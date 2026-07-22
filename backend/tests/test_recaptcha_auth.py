@@ -74,9 +74,38 @@ class TestRecaptchaAuth:
     def wipe_and_restore(self, headers):
         # Wipe at the start so we begin from a clean, disabled state.
         _wipe_recaptcha(headers)
+        # Disable auto-block for this suite — many tests intentionally fail
+        # /auth/login with garbage tokens; the shared 127.0.0.1 IP would
+        # otherwise trip the auto-block threshold and start returning 429.
+        _prior_block_settings = None
+        try:
+            _prior_block_settings = requests.get(
+                f"{API}/admin/security/settings", headers=headers, timeout=10
+            ).json()
+            requests.put(
+                f"{API}/admin/security/settings", headers=headers,
+                json={"auto_block_enabled": False}, timeout=10,
+            )
+            # Also unblock any pre-existing block on 127.0.0.1.
+            requests.delete(
+                f"{API}/admin/security/blocked-ips/127.0.0.1",
+                headers=headers, timeout=10,
+            )
+        except Exception:
+            pass
         yield
-        # Final teardown — leave disabled so subsequent iterations aren't blocked.
+        # Final teardown — leave recaptcha disabled + restore auto_block prev.
         _disable_recaptcha(headers)
+        try:
+            if _prior_block_settings and isinstance(_prior_block_settings, dict):
+                requests.put(
+                    f"{API}/admin/security/settings", headers=headers,
+                    json={"auto_block_enabled": bool(_prior_block_settings.get(
+                        "auto_block_enabled", True))},
+                    timeout=10,
+                )
+        except Exception:
+            pass
 
     # ---------- 1. GET /auth/config public / disabled default ----------
     def test_01_auth_config_disabled_by_default(self, headers):

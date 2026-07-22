@@ -234,6 +234,66 @@ class MikrotikClient:
         except Exception as e:
             return {"error": str(e)}
 
+    def torch(self, *, interface: str, duration: int = 2,
+              src_address: str = "0.0.0.0/0", dst_address: str = "0.0.0.0/0",
+              protocol: str = "any", port: str = "any", ip_version: str = "ipv4") -> dict:
+        """Run `/tool/torch` for a short duration and return the aggregated flow list.
+
+        Uses a bounded `duration` (2s default, 10s max) so the API socket does
+        not stream indefinitely.  All arguments are validated by the caller —
+        `interface` is required, everything else defaults to a wildcard.
+        """
+        try:
+            duration = max(1, min(int(duration or 2), 10))
+        except (TypeError, ValueError):
+            duration = 2
+
+        params: dict = {"interface": interface, "duration": str(duration)}
+        # RouterOS uses hyphenated keys
+        if src_address and src_address != "0.0.0.0/0":
+            params["src-address"] = src_address
+        if dst_address and dst_address != "0.0.0.0/0":
+            params["dst-address"] = dst_address
+        if protocol and protocol.lower() != "any":
+            params["protocol"] = protocol.lower()
+        # RouterOS accepts src-port / dst-port / port. Use `port` (both directions).
+        if port and str(port).lower() != "any":
+            params["port"] = str(port)
+        if ip_version and ip_version.lower() == "ipv6":
+            params["ip-version"] = "ipv6"
+
+        try:
+            api = self._connect()
+            rows = list(api(cmd="/tool/torch", **params))
+            api.close()
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": []}
+
+        # Normalize keys (RouterOS returns .id-suffixed and hyphenated names)
+        norm = []
+        for r in rows:
+            norm.append({
+                "src_address": r.get("src-address") or r.get("src_address") or "",
+                "dst_address": r.get("dst-address") or r.get("dst_address") or "",
+                "protocol":    r.get("protocol") or r.get("ip-protocol") or "",
+                "src_port":    r.get("src-port") or r.get("src_port") or "",
+                "dst_port":    r.get("dst-port") or r.get("dst_port") or "",
+                "tx_rate":     int(r.get("tx", 0) or r.get("tx-rate", 0) or 0),
+                "rx_rate":     int(r.get("rx", 0) or r.get("rx-rate", 0) or 0),
+                "tx_packets":  int(r.get("tx-packets", 0) or 0),
+                "rx_packets":  int(r.get("rx-packets", 0) or 0),
+            })
+        norm.sort(key=lambda x: (x["tx_rate"] + x["rx_rate"]), reverse=True)
+        return {
+            "ok": True,
+            "interface": interface,
+            "duration": duration,
+            "flow_count": len(norm),
+            "total_tx_rate": sum(x["tx_rate"] for x in norm),
+            "total_rx_rate": sum(x["rx_rate"] for x in norm),
+            "rows": norm,
+        }
+
 
 # ============================================================
 # Payment gateways

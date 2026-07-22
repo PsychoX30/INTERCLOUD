@@ -97,6 +97,10 @@ async def startup_seed():
         await db.login_attempts.create_index("created_at")
         await db.login_attempts.create_index("email")
         await db.login_attempts.create_index("ip")
+        # blocked_ips + notifications for auto-block feature
+        await db.blocked_ips.create_index("ip", unique=True)
+        await db.blocked_ips.create_index("expires_at")
+        await db.security_notifications.create_index("created_at")
     except Exception as e:
         logger.warning(f"Index create issue: {e}")
     try:

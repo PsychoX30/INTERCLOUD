@@ -1,0 +1,41 @@
+{
+  "summary": "Backend testing for real Diagnostic Tools + MikroTik Torch + Auto-Block IP security. Created 20 new tests covering /admin/diagnostics/tools + /admin/diagnostics/run (ping, traceroute, dns, whois, blacklist, portscan, http, torch), torch validation & happy-path, RBAC, and end-to-end auto-block flow (12 fails -> 429 -> manual unblock). Found + fixed a critical timezone-comparison bug in _is_ip_blocked and _maybe_auto_block that was returning 500 on the 11th failed login. All 20 new tests + 13 recaptcha_auth + 13 login_analytics + 14 assets_straight_line = 60 tests green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/portal/admin/diagnostics/tools", "issue": "tools list contains 9 entries because 'nslookup' is a runtime alias for 'dns' — meta has 8 (matches review spec). Not a real defect but worth noting; test uses meta length + presence checks."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_diagnostics_and_security.py",
+    "/app/test_reports/pytest/diagnostics_and_security.xml",
+    "/app/test_reports/pytest/recaptcha_auth.xml",
+    "/app/test_reports/pytest/login_analytics.xml",
+    "/app/test_reports/pytest/assets_straight_line.xml"
+  ],
+  "action_items": [
+    "Consider persisting blocked_ips expires_at consistently: _maybe_auto_block writes datetime, DELETE /blocked-ips/{ip} writes ISO string via _now(). Downstream code now normalizes both, but a single format would be cleaner.",
+    "Optionally return a token-free health probe endpoint to ping the diagnostics service without an admin session (currently 401 for anonymous, which is correct for security)."
+  ],
+  "critical_code_review_comments": [
+    "BUG (FIXED) — /app/backend/portal/routes.py::_is_ip_blocked and _maybe_auto_block compared offset-naive datetimes returned by MongoDB against offset-aware datetime.now(timezone.utc). This produced 'TypeError: can't compare offset-naive and offset-aware datetimes' on every subsequent /auth/login once a block had been recorded, causing a 500 instead of the intended 429. Normalized tzinfo before comparison (also handled string ISO form from _now()).",
+    "BUG (FIXED) — blocked_ips_list had the same tz-naive comparison on the `active` computation.",
+    "Consistency — _maybe_auto_block stores expires_at as python datetime while the DELETE unblock endpoint stores expires_at as an ISO string via _now(). Consider standardizing to ISO strings across the board.",
+    "Torch dispatcher signature: dispatch(tool, target, ...) calls run_torch(target=None, ...) which is correct, but run_torch signature is `async def run_torch(target: str | None = None, *, interface: str = '', ...)` — the empty-string default for interface means a completely missing 'interface' key doesn't reach the get_settings check; it fails validation first (interface is required). Order-of-validation is fine, but worth documenting: interface-validation happens BEFORE mikrotik-integration check, so bad-interface returns 400 even when mikrotik is disabled (test_12 accepts either error).",
+    "PORT-SCAN uses hardcoded COMMON_PORTS list; consider making it configurable via payload without opening arbitrary port scans (rate-limit or admin-only-only)."
+  ],
+  "updated_files": [
+    "/app/backend/portal/routes.py — fixed tz-naive vs tz-aware datetime comparisons in _is_ip_blocked, _maybe_auto_block, blocked_ips_list",
+    "/app/backend/tests/test_diagnostics_and_security.py — NEW, 20 tests",
+    "/app/backend/tests/test_recaptcha_auth.py — added autouse fixture to disable auto_block during the class run",
+    "/app/backend/tests/test_login_analytics.py — added autouse fixture to disable auto_block during the class run"
+  ],
+  "success_rate": {"backend": "100% (60/60 tests across 4 files)", "frontend": "not tested (backend-only per request)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026!  |  demo@client.com / ClientDemo2026!",
+  "seed_data_creation": "None. Uses existing seeded admin/client. Teardown wipes blocked_ips and 127.0.0.1 failed login_attempts + disables auto_block after the diagnostics test class ends.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auto-block is DISABLED by the diagnostics test teardown (and by the recaptcha/login-analytics test fixtures). If a future test needs auto-block ON, PUT /admin/security/settings with auto_block_enabled:true. Also, all 4 test files touching 127.0.0.1 login state are pinned to xdist_group='recaptcha_shared' so they serialize on one worker — do NOT change that pin.",
+  "rca of the issue": "RCA: MongoDB's motor driver returns tz-naive datetimes even when tz-aware datetimes are written. _maybe_auto_block wrote `expires_at = now_dt + timedelta(...)` as a python datetime (tz-aware). On read, motor returns it stripped of tzinfo (naive UTC). _is_ip_blocked then did `expires_at > now_dt` (naive > aware) which raises TypeError. Because _is_ip_blocked runs at the top of /auth/login and is not wrapped in a try/except, the raw exception surfaced as a 500. Reproduction: (1) create fake IP block via 10 failed logins; (2) 11th /auth/login → 500. Mitigation: normalize `expires_at` (both str-ISO and naive-datetime variants) to tz-aware UTC before comparison in _is_ip_blocked, _maybe_auto_block, and blocked_ips_list."
+}

@@ -108,8 +108,35 @@ class TestLoginAnalytics:
     @pytest.fixture(autouse=True, scope="class")
     def _cleanup_recaptcha(self, headers):
         _disable_recaptcha(headers)   # ensure disabled before starting
+        # Disable auto-block for this suite (brute-force test intentionally
+        # generates 3+ failures from 127.0.0.1, which can start to trip the
+        # threshold if combined with other test files run before this one).
+        _prior = None
+        try:
+            _prior = requests.get(
+                f"{LOCAL_API}/admin/security/settings", headers=headers, timeout=10
+            ).json()
+            requests.put(
+                f"{LOCAL_API}/admin/security/settings", headers=headers,
+                json={"auto_block_enabled": False}, timeout=10,
+            )
+            requests.delete(
+                f"{LOCAL_API}/admin/security/blocked-ips/127.0.0.1",
+                headers=headers, timeout=10,
+            )
+        except Exception:
+            pass
         yield
         _disable_recaptcha(headers)   # leave disabled
+        try:
+            if _prior and isinstance(_prior, dict):
+                requests.put(
+                    f"{LOCAL_API}/admin/security/settings", headers=headers,
+                    json={"auto_block_enabled": bool(_prior.get(
+                        "auto_block_enabled", True))}, timeout=10,
+                )
+        except Exception:
+            pass
 
     # ---------- 1. RBAC ----------
     def test_01_analytics_requires_auth(self):

@@ -119,22 +119,118 @@ async def _log_login_attempt(db, *, email: str, action: str, success: bool, reas
                              ip: str, user_agent: str = "", recaptcha_score: float | None = None,
                              recaptcha_enabled: bool = False):
     """Append a document to `login_attempts` for the Security Analytics dashboard.
-    Best-effort — never raise into the caller."""
+    Best-effort — never raise into the caller. On failure, also runs auto-block check."""
     try:
         await db.login_attempts.insert_one({
             "email": (email or "").lower(),
-            "action": action,           # login | register | forgot
+            "action": action,
             "success": bool(success),
-            "reason": reason,           # ok | invalid_credentials | recaptcha_missing | recaptcha_failed | recaptcha_low_score | account_exists | tos_required
+            "reason": reason,
             "ip": ip or "unknown",
             "user_agent": user_agent[:400],
             "recaptcha_enabled": bool(recaptcha_enabled),
             "recaptcha_score": recaptcha_score,
             "created_at": _now(),
         })
+        if not success and ip and ip != "unknown":
+            await _maybe_auto_block(db, ip)
     except Exception:
         import logging
         logging.getLogger("portal.security").warning("[login_attempts] insert failed for %s", email)
+
+
+DEFAULT_SECURITY_SETTINGS = {
+    "auto_block_enabled": True,
+    "fail_threshold": 10,        # failures to trigger a block
+    "window_minutes": 15,        # sliding window to count failures
+    "ban_minutes": 30,           # block duration
+    "notify_emails": [],         # recipients for block notifications
+}
+
+
+async def _get_security_settings(db) -> dict:
+    doc = await db.settings.find_one({"_id": "security"})
+    if not doc:
+        return dict(DEFAULT_SECURITY_SETTINGS)
+    merged = dict(DEFAULT_SECURITY_SETTINGS)
+    merged.update({k: v for k, v in doc.items() if k != "_id"})
+    return merged
+
+
+async def _maybe_auto_block(db, ip: str):
+    """After each failed login, check if this IP has crossed the threshold and,
+    if so, upsert a `blocked_ips` doc + emit a `security_notifications` event."""
+    s = await _get_security_settings(db)
+    if not s.get("auto_block_enabled", True):
+        return
+    window_iso = (datetime.now(timezone.utc) - timedelta(minutes=int(s["window_minutes"]))).isoformat()
+    fails = await db.login_attempts.count_documents({
+        "ip": ip, "success": False, "created_at": {"$gte": window_iso},
+    })
+    if fails < int(s["fail_threshold"]):
+        return
+    now_dt = datetime.now(timezone.utc)
+    expires = now_dt + timedelta(minutes=int(s["ban_minutes"]))
+    # Only insert a notification if this IP wasn't already actively blocked
+    existing = await db.blocked_ips.find_one({"ip": ip})
+    existing_exp = existing.get("expires_at") if existing else None
+    # Normalize both string ISO and naive-datetime forms to offset-aware.
+    if isinstance(existing_exp, str):
+        try:
+            existing_exp = datetime.fromisoformat(existing_exp.replace("Z", "+00:00"))
+        except Exception:
+            existing_exp = None
+    if isinstance(existing_exp, datetime) and existing_exp.tzinfo is None:
+        existing_exp = existing_exp.replace(tzinfo=timezone.utc)
+    if existing and existing_exp and existing_exp > now_dt and not existing.get("unblocked_at"):
+        # Extend the ban by another window
+        await db.blocked_ips.update_one({"ip": ip}, {"$set": {
+            "expires_at": expires, "hits": fails, "last_seen_at": now_dt.isoformat(),
+        }})
+        return
+    await db.blocked_ips.update_one(
+        {"ip": ip},
+        {"$set": {
+            "ip": ip,
+            "blocked_at": now_dt.isoformat(),
+            "expires_at": expires,
+            "reason": "auto_block_threshold",
+            "hits": fails,
+            "unblocked_at": None,
+        }},
+        upsert=True,
+    )
+    await db.security_notifications.insert_one({
+        "kind": "ip_auto_blocked",
+        "ip": ip,
+        "hits": fails,
+        "window_minutes": int(s["window_minutes"]),
+        "ban_minutes": int(s["ban_minutes"]),
+        "created_at": now_dt.isoformat(),
+        "read": False,
+    })
+
+
+async def _is_ip_blocked(db, ip: str) -> bool:
+    if not ip or ip == "unknown":
+        return False
+    now_dt = datetime.now(timezone.utc)
+    doc = await db.blocked_ips.find_one({"ip": ip, "unblocked_at": None})
+    if not doc:
+        return False
+    expires_at = doc.get("expires_at")
+    # Support both ISO strings and datetime objects
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except Exception:
+            return False
+    # MongoDB returns naive UTC datetimes — normalize to offset-aware.
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and expires_at > now_dt:
+        return True
+    return False
 
 
 @router.post("/auth/login", response_model=m.LoginOut)
@@ -144,6 +240,11 @@ async def login(payload: m.LoginIn, request: Request):
     ip = request.client.host if request.client else "unknown"
     ua = request.headers.get("user-agent", "")
     email = payload.email.lower().strip()
+
+    # Auto-block short-circuit
+    if await _is_ip_blocked(db, ip):
+        raise HTTPException(status_code=429, detail="IP temporarily blocked due to repeated failures")
+
     recap_doc = await _iv2.get_recaptcha_settings(db)
     recap_score = None
 
@@ -3767,6 +3868,165 @@ async def login_analytics(
         "score_distribution": {"buckets": score_buckets, "total_scored": scored_rows},
         "recent": recent,
     }
+
+
+# ---------- Security Settings & Blocked IPs ----------
+@router.get("/admin/security/settings")
+async def security_settings_get(admin=Depends(get_current_admin)):
+    db = await _get_db()
+    s = await _get_security_settings(db)
+    return s
+
+
+@router.put("/admin/security/settings")
+async def security_settings_put(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    allowed = {"auto_block_enabled", "fail_threshold", "window_minutes", "ban_minutes", "notify_emails"}
+    upd = {k: v for k, v in (payload or {}).items() if k in allowed}
+    # type coercion
+    if "fail_threshold" in upd: upd["fail_threshold"] = max(1, int(upd["fail_threshold"]))
+    if "window_minutes" in upd: upd["window_minutes"] = max(1, int(upd["window_minutes"]))
+    if "ban_minutes" in upd:    upd["ban_minutes"]    = max(1, int(upd["ban_minutes"]))
+    if "auto_block_enabled" in upd: upd["auto_block_enabled"] = bool(upd["auto_block_enabled"])
+    if "notify_emails" in upd:
+        upd["notify_emails"] = [str(x).strip() for x in (upd["notify_emails"] or []) if str(x).strip()]
+    await db.settings.update_one({"_id": "security"}, {"$set": upd}, upsert=True)
+    return await _get_security_settings(db)
+
+
+@router.get("/admin/security/blocked-ips")
+async def blocked_ips_list(admin=Depends(get_current_admin), active_only: bool = False):
+    db = await _get_db()
+    now_dt = datetime.now(timezone.utc)
+    docs = await db.blocked_ips.find({}).sort("blocked_at", -1).to_list(500)
+    out = []
+    for d in docs:
+        exp = d.get("expires_at")
+        if isinstance(exp, str):
+            try: exp_dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+            except Exception: exp_dt = None
+        else:
+            exp_dt = exp
+        # Normalize naive datetimes (MongoDB returns tz-naive UTC)
+        if isinstance(exp_dt, datetime) and exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+        is_active = (exp_dt is not None and exp_dt > now_dt and not d.get("unblocked_at"))
+        if active_only and not is_active:
+            continue
+        out.append({
+            "ip": d.get("ip"),
+            "blocked_at": d.get("blocked_at"),
+            "expires_at": (exp_dt.isoformat() if exp_dt else None),
+            "reason": d.get("reason"),
+            "hits": d.get("hits", 0),
+            "unblocked_at": d.get("unblocked_at"),
+            "active": bool(is_active),
+        })
+    return out
+
+
+@router.delete("/admin/security/blocked-ips/{ip}")
+async def blocked_ips_unblock(ip: str, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    await db.blocked_ips.update_one(
+        {"ip": ip},
+        {"$set": {"unblocked_at": _now(), "expires_at": _now()}},
+    )
+    return {"ok": True, "ip": ip}
+
+
+@router.post("/admin/security/blocked-ips")
+async def blocked_ips_add(payload: dict, admin=Depends(get_current_admin)):
+    ip = (payload.get("ip") or "").strip()
+    ban_minutes = max(1, int(payload.get("ban_minutes") or 30))
+    if not ip:
+        raise HTTPException(status_code=400, detail="ip required")
+    db = await _get_db()
+    now_dt = datetime.now(timezone.utc)
+    await db.blocked_ips.update_one(
+        {"ip": ip},
+        {"$set": {
+            "ip": ip,
+            "blocked_at": now_dt.isoformat(),
+            "expires_at": now_dt + timedelta(minutes=ban_minutes),
+            "reason": payload.get("reason") or "manual_block",
+            "hits": int(payload.get("hits", 0)),
+            "unblocked_at": None,
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "ip": ip}
+
+
+@router.get("/admin/security/notifications")
+async def security_notifications_list(admin=Depends(get_current_admin), limit: int = 50):
+    db = await _get_db()
+    limit = max(1, min(limit, 200))
+    docs = await db.security_notifications.find({}).sort("created_at", -1).to_list(limit)
+    return [{**{k: v for k, v in d.items() if k != "_id"}, "id": str(d["_id"])} for d in docs]
+
+
+@router.post("/admin/security/notifications/mark-read")
+async def security_notifications_mark_read(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    ids = payload.get("ids") or []
+    if ids:
+        from bson import ObjectId as _OID
+        await db.security_notifications.update_many(
+            {"_id": {"$in": [_OID(i) for i in ids]}},
+            {"$set": {"read": True}},
+        )
+    else:
+        await db.security_notifications.update_many({}, {"$set": {"read": True}})
+    return {"ok": True}
+
+
+# ---------- Real Diagnostic Tools ----------
+@router.post("/admin/diagnostics/run")
+async def diagnostics_run(payload: dict, admin=Depends(get_current_admin)):
+    from portal import diagnostics as _diag
+    tool = (payload.get("tool") or "").strip().lower()
+    target = (payload.get("target") or "").strip()
+    extras: dict = {}
+    for key in ("count", "max_hops", "record",
+                "interface", "src_address", "dst_address",
+                "protocol", "port", "duration", "ip_version"):
+        if key in payload and payload[key] not in (None, ""):
+            extras[key] = payload[key]
+    db = await _get_db()
+    try:
+        result = await _diag.dispatch(tool, target, db=db, **extras)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Diagnostic failed: {type(e).__name__}: {e}")
+    return result
+
+
+@router.get("/admin/diagnostics/tools")
+async def diagnostics_tools_list(admin=Depends(get_current_admin)):
+    """Advertise which tools are available on this host so the UI can grey out
+    any missing binaries (e.g. traceroute) without a round-trip."""
+    from portal import diagnostics as _diag
+    from portal import integrations_v2 as _iv2
+    db = await _get_db()
+    mikrotik_settings = await _iv2.get_settings(db, "mikrotik")
+    mikrotik_ready = bool(mikrotik_settings and mikrotik_settings.get("enabled"))
+    tools_meta = {
+        "ping":       {"label": "Ping",       "requires": "ping3 (python)",       "extras": ["count"]},
+        "traceroute": {"label": "Traceroute", "requires": "traceroute",           "extras": ["max_hops"]},
+        "dns":        {"label": "DNS Lookup", "requires": "dig",                  "extras": ["record"]},
+        "whois":      {"label": "WHOIS",      "requires": "whois",                "extras": []},
+        "blacklist":  {"label": "DNSBL",      "requires": "dns",                  "extras": []},
+        "portscan":   {"label": "Port Scan",  "requires": "tcp sockets",          "extras": []},
+        "http":       {"label": "HTTP Check", "requires": "httpx",                "extras": []},
+        "torch":      {"label": "MikroTik Torch",
+                       "requires": f"mikrotik integration ({'ready' if mikrotik_ready else 'not configured'})",
+                       "available": mikrotik_ready,
+                       "extras": ["interface", "src_address", "dst_address", "protocol", "port", "duration"]},
+    }
+    return {"tools": list(_diag.TOOLS.keys()), "meta": tools_meta,
+            "mikrotik_ready": mikrotik_ready}
 
 
 # ============================================================
