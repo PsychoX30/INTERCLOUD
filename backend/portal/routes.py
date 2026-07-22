@@ -3996,9 +3996,15 @@ async def security_settings_put(payload: dict, admin=Depends(get_current_admin))
     for boolkey in ("auto_block_enabled", "email_notify_enabled", "telegram_notify_enabled"):
         if boolkey in upd: upd[boolkey] = bool(upd[boolkey])
     if "notify_emails" in upd:
-        upd["notify_emails"] = [str(x).strip() for x in (upd["notify_emails"] or []) if str(x).strip()]
+        v = upd["notify_emails"]
+        if isinstance(v, str):
+            v = [x for x in v.replace(",", "\n").splitlines()]
+        upd["notify_emails"] = [str(x).strip() for x in (v or []) if str(x).strip()]
     if "whitelist_ips" in upd:
-        upd["whitelist_ips"] = [str(x).strip() for x in (upd["whitelist_ips"] or []) if str(x).strip()]
+        v = upd["whitelist_ips"]
+        if isinstance(v, str):
+            v = [x for x in v.replace(",", "\n").splitlines()]
+        upd["whitelist_ips"] = [str(x).strip() for x in (v or []) if str(x).strip()]
     await db.settings.update_one({"_id": "security"}, {"$set": upd}, upsert=True)
     return await _get_security_settings(db)
 

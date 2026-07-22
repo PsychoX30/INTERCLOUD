@@ -446,3 +446,36 @@ Replaced all mock diagnostic outputs with **real** network commands, added an au
 ### Dependencies added
 - `ping3` (pip) — pure-python ICMP without root
 - `iputils-ping`, `traceroute`, `whois`, `dnsutils` (apt)
+
+
+## Security Dashboard v2 — Whitelist + Notifications + Telegram (2026-07-22) ✅
+
+Extended the auto-block system with customizable rules, whitelist, admin UI, and dual-channel notifications (email via SMTP + Telegram Bot).
+
+### Backend
+- `_ip_in_whitelist(ip, whitelist)` — uses Python `ipaddress` for CIDR match (v4 & v6); falls back to hostname exact match
+- `_maybe_auto_block` — early-return when IP whitelisted; dispatches `_dispatch_block_alerts` fire-and-forget on new block
+- `_is_ip_blocked` — early-return when IP whitelisted (idempotent even if a stale block exists)
+- `_dispatch_block_alerts` — sends email via SMTP integration + Telegram via TelegramNotifier; failures swallowed
+- New endpoint `POST /admin/security/notifications/test` — sends sample alert through both channels
+- `security_settings_put` — accepts array OR comma/newline-separated string for `notify_emails` + `whitelist_ips`, plus new booleans `email_notify_enabled`, `telegram_notify_enabled`
+- New provider `telegram` in `INTEGRATION_SCHEMA` (credentials: `bot_token`, `chat_id`; option: `silent`)
+- New class `TelegramNotifier` — async `test_connection` + `send(text)` with Markdown parse_mode
+
+### Frontend AdminSecurity page — full rewrite with 4 tabs
+- **Analytics** — the existing KPI + charts + top IPs/emails + recent attempts table
+- **Block Rules** — Enable toggle, threshold/window/ban inputs, Whitelist textarea, Notification channels (Email + Telegram toggles), Send Test Alert button with per-channel result panel
+- **Blocked IPs** — Live table with active/expired badge, per-row Unblock button, Manual block form (side card)
+- **Notifications** — Feed of `security_notifications` events with NEW badges, "Mark all read" button
+
+### Test coverage
+- `/app/backend/tests/test_security_whitelist_and_telegram.py` — **19/19 tests**: whitelist unit tests (IPv4/IPv6/CIDR/hostname), skip auto-block, skip _is_ip_blocked, notification test dispatch (Telegram+SMTP), disabled toggles, Telegram schema, provider persistence with masked bot_token
+- Regression: **39/39** across security-related suites stable across 3 runs
+- Pre-existing test isolation flake between recaptcha/login_analytics tests noted (unrelated, `--dist loadscope` doesn't honor xdist_group markers)
+
+### Aktivasi Telegram (opsional)
+1. Bikin bot via `@BotFather`, dapat `bot_token`
+2. Kirim pesan ke bot dari HP → cek `https://api.telegram.org/bot<TOKEN>/getUpdates` untuk dapat `chat_id`
+3. Portal ▸ Integrations ▸ **Telegram Bot** → paste keys + Enable + Test
+4. Portal ▸ Security ▸ Block Rules → centang "Send Telegram alerts" + Save
+5. Kirim test alert dari UI untuk verifikasi
