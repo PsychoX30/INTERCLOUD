@@ -1,0 +1,56 @@
+{
+  "summary": "Backend-only tests for the new Login Attempt Analytics dashboard (GET /api/portal/admin/security/login-analytics). Wrote /app/backend/tests/test_login_analytics.py with 13 tests covering RBAC (401 no-token / 403 client-token / 200 admin), successful-login logging, brute-force failure aggregation with 127.0.0.1 IP + bruteforce@example.com email + reason=invalid_credentials, reCAPTCHA missing/failed logging, series bucket counts (24h→25, 7d→8, 30d→31), score_distribution shape (11 buckets, total_scored consistency), all-windows-no-crash, and recent[] limit cap. All 13 new tests pass. test_recaptcha_auth.py (13) + test_assets_straight_line.py (14) regressions remain green when run separately. recaptcha integration doc is left disabled at teardown so the DB is clean.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /admin/security/login-analytics?window=<unknown>", "issue": "Unknown window falls into the daily-else branch with days=30 (31 buckets), while `delta` is computed as 24h. Inconsistent — either strictly validate window values (return 422) or route the fallback into the 24h branch. Doesn't crash and isn't in the acceptance criteria, so downgraded to minor."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_login_analytics.py",
+    "/app/test_reports/pytest/login_analytics.xml",
+    "/app/test_reports/pytest/login_analytics_plus_assets.xml",
+    "/app/test_reports/pytest/recaptcha_auth_regression.xml"
+  ],
+  "action_items": [
+    "(Optional / minor) Decide policy for unknown ?window= — either strict 422 or map to the 24h branch consistently. Currently `windows.get(...)` defaults to 24h delta but the series branch falls to 30d.",
+    "(Nice-to-have) The two shared-state test files (test_login_analytics.py + test_recaptcha_auth.py) both mutate integration_settings.recaptcha. Under `-n 2 --dist=loadscope` they land on different workers → race. Consider either merging both classes into one module (loadscope pins classes-in-the-same-module to the same worker) or switching to `--dist=loadgroup` and using the pytestmark xdist_group I already tagged (`recaptcha_shared`). For now run each file with a separate pytest invocation.",
+    "(Non-blocking) portal/routes.py is now ~4700 lines. Splitting into per-domain modules (auth, security, finance, assets, etc.) is overdue."
+  ],
+  "critical_code_review_comments": [
+    "_log_login_attempt is best-effort (try/except with logger.warning) — good defensive design; a MongoDB blip won't 500 the login flow.",
+    "Recent list is sliced from `rows` which is already sorted DESC by created_at → correct ordering guaranteed. `limit` is clamped to [1..500] which is a good safety cap; default 100 matches the spec.",
+    "reason categorisation in /auth/login relies on string matching (`'Missing' in str(e.detail)`) — brittle if the enforce_recaptcha helper ever localises the message. Consider raising a typed exception (e.g. RecaptchaException(kind='missing'|'failed'|'low_score')) so the /auth/login handler can dispatch reliably.",
+    "The endpoint pulls up to 20000 rows into memory per call and does the aggregation in Python. Fine for a small dashboard but should be moved to a MongoDB aggregation pipeline (with the created_at + email + ip indexes already declared in server.py) once real traffic starts hitting the platform.",
+    "score_distribution's total_scored equals sum of buckets (which counts only recaptcha_score numbers) — matches the spec but note that when reCAPTCHA is DISABLED, recaptcha_score is None so the total is naturally 0. Good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_login_analytics.py (new — 13 tests, xdist_group tag `recaptcha_shared`)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 new login_analytics + 13/13 recaptcha_auth regression + 14/14 assets_straight_line regression). Only caveat: test_login_analytics.py and test_recaptcha_auth.py must be invoked in separate `pytest` calls under the current -n2 loadscope config because they share the recaptcha integration_settings doc.",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! + demo@client.com / ClientDemo2026! (matches /app/memory/test_credentials.md)",
+  "seed_data_creation": "3 failed logins for bruteforce@example.com + 1 success for admin + 3 more failed for admin + 2 recaptcha-enabled failed attempts for attacker@example.com are appended to `login_attempts`. Rows are ephemeral (dashboard analytics data) — no cleanup performed intentionally so the admin dashboard has realistic content. integration_settings.recaptcha is DISABLED at end of the test class.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Login analytics endpoint = GET /api/portal/admin/security/login-analytics?window=24h|7d|30d&limit=N returns {window, since, totals:{attempts,successes,failures,success_rate,recaptcha_blocks}, reason_breakdown[], top_ips[], top_emails[], series[], score_distribution:{buckets[11], total_scored}, recent[]}. Populated by /app/backend/portal/routes.py::_log_login_attempt (~L118) inserting into `login_attempts` collection every /auth/login call (both success and failure). Route implementation at ~L3646. RBAC via get_current_admin dep (401 anon, 403 client). Windows: 24h→25 hourly buckets, 7d→8 daily, 30d→31 daily. Score buckets: 11 (0.0…1.0 step 0.1). Uses ISO-string comparison on created_at with $gte since-string (safe because _now() returns ISO with trailing 'Z' and buckets slice by string prefix). To exercise recaptcha reasons the test PUTs fake keys to /admin/integrations-v2/recaptcha and relies on Google's real siteverify returning success=false (mocked upstream, exactly as spec'd). If flaky under network issues, watch for status 502 on garbage-token — the test already accepts (400|403|502). Tests use direct localhost:8001 so client.host==127.0.0.1; via ingress the IP would be the proxy pod IP. The two files test_login_analytics.py + test_recaptcha_auth.py share the recaptcha integration doc — run them in separate pytest invocations under the current -n2 loadscope config, or merge into a single module.",
+  "verified_scenarios": [
+    "401 anonymous → /admin/security/login-analytics",
+    "403 client-token (demo@client.com) → /admin/security/login-analytics",
+    "200 admin-token → correct response shape (totals, reason_breakdown, top_ips, top_emails, series, score_distribution, recent)",
+    "After successful admin login: totals.successes and totals.attempts both increment; recent[0] has email=admin@…, success=true, reason='ok', action='login'",
+    "After 3 wrong-password logins for bruteforce@example.com: totals.failures +>=3, reason_breakdown['invalid_credentials'] +>=3, top_ips contains 127.0.0.1 (+>=3), top_emails contains bruteforce@example.com (+>=3)",
+    "With reCAPTCHA enabled (fake keys): login without token → 400 + recaptcha_blocks++; login with 'deadbeef…' token → 400/403/502 + reason recaptcha_failed OR recaptcha_low_score ++",
+    "?window=24h → len(series)==25, ?window=7d → 8, ?window=30d → 31",
+    "score_distribution.buckets length == 11 with keys 0.0..1.0; total_scored == sum(bucket.count)",
+    "All three windows return valid JSON, no crash",
+    "?limit=5 caps recent[] at exactly 5; default is <=100 and >=5 (given the fixture activity)"
+  ]
+}

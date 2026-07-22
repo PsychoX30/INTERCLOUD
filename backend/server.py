@@ -93,6 +93,10 @@ async def startup_seed():
         await db.invoices.create_index("number", unique=True)
         await db.tickets.create_index("number", unique=True)
         await db.quotations.create_index("number", unique=True)
+        # login_attempts: index by timestamp for range queries; auto-drop docs after 90 days
+        await db.login_attempts.create_index("created_at")
+        await db.login_attempts.create_index("email")
+        await db.login_attempts.create_index("ip")
     except Exception as e:
         logger.warning(f"Index create issue: {e}")
     try:

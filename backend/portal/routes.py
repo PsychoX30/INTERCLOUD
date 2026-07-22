@@ -115,19 +115,63 @@ async def auth_config():
     }
 
 
+async def _log_login_attempt(db, *, email: str, action: str, success: bool, reason: str,
+                             ip: str, user_agent: str = "", recaptcha_score: float | None = None,
+                             recaptcha_enabled: bool = False):
+    """Append a document to `login_attempts` for the Security Analytics dashboard.
+    Best-effort — never raise into the caller."""
+    try:
+        await db.login_attempts.insert_one({
+            "email": (email or "").lower(),
+            "action": action,           # login | register | forgot
+            "success": bool(success),
+            "reason": reason,           # ok | invalid_credentials | recaptcha_missing | recaptcha_failed | recaptcha_low_score | account_exists | tos_required
+            "ip": ip or "unknown",
+            "user_agent": user_agent[:400],
+            "recaptcha_enabled": bool(recaptcha_enabled),
+            "recaptcha_score": recaptcha_score,
+            "created_at": _now(),
+        })
+    except Exception:
+        import logging
+        logging.getLogger("portal.security").warning("[login_attempts] insert failed for %s", email)
+
+
 @router.post("/auth/login", response_model=m.LoginOut)
 async def login(payload: m.LoginIn, request: Request):
     db = await _get_db()
     from portal import integrations_v2 as _iv2
-    await _iv2.enforce_recaptcha(
-        db, payload.recaptcha_token, "login",
-        request.client.host if request.client else None,
-    )
+    ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "")
     email = payload.email.lower().strip()
+    recap_doc = await _iv2.get_recaptcha_settings(db)
+    recap_score = None
+
+    if recap_doc:
+        try:
+            result = await _iv2.RecaptchaV3Verifier(recap_doc).verify(
+                payload.recaptcha_token, "login", ip
+            )
+            recap_score = float(result.get("score", 0.0))
+        except HTTPException as e:
+            reason = ("recaptcha_missing" if "Missing" in str(e.detail)
+                      else "recaptcha_low_score" if getattr(e, "status_code", 0) == 403
+                      else "recaptcha_failed")
+            await _log_login_attempt(db, email=email, action="login", success=False, reason=reason,
+                                     ip=ip, user_agent=ua, recaptcha_enabled=True,
+                                     recaptcha_score=recap_score)
+            raise
+
     u = await db.users.find_one({"email": email})
     if not u or not verify_password(payload.password, u["password_hash"]):
+        await _log_login_attempt(db, email=email, action="login", success=False,
+                                 reason="invalid_credentials", ip=ip, user_agent=ua,
+                                 recaptcha_enabled=bool(recap_doc), recaptcha_score=recap_score)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token(str(u["_id"]), u["email"], u["role"])
+    await _log_login_attempt(db, email=email, action="login", success=True, reason="ok",
+                             ip=ip, user_agent=ua, recaptcha_enabled=bool(recap_doc),
+                             recaptcha_score=recap_score)
     return {"token": token, "user": _user_public(u)}
 
 
@@ -3594,6 +3638,135 @@ async def payment_webhook(provider: str, request: Request):
                     except Exception:
                         pass
     return {"received": True, "status": verified["status"]}
+
+
+# ============================================================
+# SECURITY — Login Attempt Analytics
+# ============================================================
+@router.get("/admin/security/login-analytics")
+async def login_analytics(
+    admin=Depends(get_current_admin),
+    window: str = "24h",  # 24h | 7d | 30d
+    limit: int = 100,
+):
+    """Aggregate login attempts for the Admin Security dashboard.
+    Powered by the `login_attempts` collection populated by `/auth/login`."""
+    db = await _get_db()
+    now = datetime.now(timezone.utc)
+    windows = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
+    delta = windows.get(window, timedelta(hours=24))
+    since = (now - delta).isoformat()
+
+    cursor = db.login_attempts.find({"created_at": {"$gte": since}}).sort("created_at", -1)
+    rows = await cursor.to_list(20000)
+
+    total = len(rows)
+    successes = sum(1 for r in rows if r.get("success"))
+    failures = total - successes
+    success_rate = round((successes / total) * 100, 2) if total else 0.0
+    recap_blocks = sum(1 for r in rows if r.get("reason", "").startswith("recaptcha"))
+
+    # Reason breakdown
+    reason_counts: dict[str, int] = {}
+    for r in rows:
+        k = r.get("reason", "unknown")
+        reason_counts[k] = reason_counts.get(k, 0) + 1
+
+    # Top offending IPs (failures only)
+    ip_counts: dict[str, int] = {}
+    for r in rows:
+        if not r.get("success"):
+            ip = r.get("ip", "unknown")
+            ip_counts[ip] = ip_counts.get(ip, 0) + 1
+    top_ips = sorted(ip_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+
+    # Top targeted emails (failures only)
+    email_counts: dict[str, int] = {}
+    for r in rows:
+        if not r.get("success"):
+            em = r.get("email") or "(empty)"
+            email_counts[em] = email_counts.get(em, 0) + 1
+    top_emails = sorted(email_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+
+    # Time series buckets
+    if window == "24h":
+        # hourly buckets
+        buckets: dict[str, dict] = {}
+        for h in range(24, -1, -1):
+            t = now - timedelta(hours=h)
+            key = t.strftime("%Y-%m-%d %H:00")
+            buckets[key] = {"bucket": key, "success": 0, "failed": 0, "recaptcha_block": 0}
+        for r in rows:
+            ts = r.get("created_at", "")
+            key = ts[:13] + ":00"
+            if key in buckets:
+                if r.get("success"):
+                    buckets[key]["success"] += 1
+                else:
+                    buckets[key]["failed"] += 1
+                    if r.get("reason", "").startswith("recaptcha"):
+                        buckets[key]["recaptcha_block"] += 1
+        series = list(buckets.values())
+    else:
+        days = 7 if window == "7d" else 30
+        buckets = {}
+        for d in range(days, -1, -1):
+            t = now - timedelta(days=d)
+            key = t.strftime("%Y-%m-%d")
+            buckets[key] = {"bucket": key, "success": 0, "failed": 0, "recaptcha_block": 0}
+        for r in rows:
+            key = (r.get("created_at", "") or "")[:10]
+            if key in buckets:
+                if r.get("success"):
+                    buckets[key]["success"] += 1
+                else:
+                    buckets[key]["failed"] += 1
+                    if r.get("reason", "").startswith("recaptcha"):
+                        buckets[key]["recaptcha_block"] += 1
+        series = list(buckets.values())
+
+    # reCAPTCHA score distribution (buckets of 0.1)
+    score_buckets = [{"bucket": f"{b/10:.1f}", "count": 0} for b in range(0, 11)]
+    for r in rows:
+        s = r.get("recaptcha_score")
+        if s is None:
+            continue
+        idx = min(int(float(s) * 10), 10)
+        score_buckets[idx]["count"] += 1
+    scored_rows = sum(sb["count"] for sb in score_buckets)
+
+    # Recent attempts
+    recent = [{
+        "id": str(r.get("_id", "")),
+        "email": r.get("email", ""),
+        "action": r.get("action", ""),
+        "success": bool(r.get("success")),
+        "reason": r.get("reason", ""),
+        "ip": r.get("ip", ""),
+        "user_agent": (r.get("user_agent") or "")[:120],
+        "recaptcha_enabled": bool(r.get("recaptcha_enabled")),
+        "recaptcha_score": r.get("recaptcha_score"),
+        "created_at": r.get("created_at", ""),
+    } for r in rows[:max(1, min(limit, 500))]]
+
+    return {
+        "window": window,
+        "since": since,
+        "totals": {
+            "attempts": total,
+            "successes": successes,
+            "failures": failures,
+            "success_rate": success_rate,
+            "recaptcha_blocks": recap_blocks,
+        },
+        "reason_breakdown": [{"reason": k, "count": v} for k, v in
+                             sorted(reason_counts.items(), key=lambda kv: kv[1], reverse=True)],
+        "top_ips": [{"ip": k, "count": v} for k, v in top_ips],
+        "top_emails": [{"email": k, "count": v} for k, v in top_emails],
+        "series": series,
+        "score_distribution": {"buckets": score_buckets, "total_scored": scored_rows},
+        "recent": recent,
+    }
 
 
 # ============================================================

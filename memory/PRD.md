@@ -347,3 +347,32 @@ Tests:
 - Phase 4: Performance — MongoDB indexes on hot queries, frontend lazy routes
 - Phase 5: UI/UX polish, accessibility
 - Phase 6: QA & handover
+
+
+## Google reCAPTCHA v3 (2026-07-22) — Phase 2 ✅ (feature flag OFF, keys pending)
+**Ganti dari Cloudflare Turnstile** ke Google reCAPTCHA v3 (score-based, invisible) untuk portal Login/Register/Forgot-Password. Tersedia sebagai provider baru di menu **Integrations**.
+
+### Backend
+- `INTEGRATION_SCHEMA['recaptcha']` di `integrations_v2.py` — category='security', credentials `{site_key, secret_key}`, options `{min_score(=0.5), expected_hostname, verify_action(=true)}`
+- `class RecaptchaV3Verifier` — async `verify(token, action, remote_ip)` panggil Google siteverify, cek `success`+`action`+`hostname`+`score>=min_score`, raise HTTPException 400/403
+- Helpers `get_recaptcha_settings(db)` + `enforce_recaptcha(db, token, action, ip)` — no-op saat disabled
+- Auth endpoints (`/auth/login`, `/auth/register`, `/auth/forgot-password`) sekarang `await iv2.enforce_recaptcha(...)` sebelum cek password
+- Endpoint public baru `GET /api/portal/auth/config` — hanya expose `{recaptcha:{enabled, site_key}}`, **secret_key tidak pernah dikirim**
+- Models `LoginIn/RegisterIn/ForgotPasswordIn` tambah `recaptcha_token: Optional[str] = None` (backward-compat: klien lama tanpa field ini tetap 200 saat feature disabled)
+
+### Frontend
+- `src/portal/recaptcha.js` — lazy fetch `/auth/config`, inject Google script sekali, `getRecaptchaToken(action)` return token atau null bila disabled
+- `AuthContext` login/register auto-attach token
+- `PortalForgotPassword` juga wire ke reCAPTCHA (action=`forgot`)
+- Badge "Protected by Google reCAPTCHA v3 — Privacy/Terms" muncul di login saat enabled
+- `AdminIntegrations` UI menambah kategori **Security & Anti-bot** + kartu Google reCAPTCHA v3 dengan icon ShieldCheck
+
+### Test coverage
+- `/app/backend/tests/test_recaptcha_auth.py` — **13/13 pass** (schema, PUT persistence + secret masking, fail-open, missing token, garbage token, config exposes site_key only, disable-again, backward-compat)
+- Existing suites (straight-line assets, finance_v2) tetap hijau — no regression
+
+### Aktivasi (kapan user mau)
+1. Ke `https://www.google.com/recaptcha/admin/create` → pilih **v3** + domain
+2. Copy Site Key + Secret Key
+3. Portal Admin → **Integrations** → **Google reCAPTCHA v3** → Enabled + isi keys + Save
+4. Selesai. Login/Register/Forgot langsung protected tanpa deploy ulang.

@@ -37,6 +37,7 @@ import AdminQuotations from "./pages/portal/admin/AdminQuotations";
 import AdminTickets from "./pages/portal/admin/AdminTickets";
 import AdminFinance from "./pages/portal/admin/AdminFinance";
 import AdminIntegrations from "./pages/portal/admin/AdminIntegrations";
+import AdminSecurity from "./pages/portal/admin/AdminSecurity";
 import AdminMail from "./pages/portal/admin/AdminMail";
 import AdminServices from "./pages/portal/admin/AdminServices";
 import AdminAssets from "./pages/portal/admin/AdminAssets";
@@ -120,6 +121,7 @@ function App() {
                 <Route path="followups" element={<AdminFollowups />} />
                 <Route path="documents" element={<AdminDocuments />} />
                 <Route path="integrations" element={<AdminIntegrations />} />
+                <Route path="security" element={<AdminSecurity />} />
                 <Route path="real-integrations" element={<Navigate to="/portal/admin/integrations" replace />} />
                 <Route path="settings/password" element={<ChangePassword />} />
               </Route>
