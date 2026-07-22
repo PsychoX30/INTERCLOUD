@@ -312,3 +312,38 @@ Tests:
 - P2: Bandwidth/pricing calculator widget
 - P2: Client testimonials / logo carousel with quotes
 - P2 (tech-debt): Consolidate WA-message templates in Services.jsx / Pricing.jsx to use `wa.prefilled.svc` / `wa.prefilled.plan` from LanguageContext dict
+
+
+## Straight-Line Depreciation Rewrite (2026-07-22) — Phase 1 ✅
+**Confirmed direction:** Rewrite Admin Assets depreciation to metode garis lurus.
+**Formula:** `Penyusutan per Tahun = (Harga Perolehan − Nilai Sisa) / Umur Ekonomis`
+
+### Backend (`/app/backend/portal/routes.py` §2372-2610)
+- `_asset_depreciation(a)` returns full snapshot: annual/monthly/accumulated_depreciation, book_value (floored at salvage), months_elapsed, total_months, is_fully_depreciated, depreciable_base
+- `_asset_book_value(a)` and `_asset_schedule(a)` derive from it; `_serialize_asset` exposes all fields
+- New `_coerce_asset_payload` normalizes incoming payloads (backward-compat: derives `useful_life_years` from `useful_life_months` ÷ 12, or `depreciation_percent` → `round(100 ÷ pct)`)
+- New endpoint: `GET /api/portal/admin/assets/{id}` — returns asset + `schedule[]` (yearly rows for the full life)
+- Fields added to schema: `salvage_value`, `useful_life_years` (legacy `depreciation_percent` + `useful_life_months` still accepted)
+- `finance_detailed` + annual xlsx now emit `salvage_value`, `useful_life_years`, `annual_depreciation` columns
+
+### Startup migration (`/app/backend/portal/seed.py`)
+- `_migrate_assets_straight_line(db)` backfills `salvage_value=0` on any pre-existing doc missing it and derives `useful_life_years` from legacy fields
+
+### Frontend (`/app/frontend/src/pages/portal/admin/AdminAssets.jsx`)
+- New form fields: Salvage / Nilai Sisa, Useful Life / Umur Ekonomis (tahun)
+- **Live preview** panel showing Depreciable Base + Annual + Monthly as user types
+- New **Schedule modal** (Calculator icon per row) with yearly breakdown
+- Table columns updated: Cost, Salvage, Life, Annual Dep., Book Value (with -Accumulated hint)
+- `AdminFinance.jsx` assets tab table updated to include Salvage / Life / Annual Dep.
+
+### Validation
+- Test case (value=10M, salvage=1M, life=5y, purchase=2020-01-01): annual=1.800.000, monthly=150.000, accumulated=9.000.000, book=1.000.000 (salvage floor), fully depreciated ✅
+- Backend tests: **24/24 pytest pass** (14 new straight-line tests + 10 existing finance_v2 tests still green)
+- Test file: `/app/backend/tests/test_assets_straight_line.py`
+
+## Backlog (from continuation plan)
+- Phase 2: CAPTCHA — Cloudflare Turnstile placeholder in portal login/register/forgot (skip until user provides site+secret keys)
+- Phase 3: Bug fixes & refactor pass (routes.py 4500 lines → split per-domain)
+- Phase 4: Performance — MongoDB indexes on hot queries, frontend lazy routes
+- Phase 5: UI/UX polish, accessibility
+- Phase 6: QA & handover
