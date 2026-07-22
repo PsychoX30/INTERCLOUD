@@ -561,6 +561,23 @@ INTEGRATION_SCHEMA = {
             {"key": "fetch_limit", "label": "Max messages to fetch", "type": "number", "default": 50},
         ],
     },
+    "recaptcha": {
+        "label": "Google reCAPTCHA v3",
+        "category": "security",
+        "description": "Score-based invisible bot protection for portal Login, Register, and Forgot-Password. Get keys at https://www.google.com/recaptcha/admin/create (choose v3).",
+        "credentials": [
+            {"key": "site_key", "label": "Site Key (public)", "type": "text", "required": True,
+             "placeholder": "6Lc..."},
+            {"key": "secret_key", "label": "Secret Key (server-side)", "type": "password", "required": True,
+             "placeholder": "6Lc..."},
+        ],
+        "options": [
+            {"key": "min_score", "label": "Min score threshold (0.0 – 1.0)", "type": "number", "default": 0.5},
+            {"key": "expected_hostname", "label": "Expected hostname (leave blank to skip check)", "type": "text",
+             "placeholder": "portal.intercloud-digital.com"},
+            {"key": "verify_action", "label": "Enforce action match (login/register/forgot)", "type": "checkbox", "default": True},
+        ],
+    },
 }
 
 
@@ -571,6 +588,7 @@ CATEGORY_LABELS = {
     "provisioning": "Hosting Provisioning",
     "payment": "Payment Gateways",
     "mail": "Email (SMTP / IMAP)",
+    "security": "Security & Anti-bot",
 }
 
 
@@ -708,3 +726,120 @@ class IMAPClient:
             return out
         except Exception:
             return []
+
+
+
+# ============================================================
+# reCAPTCHA v3 — score-based verification for auth endpoints
+# ============================================================
+class RecaptchaV3Verifier:
+    """Async wrapper around Google's reCAPTCHA v3 siteverify endpoint.
+
+    Reads its config from an `integration_settings` doc for `provider='recaptcha'`:
+      credentials.site_key    → public, echoed to frontend
+      credentials.secret_key  → server-only, used in siteverify POST
+      options.min_score       → float, default 0.5
+      options.expected_hostname
+      options.verify_action   → bool, default True
+
+    Usage from an endpoint:
+        v = RecaptchaV3Verifier(settings)
+        await v.verify(token, action='login', remote_ip=client_ip)
+    Raises HTTPException(400/403) on failure. Fail-open only when disabled
+    (the caller is expected to check `enabled` before invoking `verify()`).
+    """
+
+    SITEVERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
+
+    def __init__(self, settings: dict):
+        c = settings.get("credentials") or {}
+        o = settings.get("options") or {}
+        self.site_key = c.get("site_key") or ""
+        self.secret_key = c.get("secret_key") or ""
+        try:
+            self.min_score = float(o.get("min_score", 0.5))
+        except (TypeError, ValueError):
+            self.min_score = 0.5
+        self.expected_hostname = (o.get("expected_hostname") or "").strip() or None
+        self.verify_action = bool(o.get("verify_action", True))
+
+    async def test_connection(self) -> dict:
+        """Test by calling siteverify with an obviously-invalid token.
+        Google returns success=false + `invalid-input-response` — that means
+        our secret_key is at least valid enough to make the call."""
+        if not self.secret_key:
+            return {"ok": False, "message": "Secret key is empty."}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as c:
+                r = await c.post(self.SITEVERIFY_URL, data={
+                    "secret": self.secret_key,
+                    "response": "test",
+                })
+            j = r.json()
+            errs = j.get("error-codes") or []
+            if "invalid-input-secret" in errs:
+                return {"ok": False, "message": "Google rejected the secret key. Double-check the value."}
+            if "missing-input-secret" in errs:
+                return {"ok": False, "message": "Secret key is missing."}
+            # Any other error means the secret is being accepted (just the token was bogus).
+            return {"ok": True, "message": "reCAPTCHA secret accepted by Google (test token expectedly failed).",
+                    "details": {"error_codes": errs}}
+        except Exception as e:
+            return {"ok": False, "message": f"{type(e).__name__}: {e}"}
+
+    async def verify(self, token: Optional[str], action: str, remote_ip: Optional[str] = None):
+        from fastapi import HTTPException  # local import to avoid pulling FastAPI in mock ctx
+        if not self.secret_key:
+            raise HTTPException(status_code=500, detail="reCAPTCHA is enabled but secret key is missing")
+        if not token:
+            raise HTTPException(status_code=400, detail="Missing reCAPTCHA token")
+
+        data = {"secret": self.secret_key, "response": token}
+        if remote_ip:
+            data["remoteip"] = remote_ip
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as c:
+                r = await c.post(self.SITEVERIFY_URL, data=data)
+                j = r.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"reCAPTCHA verify failed: {type(e).__name__}")
+
+        if not j.get("success"):
+            raise HTTPException(status_code=400, detail={
+                "message": "reCAPTCHA verification failed",
+                "errors": j.get("error-codes", []),
+            })
+        if self.verify_action and j.get("action") != action:
+            raise HTTPException(status_code=400, detail="reCAPTCHA action mismatch")
+        if self.expected_hostname and j.get("hostname") != self.expected_hostname:
+            raise HTTPException(status_code=400, detail="reCAPTCHA hostname mismatch")
+        try:
+            score = float(j.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        if score < self.min_score:
+            raise HTTPException(status_code=403, detail={
+                "message": "reCAPTCHA score too low",
+                "score": score, "min_score": self.min_score,
+            })
+        return {"success": True, "score": score, "action": j.get("action"),
+                "hostname": j.get("hostname")}
+
+
+async def get_recaptcha_settings(db) -> Optional[dict]:
+    """Convenience helper — returns the doc only if enabled."""
+    doc = await get_settings(db, "recaptcha")
+    if doc and doc.get("enabled"):
+        return doc
+    return None
+
+
+async def enforce_recaptcha(db, token: Optional[str], action: str, remote_ip: Optional[str] = None):
+    """Verify reCAPTCHA if the integration is enabled; no-op otherwise.
+    Call from auth endpoints:
+        await iv2.enforce_recaptcha(db, payload.recaptcha_token, 'login', request.client.host)
+    """
+    doc = await get_recaptcha_settings(db)
+    if not doc:
+        return None
+    return await RecaptchaV3Verifier(doc).verify(token, action, remote_ip)

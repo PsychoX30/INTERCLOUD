@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { api, setToken, clearToken, getToken, formatApiError } from "./api";
+import { getRecaptchaToken } from "./recaptcha";
 
 const AuthContext = createContext(null);
 
@@ -28,7 +29,8 @@ export const AuthProvider = ({ children }) => {
   const login = useCallback(async (email, password) => {
     setError(null);
     try {
-      const { data } = await api.post("/auth/login", { email, password });
+      const recaptcha_token = await getRecaptchaToken("login").catch(() => null);
+      const { data } = await api.post("/auth/login", { email, password, recaptcha_token });
       setToken(data.token);
       setUser(data.user);
       return data.user;
@@ -42,7 +44,8 @@ export const AuthProvider = ({ children }) => {
   const register = useCallback(async (payload) => {
     setError(null);
     try {
-      const { data } = await api.post("/auth/register", payload);
+      const recaptcha_token = await getRecaptchaToken("register").catch(() => null);
+      const { data } = await api.post("/auth/register", { ...payload, recaptcha_token });
       setToken(data.token);
       setUser(data.user);
       return data.user;

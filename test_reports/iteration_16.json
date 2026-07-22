@@ -1,0 +1,47 @@
+{
+  "summary": "Backend-only regression + feature verification for Google reCAPTCHA v3 protection on portal Login/Register/Forgot-Password. Wrote /app/backend/tests/test_recaptcha_auth.py (13 tests) covering public /auth/config shape, admin schema, PUT persistence + secret masking, fail-open when disabled, enforcement when enabled (missing/garbage token), site_key exposure toggle, disable-again immediacy, and legacy-client backward compatibility. All 13 new tests pass. Existing test_assets_straight_line.py (14) and test_finance_v2.py (10) still pass — no regression. Integration state left disabled after the run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_recaptcha_auth.py",
+    "/app/test_reports/pytest/recaptcha_auth.xml",
+    "/app/test_reports/pytest/assets_straight_line.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes.py is ~4530 lines — pre-existing concern; the two recaptcha guards + /auth/config additions are clean but the file itself should be split per-domain.",
+    "test_portal.py hard-codes an old preview URL fallback ('cloud-services-id.preview.emergentagent.com') for REACT_APP_BACKEND_URL — the test file 404s in isolation unless PORTAL_API_BASE=localhost is exported. Not a recaptcha regression; passes when correct env is present. Recommend making the fallback localhost:8001 for consistency with test_recaptcha_auth.py and test_assets_straight_line.py.",
+    "RecaptchaV3Verifier.verify raises HTTPException(status_code=500) when secret_key is empty but enabled=true. Better UX would be to treat missing secret as disabled+log-warning (fail-open) or reject at PUT time to prevent an admin accidentally locking themselves out. Not blocking for this iteration.",
+    "get_recaptcha_settings returns the raw doc (with the secret_key). /auth/config only reads credentials.site_key, so no leak — but the helper's name is easy to misuse; consider a `get_recaptcha_public_config()` helper that returns only {enabled, site_key} for public endpoints."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_recaptcha_auth.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 new recaptcha + 24/24 previous straight-line+finance)",
+    "frontend": "not tested (backend-only request; frontend helper /app/frontend/src/portal/recaptcha.js reviewed statically — correctly returns null when server reports enabled=false, verified indirectly via backend fail-open tests)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (matches /app/memory/test_credentials.md)",
+  "seed_data_creation": "Ephemeral: register creates a TEST_recap_reg_<uuid>@example.com user which is deleted immediately via /admin/users/{id} after the test. No lasting DB state. The integration_settings.recaptcha document is wiped at class setup and set to enabled:false at teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "reCAPTCHA integration = provider 'recaptcha' in integration_settings collection. Backend module /app/backend/portal/integrations_v2.py (INTEGRATION_SCHEMA at ~L564, RecaptchaV3Verifier at ~L735, get_recaptcha_settings/enforce_recaptcha at ~L829-845). Route guards in /app/backend/portal/routes.py at ~L96 (/auth/config public), ~L122 (login), ~L180 (register), ~L3300 (forgot-password). Models LoginIn/RegisterIn/ForgotPasswordIn all have optional recaptcha_token: Optional[str] = None — backward-compat preserved. Tests are grouped inside a SINGLE class TestRecaptchaAuth so pytest-xdist's default loadscope pins them to one worker (they mutate a shared integration_settings doc and MUST run sequentially). If splitting into multiple classes, use pytestmark = pytest.mark.xdist_group('recaptcha_auth') plus --dist=loadgroup. Fake site_key='6LcFakeSiteKey...' / secret='6LcSecretKey...' are used to exercise Google's real siteverify (returns success=false with invalid-input-secret which yields HTTP 400/403 from our route — exactly what test_09 asserts). Integration state is DISABLED at end of test class teardown; re-run safe.",
+  "verified_scenarios": [
+    "GET /auth/config disabled default → {recaptcha:{enabled:false,site_key:null}}, no 'secret' string anywhere in response",
+    "GET /admin/integrations-v2/schema → recaptcha entry with category='security', credentials={site_key,secret_key}, options⊇{min_score,expected_hostname,verify_action}",
+    "PUT /admin/integrations-v2/recaptcha with fake keys → returns redacted (site_key='', site_key_masked='6LcF*******', secret_key='', secret_key_masked='6LcS*******'). Subsequent GET /admin/integrations-v2 also redacted the same way. Raw secret/site key never appear in response text.",
+    "Recaptcha OFF: login/register/forgot without recaptcha_token → 200/200/200 (or 202). No 'recaptcha' in forgot response body.",
+    "Recaptcha ON, no token: login → 400 with body containing 'recaptcha' + 'missing'. Same for register + forgot-password.",
+    "Recaptcha ON, garbage token 'deadbeef'*8: login → 400 (Google returns success=false with invalid-input-response/invalid-input-secret), body does NOT contain 'invalid email or password' → confirms recaptcha guard runs BEFORE password check.",
+    "Recaptcha ON: GET /auth/config returns {enabled:true, site_key:'6LcFake...'} but NO secret_key field, and FAKE_SECRET_KEY string is not in response body.",
+    "Disable via PUT enabled:false → /auth/config immediately shows enabled:false + site_key:null; login without token works again.",
+    "Legacy client payload {email,password} without recaptcha_token field → 200 when disabled (backward-compat)."
+  ]
+}

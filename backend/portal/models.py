@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+    recaptcha_token: Optional[str] = None
 
 
 class RegisterIn(BaseModel):
@@ -28,6 +29,7 @@ class RegisterIn(BaseModel):
     # Optional lightweight CRM hints
     industry: Optional[str] = None
     accepts_tos: bool = True
+    recaptcha_token: Optional[str] = None
 
 
 class ChangePasswordIn(BaseModel):
@@ -42,8 +44,7 @@ class AdminResetPasswordIn(BaseModel):
 
 class ForgotPasswordIn(BaseModel):
     email: EmailStr
-
-
+    recaptcha_token: Optional[str] = None
 class ResetPasswordIn(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)

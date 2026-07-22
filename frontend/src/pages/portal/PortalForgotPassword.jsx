@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../portal/api";
+import { getRecaptchaToken } from "../../portal/recaptcha";
 import { Lock, ArrowLeft, Loader2, AlertTriangle, CheckCircle2, Cloud } from "lucide-react";
 
 /**
@@ -17,7 +18,8 @@ const PortalForgotPassword = () => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      await api.post("/auth/forgot-password", { email });
+      const recaptcha_token = await getRecaptchaToken("forgot").catch(() => null);
+      await api.post("/auth/forgot-password", { email, recaptcha_token });
       setDone(true);
     } catch (er) {
       setErr(er?.response?.data?.detail || "Failed to submit");

@@ -5,7 +5,7 @@ import {
 } from "../ui";
 import {
   Save, Zap, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp,
-  Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe,
+  Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck,
 } from "lucide-react";
 
 /* Unified Integrations page — replaces the old split "Integrations" + "Real APIs".
@@ -17,15 +17,17 @@ const PROVIDER_ICON = {
   midtrans: CreditCard, xendit: CreditCard, duitku: CreditCard,
   smtp: Mail, imap: Inbox,
   cpanel: Globe, plesk: HardDrive,
+  recaptcha: ShieldCheck,
 };
 
-const CATEGORY_ORDER = ["virtualization", "network", "provisioning", "payment", "mail"];
+const CATEGORY_ORDER = ["virtualization", "network", "provisioning", "payment", "mail", "security"];
 const CATEGORY_LABEL = {
   virtualization: "Virtualization & Compute",
   network: "Network",
   provisioning: "Hosting Provisioning",
   payment: "Payment Gateways",
   mail: "Email (SMTP & IMAP)",
+  security: "Security & Anti-bot",
 };
 
 const AdminIntegrations = () => {

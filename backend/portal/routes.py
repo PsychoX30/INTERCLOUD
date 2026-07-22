@@ -1,6 +1,6 @@
 """All portal routes (auth + client + admin) under /api/portal."""
 import os
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from bson import ObjectId
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -93,9 +93,36 @@ async def _mark_overdue(db):
 # ============================================================
 # AUTH
 # ============================================================
-@router.post("/auth/login", response_model=m.LoginOut)
-async def login(payload: m.LoginIn):
+@router.get("/auth/config")
+async def auth_config():
+    """Public config exposed to unauthenticated login/register pages.
+
+    Frontend uses this to decide whether to load the Google reCAPTCHA v3
+    script and which site_key to pass to `grecaptcha.execute()`.
+    Secrets are never included here.
+    """
     db = await _get_db()
+    from portal import integrations_v2 as _iv2
+    doc = await _iv2.get_recaptcha_settings(db)
+    if not doc:
+        return {"recaptcha": {"enabled": False, "site_key": None}}
+    site_key = ((doc.get("credentials") or {}).get("site_key") or "").strip()
+    return {
+        "recaptcha": {
+            "enabled": bool(site_key),
+            "site_key": site_key or None,
+        }
+    }
+
+
+@router.post("/auth/login", response_model=m.LoginOut)
+async def login(payload: m.LoginIn, request: Request):
+    db = await _get_db()
+    from portal import integrations_v2 as _iv2
+    await _iv2.enforce_recaptcha(
+        db, payload.recaptcha_token, "login",
+        request.client.host if request.client else None,
+    )
     email = payload.email.lower().strip()
     u = await db.users.find_one({"email": email})
     if not u or not verify_password(payload.password, u["password_hash"]):
@@ -142,13 +169,18 @@ async def _upsert_crm_from_user(db, u: dict, *, status: str = "prospect", extra_
 
 
 @router.post("/auth/register", response_model=m.LoginOut)
-async def register(payload: m.RegisterIn):
+async def register(payload: m.RegisterIn, request: Request):
     """Public self-registration endpoint.
 
     Creates a `client` user, mirrors them into `crm_customers` (as a
     `prospect`), and returns a signed JWT so the browser can auto-login.
     """
     db = await _get_db()
+    from portal import integrations_v2 as _iv2
+    await _iv2.enforce_recaptcha(
+        db, payload.recaptcha_token, "register",
+        request.client.host if request.client else None,
+    )
     email = payload.email.lower().strip()
 
     if not payload.accepts_tos:
@@ -3264,6 +3296,11 @@ async def auth_forgot_password(payload: m.ForgotPasswordIn, request: Request):
     the admin can still recover the user manually while awaiting SMTP setup.
     """
     db = await _get_db()
+    from portal import integrations_v2 as _iv2
+    await _iv2.enforce_recaptcha(
+        db, payload.recaptcha_token, "forgot",
+        request.client.host if request.client else None,
+    )
     email = payload.email.lower().strip()
     u = await db.users.find_one({"email": email})
     if u:

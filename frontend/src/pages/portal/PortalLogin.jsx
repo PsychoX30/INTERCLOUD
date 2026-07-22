@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
-import { LogIn, Loader2, AlertTriangle, Cloud, ArrowLeft } from "lucide-react";
+import { LogIn, Loader2, AlertTriangle, Cloud, ArrowLeft, ShieldCheck } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
+import { isRecaptchaEnabled } from "../../portal/recaptcha";
 
 const PortalLogin = () => {
   const { user, login } = useAuth();
@@ -13,6 +14,11 @@ const PortalLogin = () => {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(expired ? "Session expired. Please sign in again." : "");
+  const [captchaOn, setCaptchaOn] = useState(false);
+
+  useEffect(() => {
+    isRecaptchaEnabled().then(setCaptchaOn);
+  }, []);
 
   useEffect(() => {
     if (user && user.role) {
@@ -149,6 +155,13 @@ const PortalLogin = () => {
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
             {busy ? "Signing in…" : "Sign In"}
           </button>
+
+          {captchaOn && (
+            <div className="mt-3 text-[11px] text-slate-500 flex items-center gap-1.5" data-testid="login-recaptcha-badge">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+              Protected by Google reCAPTCHA v3 — <a className="underline" href="https://policies.google.com/privacy" target="_blank" rel="noreferrer">Privacy</a> · <a className="underline" href="https://policies.google.com/terms" target="_blank" rel="noreferrer">Terms</a>
+            </div>
+          )}
 
           <div className="mt-6 text-xs text-slate-500 border-t border-slate-100 pt-5">
             <div className="mb-3">
