@@ -638,6 +638,20 @@ INTEGRATION_SCHEMA = {
             {"key": "verify_action", "label": "Enforce action match (login/register/forgot)", "type": "checkbox", "default": True},
         ],
     },
+    "telegram": {
+        "label": "Telegram Bot",
+        "category": "security",
+        "description": "Send security notifications (auto-blocks, high-risk logins) to a Telegram chat. Create a bot with @BotFather then get its chat_id via https://api.telegram.org/bot<TOKEN>/getUpdates.",
+        "credentials": [
+            {"key": "bot_token", "label": "Bot token", "type": "password", "required": True,
+             "placeholder": "123456:ABC-DEF…"},
+            {"key": "chat_id", "label": "Chat ID (user or group)", "type": "text", "required": True,
+             "placeholder": "-100123456789"},
+        ],
+        "options": [
+            {"key": "silent", "label": "Send silently (no push notification)", "type": "checkbox", "default": False},
+        ],
+    },
 }
 
 
@@ -903,3 +917,65 @@ async def enforce_recaptcha(db, token: Optional[str], action: str, remote_ip: Op
     if not doc:
         return None
     return await RecaptchaV3Verifier(doc).verify(token, action, remote_ip)
+
+
+# ============================================================
+# Telegram Bot — security notifications
+# ============================================================
+class TelegramNotifier:
+    """Minimal Telegram Bot API wrapper for sending Markdown-safe messages
+    to a configured chat_id. Reads its settings from integrations_v2
+    with provider='telegram'."""
+
+    API_BASE = "https://api.telegram.org"
+
+    def __init__(self, settings: dict):
+        c = settings.get("credentials") or {}
+        o = settings.get("options") or {}
+        self.bot_token = c.get("bot_token") or ""
+        self.chat_id = c.get("chat_id") or ""
+        self.silent = bool(o.get("silent", False))
+
+    async def test_connection(self) -> dict:
+        if not self.bot_token:
+            return {"ok": False, "message": "bot_token is empty"}
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                r = await c.get(f"{self.API_BASE}/bot{self.bot_token}/getMe")
+                j = r.json()
+            if not j.get("ok"):
+                return {"ok": False, "message": f"Bot rejected: {j.get('description')}"}
+            u = j.get("result") or {}
+            return {"ok": True, "message": f"Connected as @{u.get('username')} ({u.get('first_name')})",
+                    "details": u}
+        except Exception as e:
+            return {"ok": False, "message": f"{type(e).__name__}: {e}"}
+
+    async def send(self, text: str, *, chat_id: str | None = None) -> dict:
+        if not self.bot_token or not (chat_id or self.chat_id):
+            raise RuntimeError("Telegram is not configured (bot_token/chat_id missing)")
+        payload = {
+            "chat_id": chat_id or self.chat_id,
+            "text": text[:4000],
+            "parse_mode": "Markdown",
+            "disable_notification": bool(self.silent),
+            "disable_web_page_preview": True,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                r = await c.post(f"{self.API_BASE}/bot{self.bot_token}/sendMessage", json=payload)
+                j = r.json()
+            if not j.get("ok"):
+                return {"ok": False, "message": j.get("description")}
+            return {"ok": True, "message_id": (j.get("result") or {}).get("message_id")}
+        except Exception as e:
+            return {"ok": False, "message": f"{type(e).__name__}: {e}"}
+
+
+async def get_telegram_settings(db) -> Optional[dict]:
+    """Convenience helper — returns the doc only if enabled."""
+    doc = await get_settings(db, "telegram")
+    if doc and doc.get("enabled"):
+        return doc
+    return None
+

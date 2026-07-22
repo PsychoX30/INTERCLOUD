@@ -145,7 +145,40 @@ DEFAULT_SECURITY_SETTINGS = {
     "window_minutes": 15,        # sliding window to count failures
     "ban_minutes": 30,           # block duration
     "notify_emails": [],         # recipients for block notifications
+    "whitelist_ips": [],         # IPs / CIDRs that are never blocked
+    "email_notify_enabled": True,
+    "telegram_notify_enabled": True,
 }
+
+
+def _ip_in_whitelist(ip: str, whitelist: list[str]) -> bool:
+    """Return True if `ip` matches any entry in the whitelist. Entries may be
+    exact IPs, CIDR ranges, or hostnames (exact string match fallback)."""
+    if not ip or not whitelist:
+        return False
+    import ipaddress as _ipaddr
+    try:
+        target = _ipaddr.ip_address(ip)
+    except ValueError:
+        target = None
+    for raw in whitelist:
+        entry = (raw or "").strip()
+        if not entry:
+            continue
+        if entry == ip:
+            return True
+        if target is None:
+            continue
+        try:
+            if "/" in entry:
+                if target in _ipaddr.ip_network(entry, strict=False):
+                    return True
+            else:
+                if target == _ipaddr.ip_address(entry):
+                    return True
+        except ValueError:
+            continue
+    return False
 
 
 async def _get_security_settings(db) -> dict:
@@ -162,6 +195,8 @@ async def _maybe_auto_block(db, ip: str):
     if so, upsert a `blocked_ips` doc + emit a `security_notifications` event."""
     s = await _get_security_settings(db)
     if not s.get("auto_block_enabled", True):
+        return
+    if _ip_in_whitelist(ip, s.get("whitelist_ips") or []):
         return
     window_iso = (datetime.now(timezone.utc) - timedelta(minutes=int(s["window_minutes"]))).isoformat()
     fails = await db.login_attempts.count_documents({
@@ -209,10 +244,79 @@ async def _maybe_auto_block(db, ip: str):
         "created_at": now_dt.isoformat(),
         "read": False,
     })
+    # Fire-and-forget alerts — never let a mail/Telegram outage break /auth/login
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(_dispatch_block_alerts(db, ip, fails, int(s["ban_minutes"]), s))
+    except Exception:
+        pass
+
+
+async def _dispatch_block_alerts(db, ip: str, hits: int, ban_minutes: int, settings: dict):
+    """Best-effort: send email(s) via SMTP + a Telegram DM.
+    Runs in the background — failures are swallowed."""
+    import logging
+    log = logging.getLogger("portal.security")
+    from portal import integrations_v2 as _iv2
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    subject = f"[Security] IP {ip} auto-blocked — {hits} failed logins"
+    text = (f"An IP has been auto-blocked by the portal.\n\n"
+            f"IP:      {ip}\n"
+            f"Hits:    {hits} failed logins within window\n"
+            f"Blocked: {ban_minutes} minute(s)\n"
+            f"Time:    {now_iso}\n\n"
+            f"Unblock via Admin ▸ Security ▸ Blocked IPs, or DELETE "
+            f"/api/portal/admin/security/blocked-ips/{ip}")
+    html = (f"<h3>IP auto-blocked</h3>"
+            f"<p>An IP has been auto-blocked by the portal.</p>"
+            f"<ul>"
+            f"<li><b>IP:</b> <code>{ip}</code></li>"
+            f"<li><b>Failed logins:</b> {hits}</li>"
+            f"<li><b>Blocked for:</b> {ban_minutes} minute(s)</li>"
+            f"<li><b>Time:</b> {now_iso}</li>"
+            f"</ul>"
+            f"<p>Unblock via <b>Admin ▸ Security ▸ Blocked IPs</b>.</p>")
+
+    # Email dispatch
+    if settings.get("email_notify_enabled", True):
+        recipients = [r for r in (settings.get("notify_emails") or []) if r]
+        smtp_doc = await _iv2.get_settings(db, "smtp")
+        if smtp_doc and smtp_doc.get("enabled") and recipients:
+            try:
+                mailer = _iv2.SMTPMailer(smtp_doc)
+                loop = __import__("asyncio").get_event_loop()
+                for to in recipients:
+                    try:
+                        await loop.run_in_executor(None, lambda t=to: mailer.send(
+                            to=t, subject=subject, html=html, text=text))
+                    except Exception as e:
+                        log.warning("[security] email to %s failed: %s", to, e)
+            except Exception as e:
+                log.warning("[security] SMTP init failed: %s", e)
+
+    # Telegram dispatch
+    if settings.get("telegram_notify_enabled", True):
+        tg_doc = await _iv2.get_telegram_settings(db)
+        if tg_doc:
+            try:
+                tg = _iv2.TelegramNotifier(tg_doc)
+                await tg.send(
+                    f"*⛔ IP auto-blocked*\n"
+                    f"`{ip}` after *{hits}* failed logins\n"
+                    f"Ban duration: *{ban_minutes} min*"
+                )
+            except Exception as e:
+                log.warning("[security] Telegram send failed: %s", e)
 
 
 async def _is_ip_blocked(db, ip: str) -> bool:
     if not ip or ip == "unknown":
+        return False
+    # Whitelist short-circuit — makes the guard idempotent even if a stale
+    # block doc still exists for an IP that was just added to the whitelist.
+    s = await _get_security_settings(db)
+    if _ip_in_whitelist(ip, s.get("whitelist_ips") or []):
         return False
     now_dt = datetime.now(timezone.utc)
     doc = await db.blocked_ips.find_one({"ip": ip, "unblocked_at": None})
@@ -3881,15 +3985,20 @@ async def security_settings_get(admin=Depends(get_current_admin)):
 @router.put("/admin/security/settings")
 async def security_settings_put(payload: dict, admin=Depends(get_current_admin)):
     db = await _get_db()
-    allowed = {"auto_block_enabled", "fail_threshold", "window_minutes", "ban_minutes", "notify_emails"}
+    allowed = {"auto_block_enabled", "fail_threshold", "window_minutes", "ban_minutes",
+               "notify_emails", "whitelist_ips",
+               "email_notify_enabled", "telegram_notify_enabled"}
     upd = {k: v for k, v in (payload or {}).items() if k in allowed}
     # type coercion
     if "fail_threshold" in upd: upd["fail_threshold"] = max(1, int(upd["fail_threshold"]))
     if "window_minutes" in upd: upd["window_minutes"] = max(1, int(upd["window_minutes"]))
     if "ban_minutes" in upd:    upd["ban_minutes"]    = max(1, int(upd["ban_minutes"]))
-    if "auto_block_enabled" in upd: upd["auto_block_enabled"] = bool(upd["auto_block_enabled"])
+    for boolkey in ("auto_block_enabled", "email_notify_enabled", "telegram_notify_enabled"):
+        if boolkey in upd: upd[boolkey] = bool(upd[boolkey])
     if "notify_emails" in upd:
         upd["notify_emails"] = [str(x).strip() for x in (upd["notify_emails"] or []) if str(x).strip()]
+    if "whitelist_ips" in upd:
+        upd["whitelist_ips"] = [str(x).strip() for x in (upd["whitelist_ips"] or []) if str(x).strip()]
     await db.settings.update_one({"_id": "security"}, {"$set": upd}, upsert=True)
     return await _get_security_settings(db)
 
@@ -3979,6 +4088,61 @@ async def security_notifications_mark_read(payload: dict, admin=Depends(get_curr
     else:
         await db.security_notifications.update_many({}, {"$set": {"read": True}})
     return {"ok": True}
+
+
+@router.post("/admin/security/notifications/test")
+async def security_notifications_test(payload: dict, admin=Depends(get_current_admin)):
+    """Fire a sample notification through email + Telegram so the admin can
+    verify their SMTP / Telegram integrations from the Security dashboard."""
+    db = await _get_db()
+    s = await _get_security_settings(db)
+    from portal import integrations_v2 as _iv2
+    result = {"email": {"attempted": False}, "telegram": {"attempted": False}}
+
+    # Email
+    recipients = payload.get("emails") or s.get("notify_emails") or []
+    recipients = [r.strip() for r in recipients if r and r.strip()]
+    smtp_doc = await _iv2.get_settings(db, "smtp")
+    if smtp_doc and smtp_doc.get("enabled") and recipients:
+        result["email"]["attempted"] = True
+        try:
+            mailer = _iv2.SMTPMailer(smtp_doc)
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            errs = []
+            for to in recipients:
+                try:
+                    await loop.run_in_executor(None, lambda t=to: mailer.send(
+                        to=t, subject="[Intercloud Security] Test alert",
+                        html="<p>This is a <b>test</b> alert from the Intercloud Portal Security dashboard.</p>",
+                        text="Test alert from Intercloud Portal Security dashboard."))
+                except Exception as e:
+                    errs.append(f"{to}: {e}")
+            result["email"]["ok"] = not errs
+            result["email"]["errors"] = errs
+            result["email"]["sent_to"] = recipients
+        except Exception as e:
+            result["email"]["ok"] = False
+            result["email"]["errors"] = [str(e)]
+    else:
+        result["email"]["reason"] = "SMTP integration not enabled or no recipients"
+
+    # Telegram
+    tg_doc = await _iv2.get_telegram_settings(db)
+    if tg_doc:
+        result["telegram"]["attempted"] = True
+        try:
+            tg = _iv2.TelegramNotifier(tg_doc)
+            r = await tg.send("*🔔 Intercloud test alert*\nThis is a test message from Security dashboard.")
+            result["telegram"]["ok"] = bool(r.get("ok"))
+            result["telegram"]["details"] = r
+        except Exception as e:
+            result["telegram"]["ok"] = False
+            result["telegram"]["errors"] = [str(e)]
+    else:
+        result["telegram"]["reason"] = "Telegram integration not enabled"
+
+    return result
 
 
 # ---------- Real Diagnostic Tools ----------
