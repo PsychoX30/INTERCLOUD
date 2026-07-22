@@ -407,3 +407,42 @@ Follow-on setelah reCAPTCHA integration. Log setiap `/auth/login` (success + fai
 - (Non-blocking) Refactor `portal/routes.py` sudah 4700+ baris → split per-domain module
 - (Nice-to-have) Enforce `?window=` strictly (currently unknown value falls into daily branch), atau map fallback ke 24h konsisten
 - (Non-blocking) Beralih ke MongoDB aggregation pipeline saat traffic besar (saat ini in-memory sampai 20k rows)
+
+
+## Real Diagnostic Tools + Auto-Block IP + MikroTik Torch (2026-07-22) ✅
+
+Replaced all mock diagnostic outputs with **real** network commands, added an auto-block IP feature, and integrated MikroTik `/tool/torch` via the existing librouteros integration.
+
+### Diagnostic Tools (real, sandboxed)
+- **New module** `/app/backend/portal/diagnostics.py` with strict input validation and hard timeouts
+- Tools available: `ping` (via `ping3` python lib — no root), `traceroute`, `dns` (dig, all record types), `whois`, `blacklist` (8 DNSBLs: Spamhaus/SpamCop/SORBS/Barracuda/UCEPROTECT/PSBL/Manitu/SpamRats), `portscan` (20 common TCP ports), `http` (real GET + headers/body preview), `torch` (MikroTik `/tool/torch`)
+- Endpoint `POST /api/portal/admin/diagnostics/run` (admin) with per-tool extra kwargs
+- Endpoint `GET /api/portal/admin/diagnostics/tools` — advertises available tools + `mikrotik_ready` so UI can grey out unavailable tools
+- Frontend `AdminDiagnostics.jsx` fully rewritten: tool picker card grid, dynamic form fields per tool, KPI summary tiles, terminal-style output, real-time flows table for torch, copy-to-clipboard
+
+### MikroTik Torch
+- New method `MikrotikClient.torch(interface, duration, src_address, dst_address, protocol, port, ip_version)` in `integrations_v2.py`
+- Torch calls `/tool/torch` on the configured RouterOS with a bounded duration (1–10s), returns sorted flow rows (proto, src/dst address+port, tx/rx rate, packet counts)
+- Frontend form pulls interface list from `/admin/mikrotik/interfaces` dropdown, sends filters, renders result table
+
+### Auto-Block IP
+- 10 failed logins in 15 min from same IP → auto-block 30 min (all configurable)
+- Guard `_is_ip_blocked()` at top of `/auth/login` returns HTTP 429 for blocked IPs
+- Endpoints:
+  - `GET/PUT /api/portal/admin/security/settings` — thresholds config
+  - `GET /api/portal/admin/security/blocked-ips[?active_only=true]`
+  - `POST /api/portal/admin/security/blocked-ips` — manual block
+  - `DELETE /api/portal/admin/security/blocked-ips/{ip}` — manual unblock
+  - `GET /api/portal/admin/security/notifications` + `POST .../mark-read`
+- New collections `blocked_ips` + `security_notifications` with proper indexes
+
+### Test coverage
+- `/app/backend/tests/test_diagnostics_and_security.py` — 20 tests (all 8 tools, auto-block flow, RBAC, torch validation/happy-path)
+- **60/60 tests green** across 4 files (recaptcha, login-analytics, assets, diagnostics)
+
+### Critical fix during testing
+- `_is_ip_blocked` + `_maybe_auto_block` + `blocked_ips_list` had a tz-naive vs tz-aware datetime comparison bug (MongoDB returns naive UTC even when tz-aware written) → 500 on 11th failed login. Testing agent normalized all datetime reads to offset-aware UTC. Verified.
+
+### Dependencies added
+- `ping3` (pip) — pure-python ICMP without root
+- `iputils-ping`, `traceroute`, `whois`, `dnsutils` (apt)
