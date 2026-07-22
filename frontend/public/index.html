@@ -1,113 +1,110 @@
-<!doctype html>
-<html lang="en">
-    <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="theme-color" content="#000000" />
-        <meta name="description" content="A product of emergent.sh" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600&display=swap" rel="stylesheet" />
-        <!--
-        manifest.json provides metadata used when your web app is installed on a
-        user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
-        -->
-        <!--
-        Notice the use of %PUBLIC_URL% in the tags above.
-        It will be replaced with the URL of the `public` folder during the build.
-        Only files inside the `public` folder can be referenced from the HTML.
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a2540" />
 
-        Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
-        work correctly both with client-side routing and a non-root public URL.
-        Learn how to configure a non-root public URL by running `npm run build`.
-        -->
-        <title>Emergent | Fullstack App</title>
-        <script>window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);</script>
-        <script src="https://assets.emergent.sh/scripts/emergent-main.js"></script>
-    </head>
-    <body>
-        <noscript>You need to enable JavaScript to run this app.</noscript>
-        <div id="root"></div>
-        <!--
-      This HTML file is a template.
-      If you open it directly in the browser, you will see an empty page.
+    <!-- Primary Meta Tags -->
+    <title>PT. Intercloud Digital Inovasi | Layanan Cloud, Data Center & Solusi IT Indonesia</title>
+    <meta name="title" content="PT. Intercloud Digital Inovasi | Layanan Cloud, Data Center & Solusi IT Indonesia" />
+    <meta name="description" content="PT. Intercloud Digital Inovasi menyediakan layanan Cloud, Hosting, VPS, Colocation, Dedicated Server, Lease to Own Appliance, Firewall Solution, dan DC to DC Connectivity terbaik di Indonesia dengan SLA 99,5% dan dukungan 24/7." />
+    <meta name="keywords" content="cloud indonesia, colocation jakarta, dedicated server, VPS indonesia, hosting, DC interconnect, firewall solution, data center indonesia, intercloud digital" />
+    <meta name="author" content="PT. Intercloud Digital Inovasi" />
+    <meta name="robots" content="index, follow" />
 
-      You can add webfonts, meta tags, or analytics to this file.
-      The build step will place the bundled scripts into the <body> tag.
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://intercloud-digital.com/" />
+    <meta property="og:title" content="PT. Intercloud Digital Inovasi | Layanan Cloud & Solusi IT" />
+    <meta property="og:description" content="Penyedia layanan Cloud, Data Center, Konektivitas & Solusi IT terpercaya di Indonesia. SLA 99,5%, dukungan 24/7, harga terbaik." />
+    <meta property="og:image" content="https://images.pexels.com/photos/17489163/pexels-photo-17489163.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940" />
+    <meta property="og:locale" content="id_ID" />
+    <meta property="og:site_name" content="PT. Intercloud Digital Inovasi" />
 
-      To begin the development, run `npm start` or `yarn start`.
-      To create a production bundle, use `npm run build` or `yarn build`.
-    -->
-        <script>
-            !(function (t, e) {
-                var o, n, p, r;
-                e.__SV ||
-                    ((window.posthog = e),
-                    (e._i = []),
-                    (e.init = function (i, s, a) {
-                        function g(t, e) {
-                            var o = e.split(".");
-                            2 == o.length && ((t = t[o[0]]), (e = o[1])),
-                                (t[e] = function () {
-                                    t.push(
-                                        [e].concat(
-                                            Array.prototype.slice.call(
-                                                arguments,
-                                                0,
-                                            ),
-                                        ),
-                                    );
-                                });
-                        }
-                        ((p = t.createElement("script")).type =
-                            "text/javascript"),
-                            (p.crossOrigin = "anonymous"),
-                            (p.async = !0),
-                            (p.src =
-                                s.api_host.replace(
-                                    ".i.posthog.com",
-                                    "-assets.i.posthog.com",
-                                ) + "/static/array.js"),
-                            (r =
-                                t.getElementsByTagName(
-                                    "script",
-                                )[0]).parentNode.insertBefore(p, r);
-                        var u = e;
-                        for (
-                            void 0 !== a ? (u = e[a] = []) : (a = "posthog"),
-                                u.people = u.people || [],
-                                u.toString = function (t) {
-                                    var e = "posthog";
-                                    return (
-                                        "posthog" !== a && (e += "." + a),
-                                        t || (e += " (stub)"),
-                                        e
-                                    );
-                                },
-                                u.people.toString = function () {
-                                    return u.toString(1) + ".people (stub)";
-                                },
-                                o =
-                                    "init me ws ys ps bs capture je Di ks register register_once register_for_session unregister unregister_for_session Ps getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSurveysLoaded onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey canRenderSurveyAsync identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty Es $s createPersonProfile Is opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing Ss debug xs getPageViewId captureTraceFeedback captureTraceMetric".split(
-                                        " ",
-                                    ),
-                                n = 0;
-                            n < o.length;
-                            n++
-                        )
-                            g(u, o[n]);
-                        e._i.push([i, s, a]);
-                    }),
-                    (e.__SV = 1));
-            })(document, window.posthog || []);
-            posthog.init("phc_DbsPb39SRc8z3EiQ6Dhj6ikv4H4rTKcht9d4sZSesceP", {
-                api_host: "https://ap.emergent.sh",
-                person_profiles: "identified_only", // or 'always' to create profiles for anonymous users as well,
-                session_recording: {
-                    recordCrossOriginIframes: true,
-                    capturePerformance: false,
-                },
-            });
-        </script>
-    </body>
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://intercloud-digital.com/" />
+    <meta name="twitter:title" content="PT. Intercloud Digital Inovasi | Layanan Cloud & Solusi IT" />
+    <meta name="twitter:description" content="Penyedia layanan Cloud, Data Center, Konektivitas & Solusi IT terpercaya di Indonesia." />
+    <meta name="twitter:image" content="https://images.pexels.com/photos/17489163/pexels-photo-17489163.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940" />
+
+    <!-- Google Fonts: Plus Jakarta Sans (modern Indonesian-friendly typeface) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Structured Data - Organization -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "PT. Intercloud Digital Inovasi",
+      "alternateName": "Intercloud Digital",
+      "url": "https://intercloud-digital.com",
+      "logo": "https://intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png",
+      "description": "Penyedia layanan Cloud, Data Center, Konektivitas dan Solusi IT terbaik di Indonesia.",
+      "address": {
+        "@type": "PostalAddress",
+        "streetAddress": "Menara Cakrawala Lt 12, Unit 1205A, Jl. M.H. Thamrin No.9, RT.2/RW.1, Kb. Sirih, Kec. Menteng",
+        "addressLocality": "Jakarta Pusat",
+        "addressRegion": "DKI Jakarta",
+        "postalCode": "10340",
+        "addressCountry": "ID"
+      },
+      "contactPoint": {
+        "@type": "ContactPoint",
+        "telephone": "+62-878-1239-7187",
+        "contactType": "customer support",
+        "email": "support@intercloud-digital.com",
+        "areaServed": "ID",
+        "availableLanguage": ["Indonesian", "English"]
+      },
+      "sameAs": [
+        "https://www.instagram.com/intercloud.id/",
+        "https://wa.me/6287812397187"
+      ]
+    }
+    </script>
+
+    <!-- Structured Data - FAQ -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Apa itu layanan Cloud Service dari Intercloud?",
+          "acceptedAnswer": {"@type": "Answer", "text": "Cloud service Intercloud adalah infrastruktur virtual yang scalable dengan performa tinggi, mencakup VPS, Cloud Hosting, dan Private Cloud dengan SLA 99,5%."}
+        },
+        {
+          "@type": "Question",
+          "name": "Apa perbedaan VPS dan Dedicated Server?",
+          "acceptedAnswer": {"@type": "Answer", "text": "VPS adalah server virtual yang berbagi resource fisik namun terisolasi, sedangkan Dedicated Server adalah server fisik penuh yang khusus untuk Anda dengan performa maksimal."}
+        },
+        {
+          "@type": "Question",
+          "name": "Apa itu Colocation?",
+          "acceptedAnswer": {"@type": "Answer", "text": "Colocation adalah layanan penempatan server fisik milik Anda di data center kami yang bersertifikasi Tier III dengan power redundant, cooling optimal, dan konektivitas premium."}
+        },
+        {
+          "@type": "Question",
+          "name": "Bagaimana cara kerja Firewall Solution?",
+          "acceptedAnswer": {"@type": "Answer", "text": "Firewall Solution kami menggunakan next-gen firewall dari brand terkemuka untuk melindungi jaringan dari ancaman cyber dengan deep packet inspection dan IPS/IDS."}
+        },
+        {
+          "@type": "Question",
+          "name": "Apa itu DC to DC Connectivity?",
+          "acceptedAnswer": {"@type": "Answer", "text": "Data Center to Data Center Connectivity adalah koneksi dedicated Layer 2 antar data center dengan latency rendah untuk replikasi, backup, dan hybrid infrastructure."}
+        }
+      ]
+    }
+    </script>
+  </head>
+  <body>
+    <noscript>Anda perlu mengaktifkan JavaScript untuk menjalankan aplikasi ini.</noscript>
+    <div id="root"></div>
+  </body>
 </html>

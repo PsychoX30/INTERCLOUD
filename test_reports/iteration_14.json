@@ -1,0 +1,56 @@
+{
+  "summary": "Verified the Integrations-unification refactor + IMAP addition end-to-end on the public preview URL. Backend: 13/13 pytest cases in test_integrations_unified.py + 3 new cases in test_mail_delivery_paths.py (16/16 total) pass — schema exposes 9 providers with category+description, IMAP save masks password + persists, test endpoint returns graceful ok:false gaierror for unreachable hosts, cPanel/Plesk missing-creds and complete-creds paths, DELETE endpoint (200 {deleted:1} + 404), user-access-catalog no longer contains 'real_integrations' but still has 'integrations', /admin/mail/inbox falls back to seed messages when IMAP disabled or unreachable, /admin/mail/send returns delivered_via='smtp-failed*' when v2 SMTP is enabled+unreachable and 'smtp-mock' or 'queued (SMTP not configured)' when disabled. Frontend: sidebar shows a single 'Integrations' entry (nav-integrations, no Real APIs link); /portal/admin/real-integrations client-side redirects to /portal/admin/integrations; unified page renders heading, 3 mini-stat cards (1/9, 5, 1), and all 5 category groups (Virtualization & Compute, Network, Hosting Provisioning, Payment Gateways, Email (SMTP & IMAP)); all 9 integration-{provider} cards render. IMAP card expands via toggle-imap and exposes imap-host/-port/-username/-password/-opt-use_ssl/-opt-mailbox/-opt-fetch_limit inputs. Fill+Save persists across page reload (host + username survive). Test-connection surfaces 'gaierror: [Errno -2] Name or service not known' as expected. Webmail 'SMTP + IMAP not configured' amber banner shows when both v2 integrations are disabled. Email, Articles, Users, Products, Finance, Provisioning admin pages continue to load without functional errors.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PortalLayout / shadcn Select in modals", "issues": ["Pre-existing React hydration warnings: '<p> cannot be a descendant of <button>' from PortalLayout line 113 and '<span> cannot be a child of <option>' from a Select inside a modal. Non-blocking, unrelated to this refactor."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_integrations_unified.py",
+    "/app/backend/tests/test_mail_delivery_paths.py",
+    "/app/test_reports/pytest/integrations_unified.xml",
+    "/app/test_reports/pytest/mail_delivery.xml"
+  ],
+  "verified_backend": {
+    "schema": "GET /admin/integrations-v2/schema returns 9 providers with category (virtualization/network/provisioning/payment/mail) + description",
+    "user_access_catalog": "'real_integrations' key removed; 'integrations' still present",
+    "imap_put_masking": "PUT /admin/integrations-v2/imap masks password_masked ending with '**' and clears raw password on subsequent GET",
+    "imap_test_unreachable": "POST /admin/integrations-v2/imap/test with unreachable host returns 200 {ok:false, message: gaierror ...}",
+    "smtp_test_wired": "POST /admin/integrations-v2/smtp/test no longer returns 'No test method'; returns ok:false gracefully against smtp.example.com",
+    "cpanel_plesk_validation": "cPanel empty creds → ok:false with 'Missing/credentials' in message; host+user+api_token → ok:true. Plesk same with password.",
+    "delete_endpoint": "DELETE /admin/integrations-v2/duitku wipes credentials (200 {deleted:1}); unknown provider → 404",
+    "mail_inbox_imap_disabled": "Returns mocked seed list, no _live flag",
+    "mail_inbox_imap_unreachable": "Gracefully returns 200 list (no crash) when IMAP configured but host unreachable",
+    "mail_send_paths": "delivered_via='smtp-failed:...' when v2 SMTP enabled+unreachable; 'smtp-mock' or 'queued (SMTP not configured)' when disabled"
+  },
+  "verified_frontend": {
+    "sidebar": "One 'Integrations' link (data-testid=nav-integrations, href=/portal/admin/integrations); no 'Real APIs' link exists anywhere in nav",
+    "redirect": "/portal/admin/real-integrations → /portal/admin/integrations (client-side Navigate replace)",
+    "unified_page": "H1 'Integrations', mini-stats '1 / 9 configured', '5 categories', '1 legacy module', 'Legacy integrations detected' banner. Category groups Virtualization & Compute / Network / Hosting Provisioning / Payment Gateways / Email (SMTP & IMAP) all render.",
+    "provider_cards": "integration-{proxmox,mikrotik,cpanel,plesk,midtrans,xendit,duitku,smtp,imap} all present",
+    "imap_ui_flow": "toggle-imap expands the card; imap-host/-port/-username/-password/-opt-use_ssl/-opt-mailbox/-opt-fetch_limit all present. Save persists (host='imap.testcase.example.com' + username survive reload). Test surfaces gaierror as expected.",
+    "webmail_banner": "'SMTP + IMAP not configured' amber banner shown when both v2 integrations are disabled; disappears once IMAP is enabled (verified in earlier iteration of the run)",
+    "regression_pages": "Email Automation, Articles, Users & Clients, Products & Services, Finance, Provisioning all load with proper H1 and no functional errors"
+  },
+  "action_items": [
+    "(Non-blocking, pre-existing) Investigate the two hydration warnings in the console: <p> as a descendant of <button> from PortalLayout ~line 113, and <span> as a child of <option> from a Select rendered inside a modal."
+  ],
+  "critical_code_review_comments": [
+    "Great refactor — the unified AdminIntegrations page cleanly groups providers by category and surfaces a legacy-migration hint pointing the admin to the old integrations collection. Consider adding a 'Delete legacy row' button next to the migration hint so admins can wipe the old module without shell access.",
+    "IMAPClient.test_connection() correctly returns ok:false + gaierror message instead of raising — good defensive coding.",
+    "portal/routes.py is now approaching 4500+ lines; the domain-split refactor called out in earlier iterations is still pending. Not blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mail_delivery_paths.py (new — 3 pytest cases covering mail/inbox IMAP fallback + mail/send v2 SMTP failure/queue paths)"
+  ],
+  "success_rate": { "backend": "100% (16/16 pytest cases across integrations + mail-delivery)", "frontend": "100% — all acceptance criteria met" },
+  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026!",
+  "seed_data_creation": "No permanent seed data. Test data (imap host 'imap.testcase.example.com') was left disabled — safe. Backend pytest fixtures set integrations back to enabled:false at teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Integrations unification is production-ready. IMAP save+test+persist works end-to-end. When adding future integrations, keep the schema pattern (category + description + credentials[] + options[]) — the unified UI groups automatically by category. DO NOT re-introduce a 'Real APIs' menu key — /admin/real-integrations is now a redirect. The two hydration warnings are pre-existing and unrelated.",
+  "rca of the issue": "N/A — all acceptance criteria satisfied on first pass."
+}

@@ -1,0 +1,80 @@
+{
+  "summary": "Comprehensive frontend testing after the EN/ID bilingual overhaul (LanguageContext refactor). Verified: (a) default language = ID, (b) LanguageToggle EN/ID pill with correct aria-pressed state, (c) global translation of Header nav, Hero, Features, Services (cards + modals), Decision Guide, Pricing tabs, PoP section, FAQ, CTA, Footer, (d) 3+ service modals open/close (Cloud, VPS, Firewall, DC-to-DC) via X and Escape, (e) Radix Tabs interactions in Pricing (Dedicated/Colocation/Interconnect) switch correctly in both languages, (f) Firewall pricing shows 'Contact us for pricing' (EN) and 'Hubungi kami untuk harga' (ID) — no numeric price, (g) 4 PoP DC cards render in both languages with correct floor labels (Lantai 5 vs 5th Floor etc.), (h) FAQ accordion expand/collapse works, (i) all 15 wa.me links point to 6287812397187, (j) language persists across scroll and reload via localStorage ic_lang, (k) zero console errors/warnings, (l) no raw i18n keys or 'undefined'/'null' leaking into DOM.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_results": {
+    "load": { "html_lang_default": "id", "console_errors": 0 },
+    "language_toggle": {
+      "default_state": { "id_pressed": "true", "en_pressed": "false" },
+      "after_click_en": { "id_pressed": "false", "en_pressed": "true", "html_lang": "en" },
+      "after_click_id": { "id_pressed": "true", "en_pressed": "false" },
+      "data_testids_present": ["lang-toggle", "lang-toggle-id", "lang-toggle-en"]
+    },
+    "nav_translation": {
+      "id": ["Home", "Kenapa Kami", "Layanan", "Harga", "FAQ", "Kontak"],
+      "en": ["Home", "Why Us", "Services", "Pricing", "FAQ", "Contact"]
+    },
+    "services_section": {
+      "title_id": "Layanan Kami",
+      "title_en": "Our Services",
+      "cards_present": 8
+    },
+    "service_modals_tested": {
+      "cloud_en": { "opens": true, "title": "Cloud Service", "wa_number_ok": true, "wa_msg_localized": "English" },
+      "firewall_en": { "opens": true, "price_text": "Contact us for pricing" },
+      "vps_en": { "opens": true, "closed_via_escape": true },
+      "dcinterconnect_en": { "opens": true, "closed_via_x": true }
+    },
+    "firewall_pricing": { "card_en": "Contact us for pricing", "verified": true },
+    "pricing_tabs": {
+      "en_labels": { "dedicated": "Dedicated Server", "colocation": "Colocation", "interconnect": "Interconnect & BGP" },
+      "id_labels_same": true,
+      "colocation_click_shows_content": true,
+      "interconnect_click_shows_content": true,
+      "sample_plan_names_en": ["1U - Server", "2U - Server", "4U - Server", "5U - Rack Space"]
+    },
+    "pop_section": {
+      "cards_count": 4,
+      "id": ["Metta DC — Cyber 1, Lantai 5", "Omni DC — Cyber 1, Lantai 2", "TIFA Building", "APJII DC — Cyber 1, Lantai 1"],
+      "en": ["Metta DC — Cyber 1, 5th Floor", "Omni DC — Cyber 1, 2nd Floor", "TIFA Building", "APJII DC — Cyber 1, 1st Floor"]
+    },
+    "faq": {
+      "trigger_count": 9,
+      "expand_collapse_works": true,
+      "translations_pick_from_bilingual_object": true
+    },
+    "whatsapp_links": {
+      "total_wa_links": 15,
+      "wrong_number_count": 0,
+      "target_number": "6287812397187"
+    },
+    "undefined_key_leaks": [],
+    "persistence": {
+      "localStorage_key": "ic_lang",
+      "value_after_en_select": "en",
+      "html_lang_after_reload_id": "id",
+      "html_lang_after_reload_en": "en",
+      "persists_on_scroll": true
+    }
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "LanguageContext.jsx cleanly falls back to entry.id when a translation is missing — prevents raw key leaks. Verified no leaks in DOM.",
+    "Two LanguageToggle instances (desktop + mobile) share the same React Context state — no divergence observed.",
+    "Services modal uses local template string for WA message (bypassing wa.prefilled.svc dict entry). Works correctly, but is a minor DRY violation. Not a blocker.",
+    "Similarly Pricing.jsx builds its own WA message per plan instead of using wa.prefilled.plan from dict. Both codepaths currently produce correct localized output; recommend consolidating for maintainability.",
+    "data-testids are present on all critical interactive elements (lang-toggle, service-card-*, service-modal, service-modal-close, service-modal-wa-*, pricing-tabs, tab-dedicated/colocation/interconnect, tab-content-*, pricing-card-*, pricing-cta-*, pop-card-*, pop-cta-wa, floating-whatsapp-btn, header-contact-cta). Excellent testability."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "N/A (skipped per request)", "frontend": "100%" },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Bilingual overhaul is production-ready. LanguageContext (ic_lang localStorage) persists selection across reloads and scroll. Zero console errors on toggle. All 15 wa.me links use +6287812397187. If new sections are added, ensure they consume useLang()/pick() and add corresponding {id,en} entries in LanguageContext dict or bilingual objects in mock/data.js. Recommended future improvement: consolidate WA-message construction in Services.jsx/Pricing.jsx to use the wa.prefilled.svc/plan dict entries already defined.",
+  "rca of the issue": "No issues found — 100% pass on all 11 requested test scenarios."
+}

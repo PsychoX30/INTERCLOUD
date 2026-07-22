@@ -1,0 +1,49 @@
+{
+  "summary": "Full end-to-end regression + new-sprint verification for Intercloud portal. Backend pytest: 45/49 passing. The 4 failing tests are the pre-existing failures listed in the review request and are pure data/design drift (RCA below) — NOT touched per instructions. All new-sprint backend tests (test_pdf_docs 8/8, test_register_and_crm 7/7, test_crm_enrichment 5/5) pass. Frontend E2E: (a) self-registration 2-step flow works, redirects to /portal/client/dashboard, new user immediately visible in Admin CRM with 'Portal user' badge; (b) admin CRM enrichment UI complete — KPI strip (Total contacts 20, Warm leads 2, Existing/active 5, Lifetime value paid Rp2,941,500), Warm-leads-only filter reduces 20→2 rows, demo client Budi Santoso shows Warm badge, latest order 'DC-to-DC 100 Mbps 21 Jul 2026', lifetime value Rp2,941,500, +8 in progress badge; (c) client invoice PDF endpoint returns application/pdf + %PDF- header + correct Content-Disposition filename, HTML preview contains all required markers (PT. INTERCLOUD DIGITAL INOVASI / NPWP / Invoiced To / Sub Total / Credit / PDF Generated on), UNPAID invoice HTML contains Payment — Bank Transfer panel with MANDIRI 1240011911816 and BCA 4730862038; (d) /portal/login → 'Create one →' link → /portal/register verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/portal/documents/invoice/{id}?format=pdf", "issue": "Content-Disposition is 'inline; filename=...' (opens in-tab) rather than 'attachment; filename=...' (Save-As dialog). Test contract in test_pdf_docs still passes since it only checks 'Invoice-' substring and filename ends with .pdf. UX-wise the 'Download PDF' icon in ClientInvoices.jsx opens the file inline in a new tab instead of triggering a browser download; consider switching to attachment or forcing download client-side."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_portal.py",
+    "/app/backend/tests/test_pdf_docs.py",
+    "/app/backend/tests/test_register_and_crm.py",
+    "/app/backend/tests/test_crm_enrichment.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: switch invoice PDF Content-Disposition from 'inline' to 'attachment' if user expects a real download when clicking the download icon (currently opens PDF inline in new tab).",
+    "REVIEW-REQUEST NOTE: the review mentions '/portal/admin/business' but the actual route in App.js is '/portal/admin/crm' (sidebar label 'Customer DB (CRM)'). Not a bug — just doc drift; both /portal/admin/business testing intents map to /portal/admin/crm."
+  ],
+  "critical_code_review_comments": [
+    "FILE-SIZE: /app/backend/portal/routes.py is now 2655 lines — worth extracting sub-routers (crm, documents, integrations, dcim, mail) into separate files for maintainability.",
+    "DUPLICATION: _mark_overdue(db) is called at the top of nearly every list/stat endpoint (7+ call sites). Consider a middleware/dependency to hoist it.",
+    "SEED: seed only inserts invoices when count==0. After tests mutate seed docs (e.g. mark INV-2026-00003 paid), there is no re-seed path and status drift breaks test_client_dashboard / test_client_invoices. Consider adding a `_backfill_seed_invoices` that ensures at least one of each status exists per fresh-run.",
+    "DESIGN INTENT: admin_update_order_status no longer auto-provisions on 'active'. Only invoice-paid path does. If that is intentional, update test_lifecycle_auto_creates_service (move to invoice-paid flow); the current test still exercises the OLD path.",
+    "REGISTRY: /admin/integrations/modules removed 'dcim' (DCIM has dedicated /admin/dcim/* endpoints), so the pytest hard-coded set is stale. Update expected set to remove 'dcim'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py (NEW — loads /app/backend/.env for pytest env-var injection)"
+  ],
+  "success_rate": {"backend": "92% (45/49) — new-sprint tests 100% (20/20); 4 failures are pre-existing drift", "frontend": "100% on all requested flows (register → dashboard, admin CRM KPI+filter+badges, PDF/HTML endpoints)"},
+  "test_credentials": "Used /app/memory/test_credentials.md — admin@intercloud-digital.com / AdminIntercloud2026! + demo@client.com / ClientDemo2026!. Staff role passwords in seed.py: Sales2026!, Support2026!, Ticket2026! (review-request had 'SalesIntercloud2026!' etc — actual seed uses shorter form).",
+  "seed_data_creation": "Registered 2 fresh E2E test client users via public /auth/register (e2etest_1784607299@example.co, e2etest_1784607349@example.co). Both auto-created CRM rows (source=self_registration, status=prospect). Also 30+ regtest_* users from prior test_register_and_crm runs are visible in CRM.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend supervisor auto-restarts on code change. Public URL is https://cloud-services-id.preview.emergentagent.com — always use REACT_APP_BACKEND_URL. New conftest.py loads /app/backend/.env so pytest picks up ADMIN_EMAIL/ADMIN_PASSWORD/CLIENT_EMAIL/CLIENT_PASSWORD and derives PORTAL_API_BASE from REACT_APP_BACKEND_URL. To re-run just: `REACT_APP_BACKEND_URL=... pytest backend/tests/ -v --junitxml=/app/test_reports/pytest/pytest_results.xml`. Admin CRM route is /portal/admin/crm (label 'Customer DB (CRM)'), NOT /portal/admin/business. Client invoice download hrefs are already token-embedded (?token=JWT) — you can fetch them anonymously from JS. PDF Content-Disposition is currently 'inline'.",
+  "rca of the issue": {
+    "test_client_dashboard": "Fails because seed's originally-status=overdue invoice (INV-2026-00003) is now status=paid in the DB. RCA: seed only inserts when count_documents==0; there is no path to re-establish an overdue invoice once the row's status has been mutated (either by a previous test that marked it paid or by _mark_overdue running against a due_date that has since shifted). Reproduction: query /api/portal/client/invoices — you'll see 21 rows with statuses {paid, unpaid} only; no 'overdue' status.",
+    "test_client_invoices": "Same root cause as test_client_dashboard — 'overdue' status has drifted out of the seeded row set.",
+    "test_modules_registry": "Fails because MODULE_SCHEMAS in /app/backend/portal/integrations_registry.py no longer contains a 'dcim' key. DCIM was intentionally moved out of the integrations hub into its own dedicated endpoints (/admin/dcim/racks, /admin/dcim/prefixes, etc — see routes.py L1722+). The hard-coded expected set in test_portal.py::test_modules_registry L287 is stale. Design decision, not a bug.",
+    "test_lifecycle_auto_creates_service": "Fails because admin_update_order_status (routes.py L762-780) no longer calls _auto_provision when transitioning to 'active'. The docstring explicitly says 'Auto-provisioning primarily happens when the linked invoice is marked paid'. The actual auto-provision path is L851-862 in admin_update_invoice_status: when status is set to 'paid' AND invoice is linked to an order, _auto_provision fires. The test still exercises the OLD (removed) order-status-transition path. Design decision, not a bug — test needs to be re-authored to trigger via invoice payment.",
+    "mitigation_recommendation": "1) Update test_modules_registry expected set to remove 'dcim'. 2) Rewrite test_lifecycle_auto_creates_service to create-invoice → mark-paid instead of manually moving order status through provisioning→active. 3) Either add a seed backfill that resets one invoice to 'overdue' at boot, OR relax test_client_invoices to require 'overdue OR unpaid' (since _mark_overdue converts unpaid→overdue on next request). None of these require touching product code."
+  }
+}

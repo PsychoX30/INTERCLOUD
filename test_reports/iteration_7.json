@@ -1,0 +1,52 @@
+{
+  "summary": "Verified sidebar sticky-positioning fix in /app/frontend/src/pages/portal/PortalLayout.jsx. Logged in as admin and client, tested 10 long-scroll portal pages at desktop 1440x900, and mobile regression at 375x812. The sidebar now correctly stays pinned at viewport top=0 with the full dark navy (#0a2350) background always covering the left edge — the reported white/slate-50 gap below the 'Intercloud Admin' card is fully resolved.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_evidence": {
+    "admin_pages_verified": {
+      "admin-products":   {"aside_top": 0.0,  "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)", "scrollY_at_check": 0},
+      "admin-dashboard":  {"aside_top": 0.0,  "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)", "scrollY_at_check": 0},
+      "admin-orders":     {"aside_top": 0.0,  "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)", "scrollY_at_check": 1497},
+      "admin-invoices":   {"aside_top": 0.0,  "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)", "scrollY_at_check": 694},
+      "admin-crm":        {"aside_top": -0.5, "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)", "scrollY_at_check": 1253},
+      "admin-dcim":       {"aside_top": 0.0,  "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)", "scrollY_at_check": 0}
+    },
+    "client_pages_verified": {
+      "client-dashboard": {"aside_top": 0.0,  "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)"},
+      "client-services":  {"aside_top": -0.5, "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)"},
+      "client-invoices":  {"aside_top": 0.0,  "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)"},
+      "client-tickets":   {"aside_top": -0.5, "aside_height": 900, "position": "sticky", "bg": "rgb(10, 35, 80)"}
+    },
+    "left_edge_pixel_check_admin_products_scrolled": {
+      "point": "(10, viewportHeight-50)",
+      "tag": "DIV",
+      "class": "px-3 py-3 border-t border-white/10",
+      "aside_contains": true,
+      "note": "Bottom-left of viewport IS inside <aside>. Confirms no slate-50 gap."
+    },
+    "mobile_regression_375x812": {
+      "initial_hidden": {"left": -288, "transform": "translate-x-full", "ok": true},
+      "hamburger_open":  {"left": 0, "right": 288, "backdrop_rendered": true, "ok": true},
+      "backdrop_close":  {"click_at": "(340, 400) visible backdrop area", "result_left": -288, "ok": true},
+      "x_button_close":  {"result_left": -288, "ok": true}
+    },
+    "header_and_ctas": "Sticky main-content header (z-30 white bar with 'Signed in as ...') and top-right 'New Product' CTA remain visible and clickable at all scroll positions on admin/products (visible in screenshot)."
+  },
+  "test_report_links": ["/app/test_reports/iteration_7.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "PortalLayout.jsx line 113 fix is correct and minimal: `fixed lg:sticky top-0 left-0 h-screen lg:self-start w-72 ... flex flex-col flex-shrink-0`. Sticky+self-start pins the aside to the viewport top inside the flex parent while main content scrolls. No other file touched. No side-effects observed.",
+    "Minor (pre-existing, out of scope): the mobile hamburger button in the header uses no data-testid — recommend adding `data-testid=\"mobile-menu-toggle\"` for easier automation; had to select via `header button:first`. Not blocking."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100%"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! ; demo@client.com / ClientDemo2026! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The sidebar sticky fix (lg:sticky top-0 h-screen lg:self-start flex-shrink-0) is verified across all 10 long-scroll portal pages (6 admin + 4 client) plus mobile regression. Bug from iteration screenshots is fully resolved. No regressions detected — main content header, CTA buttons, mobile hamburger, backdrop close, and X-button close all still work. If revisiting layout, note that <aside> has z-50 and mobile backdrop has z-40 (inset-0), so Playwright's default center-click on backdrop lands behind the open sidebar — use page.mouse.click(x>288, y) or click on the X button for reliable close."
+}

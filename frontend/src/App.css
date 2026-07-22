@@ -1,4 +1,88 @@
-/* Component-local overrides (kept minimal) */
 .App {
-    min-height: 100vh;
+  min-height: 100vh;
+  background: #ffffff;
+  color: #0a2540;
 }
+
+html { scroll-behavior: smooth; }
+
+/* Brand palette */
+:root {
+  --ic-navy-950: #061b3a;
+  --ic-navy-900: #0a2350;
+  --ic-navy-800: #0d2c66;
+  --ic-navy-700: #143a80;
+  --ic-yellow: #f5b120;
+  --ic-yellow-light: #ffc94a;
+  --ic-yellow-dark: #d4941a;
+}
+
+.ic-font { font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif; }
+
+/* Curved yellow SVG accent used in reference images */
+.curved-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Card hover lift */
+.card-lift {
+  transition: transform 300ms ease, box-shadow 300ms ease, border-color 300ms ease;
+}
+.card-lift:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 25px 50px -12px rgba(10, 37, 80, 0.35);
+}
+
+/* Grid overlay */
+.grid-overlay {
+  background-image:
+    linear-gradient(rgba(245,177,32,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(245,177,32,0.06) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+/* Marquee for partners */
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.marquee-track {
+  animation: marquee 40s linear infinite;
+  width: max-content;
+}
+
+/* Underline accent */
+.title-underline::after {
+  content: '';
+  display: block;
+  width: 72px;
+  height: 4px;
+  background: var(--ic-yellow);
+  border-radius: 999px;
+  margin-top: 14px;
+}
+
+/* Text gradient (only used on hero heading small span) */
+.text-yellow-accent { color: var(--ic-yellow); }
+
+/* Fade-in-up */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 700ms ease both; }
+
+/* WhatsApp float button pulse */
+@keyframes waPulse {
+  0% { box-shadow: 0 0 0 0 rgba(37,211,102,0.6); }
+  70% { box-shadow: 0 0 0 18px rgba(37,211,102,0); }
+  100% { box-shadow: 0 0 0 0 rgba(37,211,102,0); }
+}
+.wa-pulse { animation: waPulse 2s infinite; }
+
+/* Scrollbar hide inside modal for aesthetics */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

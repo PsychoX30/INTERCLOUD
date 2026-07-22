@@ -1,0 +1,86 @@
+{
+  "summary": "Sprint 9 — Real Integrations Hub (6 providers scaffolded) + Password Lifecycle (change/admin-reset/forgot/reset). Backend: 18/18 sprint pytest cases green (test_real_integrations.py 9/9, test_password_lifecycle.py 9/9). Sprint regression: 38/38 green across test_pdf_docs.py, test_register_and_crm.py, test_catalog_and_access.py, test_sprint_extras.py, test_crm_enrichment.py. Combined 56/56 sprint+regression green. Frontend E2E validated: /portal/forgot-password, /portal/reset-password (with & without ?token), /portal/{admin|client}/settings/password (change-password happy + wrong-current-pw error + same-password-must-differ error), /portal/admin/real-integrations (all 6 provider cards render, Midtrans card expands to expose Test-connection + Save buttons), /portal/admin/users Reset-pw modal (47 buttons, modal opens with admin-reset-new/confirm/notify/submit testids), sidebar change-pw-link (lock icon) present for both admin and client. Regression sanity: demo@client.com login → dashboard OK, order wizard step1 loads, invoices list loads. Backend correctly returns 403 to client on admin integration endpoints.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/portal/admin/real-integrations (when visited by a client role)",
+        "issues": [
+          "No client-side role guard on the route — a client role that navigates directly to /portal/admin/real-integrations sees the React dev-overlay ('Uncaught runtime errors: Request failed with status code 403') instead of being redirected to /portal/client/dashboard or shown a friendly '403 Not authorized' page. Backend is correct (returns 403). This overlay only appears in dev build but still indicates a missing try/catch or route guard on the AdminRealIntegrations page's initial data fetch. Not a security defect — a UX defect."
+        ]
+      }
+    ]
+  },
+  "test_evidence": {
+    "backend_pytest_sprint": {
+      "test_real_integrations.py": "9/9 passed — schema returns 6 providers, client 403 on schema, list+upsert+masking (server_key redacted with SB-M**** helper, empty credentials merge does NOT wipe secret), test endpoint on unconfigured, unknown provider 404, proxmox/mikrotik/pay-online live endpoints all return 400 when disabled, webhook rejects bogus signature (400 or 404)",
+      "test_password_lifecycle.py": "9/9 passed — wrong current pw 400, same pw 400, weak (<8) 422, happy-path change (old fails, new works), admin reset (old fails, new works, notify_user honoured), client cannot reset others (403), forgot-password neutral (same message for known & unknown emails), forgot->log-token-extract->reset one-shot (2nd use returns 400), bad-token 400"
+    },
+    "backend_regression": {
+      "test_pdf_docs.py + test_register_and_crm.py + test_catalog_and_access.py + test_sprint_extras.py + test_crm_enrichment.py": "38/38 passed in 16.72s — invoice PDF still returns application/pdf, self-registration still mirrors to CRM, order wizard pricing math unchanged, admin CRM enrichment KPIs still render"
+    },
+    "frontend_public_password_screens": {
+      "login_forgot_link": "data-testid=login-goto-forgot present on /portal/login and navigates to /portal/forgot-password",
+      "forgot_page": "Single email input + [data-testid=forgot-submit] Send-reset-link button. After submit, form is replaced with [data-testid=forgot-done] neutral success card",
+      "reset_page_no_token": "Renders error banner ('token missing/invalid/expired') when ?token= query param is absent",
+      "reset_page_with_token": "?token=abc123 renders full form with all 4 testids: reset-form, reset-new, reset-confirm, reset-submit"
+    },
+    "frontend_change_password": {
+      "sidebar_lock_icon_admin": "[data-testid=change-pw-link] visible in admin sidebar user card, navigates to /portal/admin/settings/password",
+      "sidebar_lock_icon_client": "[data-testid=change-pw-link] visible in client sidebar user card",
+      "form_fields": "change-pw-current + change-pw-new + change-pw-confirm + change-pw-submit all render",
+      "wrong_current_pw": "Backend returns 400 → inline red banner appears in UI",
+      "same_password": "Inline red banner 'New password must differ from the current one.' displays correctly"
+    },
+    "frontend_admin_users_reset_modal": {
+      "reset_buttons": "47 [data-testid=reset-pw-*] buttons in the Users table (one per row)",
+      "modal_testids": "admin-reset-new + admin-reset-confirm + admin-reset-notify (checkbox default checked) + admin-reset-submit all render inside the modal",
+      "modal_copy": "'Set a new password for <Name> (<email>).' correctly personalised"
+    },
+    "frontend_real_integrations": {
+      "provider_cards": "All 6 cards render: Proxmox VE (proxmox, DISABLED), Mikrotik RouterOS (mikrotik, DISABLED), Midtrans Snap (midtrans, DISABLED), Xendit (xendit, ENABLED), Duitku (duitku, ENABLED), SMTP Outgoing Email (smtp, DISABLED)",
+      "expansion": "Clicking Midtrans header reveals credentials + options section and both 'Test connection' and 'Save' CTAs",
+      "client_role": "Backend returns 403; frontend UI does NOT gate the route with a role guard so a client that visits the URL sees the React dev-overlay for the uncaught AxiosError (see design_issues)"
+    },
+    "regression_sanity": {
+      "demo_client_login": "demo@client.com / ClientDemo2026! → /portal/client/dashboard OK",
+      "order_wizard_step1": "/portal/client/order loads product/category grid",
+      "invoices_list": "/portal/client/invoices loads invoices list",
+      "admin_dashboard_KPIs": "Total clients 36, Active services 7, Pending orders 4, Open tickets 9, Revenue (month) Rp 3,052,500 — all still render"
+    }
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_real_integrations.py",
+    "/app/backend/tests/test_password_lifecycle.py",
+    "/app/test_reports/pytest/sprint_v9.xml",
+    "/app/test_reports/pytest/regression_v9.xml"
+  ],
+  "action_items": [
+    "OPTIONAL / LOW PRIORITY — Add a client-side role guard (or try/catch + friendly banner) on /portal/admin/real-integrations so a non-admin who navigates there is redirected to /portal/client/dashboard rather than seeing the React dev-overlay for the 403 AxiosError. Same pattern likely already applied on other admin-only routes — copy that guard. Backend is correct."
+  ],
+  "critical_code_review_comments": [
+    "portal/integrations_v2.py — redact() correctly masks sensitive fields (secret/password/api_key/token) with *_masked helper (e.g., server_key_masked='SB-M****'). PUT merge is correctly non-destructive when a credential value is empty — the test_list_and_upsert_and_masking test proves the server_key survives a subsequent PUT with only client_key set.",
+    "portal/routes.py password-reset — hashed at rest (sha256), single-use (marked used=true), 60-min expiry — all three enforced. Old-password login returns 401 after any change/reset — good.",
+    "Forgot-password no-enumeration is real: both known & unknown emails return the identical neutral message body, so an attacker cannot enumerate users. SMTP fallback logs 'token=<url-safe>' to backend.err.log — this is a scaffold-only behaviour and clearly documented in the review context.",
+    "Webhook /webhooks/midtrans returns 400 or 404 on bogus signatures (never 200) — signature verification is enforced before any state mutation. Good.",
+    "AdminRealIntegrations.jsx — missing client-side role guard on the initial data fetch. When a client role lands on the route, the axios 403 propagates as an unhandled promise rejection and triggers the dev-overlay. Not a security bug (backend blocks) but a UX polish miss.",
+    "test_real_integrations.py test method name is 'test_schema_returns_5_providers' but actually asserts 6 providers — cosmetic rename recommended for future maintainers.",
+    "test_real_integrations.py::test_test_endpoint_on_unconfigured_returns_ok_message is essentially a no-op (only writes settings, no assertions). Recommend adding an explicit assert on the /midtrans/test response when misconfigured to raise the value of the test."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (18/18 sprint tests + 38/38 sprint-regression tests = 56/56 green)",
+    "frontend": "100% (all sprint-9 UI features render + integrate correctly; one minor UX polish miss on client-role hitting admin URL directly)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026!  ;  demo@client.com / ClientDemo2026!",
+  "seed_data_creation": "Sprint tests auto-create disposable pwtest_*/admreset_*/forgot_* users (each cleaned up in fixture teardown). Midtrans integration record is left in a 'saved sandbox credentials' state after the masking test — this is expected (test verifies persistence).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint 9 is fully green. Key artefacts: (1) Backend — 9/9 test_real_integrations.py + 9/9 test_password_lifecycle.py + 38/38 sprint-regression. (2) All 6 integration providers appear on /portal/admin/real-integrations (proxmox/mikrotik/midtrans/xendit/duitku/smtp). Each has Enabled toggle + credentials block (with saved:*** placeholders) + options + Test-connection + Save. (3) Password screens: /portal/forgot-password (public), /portal/reset-password?token=... (public), /portal/{admin|client}/settings/password (auth). Admin sidebar + client sidebar both show a lock-icon quick-link. (4) AdminUsers has a Reset-pw button on every row → modal → confirms with browser confirm() → POST /admin/users/{uid}/reset-password. (5) FORGOT-PASSWORD LOG-TOKEN EXTRACTION works via /var/log/supervisor/backend.err.log 'token=<url-safe>' regex — if the pod is re-provisioned the log rolls and the test will skip (documented in review request). (6) One minor UX polish miss: no client-side role guard on /portal/admin/real-integrations — non-admins that navigate there see the React dev-overlay for a 403 AxiosError instead of a friendly redirect. Backend is correct. Recommend main agent add a role check similar to the other admin routes. Do NOT re-attempt the 4 pre-existing test_portal.py data-drift failures — they are documented as expected.",
+  "rca of the issue": "N/A — no bugs to root-cause. The one polish miss (unhandled 403 on client-visits-admin-URL) is documented in action_items."
+}

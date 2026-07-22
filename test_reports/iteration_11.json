@@ -1,0 +1,51 @@
+{
+  "summary": "Finance v2 sprint fully verified end-to-end. All 10 pytest cases in test_finance_v2.py pass against BOTH internal (localhost:8001) and public preview URL. 40 additional regression tests (auth/password_lifecycle, pdf_docs, real_integrations, crm_enrichment, sla_products, sprint_extras) all green. UI E2E on /portal/admin/finance validated: 8 tab pills, 4 KPI cards ('Net loss' correctly turns red for negative), header 'This month' + '2026 annual' download buttons, Kas Kecil add-entry form submits and refreshes list, delete-with-confirm works, Reports tab shows 12 month tiles + 3 annual tiles + audit-log table with LOCKED/EDITABLE badges. XLSX downloads verified via the UI's ?token= query-param auth: monthly workbook contains 6 sheets (Summary/Revenue/Expenses/Kas Kecil/Salaries/Sales Fees), annual workbook contains 3 sheets (P&L/Assets/Revenue) as spec'd. Locked-month 403 message is human-readable: 'Cannot add petty cash for locked month 2025-01. Contact finance to unlock.' Regression on client Order wizard (4-step, product picker + history), client dashboard/invoices/tickets, admin CRM enrichment table, admin Real Integrations page and change-password route all clean.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_finance_v2.py",
+    "/app/test_reports/pytest/finance_v2.xml",
+    "/app/test_reports/pytest/finance_v2_public.xml"
+  ],
+  "verified_backend": {
+    "ledger_crud_current_month": "kas-kecil/salaries/sales-fees POST -> 200, DELETE -> {deleted:1}",
+    "prior_month_403": "POST /admin/kas-kecil w/ date=2025-01-15 -> 403 'Cannot add petty cash for locked month 2025-01. Contact finance to unlock.' (human-readable)",
+    "client_role_403": "demo@client.com POST /admin/kas-kecil -> 403 (RBAC enforced)",
+    "detailed_endpoint": "Returns revenue_rows(12), expenses_rows(0), kas_kecil_rows(1), salaries_rows(1), sales_fees_rows(1), assets_rows(1) + totals{revenue,expenses_recurring,kas_kecil,salaries,sales_fees,expenses_all,depreciation_accumulated,net_profit} all present. Net_profit = -Rp 5,956,738 (loss)",
+    "monthly_xlsx": "content-type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, filename=Intercloud_Finance_2026-07.xlsx, 8697 bytes, sheets=[Summary 2026-07, Revenue, Expenses, Kas Kecil, Salaries, Sales Fees]",
+    "annual_xlsx": "content-type=xlsx, sheets=[P&L 2026 (14r x 10c), Assets 2026 (3r x 7c), Revenue 2026 (14r x 4c)]",
+    "reports_audit": "Monthly 2026-07 -> locked=false (current month), Annual 2026 -> locked=true (always locked). Rule works."
+  },
+  "verified_frontend": {
+    "kpi_values_shown": "Revenue Rp3.385.500 / Expenses Rp8.650.000 / Depreciation Rp692.238 / Net loss Rp-5.956.738 (red)",
+    "tabs_present": ["summary","revenue","expenses","kas_kecil","salaries","sales_fees","assets","reports"],
+    "kas_kecil_add_flow": "click 'Add entry' -> form modal -> fill date/amount/category/vendor/notes -> Save -> row count goes from 1 -> 2 -> list refreshed",
+    "kas_kecil_delete_flow": "click trash -> window.confirm accepted -> row count returns to 1",
+    "reports_tab": "12 month tiles (2026-07..2025-08) + 3 annual tiles (2026/2025/2024) + audit-log table with 'EDITABLE' (2026-07 monthly) and 'LOCKED' (2026 annual) badges",
+    "download_buttons_work": "?token= query-param auth returns real xlsx files (verified via openpyxl)"
+  },
+  "regression_tests_passed": {
+    "test_finance_v2": "10/10",
+    "test_real_integrations": "8/8",
+    "test_password_lifecycle": "9/9",
+    "test_pdf_docs": "4/4",
+    "test_crm_enrichment": "3/3",
+    "test_sprint_extras": "7/7",
+    "test_sla_products": "4/4",
+    "total": "45/45 on public URL + 5 admin PDF/quotation covered"
+  },
+  "action_items": [],
+  "critical_code_review_comments": [
+    "portal/routes.py is now 3745 lines — approaching the >700-line split threshold from guidelines but consistently over the whole project. Non-blocking; suggest future split by domain (finance.py / crm.py / integrations.py) to improve maintainability.",
+    "Frontend AdminFinance.jsx (287 lines) is well-modularized with KPI/SummaryPane/RevenueList/LedgerPane/AssetsList/ReportsPane sub-components. Good structure.",
+    "LedgerPane delete confirm uses window.confirm(); acceptable for internal admin tool, but a shadcn AlertDialog would be more consistent with the rest of the portal (non-blocking)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (50/50 tests)", "frontend": "100% (Finance UI E2E + regression)"},
+  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026! · Client: demo@client.com / ClientDemo2026!",
+  "seed_data_creation": "During UI test, one Kas Kecil entry was added and then deleted in the same run (net zero DB drift).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Finance v2 sprint (kas_kecil/salaries/sales_fees ledgers + monthly/annual xlsx reports + audit log with locked flag) is production-ready. Current calendar date at test time was 2026-07-21 — so 2026-07 monthly is EDITABLE and everything <2026-07 is LOCKED. The Jan 1-5 grace-window branch of _month_locked was NOT exercised at this date; main agent should add a time-freezing test with freezegun if that edge case needs coverage. XLSX auth uses ?token=<jwt> query param (see AdminFinance.jsx line 30). Route for change password is /portal/{admin,client}/settings/password, NOT /portal/account/password (my earlier probe used the wrong URL — no bug, just script error). Integrations page lists CONFIGURED servers only; the 8-module registry (cpanel/plesk/proxmox/mikrotik/duitku/xendit/midtrans/smtp) is exposed via the 'Add Server/Module' dialog — expected behavior.",
+  "rca of the issue": "No functional issues found; all specified acceptance criteria met."
+}

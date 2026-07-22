@@ -1,0 +1,52 @@
+{
+  "summary": "Full E2E validation of the WHMCS-style catalog + order-wizard + admin access-control sprint. Ran 18 sprint pytest cases (12 existing + 6 new extras) + full 70-test sweep + Playwright E2E of the client 4-step order wizard, admin categories/products/users pages, and per-user menu_keys sidebar filter. 66/70 backend green (the 4 failures are the pre-existing data-drift ones flagged as expected in the review request). All new sprint features work end-to-end.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_evidence": {
+    "backend_pytest_new_sprint": {
+      "test_catalog_and_access.py": "12/12 passed — category CRUD, product option-groups round-trip, add-on flagging, order-preview pricing (100k base + 150k RAM + 2x25k IPs + 50k addon = 350k mo, 388.5k total w/ 11% tax), no-selection base-only preview (100k → 111k), addon-cannot-be-ordered 404, cart-snapshot persistence, user-access-catalog with 25 menu items + 8 feature flags, client 403 on catalog, menu_keys/feature_flags round-trip via /admin/users",
+      "test_sprint_extras.py (NEW)": "6/6 passed — slug cascade updates product.category, category delete blocked when products still reference it, /orders/preview requires auth, /portal-public/addons lists add-on, order status=pending_payment + invoice_id present + itemized invoice lines, user access round-trip via list endpoint"
+    },
+    "backend_full_sweep": "66 passed, 4 failed. The 4 failures (test_client_dashboard, test_client_invoices, test_modules_registry, test_lifecycle_auto_creates_service) are the pre-existing data-drift cases explicitly documented in the review request as 'expected to fail — do NOT fix'.",
+    "frontend_admin": {
+      "admin/categories": "Renders 10 seeded categories (cloud, vps, hosting, dedicated, colocation, firewall, interconnect, lease, domain, other) each with correct product_count (VPS=3, Hosting=2, Cloud=1, Dedicated=1, Colocation=1, Firewall=1, Interconnect=1, Lease=0, Domain=0, Other=1). 'Add category' button visible. Slug column and sort column render.",
+      "admin/products": "Filter tabs 'All (11) / Base plans (10) / Add-ons (1)' render with counts. 'VPS KVM Configurable' base-plan row shows '4 groups' badge in Options column. 'Managed Daily Backup' row shows 'ADD-ON' pink badge. New Product CTA present.",
+      "admin/addons": "URL routes to AdminProducts with Add-ons filter pre-selected — verified 'Add-ons' filter tab is active with count",
+      "admin/users": "Users table has ACCESS column showing 'Default for sales' badge for sales users and '—' for clients. 'Manage access' link renders per non-client. Modal opens with 'Use default for role SALES' toggle (checked by default), menu-access section (collapsed when default selected), Feature Flags grid (8 flags visible: can permanently delete invoices, can delete user accounts, can edit DCIM devices, can allocate & edit IP prefixes, can trigger auto-provisioning manually, can view finance Assets & depreciation, can impersonate a client for support, can export CRM / invoices to CSV), and 'Assigned Clients' section (28 clients listed) — only appears for sales/support role."
+    },
+    "frontend_client_order_wizard": {
+      "step1_pick": "Category tab strip: 'CLOUD (1) / VPS (3) / WEB HOSTING (2) / DEDICATED (1) / COLOCATION (1) / FIREWALL (1) / INTERCONNECT (1)'. Categories with 0 products (lease, domain) correctly hidden. Product cards show name, tag, description, features list, and Rp price. Continue button disabled until a card is picked; enabled once 'VPS KVM Configurable' selected.",
+      "step2_configure": "Reached after Continue. Body contains 'RAM' and 'CPU' option group labels (custom UI, no native selects). Continue proceeds to add-ons.",
+      "step3_addons": "'Managed Daily Backup' add-on card visible (matches applies_to_categories=['vps'] filter). Card toggles on click. Back + Review order CTAs visible.",
+      "step4_review": "Order summary: 'VPS KVM Configurable — base plan (monthly) Rp100,000', 'Add-on: Managed Daily Backup +Rp50,000/mo'. Right column: 'TOTAL DUE TODAY Rp166,500' | Recurring subtotal Rp150,000 | Setup fees Rp0 | Tax (11%) Rp16,500 | Total Rp166,500. Notes textarea captures message. 'Confirm & Generate Invoice' CTA + 'Back to edit'.",
+      "step5_done": "'Order placed successfully' green success card with 'View invoice →' CTA + 'Order another' CTA. Order appears in Order History below with status PENDING PAYMENT + View invoice link."
+    },
+    "frontend_menu_filter": {
+      "restricted_sales_user_menu_keys_dashboard_orders": "Sidebar DOM contained only ['INTERCLOUD Admin Console', 'Dashboard', 'Orders'] — Tickets/CRM/Users/Diagnostics all hidden as expected",
+      "default_after_reset_empty_menu_keys": "Sidebar count=14 — Dashboard + Orders + Tickets + full default menu restored"
+    }
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_catalog_and_access.py",
+    "/app/backend/tests/test_sprint_extras.py",
+    "/app/test_reports/pytest/catalog_access.xml",
+    "/app/test_reports/pytest/sprint_extras.xml",
+    "/app/test_reports/pytest/full_sweep.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "portal/routes.py _serialize_order does NOT expose cart_snapshot in the API response — it is persisted in the DB (audit trail) but not returned. This is a deliberate design choice consistent with the sprint spec ('stores cart_snapshot on the order'). If the frontend ever needs to re-render the exact cart shown at confirm time, add cart_snapshot to _serialize_order response.",
+    "test_catalog_and_access.py TestProductOptions.sample fixture emits PytestRemovedIn10Warning (class-scoped instance-method deprecation). Non-blocking but recommend switching to @classmethod for future pytest-10 compatibility.",
+    "portal/routes.py — good separation: _price_cart is shared between /orders/preview and /client/orders, guaranteeing preview shows exact same math as final invoice.",
+    "Step 2 (Configure) uses custom UI (no native <select>) — for accessibility & keyboard-nav, verify each option-group control has proper ARIA role/labels. Not blocking (no visible defect)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint_extras.py (NEW — 6 additional sprint coverage tests)"
+  ],
+  "success_rate": {"backend": "94% (66/70 total; 100% on the 18 new sprint tests)", "frontend": "100% (all 4 wizard steps + success card + menu filter + admin CRUD pages render + navigate correctly)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! ; demo@client.com / ClientDemo2026! ; sales@intercloud-digital.com / Sales2026! (per seed.py, agrees with review-request note)",
+  "seed_data_creation": "Sprint tests auto-create/delete a 'Pytest VPS' product, a 'Pytest Backup' add-on, a 'testcat_*' category, a 'cascade_*' + 'delblock_*' category with children — all cleaned up in fixture teardown. Sales user menu_keys was toggled and reset to [] at the end of the menu-filter E2E test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint is fully green. Key artefacts: (1) Backend pytest — 18/18 new sprint tests + 66/70 overall (4 known pre-existing failures per review request). (2) Order-wizard 4-step flow works: /portal/client/order → StepPick (category tabs + product cards) → StepConfigure (option groups) → StepAddons (category-filtered) → StepReview (live /orders/preview) → success card with View Invoice CTA. (3) Admin categories page /portal/admin/categories has full CRUD w/ slug auto-sanitising. (4) Admin products /portal/admin/products has filter tabs All/Base/Add-ons + a 'is_addon' toggle in the form that swaps between option-group editor and applies-to editor. (5) Admin users /portal/admin/users has 'Manage access' modal with default-role toggle + menu checklist + feature flags + assigned clients section. (6) menu_keys override on user correctly restricts sidebar in real-time — the Playwright DOM check confirmed only Dashboard+Orders when menu_keys=['dashboard','orders']. NOTE: browser screenshot ordering in the tool output for the menu-filter test may look reversed but the DOM-level assertions from page.evaluate() are the source of truth and confirm the filter works."
+}

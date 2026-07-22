@@ -1,0 +1,61 @@
+{
+  "summary": "Verified email refresh (seed v2) + brand-new Articles module end-to-end on the public preview URL. Backend: 31/31 existing pytest cases in test_articles.py + test_emails.py pass, plus 4 new focused cases in test_email_refresh.py covering the polite English wording, the invoice_generated due-date subject, and the real Intercloud logo URL embedded in preview HTML — all pass (4/4). Frontend public /articles renders hero, search input+button, 11 tag chips, 1 featured card, 2 non-featured article cards and results-count '3 articles'. Search 'colocation' narrows to 1 result; clear-filters restores; tag-chip filter works. Detail page /articles/colocation-vs-dedicated-vs-vps renders article-title/excerpt/cover/body/back-to-articles/JSON-LD (@type=BlogPosting) and updates document.title. Unknown slug returns a 'not found' page. Header 'Articles' link (data-testid=header-articles-link) is present on both landing and /articles. Admin flow: login → nav-articles → /portal/admin/articles shows 3 seed rows; search filter narrows to 1 for 'colocation'; New article opens modal with editor-tab-write/media/seo. YouTube URL entered in Media tab renders a live embed iframe. SEO tab exposes editor-meta-title/description/keywords/og-image/tags. Save persists (rows 3→4) and delete removes (rows 4→3). Regression: Email Automation page still renders 12 templates with 'Available variables' bar and Templates/Broadcast/Delivery-log tabs — no console errors.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin editor modal", "issues": ["React hydration warning in console: '<p> cannot be a child of <span>' — non-critical, likely inside a shadcn <SelectItem> option that renders paragraphs. Does not affect functionality."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_articles.py",
+    "/app/backend/tests/test_emails.py",
+    "/app/backend/tests/test_email_refresh.py",
+    "/app/test_reports/pytest/articles_emails.xml",
+    "/app/test_reports/pytest/email_refresh.xml"
+  ],
+  "verified_backend": {
+    "articles_public_listing": "GET /public/articles → total=3 (why-indonesian-…, colocation-vs-…, cyber-1-core-…)",
+    "articles_public_search": "GET /public/articles?q=colocation → 1 result matching colocation-vs-dedicated-vs-vps",
+    "articles_tag_filter": "GET /public/articles?tag=announcement → 1 result = cyber-1-core-network-upgrade-notice",
+    "articles_tag_facet": "GET /public/articles/tags → counts include cloud/colocation/vps",
+    "articles_detail_view_count": "view_count increments +1 on each GET /public/articles/{slug}",
+    "articles_404_and_drafts": "unknown slug → 404; draft article created via admin → not visible on public endpoint (404)",
+    "admin_articles_crud": "POST auto-generates slug, normalises tags to lowercase-kebab + dedupes, PUT draft→published stamps published_at, DELETE returns {deleted:1}, slug collision auto-suffix -2",
+    "admin_articles_rbac": "role=client → 403 on GET/POST /admin/articles",
+    "email_welcome_subject": "'Welcome to Intercloud, {user.name} — your portal is ready' (contains 'Warm regards')",
+    "email_invoice_generated_subject": "contains 'due {invoice.due_date}'",
+    "email_preview_logo": "POST /admin/email-templates/preview body_html includes 'intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png' (real logo URL, not the old 'IC' placeholder). Verified across all 12 system templates.",
+    "email_regression": "19/19 existing test_emails.py cases still green after seed_v2 bump"
+  },
+  "verified_frontend": {
+    "public_list_/articles": "hero + articles-search-input + articles-search-btn, 11 tag-chip-* buttons, featured-* card for slug why-indonesian-…, 2 article-card-* cards, results-count='3 articles', active-filters + clear-filters both functional",
+    "public_search_flow": "Type 'colocation' → cards go 2→1; clear-filters returns to 2; clicking tag-chip-colocation also narrows to 1",
+    "public_detail": "/articles/colocation-vs-dedicated-vs-vps renders article-title/-excerpt/-cover/-body/-back-to-articles, 4 article-tag-* chips linking back to /articles?tag=…, document.title 'Colocation vs Dedicated vs VPS — Practical Decision Guide — Intercloud', #article-jsonld script contains BlogPosting",
+    "public_404": "/articles/does-not-exist-xyz → 'not found' page",
+    "header_link": "data-testid=header-articles-link present on landing / and /articles",
+    "admin_articles_page": "nav-articles → /portal/admin/articles, articles-table renders 3 rows, articles-search + status/tag filters work",
+    "admin_editor_tabs": "New article modal with editor-tab-write/media/seo. Write tab has editor-title + editor-body. Media tab: entering YouTube URL in editor-video renders an iframe[src*='youtube.com/embed'] live preview. SEO tab: editor-meta-title/-description/-keywords/-og-image/-tags all present.",
+    "admin_save_delete_flow": "Fill title 'Playwright test article uniq' + body + cover + video + tags → editor-save-btn → row appears (3→4). Open via edit-{slug} → editor-delete-btn → row removed (4→3). Success toast 'Article … deleted.'",
+    "email_page_regression": "nav-email → /portal/admin/email renders 12 template rows across tab-templates. Templates/Broadcast/Delivery-log tabs all render. No console errors."
+  },
+  "action_items": [
+    "(Non-blocking) Investigate the React hydration warning '<p> cannot be a child of <span>' surfacing in the admin editor. It appears when the Select component renders SelectItem options containing paragraph tags. Cosmetic only."
+  ],
+  "critical_code_review_comments": [
+    "portal/routes.py continues to grow (articles endpoints added ~lines 4038+); split-by-domain refactor still pending but not blocking.",
+    "Public ArticlesList clears filters + resets URL correctly and results-count string is human-readable.",
+    "Featured 'related' array is often empty because seed articles share no tags — expected behaviour of the fallback query. Consider expanding related to fall back to same category if tags don't match."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_email_refresh.py (new — 4 pytest cases validating seed v2 refresh + logo URL)"
+  ],
+  "success_rate": { "backend": "100% (35/35 pytest cases)", "frontend": "100% (public list/detail/404 + admin editor CRUD + email regression)" },
+  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026!; Client: demo@client.com / ClientDemo2026!",
+  "seed_data_creation": "During UI test one admin article 'Playwright test article uniq' was created then deleted (net-zero DB drift). Backend pytest also creates + tears down several TEST_ / pytest-prefixed articles.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Articles module (backend routes + admin editor + public list/detail) and email refresh (seed v2 + real Intercloud logo in preview) are production-ready. Seeded articles do not include a video_url, so the /articles/{slug} public YouTube iframe (article-video) was not exercisable via seed alone — coverage was proven via the admin editor's Media-tab live preview iframe. Full-text search uses a Mongo text index on title/body/tags — searches like 'colocation' rank the target article first. Draft articles are hidden from public. When adding new tests, use PORTAL_API_BASE from conftest.py (already wired to REACT_APP_BACKEND_URL/api/portal).",
+  "rca of the issue": "No functional issues found; all specified acceptance criteria satisfied."
+}

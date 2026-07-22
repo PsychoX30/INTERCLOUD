@@ -1,0 +1,47 @@
+{
+  "summary": "Focused verification of the two bugs from this sprint. BUG 1 (scroll-to-top on route change) and BUG 2 (SLA=99.5% everywhere) are BOTH fixed. All 3 backend pytest cases pass and all Playwright UI assertions pass across landing, 3 legal pages, portal login, client dashboard, and a back-nav round-trip.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sla_products.py",
+    "/app/test_reports/pytest/sla_products.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ScrollToTop.jsx correctly gated by useLocation pathname+hash and mounted inside <BrowserRouter> — good placement.",
+    "Seed drift-correction pass in _seed_products() is idempotent and covers all 6 stale SLA variants (dots and commas) — no duplicate migration needed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sla_products.py (new)"
+  ],
+  "success_rate": {"backend": "100% (3/3)", "frontend": "100% (all assertions green)"},
+  "test_credentials": "Admin admin@intercloud-digital.com / AdminIntercloud2026!  ·  Client demo@client.com / ClientDemo2026!",
+  "seed_data_creation": "None — reused existing seeded products/users.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "BUG 1 & BUG 2 verified via /app/backend/tests/test_sla_products.py (3 tests) and a Playwright grep of body.innerText across landing, /legal/terms, /legal/aup, /legal/sla, /portal/login, /portal/client/dashboard, /portal/register — none contained 99.9% / 99.95% / 99.99% / 99,9% / 99,95% / 99,99%. Scroll assertion: scrolled landing to bottom (scrollY=2880), clicked each footer legal link, verified scrollY=0 on destination. Back-nav (landing → /legal/terms → back → /legal/aup) also lands at 0. Portal client dashboard shows '99.5% uptime' string. Note: portal dashboard doesn't have enough content to scroll for the /dashboard→/invoices route-reset test — scrollY stayed at 0 both before and after nav (not a defect, dashboard just fits above the fold).",
+  "verification_details": {
+    "landing_has_99_5": true,
+    "landing_bad_hits": [],
+    "legal_terms_scroll_pre_post": [2880, 0],
+    "legal_aup_scroll_pre_post": [4910, 0],
+    "legal_sla_scroll_pre_post": [2880, 0],
+    "sla_page_network_line_ok": true,
+    "sla_page_power_line_ok": true,
+    "sla_page_downtime_line_ok": true,
+    "back_then_aup_scroll_ok": true,
+    "portal_login_99_5": true,
+    "client_dashboard_99_5_uptime": true,
+    "register_page_bad_hits": [],
+    "admin_products_endpoint_bad_features": [],
+    "public_products_endpoint_bad_features": [],
+    "dc_to_dc_100mbps_feature_99_5_sla_present": true
+  }
+}

@@ -2,72 +2,74 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Fonts: Chivo (headings) + IBM Plex Sans (body/tabular) */
-@import url("https://fonts.googleapis.com/css2?family=Chivo:wght@400;500;600;700;800;900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
-
-html,
-body,
-#root {
-    height: 100%;
-}
-
 body {
     margin: 0;
     font-family:
-        "IBM Plex Sans",
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
+        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
         sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #f8f9fa;
-    color: #111827;
-    font-feature-settings: "ss01", "cv01";
 }
 
-code,
-.font-mono {
-    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+code {
+    font-family:
+        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
 
-.font-display {
-    font-family: "Chivo", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-    letter-spacing: -0.02em;
-}
-
-.tabular-nums {
-    font-variant-numeric: tabular-nums;
-}
-
-/* Design tokens (light theme only) */
 @layer base {
     :root {
-        --background: 210 20% 98%;
-        --foreground: 222 47% 11%;
+        --background: 0 0% 100%;
+        --foreground: 0 0% 3.9%;
         --card: 0 0% 100%;
-        --card-foreground: 222 47% 11%;
+        --card-foreground: 0 0% 3.9%;
         --popover: 0 0% 100%;
-        --popover-foreground: 222 47% 11%;
-        --primary: 222 47% 11%;
-        --primary-foreground: 210 20% 98%;
-        --secondary: 210 16% 96%;
-        --secondary-foreground: 222 47% 11%;
-        --muted: 210 16% 96%;
-        --muted-foreground: 215 16% 47%;
-        --accent: 214 100% 34%;
-        --accent-foreground: 0 0% 100%;
-        --destructive: 0 74% 50%;
-        --destructive-foreground: 0 0% 100%;
-        --border: 220 13% 91%;
-        --input: 220 13% 91%;
-        --ring: 214 100% 34%;
-        --chart-1: 214 100% 34%;
-        --chart-2: 142 71% 45%;
-        --chart-3: 24 95% 53%;
-        --chart-4: 262 83% 58%;
-        --chart-5: 340 82% 52%;
+        --popover-foreground: 0 0% 3.9%;
+        --primary: 0 0% 9%;
+        --primary-foreground: 0 0% 98%;
+        --secondary: 0 0% 96.1%;
+        --secondary-foreground: 0 0% 9%;
+        --muted: 0 0% 96.1%;
+        --muted-foreground: 0 0% 45.1%;
+        --accent: 0 0% 96.1%;
+        --accent-foreground: 0 0% 9%;
+        --destructive: 0 84.2% 60.2%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 0 0% 89.8%;
+        --input: 0 0% 89.8%;
+        --ring: 0 0% 3.9%;
+        --chart-1: 12 76% 61%;
+        --chart-2: 173 58% 39%;
+        --chart-3: 197 37% 24%;
+        --chart-4: 43 74% 66%;
+        --chart-5: 27 87% 67%;
         --radius: 0.5rem;
+    }
+    .dark {
+        --background: 0 0% 3.9%;
+        --foreground: 0 0% 98%;
+        --card: 0 0% 3.9%;
+        --card-foreground: 0 0% 98%;
+        --popover: 0 0% 3.9%;
+        --popover-foreground: 0 0% 98%;
+        --primary: 0 0% 98%;
+        --primary-foreground: 0 0% 9%;
+        --secondary: 0 0% 14.9%;
+        --secondary-foreground: 0 0% 98%;
+        --muted: 0 0% 14.9%;
+        --muted-foreground: 0 0% 63.9%;
+        --accent: 0 0% 14.9%;
+        --accent-foreground: 0 0% 98%;
+        --destructive: 0 62.8% 30.6%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 0 0% 14.9%;
+        --input: 0 0% 14.9%;
+        --ring: 0 0% 83.1%;
+        --chart-1: 220 70% 50%;
+        --chart-2: 160 60% 45%;
+        --chart-3: 30 80% 55%;
+        --chart-4: 280 65% 60%;
+        --chart-5: 340 75% 55%;
     }
 }
 
@@ -78,84 +80,36 @@ code,
     body {
         @apply bg-background text-foreground;
     }
-    h1,
-    h2,
-    h3,
-    h4 {
-        @apply font-display;
+}
+
+@layer base {
+    [data-debug-wrapper="true"] {
+        display: contents !important;
     }
-}
 
-/* Utility: micro shadow ring for cards */
-.ring-hair {
-    box-shadow:
-        0 1px 0 rgba(15, 23, 42, 0.03),
-        0 0 0 1px rgba(15, 23, 42, 0.06);
-}
-
-/* Focus ring: subtle accent */
-.focus-ring:focus-visible {
-    outline: 2px solid hsl(var(--accent));
-    outline-offset: 2px;
-}
-
-/* Print helpers */
-@media print {
-    .no-print {
-        display: none !important;
+    [data-debug-wrapper="true"] > * {
+        margin-left: inherit;
+        margin-right: inherit;
+        margin-top: inherit;
+        margin-bottom: inherit;
+        padding-left: inherit;
+        padding-right: inherit;
+        padding-top: inherit;
+        padding-bottom: inherit;
+        column-gap: inherit;
+        row-gap: inherit;
+        gap: inherit;
+        border-left-width: inherit;
+        border-right-width: inherit;
+        border-top-width: inherit;
+        border-bottom-width: inherit;
+        border-left-style: inherit;
+        border-right-style: inherit;
+        border-top-style: inherit;
+        border-bottom-style: inherit;
+        border-left-color: inherit;
+        border-right-color: inherit;
+        border-top-color: inherit;
+        border-bottom-color: inherit;
     }
-    body {
-        background: #fff;
-    }
-}
-
-/* Reduce motion */
-@media (prefers-reduced-motion: reduce) {
-    * {
-        transition-duration: 0.01ms !important;
-        animation-duration: 0.01ms !important;
-    }
-}
-
-/* Sidebar link hover accent-bar */
-.sidebar-link {
-    position: relative;
-    transition:
-        background-color 0.15s ease,
-        color 0.15s ease;
-}
-.sidebar-link[data-active="true"]::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 8px;
-    bottom: 8px;
-    width: 3px;
-    background: hsl(var(--accent));
-    border-radius: 0 3px 3px 0;
-}
-
-/* Table density */
-.dense-table th {
-    font-family: "Chivo", sans-serif;
-    font-size: 11px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #64748b;
-    font-weight: 600;
-}
-.dense-table td,
-.dense-table th {
-    border-bottom: 1px solid #eef1f5;
-}
-
-/* Grain overlay for auth split */
-.grain::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background-image: radial-gradient(rgba(15, 23, 42, 0.08) 1px, transparent 1px);
-    background-size: 3px 3px;
-    mix-blend-mode: multiply;
-    pointer-events: none;
 }

@@ -1,75 +1,56 @@
 {
-  "summary": "Backend API tests executed via pytest (36 tests). 34 passed, 2 failed. Depreciation formula verified: 10M/1M/5y => annual 1,800,000, monthly 150,000, fully depreciated after 5y with book_value=1,000,000 (floored at salvage). All CRUD, RBAC (admin vs staff), uniqueness, in-use protection, dashboard, and reports work. Two real backend bugs found in auth: (1) POST /api/auth/reset-password returns 500 due to tz-naive vs tz-aware datetime comparison, (2) brute-force lockout does not trigger 429 because identifier uses request.client.host (K8s ingress proxy IP) which rotates across multiple pods, splitting counters.",
-  "backend_issues": {
-    "critical": [
-      {
-        "endpoint": "POST /api/auth/reset-password",
-        "issue": "Returns 500 Internal Server Error on valid token. Root cause: server.py:446 compares `rec['expires_at'] < now_utc()`; expires_at retrieved from MongoDB via motor is offset-naive (default pymongo tz_aware=False) while now_utc() is offset-aware UTC. TypeError: can't compare offset-naive and offset-aware datetimes. Fix: either wrap the stored value with .replace(tzinfo=timezone.utc) on read, use datetime.utcnow() (naive) consistently, or initialize AsyncIOMotorClient(MONGO_URL, tz_aware=True, tzinfo=timezone.utc).",
-        "priority": "CRITICAL"
-      },
-      {
-        "endpoint": "POST /api/auth/login (brute-force lockout)",
-        "issue": "After 5 wrong-password attempts the 6th call still returns 401 instead of 429. Cause: identifier = f'{request.client.host}:{email}' but behind the K8s ingress request.client.host rotates between multiple proxy pods (observed 10.79.151.158 and 10.79.151.159 alternating for the same client session), so each IP starts its own counter and never reaches 5. Also, on the 5th failed attempt the code resets count to 0 when setting locked_until, so the lockout window depends solely on the tz-aware/naive comparison in server.py:371 which would additionally raise TypeError if the identifier ever were consistent. Fix: use email as identifier (or trust X-Forwarded-For / prefer email-only) AND fix the datetime comparison (same tz bug as reset-password).",
-        "priority": "HIGH"
-      }
-    ],
-    "minor": [
-      {
-        "endpoint": "startup / motor client",
-        "issue": "AsyncIOMotorClient is created without tz_aware=True. All datetime fields written as tz-aware (now_utc()) come back naive on read. Latent risk anywhere datetimes are compared or serialized (e.g., login_attempts.locked_until, password_reset_tokens.expires_at). Recommended: AsyncIOMotorClient(MONGO_URL, tz_aware=True, tzinfo=timezone.utc)."
-      },
-      {
-        "endpoint": "GET /api/dashboard/summary",
-        "issue": "`status_breakdown` is returned as a dict keyed by status (e.g. {\"active\": 5}). Frontend consumers should be aware — it is not a list of {status, count}. Not a bug, but inconsistent with category_breakdown/location_breakdown which are arrays."
-      },
-      {
-        "endpoint": "PUT /api/assets/{id}",
-        "issue": "Endpoint is accessible to any authenticated user (not admin-only). The request statement listed 'Delete (admin only)' — update also grants staff full edit rights. Confirm intended RBAC."
-      }
-    ]
-  },
+  "summary": "Comprehensive frontend testing of PT. Intercloud Digital Inovasi landing page. Verified SEO/meta/JSON-LD, header logo & nav, hero, features (4), all 8 service cards + modal (open/close via X, Escape, outside click), Dedicated Server modal content (signals & use-cases), Decision Guide 3 cards, Pricing 3 plans, Partners marquee, FAQ accordion (9 items, single-open), CTA contact cards, Footer, Floating WhatsApp, responsive layout at 375/768/1920. All 11 wa.me links point to 6287812397187 with target=_blank. No console/page errors.",
+  "backend_issues": { "critical": [], "minor": [] },
   "frontend_issues": {
     "ui_bugs": [],
     "integration_issues": [],
     "design_issues": []
   },
-  "test_report_links": [
-    "/app/backend/tests/backend_test.py",
-    "/app/test_reports/pytest/pytest_results.xml"
-  ],
-  "action_items": [
-    "Fix reset-password 500: normalize datetime comparison (use datetime.now(timezone.utc) vs stored naive UTC via .replace(tzinfo=timezone.utc), or configure motor with tz_aware=True).",
-    "Fix brute-force lockout: switch identifier to email (or X-Forwarded-For + email) so it survives K8s ingress proxy IP rotation; also do NOT reset count on lock; also fix same tz-datetime comparison bug on server.py:371.",
-    "Optional: verify intended RBAC for PUT /api/assets/{id} — currently allows staff to edit (only DELETE is admin-only)."
-  ],
-  "critical_code_review_comments": [
-    "server.py stores tz-aware datetimes but reads them back as naive (motor default). Two known crash sites (reset-password, login lockout). Fix at the client level by passing tz_aware=True to AsyncIOMotorClient — one-line fix that covers all future datetime fields.",
-    "Brute-force lockout identifier depends on request.client.host, which behind Kubernetes ingress is the proxy pod IP and not stable. Use email or a trusted forwarded header.",
-    "Login lockout logic resets `count = 0` when triggering lockout. If the lockout check fails to fire (e.g., due to the tz bug or IP-rotation), subsequent bad attempts restart from 0, permanently disabling the throttle.",
-    "server.py at ~815 lines — approaching the 700-line guideline threshold; consider splitting auth, assets, taxonomy, dashboard, reports into modules.",
-    "@app.on_event('startup') is deprecated in modern FastAPI; consider lifespan context manager.",
-    "CORS_ORIGINS='*' combined with allow_credentials=True is silently downgraded by browsers and violates the CORS spec. For production, list explicit origins."
-  ],
-  "updated_files": [
-    "/app/backend/tests/backend_test.py (new)",
-    "/app/test_reports/pytest/pytest_results.xml (new)"
-  ],
-  "success_rate": {"backend": "94% (34/36)", "frontend": "N/A (not requested)"},
-  "test_credentials": "admin@intercloud.io / admin123 (auto-seeded)",
-  "seed_data_creation": "Test data uses uuid-suffixed emails and TEST_ prefixed names/codes to avoid collisions. Tests self-cleanup transient categories/locations; some TEST_ assets remain in DB (idempotent for re-runs since codes are uuid'd).",
-  "retest_needed": true,
-  "main_agent_can_self_test": true,
-  "context_for_next_testing_agent": "Backend runs at REACT_APP_BACKEND_URL=https://portal-straight-line.preview.emergentagent.com. Run: `python -m pytest /app/backend/tests/backend_test.py -v -n 0 --junitxml=/app/test_reports/pytest/pytest_results.xml`. Note pytest.ini forces -n 2 --dist loadscope; use -n 0 for serial. K8s ingress uses multiple proxy IPs — any test relying on request.client.host stability will misbehave. Motor is configured with default tz_aware=False; datetime reads are naive.",
-  "rca of the issue": {
-    "reset_password_500": {
-      "reproduction": "POST /api/auth/forgot-password → get reset_token from response; POST /api/auth/reset-password {token, new_password}. Response: 500.",
-      "root_cause": "server.py:446 `rec['expires_at'] < now_utc()` where expires_at is naive datetime (pymongo default) and now_utc() is tz-aware, raising TypeError.",
-      "mitigation": "Either (a) init motor with tz_aware=True, (b) store naive UTC via datetime.utcnow() and compare with datetime.utcnow(), or (c) explicitly attach tz on read: `rec['expires_at'].replace(tzinfo=timezone.utc)`."
+  "test_results": {
+    "seo": { "title_ok": true, "meta_description_ok": true, "og_image_present": true, "jsonld_types": ["Organization", "FAQPage"] },
+    "header": { "logo_loaded": true, "logo_natural": "138x68", "hubungi_kami_wa_ok": true, "target_blank": true },
+    "hero": { "heading_ok": true, "primary_cta_scrolls_to_services": true, "secondary_cta_wa_ok": true },
+    "features_why_us": { "count": 4, "cards": ["Harga Kompetitif", "Support 24/7", "Koneksi Stabil", "SLA 99,5%"] },
+    "services": { "count": 8, "ids_present": ["cloud","hosting","vps","colocation","dedicated","lease","firewall","dcinterconnect"], "note": "Review request text mentioned '9 service cards' but the id list shows 8 - only 8 exist in data.js and 8 render (correct)." },
+    "service_modal": {
+      "opens_on_card_click": true,
+      "sections_present": ["Overview", "KAPAN BISNIS BUTUH", "COCOK UNTUK", "DIBANDING ALTERNATIF LAIN", "FITUR & SPESIFIKASI", "Mulai dari", "Tanya via WhatsApp"],
+      "close_x_works": true,
+      "close_escape_works": true,
+      "close_outside_click_works": true,
+      "wa_button_correct_number_and_service_name": true
     },
-    "brute_force_bypass": {
-      "reproduction": "Send 5+ wrong-password logins to a fresh account from the public URL. Observe 6th still returns 401 (no 429).",
-      "root_cause": "Identifier `f'{request.client.host}:{email}'` uses the immediate TCP peer IP which behind K8s ingress rotates between multiple proxy pods. Each pod IP has its own counter. Additionally, on the 5th fail the code resets count=0 while setting locked_until — so if the lockout check ever fails to fire, counters never accumulate to 5 again.",
-      "mitigation": "Use email as the identifier (or trust X-Forwarded-For / X-Real-IP header from ingress), and stop zeroing count when locking. Also fix the tz-datetime comparison in the lockout check itself."
-    }
-  }
+    "dedicated_modal_specifics": {
+      "signals": ["Website atau aplikasi sering lambat", "Trafik pengguna semakin meningkat", "Membutuhkan resource server khusus"],
+      "use_cases": ["Startup dan software house", "Aplikasi internal perusahaan", "Sistem transaksi online"]
+    },
+    "decision_guide": { "section_present": true, "guide_cards": ["hosting","vps","dedicated"], "cta_present": true },
+    "pricing": { "plans": ["DC Interconnect", "Dedicated Server 8 Core", "Colocation 1U-Server"], "all_wa_links_valid": true },
+    "partners_marquee": { "marquee_track_present": true, "children_count": 32, "note": "16 partners duplicated = 32 for loop animation" },
+    "faq": { "trigger_count": 9, "single_open_behavior": true },
+    "cta_contact": { "phone_shown": "+62 878-1239-7187", "email_shown": "support@intercloud-digital.com", "address_shown": "Menara Cakrawala", "wa_link_ok": true, "mailto_ok": true },
+    "footer": { "logo_loaded": true, "current_year_shown": true, "instagram_link": "https://www.instagram.com/intercloud.id/", "wa_link_ok": true, "mailto_ok": true },
+    "floating_wa": { "present": true, "href_ok": true, "pulse_class": "wa-pulse", "position": "fixed bottom-6 right-6" },
+    "wa_number_consistency": { "total_wa_links": 11, "wrong_number_count": 0 },
+    "responsive": {
+      "mobile_375": { "hero_image_hidden": true, "hamburger_visible": true, "desktop_nav_hidden": true, "mobile_menu_wa_ok": true, "svc_grid": "1 column" },
+      "tablet_768": { "hamburger_visible": true, "svc_grid": "2 columns" },
+      "desktop_1920": { "desktop_nav_visible": true, "svc_grid": "3 columns" }
+    },
+    "console_errors": [],
+    "logo_network": "opaque-ok (loaded, naturalWidth=138)"
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor: In CTA.jsx the address contact card uses href='#' which navigates to top of page when clicked; consider href='https://maps.google.com/...' (Menara Cakrawala) or removing anchor wrapping (kept as-is; not a blocker).",
+    "Minor: Review request stated 9 service cards but data.js defines exactly 8 (cloud, hosting, vps, colocation, dedicated, lease, firewall, dcinterconnect). All 8 render correctly. This appears to be a typo in the review request, not a code issue."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "N/A (skipped per request)", "frontend": "100%" },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All landing-page flows verified end-to-end. Frontend-only site; no backend. WhatsApp number 6287812397187 is used consistently across all 11 wa.me links (Header, Hero, Services modals, Decision Guide, Pricing, FAQ, CTA, Footer, Floating). No console errors. Responsive tested at 375/768/1920.",
+  "rca of the issue": "No issues found."
 }

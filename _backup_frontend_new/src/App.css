@@ -1,0 +1,4 @@
+/* Component-local overrides (kept minimal) */
+.App {
+    min-height: 100vh;
+}

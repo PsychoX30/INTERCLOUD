@@ -1,0 +1,50 @@
+{
+  "summary": "Backend-only regression on the rewritten straight-line depreciation for AdminAssets. Created a dedicated pytest suite (14 tests) covering formula validation, edge cases, legacy field migration, CRUD + schedule, and downstream finance endpoints. All 14 new tests pass. Existing test_finance_v2.py (10 tests) still passes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_assets_straight_line.py",
+    "/app/test_reports/pytest/assets_straight_line.xml",
+    "/app/test_reports/pytest/finance_v2.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes.py is ~4500 lines — should be split into per-domain modules (assets, finance, invoices, etc.) for maintainability, but this is a longstanding project-wide observation, not a regression.",
+    "`_asset_depreciation` uses `datetime.now(timezone.utc).replace(tzinfo=None)` combined with a naive `datetime.fromisoformat(purchase[:10])` — works correctly for date-only purchase strings but would silently mishandle purchase dates with timezone info. Fine for current usage since purchase_date is stored as YYYY-MM-DD."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_assets_straight_line.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (24/24)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/backend/.env, matches /app/memory/test_credentials.md)",
+  "seed_data_creation": "Tests create uuid-suffixed TEST_asset_* documents and clean them up via a module-scoped teardown fixture. On the finance/detailed test we also verify the row appears, then teardown removes it.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Straight-line depreciation formula lives in /app/backend/portal/routes.py: _asset_depreciation / _asset_book_value / _asset_schedule / _coerce_asset_payload. Startup migration in /app/backend/portal/seed.py: _migrate_assets_straight_line backfills salvage_value=0 and derives useful_life_years from legacy useful_life_months (÷12) or depreciation_percent (100÷pct). Test suite: /app/backend/tests/test_assets_straight_line.py (uses pytest-xdist, so any sum-vs-sum invariants across sequential API calls must be avoided — use per-asset invariants instead). System date is 2026-07-22. For the validation case (value=10M, salvage=1M, life=5y, purchase=2020-01-01) the asset is fully depreciated: annual=1.8M, monthly=150k, accumulated=9M, book=1M (salvage floor), is_fully_depreciated=true.",
+  "verified_scenarios": [
+    "validation_case value=10M salvage=1M life=5y purchase=2020-01-01 → annual=1_800_000, monthly=150_000, accumulated=9_000_000, book=1_000_000, is_fully_depreciated=true",
+    "zero_salvage 10M/0/5y → annual=2_000_000",
+    "life_one_year 6M/0/1y purchase=2020-01-01 → annual=6M, book=0, fully depreciated",
+    "mid_year purchase ~37 days ago, value=12M/0/10y → monthly=100_000, months_elapsed in (1,2), 0 < accumulated ≤ 200_000, not fully depreciated",
+    "legacy depreciation_percent=20 → useful_life_years=5, annual=value/5",
+    "legacy useful_life_months=60 → useful_life_years=5",
+    "GET /admin/assets/{id} returns schedule array of length useful_life_years with correct fields; last row book_value = salvage",
+    "PUT updates salvage_value + useful_life_years and response reflects new depreciation immediately",
+    "DELETE returns {deleted:1}, subsequent GET → 404",
+    "GET /admin/assets list includes salvage_value, useful_life_years, annual_depreciation, monthly_depreciation, accumulated_depreciation, book_value",
+    "GET /admin/finance/detailed assets_rows include new fields; per-asset invariant value - book_value == accumulated_depreciation holds",
+    "GET /admin/finance/report returns non-negative total_depreciation ≤ total_assets_value",
+    "GET /admin/finance/summary still works (existing test_finance_v2 remains green)",
+    "GET /admin/finance/report/monthly/{period} and /annual/{year} XLSX downloads still work (test_finance_v2)"
+  ]
+}
