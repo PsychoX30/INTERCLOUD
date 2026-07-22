@@ -49,7 +49,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 TURNSTILE_ENABLED = os.environ.get("TURNSTILE_ENABLED", "false").lower() == "true"
 TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET_KEY", "")
 
-client = AsyncIOMotorClient(MONGO_URL)
+client = AsyncIOMotorClient(MONGO_URL, tz_aware=True, tzinfo=timezone.utc)
 db = client[DB_NAME]
 
 app = FastAPI(title="Intercloud Portal API", version="1.0.0")
@@ -363,8 +363,11 @@ async def register(payload: RegisterInput, request: Request, response: Response)
 async def login(payload: LoginInput, request: Request, response: Response):
     await verify_turnstile(payload.captcha_token, request.client.host if request.client else None)
     email = payload.email.lower().strip()
-    ip = request.client.host if request.client else "unknown"
-    identifier = f"{ip}:{email}"
+    # Prefer forwarded IP from ingress; fall back to peer IP. Use email as
+    # the identity anchor so throttling works even when ingress IPs rotate.
+    fwd = request.headers.get("x-forwarded-for", "")
+    ip = (fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown"))
+    identifier = email
 
     # Brute force check
     attempt = await db.login_attempts.find_one({"identifier": identifier})
@@ -373,12 +376,11 @@ async def login(payload: LoginInput, request: Request, response: Response):
 
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(payload.password, user["password_hash"]):
-        # Increment attempts
+        # Increment attempts (do NOT reset counter when locking so lockout persists)
         attempts = (attempt.get("count", 0) if attempt else 0) + 1
-        update = {"identifier": identifier, "count": attempts, "last_at": now_utc()}
+        update = {"identifier": identifier, "count": attempts, "last_at": now_utc(), "last_ip": ip}
         if attempts >= 5:
             update["locked_until"] = now_utc() + timedelta(minutes=15)
-            update["count"] = 0
         await db.login_attempts.update_one({"identifier": identifier}, {"$set": update}, upsert=True)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
