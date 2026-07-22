@@ -376,3 +376,34 @@ Tests:
 2. Copy Site Key + Secret Key
 3. Portal Admin → **Integrations** → **Google reCAPTCHA v3** → Enabled + isi keys + Save
 4. Selesai. Login/Register/Forgot langsung protected tanpa deploy ulang.
+
+
+## Login Attempt Analytics (2026-07-22) — Security Dashboard ✅
+Follow-on setelah reCAPTCHA integration. Log setiap `/auth/login` (success + failure) ke koleksi `login_attempts` untuk visibilitas bot & brute-force.
+
+### Backend
+- Helper `_log_login_attempt()` di `portal/routes.py` (~L118) — insert best-effort, tidak pernah raise ke caller
+- `/auth/login` rewritten untuk log setiap attempt dengan: email, action, success, reason, ip, user_agent, recaptcha_enabled, recaptcha_score
+- Reason codes: `ok`, `invalid_credentials`, `recaptcha_missing`, `recaptcha_failed`, `recaptcha_low_score`
+- Endpoint baru `GET /api/portal/admin/security/login-analytics?window=24h|7d|30d&limit=N` (admin-only) — return totals + reason_breakdown + top_ips + top_emails + hourly/daily series + reCAPTCHA score histogram + recent list
+- MongoDB indexes ditambah di `server.py`: `login_attempts.created_at`, `.email`, `.ip`
+
+### Frontend
+- Page baru `/app/frontend/src/pages/portal/admin/AdminSecurity.jsx` — dashboard lengkap:
+  - Window switcher: 24h / 7 days / 30 days
+  - 4 KPI cards: Total Attempts, Success Rate, Failed, Blocked by reCAPTCHA
+  - Line chart "Attempts over time" (Success / Failed / reCAPTCHA per bucket)
+  - Bar chart "reCAPTCHA score distribution" (0.0–1.0 buckets)
+  - Top offending IPs + Top targeted emails tables
+  - "Outcome breakdown" pill row
+  - Recent attempts table (Time, Email, Action, IP, Outcome badge, reCAPTCHA score)
+- Route `/portal/admin/security` di `App.js`, sidebar entry "Security" dengan icon ShieldCheck di grup System
+
+### Test coverage
+- `/app/backend/tests/test_login_analytics.py` — **13/13 pass** (RBAC, success/failure aggregation, reCAPTCHA-blocked logging, window buckets, score histogram, limit cap)
+- Existing suites tetap hijau: `test_recaptcha_auth.py` (13), `test_assets_straight_line.py` (14)
+
+### Future improvements (dari code-review agent)
+- (Non-blocking) Refactor `portal/routes.py` sudah 4700+ baris → split per-domain module
+- (Nice-to-have) Enforce `?window=` strictly (currently unknown value falls into daily branch), atau map fallback ke 24h konsisten
+- (Non-blocking) Beralih ke MongoDB aggregation pipeline saat traffic besar (saat ini in-memory sampai 20k rows)
