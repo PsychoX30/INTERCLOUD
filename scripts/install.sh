@@ -75,16 +75,66 @@ apt-get install -y --no-install-recommends \
   jq
 
 # ------------------------------------------------------------------
+# 1b. Preflight: MongoDB 5.0+ requires AVX CPU instructions. If we're
+#     inside a Proxmox/KVM VM whose CPU type is 'kvm64', 'qemu64', or
+#     'x86-64-v2-AES' the AVX flag is hidden from the guest even when
+#     the physical host CPU has it. Fail EARLY with actionable steps
+#     rather than let mongod SIGILL-crash later.
+# ------------------------------------------------------------------
+if ! grep -q -w avx /proc/cpuinfo; then
+  echo
+  warn "This CPU does NOT expose AVX — MongoDB 5.0+ will SIGILL on startup."
+  cat <<EOF
+
+  Detected CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')
+
+  If this is a Proxmox / KVM guest, the fix is on the HYPERVISOR host:
+
+      # 1) On the Proxmox host, verify the physical CPU has AVX:
+      grep -o -w avx /proc/cpuinfo | head -1
+
+      # 2) Shut down this VM, then set CPU type to 'host' (or x86-64-v3+):
+      qm shutdown <VMID>
+      qm set <VMID> --cpu host
+
+      # 3) Start the VM back up:
+      qm start <VMID>
+
+      # 4) Inside the VM, confirm AVX is now visible:
+      grep -o -w avx /proc/cpuinfo | head -1
+
+  Alternatives if the physical CPU has NO AVX at all:
+    - Set MONGO_SERIES=4.4 env var and re-run this installer
+      (MongoDB 4.4 is EOL but still works on non-AVX hardware).
+    - Or migrate the DB backend to FerretDB / PostgreSQL — ask the
+      maintainer for the alternate installer branch.
+
+EOF
+  # Allow explicit opt-in to legacy Mongo 4.4 for non-AVX hosts.
+  if [[ "${MONGO_SERIES:-}" == "4.4" ]]; then
+    warn "Continuing with MongoDB 4.4 as requested (MONGO_SERIES=4.4)."
+  else
+    die "Aborting: enable AVX on this VM (steps above) OR re-run with MONGO_SERIES=4.4."
+  fi
+fi
+
+# ------------------------------------------------------------------
 # 2. MongoDB (official APT repo). On Ubuntu 24.04 Noble we install
 #    MongoDB 8.0 (first release with official Noble support). On older
 #    Ubuntu we fall back to 7.0 from the jammy repo.
 # ------------------------------------------------------------------
 if ! command -v mongod >/dev/null 2>&1; then
-  case "${VERSION_CODENAME:-}" in
-    noble)  MONGO_SERIES="8.0"; MONGO_REPO_CODENAME="noble" ;;
-    jammy)  MONGO_SERIES="7.0"; MONGO_REPO_CODENAME="jammy" ;;
-    *)      MONGO_SERIES="7.0"; MONGO_REPO_CODENAME="jammy" ;;
-  esac
+  # MONGO_SERIES may already be set from the AVX-preflight fallback path.
+  if [[ -z "${MONGO_SERIES:-}" ]]; then
+    case "${VERSION_CODENAME:-}" in
+      noble)  MONGO_SERIES="8.0"; MONGO_REPO_CODENAME="noble" ;;
+      jammy)  MONGO_SERIES="7.0"; MONGO_REPO_CODENAME="jammy" ;;
+      *)      MONGO_SERIES="7.0"; MONGO_REPO_CODENAME="jammy" ;;
+    esac
+  else
+    # Legacy 4.4 fallback only works with the jammy/focal repo.
+    MONGO_REPO_CODENAME="jammy"
+  fi
   log "Installing MongoDB ${MONGO_SERIES} (repo codename: ${MONGO_REPO_CODENAME})"
   curl -fsSL "https://pgp.mongodb.com/server-${MONGO_SERIES}.asc" | \
     gpg -o "/usr/share/keyrings/mongodb-server-${MONGO_SERIES}.gpg" --dearmor --yes
