@@ -46,7 +46,11 @@ See `/app/memory/test_credentials.md`.
 **Phase 1 — Performance**
 - All admin + client pages `React.lazy()` + `<Suspense>` (Landing kept eager
   for SEO/LCP). Initial bundle expected ~60-70% smaller.
-- `GZipMiddleware` compresses JSON >1KB.
+- `GZipMiddleware` (minimum_size=1024) compresses JSON >1KB. **Middleware
+  order matters**: GZip must be added FIRST (innermost, closest to app) so
+  `GZipResponder` sees the raw response before BaseHTTPMiddleware-based
+  wrappers (SlowAPI, SecurityHeaders) turn the body into a stream that
+  hides Content-Length and breaks the minimum_size check.
 - Compound MongoDB indexes on hot paths: `services.{user_id, status}`,
   `orders.{user_id, created_at}`, `invoices.{user_id, status}` +
   `{status, due_date}`, `tickets.{user_id, status}` + `{status, updated_at}`,
@@ -64,9 +68,10 @@ See `/app/memory/test_credentials.md`.
   Permissions-Policy (camera/mic/geo/payment blocked),
   `Content-Security-Policy-Report-Only` (per user preference).
 - `/api/csp-report` receives violation reports and logs them.
-- Rate limiting (slowapi): `/auth/login` 10/min, `/auth/register` 5/hour,
-  `/auth/forgot-password` 5/hour, `/auth/reset-password` 10/hour. Returns
-  HTTP 429 + `Retry-After: 60`.
+- Rate limiting (slowapi with `headers_enabled=False` — the header injector
+  is incompatible with BaseHTTPMiddleware-wrapped responses): `/auth/login`
+  10/min, `/auth/register` 5/hour, `/auth/forgot-password` 5/hour,
+  `/auth/reset-password` 10/hour. Returns HTTP 429 + `Retry-After: 60`.
 - `SensitiveLogFilter` masks JWTs, bearer tokens, passwords, api-keys,
   and email addresses in log lines (partial-mask e-mail local-part).
 
