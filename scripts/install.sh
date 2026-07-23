@@ -447,15 +447,28 @@ sudo -u intercloud -H bash -c "
 # 7. nginx — reverse proxy / static + /api
 # ------------------------------------------------------------------
 log "Writing /etc/nginx/sites-available/intercloud"
+# Include www.<domain> in server_name so both variants resolve here.
+NGINX_SERVER_NAME="${PORTAL_DOMAIN:-_}"
+if [[ -n "$PORTAL_DOMAIN" ]]; then
+  NGINX_SERVER_NAME="$PORTAL_DOMAIN www.$PORTAL_DOMAIN"
+fi
 cat > /etc/nginx/sites-available/intercloud <<NGINX
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
-    server_name ${PORTAL_DOMAIN:-_};
+    server_name ${NGINX_SERVER_NAME};
 
     client_max_body_size 100M;   # backup restores upload archives here
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml;
+
+    # ACME HTTP-01 challenge — MUST be served over plain HTTP, no redirects,
+    # so certbot can issue/renew the Let's Encrypt cert.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
 
     # SPA static bundle
     root $APP_DIR/frontend/build;
@@ -481,6 +494,9 @@ NGINX
 
 ln -sf /etc/nginx/sites-available/intercloud /etc/nginx/sites-enabled/intercloud
 rm -f /etc/nginx/sites-enabled/default
+# Ensure ACME challenge webroot exists (nginx returns 404 for /.well-known
+# otherwise, which breaks HTTP-01 validation).
+install -d -o www-data -g www-data -m 0755 /var/www/html/.well-known/acme-challenge
 nginx -t
 systemctl reload nginx
 
@@ -561,28 +577,69 @@ F2BFILTER
 fi
 
 # ------------------------------------------------------------------
-# 8c. Certbot — automatic HTTPS if PORTAL_DOMAIN + LETSENCRYPT_EMAIL set
+# 8c. Certbot — automatic HTTPS. Mandatory unless SKIP_HTTPS=1.
 # ------------------------------------------------------------------
-if [[ -n "$PORTAL_DOMAIN" && -n "$LETSENCRYPT_EMAIL" ]]; then
-  if certbot certificates 2>/dev/null | grep -q "Domains:.*\\b${PORTAL_DOMAIN}\\b"; then
-    log "Let's Encrypt cert already exists for $PORTAL_DOMAIN — renewing"
-    certbot renew --quiet --nginx || warn "certbot renew failed (non-fatal)"
-  else
-    log "Requesting Let's Encrypt cert for $PORTAL_DOMAIN"
-    # Extra domain: www.$PORTAL_DOMAIN if reachable.
-    EXTRA_D=""
-    if getent hosts "www.$PORTAL_DOMAIN" >/dev/null 2>&1; then
-      EXTRA_D="-d www.$PORTAL_DOMAIN"
-    fi
-    certbot --nginx --non-interactive --agree-tos \
-      --email "$LETSENCRYPT_EMAIL" \
-      --redirect \
-      -d "$PORTAL_DOMAIN" $EXTRA_D \
-      || warn "certbot failed — falling back to HTTP. Fix DNS + rerun:  sudo certbot --nginx -d $PORTAL_DOMAIN"
-  fi
-  systemctl enable --now certbot.timer 2>/dev/null || true
+if [[ "${SKIP_HTTPS:-0}" == "1" ]]; then
+  warn "SKIP_HTTPS=1 set — leaving portal on plain HTTP (NOT recommended for production)."
+elif [[ -z "$PORTAL_DOMAIN" ]]; then
+  warn "PORTAL_DOMAIN is empty — cannot request Let's Encrypt cert. Portal will be HTTP-only."
 else
-  warn "Skipping HTTPS — set PORTAL_DOMAIN and LETSENCRYPT_EMAIL to auto-issue a Let's Encrypt cert."
+  log "Requesting HTTPS via Let's Encrypt for $PORTAL_DOMAIN"
+  SERVER_IP="$(hostname -I | awk '{print $1}')"
+
+  # ---- DNS preflight ----
+  RESOLVED_IP="$(getent hosts "$PORTAL_DOMAIN" | awk '{print $1}' | head -n1)"
+  if [[ -z "$RESOLVED_IP" ]]; then
+    warn "DNS lookup for '$PORTAL_DOMAIN' returned nothing."
+    warn "Point an A record for '$PORTAL_DOMAIN' to $SERVER_IP, then re-run this installer."
+    warn "Skipping certbot for now — portal will remain on HTTP."
+  elif [[ "$RESOLVED_IP" != "$SERVER_IP" ]]; then
+    warn "DNS mismatch: '$PORTAL_DOMAIN' resolves to '$RESOLVED_IP' but this server is '$SERVER_IP'."
+    warn "Certbot HTTP-01 challenge will fail — fix the DNS A record and re-run this installer."
+    warn "Skipping certbot for now — portal will remain on HTTP."
+  else
+    log "DNS OK: $PORTAL_DOMAIN → $SERVER_IP"
+
+    # ---- Port 80 reachability preflight ----
+    if ! ss -tlnp 2>/dev/null | grep -qE ':80\s'; then
+      warn "nginx is not listening on port 80 — restarting"
+      systemctl restart nginx || true
+    fi
+
+    # ---- Existing cert? renew. Otherwise issue new. ----
+    if certbot certificates 2>/dev/null | grep -q "Domains:.*\b${PORTAL_DOMAIN}\b"; then
+      log "Let's Encrypt cert already exists for $PORTAL_DOMAIN — renewing"
+      certbot renew --quiet --nginx || warn "certbot renew failed (non-fatal)"
+    else
+      EXTRA_D=""
+      WWW_IP="$(getent hosts "www.$PORTAL_DOMAIN" | awk '{print $1}' | head -n1)"
+      if [[ "$WWW_IP" == "$SERVER_IP" ]]; then
+        EXTRA_D="-d www.$PORTAL_DOMAIN"
+        log "www.$PORTAL_DOMAIN also resolves here — including it in the cert"
+      fi
+      # Verbose so operators see WHY it fails (rate limit, challenge 404, etc).
+      if ! certbot --nginx --non-interactive --agree-tos \
+             --email "$LETSENCRYPT_EMAIL" \
+             --redirect \
+             -d "$PORTAL_DOMAIN" $EXTRA_D; then
+        echo
+        warn "certbot failed. Common causes + fixes:"
+        cat <<HTTPSFIX
+    - Rate limit hit (>5 fails/hour): wait, then retry.
+    - Port 80 blocked by ISP/firewall: run 'sudo ufw status' + test from outside:
+        curl -v http://$PORTAL_DOMAIN/.well-known/acme-challenge/test
+    - Wrong nginx server_name: check '/etc/nginx/sites-enabled/intercloud'.
+    - Retry manually with verbose logging:
+        sudo certbot --nginx -v --agree-tos --email $LETSENCRYPT_EMAIL \\
+             --redirect -d $PORTAL_DOMAIN $EXTRA_D
+    - Portal will remain on HTTP until certbot succeeds.
+HTTPSFIX
+      else
+        log "HTTPS enabled ✓ — Let's Encrypt cert installed and HTTP→HTTPS redirect active"
+      fi
+    fi
+    systemctl enable --now certbot.timer 2>/dev/null || true
+  fi
 fi
 
 # ------------------------------------------------------------------
