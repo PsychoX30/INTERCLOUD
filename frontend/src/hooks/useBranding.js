@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import axios from "axios";
 
 /**
@@ -6,13 +6,21 @@ import axios from "axios";
  * the result in module scope so the second, third, Nth mount all read
  * from memory. Public endpoint — no auth needed.
  *
- * Returns the merged {defaults, DB overrides} shape:
- *   { logo_light, logo_dark, favicon, email_banner }
+ * Returns a derived object:
+ *   {
+ *     logo_dark,          // navy artwork — invoice/PDF/email/white surfaces
+ *     logo_light,         // white artwork for dark surfaces
+ *     logo_light_source,  // "uploaded" if admin uploaded a bespoke variant,
+ *                         // "inverted" if we auto-derived from logo_dark
+ *     favicon,
+ *     email_banner,
+ *   }
  *
- * While the first fetch is in flight `logo_light` / `logo_dark` are
- * empty strings so consumers can skip rendering to avoid a broken-image
- * flash. Once loaded, defaults from backend/portal/branding.py fill in
- * (inline SVG data URIs — always renderable, no external dependency).
+ * The `logo_light_source` flag lets the consumer decide whether to apply
+ * `filter: brightness(0) invert(1)` when rendering. That filter turns a
+ * dark-coloured image into a white silhouette, which is exactly what
+ * operators want when they upload a single dark-on-white logo and expect
+ * it to work over both light and dark backgrounds.
  */
 
 let _cache = null;
@@ -39,15 +47,22 @@ export function invalidateBrandingCache() {
 }
 
 export default function useBranding() {
-  const [branding, setBranding] = useState(_cache || {
+  const [raw, setRaw] = useState(_cache || {
     logo_light: "", logo_dark: "", favicon: "", email_banner: "",
   });
 
   useEffect(() => {
     let cancelled = false;
-    fetchBranding().then((b) => { if (!cancelled) setBranding(b); });
+    fetchBranding().then((b) => { if (!cancelled) setRaw(b); });
     return () => { cancelled = true; };
   }, []);
 
-  return branding;
+  return useMemo(() => {
+    const hasUploadedLight = !!raw.logo_light;
+    return {
+      ...raw,
+      logo_light: raw.logo_light || raw.logo_dark || "",
+      logo_light_source: hasUploadedLight ? "uploaded" : "inverted",
+    };
+  }, [raw]);
 }

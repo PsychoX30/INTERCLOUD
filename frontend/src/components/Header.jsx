@@ -8,6 +8,7 @@ import useBranding from "../hooks/useBranding";
 
 const Logo = () => {
   const branding = useBranding();
+  const invert = branding.logo_light_source === "inverted";
   return (
     <Link to="/" className="flex items-center gap-3" data-testid="site-logo-link">
       {branding.logo_light ? (
@@ -15,6 +16,7 @@ const Logo = () => {
           src={branding.logo_light}
           alt="Intercloud Digital Inovasi"
           className="h-11 md:h-12 w-auto object-contain"
+          style={invert ? { filter: "brightness(0) invert(1)" } : undefined}
           loading="eager"
           data-testid="site-logo-img"
         />

@@ -6,14 +6,15 @@ const FIELDS = [
   {
     key: "logo_dark",
     label: "Logo — dark on white",
-    hint: "Used on invoice/quotation PDFs, email headers footers, and Google search-result cards. Choose a version whose colours read well on a WHITE background.",
+    hint: "The MAIN logo. Used on invoice PDFs, email headers, browser search cards, and the Admin sidebar. Upload a version whose colours read well on a WHITE background — the light-on-dark variant is auto-derived from this by inverting colours.",
     background: "#ffffff",
   },
   {
     key: "logo_light",
-    label: "Logo — light on dark",
-    hint: "Used in the landing header/footer over the navy hero. Choose a white/light-coloured variant.",
+    label: "Logo — light on dark (optional override)",
+    hint: "Leave empty — the landing header/footer will auto-invert your dark-on-white logo to a white silhouette. Upload here ONLY if you want a bespoke variant (e.g. tagline in a different colour).",
     background: "#0a2350",
+    invert_fallback: true,
   },
   {
     key: "favicon",
@@ -112,8 +113,16 @@ const AdminBranding = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {FIELDS.map((f) => {
           const val = branding?.[f.key] || "";
+          // For logo_light: when empty, preview the auto-inverted fallback
+          // (logo_dark with CSS filter). This gives operators a live sense
+          // of what visitors will actually see on the landing header.
+          const showFallback = !val && f.invert_fallback && branding?.logo_dark;
+          const previewSrc = val || (showFallback ? branding.logo_dark : "");
+          const previewStyle = (showFallback || (val && f.invert_fallback && f.key === "logo_light" && branding.logo_light_source === "inverted"))
+            ? { filter: "brightness(0) invert(1)" }
+            : undefined;
           const isBusy = busyKey === f.key;
-          const isEmpty = !val;
+          const isEmpty = !previewSrc;
           return (
             <div key={f.key}
                  className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm"
@@ -134,7 +143,8 @@ const AdminBranding = () => {
                       <div className="text-xs">Not set</div>
                     </div>
                   ) : (
-                    <img src={val} alt={f.label} className="max-h-full max-w-full object-contain"
+                    <img src={previewSrc} alt={f.label} className="max-h-full max-w-full object-contain"
+                         style={previewStyle}
                          data-testid={`admin-branding-preview-${f.key}`} />
                   )}
                 </div>
