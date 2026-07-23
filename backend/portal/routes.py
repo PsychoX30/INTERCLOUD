@@ -3752,32 +3752,216 @@ async def proxmox_vnc(node: str, vmid: int, admin=Depends(get_current_admin)):
     return {"ticket": ticket, "wss": f"{iv2.ProxmoxClient(s).host}/?console=kvm&novnc=1&vmid={vmid}&node={node}"}
 
 
-# ---------------- Mikrotik live views ----------------
-@router.get("/admin/mikrotik/interfaces")
-async def mikrotik_interfaces(admin=Depends(get_current_admin)):
-    db = await _get_db()
+# ---------------- Mikrotik multi-device management ----------------
+async def _get_mikrotik_device(db, device_id: str | None):
+    """Resolve a Mikrotik device by id; if id is missing return the legacy
+    single-device credentials from `integration_settings.mikrotik` as a
+    seamless fallback."""
+    if device_id:
+        try:
+            doc = await db.mikrotik_devices.find_one({"_id": _oid(device_id)})
+        except Exception:
+            doc = None
+        if not doc:
+            raise HTTPException(status_code=404, detail="Mikrotik device not found")
+        return doc
+    # Fallback: use the integration_settings.mikrotik credentials
     s = await iv2.get_settings(db, "mikrotik")
     if not s or not s.get("enabled"):
-        raise HTTPException(status_code=400, detail="Mikrotik not configured")
-    return iv2.MikrotikClient(s).list_interfaces()
+        raise HTTPException(status_code=400, detail="Mikrotik not configured. Add a device in Admin ▸ MikroTik Ops ▸ Devices, or enable the legacy MikroTik integration.")
+    return {"_id": None, "name": "default", **(s.get("credentials") or {})}
+
+
+def _serialize_device(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]) if d.get("_id") else None,
+        "name": d.get("name", ""),
+        "host": d.get("host", ""),
+        "port": int(d.get("port") or 8728),
+        "username": d.get("username", ""),
+        "use_tls": bool(d.get("use_tls", False)),
+        "site": d.get("site", ""),
+        "notes": d.get("notes", ""),
+        "created_at": d.get("created_at"),
+    }
+
+
+@router.get("/admin/mikrotik/devices")
+async def mikrotik_devices_list(admin=Depends(get_current_admin)):
+    db = await _get_db()
+    docs = await db.mikrotik_devices.find({}).sort("created_at", 1).to_list(500)
+    out = [_serialize_device(d) for d in docs]
+    # Attach legacy single-device fallback marker so the UI can show it too
+    legacy = await iv2.get_settings(db, "mikrotik")
+    if legacy and legacy.get("enabled") and (legacy.get("credentials") or {}).get("host"):
+        c = legacy["credentials"]
+        out.insert(0, {
+            "id": None, "name": "Legacy (Integrations)", "host": c.get("host"),
+            "port": int(c.get("port") or 8728), "username": c.get("username"),
+            "use_tls": bool(c.get("use_tls", False)), "site": "", "notes": "",
+            "legacy": True,
+        })
+    return out
+
+
+@router.post("/admin/mikrotik/devices")
+async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = {
+        "name": (payload.get("name") or "").strip() or "unnamed",
+        "host": (payload.get("host") or "").strip(),
+        "port": int(payload.get("port") or 8728),
+        "username": (payload.get("username") or "").strip(),
+        "password": payload.get("password") or "",
+        "use_tls": bool(payload.get("use_tls", False)),
+        "site": payload.get("site") or "",
+        "notes": payload.get("notes") or "",
+        "created_at": _now(),
+    }
+    if not doc["host"] or not doc["username"]:
+        raise HTTPException(status_code=400, detail="host and username are required")
+    r = await db.mikrotik_devices.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_device(doc)
+
+
+@router.put("/admin/mikrotik/devices/{did}")
+async def mikrotik_devices_update(did: str, payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    allowed = {"name", "host", "port", "username", "password", "use_tls", "site", "notes"}
+    upd = {k: v for k, v in (payload or {}).items() if k in allowed}
+    if "port" in upd: upd["port"] = int(upd["port"] or 8728)
+    if "use_tls" in upd: upd["use_tls"] = bool(upd["use_tls"])
+    if "password" in upd and not upd["password"]:
+        upd.pop("password")  # don't blank out password when field is empty
+    r = await db.mikrotik_devices.update_one({"_id": _oid(did)}, {"$set": upd})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Device not found")
+    d = await db.mikrotik_devices.find_one({"_id": _oid(did)})
+    return _serialize_device(d)
+
+
+@router.delete("/admin/mikrotik/devices/{did}")
+async def mikrotik_devices_delete(did: str, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    r = await db.mikrotik_devices.delete_one({"_id": _oid(did)})
+    return {"ok": True, "deleted": r.deleted_count}
+
+
+@router.post("/admin/mikrotik/devices/{did}/test")
+async def mikrotik_devices_test(did: str, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    d = await _get_mikrotik_device(db, did)
+    import asyncio as _a
+    r = await _a.get_event_loop().run_in_executor(None, lambda: iv2.MikrotikClient(d).test_connection())
+    return r
+
+
+async def _run_mikrotik(db, device_id: str | None, fn_name: str, *args, **kwargs):
+    """Helper — resolve the device, dispatch a MikrotikClient method in a
+    threadpool (librouteros is sync), return the result."""
+    d = await _get_mikrotik_device(db, device_id)
+    client = iv2.MikrotikClient(d)
+    fn = getattr(client, fn_name)
+    import asyncio as _a
+    return await _a.get_event_loop().run_in_executor(None, lambda: fn(*args, **kwargs))
+
+
+# ---------------- Mikrotik live views ----------------
+@router.get("/admin/mikrotik/interfaces")
+async def mikrotik_interfaces(admin=Depends(get_current_admin), device_id: str | None = None):
+    db = await _get_db()
+    return await _run_mikrotik(db, device_id, "list_interfaces")
 
 
 @router.get("/admin/mikrotik/bgp")
-async def mikrotik_bgp(admin=Depends(get_current_admin)):
+async def mikrotik_bgp(admin=Depends(get_current_admin), device_id: str | None = None):
     db = await _get_db()
-    s = await iv2.get_settings(db, "mikrotik")
-    if not s or not s.get("enabled"):
-        raise HTTPException(status_code=400, detail="Mikrotik not configured")
-    return iv2.MikrotikClient(s).list_bgp_peers()
+    return await _run_mikrotik(db, device_id, "list_bgp_peers")
 
 
 @router.get("/admin/mikrotik/traffic")
-async def mikrotik_traffic(interface: str, admin=Depends(get_current_admin)):
+async def mikrotik_traffic(interface: str, admin=Depends(get_current_admin), device_id: str | None = None):
     db = await _get_db()
-    s = await iv2.get_settings(db, "mikrotik")
-    if not s or not s.get("enabled"):
-        raise HTTPException(status_code=400, detail="Mikrotik not configured")
-    return iv2.MikrotikClient(s).traffic_monitor(interface)
+    return await _run_mikrotik(db, device_id, "traffic_monitor", interface)
+
+
+@router.get("/admin/mikrotik/system")
+async def mikrotik_system(admin=Depends(get_current_admin), device_id: str | None = None):
+    db = await _get_db()
+    return await _run_mikrotik(db, device_id, "system_resource")
+
+
+# ---------- Looking Glass ----------
+@router.post("/admin/mikrotik/looking-glass")
+async def mikrotik_looking_glass(payload: dict, admin=Depends(get_current_admin)):
+    """Execute a Looking-Glass style lookup from the router:
+    payload = {device_id?, tool: 'ping'|'traceroute'|'bgp_route', target: str}"""
+    db = await _get_db()
+    tool = (payload.get("tool") or "ping").lower()
+    if tool not in ("ping", "traceroute", "bgp_route"):
+        raise HTTPException(status_code=400, detail="tool must be ping/traceroute/bgp_route")
+    target = (payload.get("target") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+    return await _run_mikrotik(db, payload.get("device_id"),
+                               "looking_glass", tool=tool, target=target)
+
+
+# ---------- Blackhole ----------
+@router.get("/admin/mikrotik/blackhole")
+async def mikrotik_blackhole_list(admin=Depends(get_current_admin), device_id: str | None = None):
+    db = await _get_db()
+    return await _run_mikrotik(db, device_id, "blackhole_list")
+
+
+@router.post("/admin/mikrotik/blackhole")
+async def mikrotik_blackhole_add(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    prefix = (payload.get("prefix") or "").strip()
+    if not prefix:
+        raise HTTPException(status_code=400, detail="prefix required")
+    return await _run_mikrotik(db, payload.get("device_id"),
+                               "blackhole_add", prefix,
+                               comment=payload.get("comment") or "portal-blackhole")
+
+
+@router.delete("/admin/mikrotik/blackhole/{route_id}")
+async def mikrotik_blackhole_remove(route_id: str, admin=Depends(get_current_admin),
+                                    device_id: str | None = None):
+    db = await _get_db()
+    return await _run_mikrotik(db, device_id, "blackhole_remove", route_id)
+
+
+# ---------- Backup ----------
+@router.get("/admin/mikrotik/backups")
+async def mikrotik_backups_list(admin=Depends(get_current_admin), device_id: str | None = None):
+    db = await _get_db()
+    return await _run_mikrotik(db, device_id, "backup_list")
+
+
+@router.post("/admin/mikrotik/backups")
+async def mikrotik_backups_create(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    return await _run_mikrotik(db, payload.get("device_id"),
+                               "backup_create", name=payload.get("name"))
+
+
+@router.delete("/admin/mikrotik/backups/{filename}")
+async def mikrotik_backups_delete(filename: str, admin=Depends(get_current_admin),
+                                  device_id: str | None = None):
+    db = await _get_db()
+    return await _run_mikrotik(db, device_id, "backup_delete", filename)
+
+
+# ---------- Reboot ----------
+@router.post("/admin/mikrotik/reboot")
+async def mikrotik_reboot(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    confirm = (payload.get("confirm") or "").strip().upper()
+    if confirm != "REBOOT":
+        raise HTTPException(status_code=400, detail="Confirm by sending {confirm: 'REBOOT'}")
+    return await _run_mikrotik(db, payload.get("device_id"), "reboot")
 
 
 # ---------------- Payment gateway — create + webhook ----------------

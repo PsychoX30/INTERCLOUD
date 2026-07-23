@@ -42,8 +42,9 @@ import AdminMail from "./pages/portal/admin/AdminMail";
 import AdminServices from "./pages/portal/admin/AdminServices";
 import AdminAssets from "./pages/portal/admin/AdminAssets";
 import {
-  AdminSubscriptions, AdminProvisioning, AdminMikrotik, AdminDCIM,
+  AdminSubscriptions, AdminProvisioning, AdminDCIM,
 } from "./pages/portal/admin/AdminMockedScreens";
+import AdminMikrotik from "./pages/portal/admin/AdminMikrotik";
 import AdminDiagnostics from "./pages/portal/admin/AdminDiagnostics";
 import AdminEmails from "./pages/portal/admin/AdminEmails";
 import AdminArticles from "./pages/portal/admin/AdminArticles";

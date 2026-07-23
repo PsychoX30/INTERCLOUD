@@ -178,7 +178,9 @@ class MikrotikClient:
     """
 
     def __init__(self, settings: dict):
-        c = settings.get("credentials") or {}
+        # Accept both integration_settings shape (credentials={...}) and a raw
+        # mikrotik_devices doc where the connection fields live at top-level.
+        c = settings.get("credentials") or settings or {}
         self.host = c.get("host")
         self.port = int(c.get("port") or 8728)
         self.username = c.get("username")
@@ -217,13 +219,137 @@ class MikrotikClient:
             return []
 
     def list_bgp_peers(self) -> list:
+        """RouterOS 6 uses /routing/bgp/peer; RouterOS 7 renamed to /routing/bgp/session.
+        Try both so the caller doesn't need to know."""
         try:
             api = self._connect()
-            rows = list(api.path("routing", "bgp", "peer"))
-            api.close()
-            return rows
         except Exception:
             return []
+        rows = []
+        for path in (("routing", "bgp", "session"), ("routing", "bgp", "peer")):
+            try:
+                rows = list(api.path(*path))
+                if rows:
+                    break
+            except Exception:
+                continue
+        try: api.close()
+        except Exception: pass
+        return rows
+
+    # ---------- Looking Glass (ping / traceroute / bgp-route lookup) ----------
+    def looking_glass(self, *, tool: str, target: str) -> dict:
+        """Run a read-only lookup from the RouterOS itself.
+        tool ∈ {ping, traceroute, bgp_route}."""
+        try:
+            api = self._connect()
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": []}
+        try:
+            if tool == "ping":
+                rows = list(api(cmd="/ping", address=target, count="5"))
+            elif tool == "traceroute":
+                rows = list(api(cmd="/tool/traceroute", address=target, count="1"))
+            elif tool == "bgp_route":
+                # Try both v6 and v7 route tables
+                try:
+                    rows = list(api.path("routing", "route"))
+                except Exception:
+                    rows = list(api.path("ip", "route"))
+                rows = [r for r in rows if (r.get("dst-address") or "").startswith(target)]
+            else:
+                return {"ok": False, "error": f"Unknown tool '{tool}'", "rows": []}
+        except Exception as e:
+            try: api.close()
+            except Exception: pass
+            return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": []}
+        try: api.close()
+        except Exception: pass
+        return {"ok": True, "rows": rows, "tool": tool, "target": target}
+
+    # ---------- Blackhole routes (/ip/route type=blackhole) ----------
+    def blackhole_list(self) -> list:
+        try:
+            api = self._connect()
+            rows = list(api.path("ip", "route"))
+            api.close()
+            return [r for r in rows if (r.get("type") or "").lower() == "blackhole"]
+        except Exception:
+            return []
+
+    def blackhole_add(self, prefix: str, *, comment: str = "portal-blackhole") -> dict:
+        try:
+            api = self._connect()
+            api(cmd="/ip/route/add",
+                **{"dst-address": prefix, "type": "blackhole",
+                   "distance": "1", "comment": comment})
+            api.close()
+            return {"ok": True, "prefix": prefix}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    def blackhole_remove(self, route_id: str) -> dict:
+        try:
+            api = self._connect()
+            api(cmd="/ip/route/remove", **{".id": route_id})
+            api.close()
+            return {"ok": True, "id": route_id}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # ---------- Backup ----------
+    def backup_list(self) -> list:
+        try:
+            api = self._connect()
+            files = list(api.path("file"))
+            api.close()
+            return [f for f in files
+                    if (f.get("name") or "").endswith(".backup")
+                    or (f.get("name") or "").endswith(".rsc")
+                    or (f.get("type") or "").lower() == "backup"]
+        except Exception:
+            return []
+
+    def backup_create(self, *, name: str | None = None) -> dict:
+        import datetime as _dt
+        name = name or _dt.datetime.utcnow().strftime("portal-%Y%m%d-%H%M%S")
+        try:
+            api = self._connect()
+            api(cmd="/system/backup/save", **{"name": name, "dont-encrypt": "yes"})
+            api.close()
+            return {"ok": True, "name": name}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    def backup_delete(self, filename: str) -> dict:
+        try:
+            api = self._connect()
+            api(cmd="/file/remove", **{"numbers": filename})
+            api.close()
+            return {"ok": True, "name": filename}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # ---------- Reboot ----------
+    def reboot(self) -> dict:
+        try:
+            api = self._connect()
+            api(cmd="/system/reboot")
+            try: api.close()
+            except Exception: pass
+            return {"ok": True, "message": "Reboot command dispatched"}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # ---------- System info ----------
+    def system_resource(self) -> dict:
+        try:
+            api = self._connect()
+            info = list(api.path("system", "resource"))
+            api.close()
+            return info[0] if info else {}
+        except Exception as e:
+            return {"error": str(e)}
 
     def traffic_monitor(self, interface: str) -> dict:
         try:

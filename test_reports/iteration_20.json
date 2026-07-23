@@ -1,0 +1,43 @@
+{
+  "summary": "Backend testing of MikroTik multi-device support + real RouterOS integration. Created /app/backend/tests/test_mikrotik_devices.py with 35 tests covering: Devices CRUD, PUT-empty-password non-overwrite (DB-verified via motor), /test-connection graceful failure, live views (interfaces/bgp/system/traffic) for unreachable device (127.0.0.1:8728 → ConnectionRefused), Looking Glass (ping/traceroute/bgp_route) validation + graceful ok:false, Blackhole list/add/remove, Backups list/create, Reboot (confirm='REBOOT' guard), backward-compat legacy /integrations-v2/mikrotik fallback when no device_id, and RBAC (all 11 admin endpoints — 401 no-token, 403 client). All 35/35 pass in ~2s. Regression: test_security_whitelist_and_telegram.py (19/19) and TestIntegrations legacy 33 tests all still green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_mikrotik_devices.py",
+    "/app/test_reports/pytest/mikrotik_devices.xml",
+    "/app/test_reports/pytest/regression_mikrotik.xml"
+  ],
+  "action_items": [
+    "PRE-EXISTING (not caused by this iteration): /app/backend/tests/test_diagnostics_and_security.py::TestDiagnosticsRun::test_05_run_dns and ::test_06_run_whois fail because `dig`, `nslookup`, and `whois` binaries are MISSING from the container (verified: `which nslookup` returns 127). The /admin/diagnostics/run endpoint returns output='' and summary=None for dns/whois → the SERVER should gracefully handle missing binaries with a clear error, and/or the Docker image should apt-install dnsutils + whois. Currently server just returns silent empty output. NOT a mikrotik regression.",
+    "PRE-EXISTING (not caused by this iteration): /app/backend/tests/test_portal.py uses a STALE hardcoded fallback URL `https://cloud-services-id.preview.emergentagent.com` at line 11. Real URL is `https://portal-straight-line.preview.emergentagent.com`. Conftest.py only reads /app/backend/.env, so REACT_APP_BACKEND_URL (defined only in /app/frontend/.env) never reaches this test module. Fix: update the fallback URL in test_portal.py OR add REACT_APP_BACKEND_URL loading in conftest.py from /app/frontend/.env. NOT a mikrotik regression.",
+    "PRE-EXISTING (not caused by this iteration): test_portal.py::test_modules_registry expects a 'dcim' module in /admin/integrations/modules registry — the current registry does NOT include 'dcim'. Either add it to the registry or update the test's expected set. NOT a mikrotik regression."
+  ],
+  "critical_code_review_comments": [
+    "GOOD — /app/backend/portal/routes.py::_get_mikrotik_device (L3756–3772): clean legacy fallback. When device_id is None + legacy /integrations-v2/mikrotik is enabled → returns credentials with _id=None. When neither present → 400 with a helpful message. Verified by test_28 (400 when neither) and test_29 (falls back when legacy enabled).",
+    "GOOD — /app/backend/portal/routes.py::mikrotik_devices_update (L3835–3836): correctly drops empty-string password from the update payload BEFORE calling MongoDB $set → confirmed via direct DB read in test_06 that stored password ('TEST_secret_pw') was NOT overwritten when payload sent password=''.",
+    "GOOD — /app/backend/portal/routes.py::_serialize_device: password field is NOT included in the response — verified by test_02 (POST response) and test_03 (list response).",
+    "GOOD — /app/backend/portal/integrations_v2.py::MikrotikClient — every method wraps librouteros calls in try/except and returns either [] (list methods), {error: str} (system/traffic), or {ok:false, error: str} (mutating methods). NO endpoint ever raises 500 for unreachable device. Verified across 22 live-view / mutation tests.",
+    "GOOD — /admin/mikrotik/looking-glass (L3896–3908): validates `tool` ∈ {ping, traceroute, bgp_route} → 400, validates `target` required → 400, then delegates to MikrotikClient.looking_glass which returns ok:false + error on connection failure.",
+    "GOOD — /admin/mikrotik/reboot (L3958–3964): strict guard requires payload.confirm == 'REBOOT' → 400 'Confirm by sending {confirm: REBOOT}' otherwise. Case-insensitive uppercase check catches 'reboot', 'yes', missing key.",
+    "GOOD — MikrotikClient constructor (integrations_v2.py L180–188) accepts BOTH the legacy shape `settings={credentials:{...}}` AND a raw mikrotik_devices doc where connection fields live at top-level. Fallback works seamlessly.",
+    "MINOR — /admin/mikrotik/devices/{id}/test (L3851–3857) does not validate that the device exists BEFORE calling the client. If did is a bad ObjectId, _oid() raises 400 (fine). If did is a valid ObjectId but no doc → _get_mikrotik_device raises 404 (fine). Behavior is correct.",
+    "MINOR — /admin/mikrotik/backups/{filename} (DELETE, L3950–3954) is present in the router but NOT called out in the review request. Untested here — the review only mentions backup_list and backup_create. Add a coverage note: DELETE also wraps in try/except and returns {ok:false, error} on failure (same pattern as blackhole_remove).",
+    "SUGGESTION — /admin/mikrotik/devices POST (L3808–3825): doesn't validate `host` format (accepts empty-trimmed via strip, requires non-empty). Consider a hostname/IP regex or use pydantic model for stricter validation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mikrotik_devices.py (NEW, 35 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% for mikrotik suite (35/35 stable). Regression regressions unrelated to mikrotik: test_diagnostics_and_security 2 failures (missing dig/whois binaries, pre-existing env issue), test_portal 3 failures (stale URL + missing dcim module, pre-existing).",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! ; demo@client.com / ClientDemo2026!",
+  "seed_data_creation": "Creates 1 shared TEST_shared_router device (module scope) + 1 TEST_router1 device for TestDevicesCrud (class scope) + 1 TEST_to_delete for TestDeleteDevice (per-test, deleted inline). All cleaned up via yield-teardown fixtures + best-effort DELETE in the module-level _ensure_mikrotik_disabled fixture. Also toggles /admin/integrations-v2/mikrotik enabled=true briefly in test_29, then disables it in the finally block AND the module teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "1) MIKROTIK MULTI-DEVICE SUITE IS STABLE — 35/35 in 2 seconds. Uses host=127.0.0.1:8728 for ConnectionRefused fast-fail. 2) Fixture layout: `device_id` (module scope) is a shared device for read-only tests. `crud_device` (class scope) is dedicated to TestDevicesCrud so it can mutate password. `TestDeleteDevice` creates its own inline device. `_ensure_mikrotik_disabled` (module autouse) ensures legacy /integrations-v2/mikrotik is disabled at start + end. 3) The pytest-xdist loadscope reorders classes across workers non-deterministically — DON'T rely on class ordering; make each class self-sufficient. 4) UNRELATED PRE-EXISTING ISSUES: (a) test_diagnostics_and_security dns/whois tests fail because dig/nslookup/whois binaries are missing from the container; (b) test_portal.py uses stale hardcoded URL; conftest doesn't propagate REACT_APP_BACKEND_URL from /app/frontend/.env. 5) The MikrotikClient.password_hash fields at TEST_secret_pw / TEST_new_pw etc. are plain strings — RouterOS API traditionally uses plaintext. If backend switches to hashed storage in future, test_06/test_07 will need to inspect the transformed value.",
+  "rca of the issue": "No mikrotik-specific bugs found. All 35 targeted assertions from the review request pass — including PUT-empty-password non-overwrite (biggest risk area), no-500 graceful-failure invariant across 11 endpoints, and RBAC across all admin/mikrotik/* endpoints. Pre-existing DNS/whois test failures RCA: `apt-get install -y dnsutils whois` needed in the container OR the diagnostics endpoint should return a clear error ('binary not available') instead of silent empty output. Pre-existing test_portal.py failures RCA: stale URL fallback + missing 'dcim' module in registry."
+}
