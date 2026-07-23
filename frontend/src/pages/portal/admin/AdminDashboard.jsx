@@ -20,7 +20,7 @@ const AdminDashboard = () => {
         <StatCard label="Revenue (Month)" value={money(s.revenue_month)} tone="good" testid="stat-rev-month" />
         <StatCard label="Revenue (Total)" value={money(s.revenue_total)} testid="stat-rev-total" />
         <StatCard label="Unpaid Invoices" value={s.unpaid_invoices} tone={s.unpaid_invoices ? "warn" : "default"} testid="stat-unpaid" />
-        <StatCard label="Overdue Total" value={money(s.overdue_total)} hint={`${s.overdue_invoices} invoice(s)`} tone={s.overdue_total ? "danger" : "default"} testid="stat-overdue" />
+        <StatCard label="Overdue Total" value={money(s.overdue_total)} hint={`${s.overdue_invoices || 0} invoice(s)`} tone={s.overdue_total ? "danger" : "default"} testid="stat-overdue" />
       </div>
       <div className="mt-6 grid md:grid-cols-2 gap-4">
         <QuickLinks />

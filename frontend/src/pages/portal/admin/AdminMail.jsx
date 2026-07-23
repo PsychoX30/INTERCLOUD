@@ -54,8 +54,15 @@ const Inbox_ = () => {
   }, []);
 
   const open = async (m) => {
-    const { data } = await api.get(`/admin/mail/messages/${m.id}`);
-    setSelected(data); load();
+    try {
+      const { data } = await api.get(`/admin/mail/messages/${m.id}`);
+      setSelected(data);
+      load();
+    } catch (e) {
+      // Fallback: show whatever we have from the list so the UI still
+      // responds to the click even if the server can't fetch the full body.
+      setSelected({ ...m, body: m.preview || "(Failed to load message body — check IMAP integration or refresh)" });
+    }
   };
 
   const star = async (m, e) => {

@@ -1426,9 +1426,14 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
 
 # Orders
 @router.get("/admin/orders")
-async def admin_list_orders(admin=Depends(get_current_admin)):
+async def admin_list_orders(staff=Depends(get_current_staff)):
     db = await _get_db()
-    docs = await db.orders.find({}).sort("created_at", -1).to_list(1000)
+    q = {}
+    if staff["role"] == "sales":
+        # Sales sees only orders belonging to clients they're assigned to.
+        assigned = [ObjectId(cid) for cid in (staff.get("assigned_client_ids") or [])]
+        q = {"user_id": {"$in": assigned}} if assigned else {"_id": None}  # empty result if unassigned
+    docs = await db.orders.find(q).sort("created_at", -1).to_list(1000)
     return [_serialize_order(d) for d in docs]
 
 
@@ -1558,9 +1563,13 @@ async def _serialize_quotation(db, d: dict) -> dict:
 
 
 @router.get("/admin/quotations")
-async def admin_list_quotations(admin=Depends(get_current_admin)):
+async def admin_list_quotations(staff=Depends(get_current_staff)):
     db = await _get_db()
-    docs = await db.quotations.find({}).sort("created_at", -1).to_list(1000)
+    q = {}
+    if staff["role"] == "sales":
+        assigned = [ObjectId(cid) for cid in (staff.get("assigned_client_ids") or [])]
+        q = {"user_id": {"$in": assigned}} if assigned else {"_id": None}
+    docs = await db.quotations.find(q).sort("created_at", -1).to_list(1000)
     return [await _serialize_quotation(db, d) for d in docs]
 
 
@@ -1952,7 +1961,37 @@ async def admin_mail_inbox(staff=Depends(get_current_staff)):
 @router.get("/admin/mail/messages/{mid}")
 async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
-    d = await db.mail_inbox.find_one({"_id": _oid(mid)})
+    # ---- IMAP live message (id prefixed with "imap-") ----
+    # The inbox endpoint returns items with id="imap-<uid>" when live IMAP is
+    # active. Re-fetch the whole recent-list from IMAP and find the matching
+    # entry. This preserves the "click to read full body" UX without needing
+    # a separate IMAP UID-lookup helper.
+    if mid.startswith("imap-"):
+        uid = mid[len("imap-"):]
+        imap_settings = await iv2.get_settings(db, "imap")
+        if imap_settings and imap_settings.get("enabled"):
+            try:
+                for msg in iv2.IMAPClient(imap_settings).fetch_recent():
+                    if str(msg.get("id")) == uid:
+                        return {
+                            "id": mid,
+                            "from_name": msg["from"].split("<")[0].strip(" \""),
+                            "from_email": (msg["from"].split("<")[-1].rstrip(">") if "<" in msg["from"] else msg["from"]),
+                            "subject": msg.get("subject", ""),
+                            "body": msg.get("body") or msg.get("preview") or "",
+                            "received_at": msg.get("date"),
+                            "starred": False,
+                        }
+            except Exception:
+                pass
+        raise HTTPException(status_code=404, detail="IMAP message no longer available (mailbox may have been re-synced)")
+
+    # ---- Mongo-backed message (demo seed + local send history) ----
+    try:
+        oid = _oid(mid)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid message id")
+    d = await db.mail_inbox.find_one({"_id": oid})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
     if d.get("unread"):

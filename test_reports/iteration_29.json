@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 29 — Batch-2 bug-fix verification (B1 mail body, B2 sales orders/quotations stuck-loading, B3 dashboard 'undefined invoice(s)') + F2 finance-role catalog regression. 100% GREEN. Backend: 15/15 pytest cases pass against preview env (https://portal-straight-line.preview.emergentagent.com). Frontend: 6/6 Playwright scenarios pass. B1 mail message body 'Halo tim Intercloud... Kami sudah transfer via BCA sebesar Rp 1.665.000 untuk invoice INV-2026-00003' renders in right panel after click; bogus imap-fakeid123 returns 404 (not 500). B2 sales.test@intercloud-digital.com GET /api/portal/admin/orders and /admin/quotations both return HTTP 200 JSON array [] (filter with $in on empty assigned list works); frontend /portal/admin/orders + /portal/admin/quotations show EmptyState 'No orders yet' / 'No quotations yet', NOT infinite spinner. B3 admin dashboard stat-overdue card renders 'Overdue Total Rp 0 0 invoice(s)' — no 'undefined' anywhere. F2 user-access-catalog returns 30 menus + 23 feature_flags (review said 22 — code actually has 23, non-blocking); 'finance' in default_roles for all 15 keys claimed; New user modal Role dropdown includes Finance option (data-testid='u-role'); finance role in users table renders with exact class 'bg-purple-100 text-purple-700'. Regression: admin login OK, /admin/invoices /admin/orders /admin/quotations all 200 for admin, branding still returns webp data URIs (>5KB), sitemap.xml still valid application/xml with <urlset. Zero regressions detected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/portal/admin/user-access-catalog", "issue": "feature_flags catalog returns 23 items, but the review request text claims 22. Not a functional bug — the extra flag is 'can_view_email_automation' (line 1012 in routes.py). Frontend renders all of them regardless. Recommend main agent update the review-note (or drop one flag if 22 was intentional)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter29_bugfix_batch2.py",
+    "/app/test_reports/pytest/iter29_bugfix_batch2.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "B1 fix (routes.py L1961-L1996) — the imap-* branch now returns a clean 404 when the mailbox has been re-synced, and the mongo-oid branch wraps _oid(mid) in try/except so garbage ids return 400 instead of 500. Solid RCA-style fix.",
+    "B2 fix — sales-role guard uses `q = {'_id': None}` when assigned_client_ids is empty (routes.py L1435, L1571). This is a clever way to short-circuit to an empty result without $in:[] which some Mongo drivers still choke on. Consider factoring the guard into a helper `_sales_scope_filter(staff)` since orders/quotations/users all repeat the pattern.",
+    "B3 fix — AdminDashboard.jsx L23 uses `${s.overdue_invoices || 0}` — good defensive default. However the root cause is that /admin/dashboard didn't include the field in some paths; backend now always returns int (verified 0). Keep both belt-and-suspenders in place.",
+    "AdminMail.jsx open() has try/catch fallback (L56-L66) so even a network hiccup on message-fetch doesn't leave the right panel blank. Good UX.",
+    "AdminUsers.jsx role dropdown (L334-L341) — all 6 roles present, Finance option added. Purple badge class 'bg-purple-100 text-purple-700' rendered correctly on 7/7 users table row.",
+    "Feature-flag count mismatch (23 vs 22 in review): non-functional, but suggests the review-request text is stale. Recommend either (a) drop 'can_view_email_automation' if the flag is legacy, or (b) update PRD/review note to say 23.",
+    "Sales seed user (sales.test@intercloud-digital.com) has NO documented password in /app/memory/test_credentials.md — the test suite works around this by resetting via admin API. Strongly recommend main agent add the sales row to test_credentials.md so future testing agents don't have to reset."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter29_bugfix_batch2.py (new, 15 tests)"
+  ],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% (6/6)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md). sales.test@intercloud-digital.com — seeded but password NOT in credentials file; test suite resets it to 'SalesTest2026!' via admin API (see fixture). Sales user has 1 assigned_client_id (contoso@example.com).",
+  "seed_data_creation": "Test suite creates and cleans up 1 finance user (email 'TEST_finance_badge@example.com') to verify the purple badge rendering — deleted after screenshot verification. Sales password reset to 'SalesTest2026!' but the sales user itself was pre-seeded by the installer.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression file /app/backend/tests/test_iter29_bugfix_batch2.py covers all 3 batch-2 bugs + F2 finance-role catalog + regression sweep. Run with `python -m pytest backend/tests/test_iter29_bugfix_batch2.py -v` (~2s, 15 tests). The suite auto-resets sales password via admin fixture, so it's self-contained. Key testids: stat-overdue (dashboard), mail-<oid> (mail inbox rows), .whitespace-pre-wrap (mail body), u-role (new-user modal role dropdown), .bg-purple-100.text-purple-700 (finance badge). test_iter28_regression_smoke.py (previous batch) is still green and covers branding+sitemap+PDF-logo — no overlap, run both. Sales credentials should be added to /app/memory/test_credentials.md by main agent to avoid the password-reset dance.",
+  "rca of the issue": "N/A — all three main-agent-claimed bug fixes verified working. B1 root-cause was raw ObjectId(mid) throwing InvalidId on 'imap-*' strings and bogus ids → 500; fix wraps in try/except + special-cases imap prefix. B2 root-cause was staff-role guard using {'user_id': {'$in': []}} for unassigned sales which some Mongo builds evaluate slowly, plus admin-only Depends causing 403 for sales; fix uses get_current_staff + {'_id': None} short-circuit. B3 root-cause was /admin/dashboard occasionally missing overdue_invoices field → frontend template rendered 'undefined invoice(s)'; fix (a) backend always sets int, (b) frontend uses `${s.overdue_invoices || 0}` guard."
+}
