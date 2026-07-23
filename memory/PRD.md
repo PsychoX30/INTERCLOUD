@@ -20,6 +20,13 @@ See `/app/memory/test_credentials.md`.
 
 ## Implemented (as of 2026-07-23)
 
+### UI/UX Polish — Phase 5
+- Rolled out reusable `<DataTable>` across **Invoices, Services, Users, Assets** admin
+  pages. Every table now supports column sort (tri-state), free-text search across
+  key columns, loading skeleton, and a proper empty state with helpful hint.
+  `AdminServices` additionally resolves `user_id` → client name/email lookup so
+  operators no longer see raw ObjectIds.
+
 ### System Ops
 - **Factory Reset** — `POST /api/portal/admin/system/factory-reset` (admin only).
   Wipes every non-preserved collection; preserves `settings` (branding + landing CMS)
@@ -225,9 +232,10 @@ See `/app/memory/test_credentials.md`.
 
 ## Backlog
 
-**P1 — Roll out `<DataTable>`** across Invoices, Orders, Services, Users,
-Assets. Wrap each screen's table with the new component + provide
-`columns`/`searchKeys` — 30-min-per-screen job.
+**P1 — Roll out `<DataTable>`** across the remaining admin screens (Quotations,
+Products, Add-ons, Tickets, Categories) and the client-side lists (Client
+Invoices, Client Services). Same pattern: define `columns` + `searchKeys` +
+`empty` + `rowKey`, then delete the hand-rolled table.
 
 **P2 — Environment**
 - Bake `traceroute` (+ `dig`, `whois`) into the backend container image

@@ -1,17 +1,58 @@
 import React, { useEffect, useState } from "react";
 import { api, money, shortDate, docUrl } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
+import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Trash2, CheckCircle2, FileDown, Download } from "lucide-react";
+import { DataTable } from "../../../components/ui/data-table";
 
 const AdminInvoices = () => {
   const [rows, setRows] = useState(null);
   const [modal, setModal] = useState(false);
   const load = () => api.get("/admin/invoices").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
-  if (!rows) return <Loading />;
 
   const markPaid = async (id) => { await api.put(`/admin/invoices/${id}/status`, { status: "paid", payment_method: "bank_transfer" }); load(); };
   const cancel = async (id) => { if (window.confirm("Cancel invoice?")) { await api.put(`/admin/invoices/${id}/status`, { status: "cancelled" }); load(); } };
+
+  const columns = [
+    { key: "number", label: "#", sortable: true, mono: true,
+      render: (v) => <span className="font-mono font-bold text-[#0a2350]">{v}</span> },
+    { key: "user_name", label: "Client", sortable: true,
+      render: (_v, r) => (
+        <>
+          <div className="font-semibold text-[#0a2350]">{r.user_name}</div>
+          <div className="text-xs text-slate-500">{r.user_email}</div>
+        </>
+      ) },
+    { key: "created_at", label: "Issued", sortable: true,
+      render: (v) => <span className="text-slate-500">{shortDate(v)}</span> },
+    { key: "due_date", label: "Due", sortable: true,
+      render: (v) => <span className="text-slate-500">{shortDate(v)}</span> },
+    { key: "total", label: "Total", sortable: true, align: "right",
+      render: (v) => <span className="font-extrabold text-[#0a2350]">{money(v)}</span> },
+    { key: "status", label: "Status", sortable: true,
+      render: (v) => <StatusBadge status={v} /> },
+    { key: "_actions", label: "Actions", sortable: false, align: "right",
+      render: (_v, inv) => (
+        <span className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+          <a href={docUrl("invoice", inv.id)} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120]" title="Preview" data-testid={`inv-pdf-${inv.number}`}>
+            <FileDown className="h-4 w-4 inline" />
+          </a>
+          <a href={docUrl("invoice", inv.id, "pdf")} target="_blank" rel="noreferrer" className="ml-3 text-slate-600 hover:text-[#f5b120]" title="Download PDF" data-testid={`inv-download-${inv.number}`}>
+            <Download className="h-4 w-4 inline" />
+          </a>
+          {(inv.status === "unpaid" || inv.status === "overdue") && (
+            <button className="ml-3 text-emerald-600 hover:text-emerald-800" onClick={() => markPaid(inv.id)} title="Mark Paid" data-testid={`inv-pay-${inv.number}`}>
+              <CheckCircle2 className="h-4 w-4 inline" />
+            </button>
+          )}
+          {inv.status !== "cancelled" && (
+            <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => cancel(inv.id)} title="Cancel">
+              <Trash2 className="h-4 w-4 inline" />
+            </button>
+          )}
+        </span>
+      ) },
+  ];
 
   return (
     <div>
@@ -20,55 +61,15 @@ const AdminInvoices = () => {
         subtitle="Create invoices, mark paid, and track overdue accounts."
         actions={<button className={btnPrimary} onClick={() => setModal(true)} data-testid="new-invoice-btn"><Plus className="h-4 w-4" /> New Invoice</button>}
       />
-      {rows.length === 0 && <EmptyState title="No invoices yet" />}
-      <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-        <table className="w-full min-w-[720px] text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-            <tr>
-              <th className="px-4 py-3 text-left">#</th>
-              <th className="px-4 py-3 text-left">Client</th>
-              <th className="px-4 py-3 text-left">Issued</th>
-              <th className="px-4 py-3 text-left">Due</th>
-              <th className="px-4 py-3 text-right">Total</th>
-              <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((inv) => (
-              <tr key={inv.id} className="border-t border-slate-100" data-testid={`inv-${inv.number}`}>
-                <td className="px-4 py-3 font-mono font-bold text-[#0a2350]">{inv.number}</td>
-                <td className="px-4 py-3">
-                  <div className="font-semibold text-[#0a2350]">{inv.user_name}</div>
-                  <div className="text-xs text-slate-500">{inv.user_email}</div>
-                </td>
-                <td className="px-4 py-3 text-slate-500">{shortDate(inv.created_at)}</td>
-                <td className="px-4 py-3 text-slate-500">{shortDate(inv.due_date)}</td>
-                <td className="px-4 py-3 text-right font-extrabold text-[#0a2350]">{money(inv.total)}</td>
-                <td className="px-4 py-3"><StatusBadge status={inv.status} /></td>
-                <td className="px-4 py-3 text-right">
-                  <a href={docUrl("invoice", inv.id)} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120]" title="Preview" data-testid={`inv-pdf-${inv.number}`}>
-                    <FileDown className="h-4 w-4 inline" />
-                  </a>
-                  <a href={docUrl("invoice", inv.id, "pdf")} target="_blank" rel="noreferrer" className="ml-3 text-slate-600 hover:text-[#f5b120]" title="Download PDF" data-testid={`inv-download-${inv.number}`}>
-                    <Download className="h-4 w-4 inline" />
-                  </a>
-                  {(inv.status === "unpaid" || inv.status === "overdue") && (
-                    <button className="ml-3 text-emerald-600 hover:text-emerald-800" onClick={() => markPaid(inv.id)} title="Mark Paid" data-testid={`inv-pay-${inv.number}`}>
-                      <CheckCircle2 className="h-4 w-4 inline" />
-                    </button>
-                  )}
-                  {inv.status !== "cancelled" && (
-                    <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => cancel(inv.id)} title="Cancel">
-                      <Trash2 className="h-4 w-4 inline" />
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        rows={rows || []}
+        loading={rows === null}
+        columns={columns}
+        searchKeys={["number", "user_name", "user_email", "status"]}
+        rowKey={(r) => r.id}
+        empty={{ title: "No invoices yet", hint: "Create your first invoice." }}
+        testid="admin-invoices-table"
+      />
       {modal && <NewInvoice onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
     </div>
   );

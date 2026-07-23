@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { api, shortDate } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { UserPlus, Users, ShieldCheck, Edit, KeyRound } from "lucide-react";
+import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
+import { UserPlus, ShieldCheck, KeyRound } from "lucide-react";
+import { DataTable } from "../../../components/ui/data-table";
 
 const AdminUsers = () => {
   const [rows, setRows] = useState(null);
@@ -20,7 +21,63 @@ const AdminUsers = () => {
     api.get("/admin/user-access-catalog").then((r) => setCatalog(r.data)).catch(() => {});
   }, []);
 
-  if (!rows) return <Loading />;
+  const columns = [
+    { key: "name",  label: "Name",  sortable: true,
+      render: (v) => <span className="font-semibold text-[#0a2350]">{v}</span> },
+    { key: "email", label: "Email", sortable: true,
+      render: (v) => <span className="text-slate-600">{v}</span> },
+    { key: "company", label: "Company", sortable: true,
+      render: (v) => <span className="text-slate-600">{v || "—"}</span> },
+    { key: "role", label: "Role", sortable: true,
+      render: (v) => (
+        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${
+          v === "admin"  ? "bg-[#f5b120]/20 text-[#0a2350]"
+          : v === "client" ? "bg-emerald-100 text-emerald-700"
+          : "bg-sky-100 text-sky-700"
+        }`}>{v}</span>
+      ) },
+    { key: "_access", label: "Access", sortable: false,
+      render: (_v, u) => (
+        u.role === "client" ? <span className="text-slate-400">—</span> : (
+          <div className="flex flex-col gap-0.5 text-xs">
+            {u.menu_keys && u.menu_keys.length > 0
+              ? <span className="font-semibold">{u.menu_keys.length} menu(s)</span>
+              : <span className="text-slate-500">Default for {u.role}</span>}
+            {u.assigned_client_ids?.length > 0 && (
+              <span className="text-emerald-600 text-[10px]">{u.assigned_client_ids.length} client(s) assigned</span>
+            )}
+            {u.feature_flags?.length > 0 && (
+              <span className="text-purple-600 text-[10px]">{u.feature_flags.length} feature flag(s)</span>
+            )}
+          </div>
+        )
+      ) },
+    { key: "created_at", label: "Since", sortable: true,
+      render: (v) => <span className="text-slate-500 text-xs">{shortDate(v)}</span> },
+    { key: "_actions", label: "Actions", sortable: false, align: "right",
+      render: (_v, u) => (
+        <span onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
+          <button
+            onClick={() => setResetUser(u)}
+            className="text-slate-600 hover:text-red-600 font-bold text-xs inline-flex items-center gap-1 mr-3"
+            data-testid={`reset-pw-${u.email}`}
+            title="Reset password"
+          >
+            <KeyRound className="h-3.5 w-3.5" /> Reset pw
+          </button>
+          {u.role !== "client" && catalog && (
+            <button
+              onClick={() => setAccessUser(u)}
+              className="text-[#0a2350] hover:text-[#f5b120] font-bold text-xs inline-flex items-center gap-1"
+              data-testid={`edit-access-${u.email}`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" /> Manage access
+            </button>
+          )}
+        </span>
+      ) },
+  ];
+
   return (
     <div>
       <PageHeader
@@ -28,71 +85,15 @@ const AdminUsers = () => {
         subtitle="Register new users, assign roles & menu access, and pick which clients each staff member handles."
         actions={<button className={btnPrimary} onClick={() => setModal(true)} data-testid="new-user-btn"><UserPlus className="h-4 w-4" /> New user</button>}
       />
-      {rows.length === 0 && <EmptyState title="No users yet" />}
-      <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-        <table className="w-full min-w-[720px] text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-            <tr>
-              <th className="px-4 py-3 text-left">Name</th>
-              <th className="px-4 py-3 text-left">Email</th>
-              <th className="px-4 py-3 text-left">Company</th>
-              <th className="px-4 py-3 text-left">Role</th>
-              <th className="px-4 py-3 text-left">Access</th>
-              <th className="px-4 py-3 text-left">Since</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((u) => (
-              <tr key={u.id} className="border-t border-slate-100" data-testid={`user-${u.email}`}>
-                <td className="px-4 py-3 font-semibold text-[#0a2350]">{u.name}</td>
-                <td className="px-4 py-3 text-slate-600">{u.email}</td>
-                <td className="px-4 py-3 text-slate-600">{u.company || "-"}</td>
-                <td className="px-4 py-3">
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${u.role === "admin" ? "bg-[#f5b120]/20 text-[#0a2350]" : u.role === "client" ? "bg-emerald-100 text-emerald-700" : "bg-sky-100 text-sky-700"}`}>{u.role}</span>
-                </td>
-                <td className="px-4 py-3 text-xs text-slate-600">
-                  {u.role === "client" ? (
-                    <span className="text-slate-400">—</span>
-                  ) : (
-                    <div className="flex flex-col gap-0.5">
-                      {u.menu_keys && u.menu_keys.length > 0
-                        ? <span className="font-semibold">{u.menu_keys.length} menu(s)</span>
-                        : <span className="text-slate-500">Default for {u.role}</span>}
-                      {u.assigned_client_ids?.length > 0 && (
-                        <span className="text-emerald-600 text-[10px]">{u.assigned_client_ids.length} client(s) assigned</span>
-                      )}
-                      {u.feature_flags?.length > 0 && (
-                        <span className="text-purple-600 text-[10px]">{u.feature_flags.length} feature flag(s)</span>
-                      )}
-                    </div>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-slate-500 text-xs">{shortDate(u.created_at)}</td>
-                <td className="px-4 py-3 text-right">
-                  <button
-                    onClick={() => setResetUser(u)}
-                    className="text-slate-600 hover:text-red-600 font-bold text-xs inline-flex items-center gap-1 mr-3"
-                    data-testid={`reset-pw-${u.email}`}
-                    title="Reset password"
-                  >
-                    <KeyRound className="h-3.5 w-3.5" /> Reset pw
-                  </button>
-                  {u.role !== "client" && catalog && (
-                    <button
-                      onClick={() => setAccessUser(u)}
-                      className="text-[#0a2350] hover:text-[#f5b120] font-bold text-xs inline-flex items-center gap-1"
-                      data-testid={`edit-access-${u.email}`}
-                    >
-                      <ShieldCheck className="h-3.5 w-3.5" /> Manage access
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        rows={rows || []}
+        loading={rows === null}
+        columns={columns}
+        searchKeys={["name", "email", "company", "role"]}
+        rowKey={(u) => u.id}
+        empty={{ title: "No users yet", hint: "Click 'New user' to add the first staff member or client." }}
+        testid="admin-users-table"
+      />
       {modal && <NewUserModal onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
       {accessUser && catalog && (
         <UserAccessModal

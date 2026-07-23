@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api, money, shortDate } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, StatCard, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Package, Plus, Trash2, Edit, Layers, TrendingDown, Calculator, X } from "lucide-react";
+import { PageHeader, StatCard, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
+import { Plus, Trash2, Edit, Calculator, X } from "lucide-react";
+import { DataTable } from "../../../components/ui/data-table";
 
 const CATEGORIES = ["server", "switch", "router", "firewall", "storage", "ups", "aircon", "monitor", "cable", "other"];
 
@@ -11,7 +12,6 @@ const AdminAssets = () => {
   const [scheduleFor, setScheduleFor] = useState(null);
   const load = () => api.get("/admin/assets").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
-  if (!rows) return <Loading />;
 
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/assets/${id}`); load(); } };
   const showSchedule = async (id) => {
@@ -19,9 +19,49 @@ const AdminAssets = () => {
     setScheduleFor(data);
   };
 
-  const totalValue = rows.reduce((a, b) => a + (b.value || 0), 0);
-  const totalBook = rows.reduce((a, b) => a + (b.book_value || 0), 0);
-  const totalDep = rows.reduce((a, b) => a + (b.accumulated_depreciation || 0), 0);
+  const list = rows || [];
+  const totalValue = list.reduce((a, b) => a + (b.value || 0), 0);
+  const totalBook = list.reduce((a, b) => a + (b.book_value || 0), 0);
+  const totalDep = list.reduce((a, b) => a + (b.accumulated_depreciation || 0), 0);
+
+  const columns = [
+    { key: "name", label: "Asset", sortable: true,
+      render: (_v, a) => (
+        <>
+          <div className="font-semibold text-[#0a2350]">{a.name}</div>
+          <div className="text-xs text-slate-500">{a.vendor || "—"} · {a.location || "—"}</div>
+        </>
+      ) },
+    { key: "serial_number", label: "Serial", sortable: true, mono: true,
+      render: (v) => <span className="font-mono text-xs">{v || "—"}</span> },
+    { key: "category", label: "Category", sortable: true,
+      render: (v) => <span className="uppercase text-xs font-bold text-[#f5b120]">{v}</span> },
+    { key: "purchase_date", label: "Purchased", sortable: true,
+      render: (v) => <span className="text-xs text-slate-500">{shortDate(v) || "—"}</span> },
+    { key: "value", label: "Cost", sortable: true, align: "right",
+      render: (v) => <span className="font-semibold">{money(v)}</span> },
+    { key: "salvage_value", label: "Salvage", sortable: true, align: "right",
+      render: (v) => <span className="text-xs text-slate-500">{money(v || 0)}</span> },
+    { key: "useful_life_years", label: "Life", sortable: true, align: "right",
+      render: (v) => <span className="text-xs">{v ? `${v} yr` : "—"}</span> },
+    { key: "annual_depreciation", label: "Annual Dep.", sortable: true, align: "right",
+      render: (v) => <span className="text-amber-700">{money(v || 0)}</span> },
+    { key: "book_value", label: "Book Value", sortable: true, align: "right",
+      render: (_v, a) => (
+        <>
+          <div className="font-extrabold text-[#0a2350] tabular-nums">{money(a.book_value)}</div>
+          <div className="text-[10px] text-red-500 tabular-nums">-{money(a.accumulated_depreciation)}</div>
+        </>
+      ) },
+    { key: "_actions", label: "", sortable: false, align: "right",
+      render: (_v, a) => (
+        <span onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
+          <button title="Depreciation schedule" className="text-slate-600 hover:text-[#0a2350]" onClick={() => showSchedule(a.id)} data-testid={`asset-schedule-${a.id}`}><Calculator className="h-4 w-4 inline" /></button>
+          <button className="ml-2 text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(a)}><Edit className="h-4 w-4 inline" /></button>
+          <button className="ml-2 text-slate-600 hover:text-red-600" onClick={() => del(a.id)}><Trash2 className="h-4 w-4 inline" /></button>
+        </span>
+      ) },
+  ];
 
   return (
     <div>
@@ -31,59 +71,22 @@ const AdminAssets = () => {
         actions={<button className={btnPrimary} onClick={() => setEditing("new")} data-testid="new-asset-btn"><Plus className="h-4 w-4" /> Add Asset</button>}
       />
       <div className="grid sm:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Asset Count" value={rows.length} testid="asset-count" />
+        <StatCard label="Asset Count" value={list.length} testid="asset-count" />
         <StatCard label="Total Cost (Harga Perolehan)" value={money(totalValue)} tone="good" testid="asset-total" />
         <StatCard label="Net Book Value (Nilai Buku)" value={money(totalBook)} tone="good" testid="asset-net" />
         <StatCard label="Accumulated Depreciation" value={money(totalDep)} tone="warn" testid="asset-dep" />
       </div>
 
-      {rows.length === 0 && <EmptyState title="No assets yet" body="Track your appliances, servers, and DC equipment with straight-line depreciation." />}
-      {rows.length > 0 && (
-        <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-          <table className="w-full min-w-[860px] text-sm">
-            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-              <tr>
-                <th className="px-4 py-3 text-left">Asset</th>
-                <th className="px-4 py-3 text-left">Serial</th>
-                <th className="px-4 py-3 text-left">Category</th>
-                <th className="px-4 py-3 text-left">Purchased</th>
-                <th className="px-4 py-3 text-right">Cost</th>
-                <th className="px-4 py-3 text-right">Salvage</th>
-                <th className="px-4 py-3 text-right">Life</th>
-                <th className="px-4 py-3 text-right">Annual Dep.</th>
-                <th className="px-4 py-3 text-right">Book Value</th>
-                <th className="px-4 py-3 text-right"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((a) => (
-                <tr key={a.id} className="border-t border-slate-100" data-testid={`asset-${a.id}`}>
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-[#0a2350]">{a.name}</div>
-                    <div className="text-xs text-slate-500">{a.vendor || "—"} · {a.location || "—"}</div>
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs">{a.serial_number || "—"}</td>
-                  <td className="px-4 py-3 uppercase text-xs font-bold text-[#f5b120]">{a.category}</td>
-                  <td className="px-4 py-3 text-xs text-slate-500">{shortDate(a.purchase_date) || "—"}</td>
-                  <td className="px-4 py-3 text-right font-semibold tabular-nums">{money(a.value)}</td>
-                  <td className="px-4 py-3 text-right text-xs tabular-nums text-slate-500">{money(a.salvage_value || 0)}</td>
-                  <td className="px-4 py-3 text-right text-xs tabular-nums">{a.useful_life_years ? `${a.useful_life_years} yr` : "—"}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-amber-700">{money(a.annual_depreciation || 0)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="font-extrabold text-[#0a2350] tabular-nums">{money(a.book_value)}</div>
-                    <div className="text-[10px] text-red-500 tabular-nums">-{money(a.accumulated_depreciation)}</div>
-                  </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <button title="Depreciation schedule" className="text-slate-600 hover:text-[#0a2350]" onClick={() => showSchedule(a.id)} data-testid={`asset-schedule-${a.id}`}><Calculator className="h-4 w-4 inline" /></button>
-                    <button className="ml-2 text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(a)}><Edit className="h-4 w-4 inline" /></button>
-                    <button className="ml-2 text-slate-600 hover:text-red-600" onClick={() => del(a.id)}><Trash2 className="h-4 w-4 inline" /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        rows={list}
+        loading={rows === null}
+        columns={columns}
+        searchKeys={["name", "serial_number", "category", "vendor", "location"]}
+        rowKey={(a) => a.id}
+        empty={{ title: "No assets yet", hint: "Track your appliances, servers, and DC equipment with straight-line depreciation." }}
+        testid="admin-assets-table"
+      />
+
       {editing && <AssetForm a={editing === "new" ? null : editing} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
       {scheduleFor && <ScheduleModal asset={scheduleFor} onClose={() => setScheduleFor(null)} />}
     </div>
