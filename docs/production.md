@@ -72,8 +72,6 @@ Environment variables:
 | `MONGO_APP_PASSWORD` | *(random 32-byte)* | Auto-generated + saved. |
 | `ADMIN_EMAIL` | `admin@intercloud-digital.com` | Seed admin. Written to backend/.env; seeder resets the admin's password to this on first boot. |
 | `ADMIN_PASSWORD` | `AdminIntercloud2026!` | Change after login. |
-| `CLIENT_EMAIL` | `demo@contoh-digital.co.id` | Demo client seeded on first boot. |
-| `CLIENT_PASSWORD` | `DemoClient2026!` | Demo client password. |
 | `EMERGENT_LLM_KEY` | *(empty)* | Paste for AI features. |
 
 ## Updates — two options

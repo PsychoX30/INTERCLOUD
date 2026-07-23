@@ -139,7 +139,21 @@ See `/app/memory/test_credentials.md`.
   two-step Restore form: file picker + typed `REPLACE` confirmation +
   `window.confirm` prompt.
 
-### One-command production install + in-place updates (2026-07-23)
+### First-boot seed reduced to admin-only (2026-07-23)
+- `backend/portal/seed.py` now creates only the **admin** user. All demo
+  data — sample client, sales/support/ticket_only staff users, sample
+  products, invoices, tickets, articles — has been removed so a fresh
+  install starts from a clean slate ready for real customers.
+- Seeder remains idempotent: creates the admin on first boot; if
+  `ADMIN_PASSWORD` in `backend/.env` later changes, the stored hash is
+  re-synced so the operator can always log in.
+- `install.sh` no longer emits `CLIENT_EMAIL` / `CLIENT_PASSWORD` in
+  `backend/.env` — the seeder doesn't need them any more.
+- `PortalLogin.jsx` no longer displays the "Demo credentials" block.
+  Login screen shows only the standard form + "Create one" link.
+- Existing installs are unaffected — no data is dropped by this change,
+  it only prevents new demo rows from being *created* on subsequent
+  boots. To wipe an existing DB, use Admin ▸ Backup, Restore & Update.
 - `scripts/install.sh` — Ubuntu 24.04 LTS end-to-end installer:
   - OS deps + build tools (nginx, supervisor, python 3.12, node 20 + yarn,
     traceroute / dig / whois, jq, fail2ban, certbot, ufw)

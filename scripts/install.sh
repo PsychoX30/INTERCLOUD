@@ -216,8 +216,6 @@ CORS_ORIGINS="$CORS"
 EMERGENT_LLM_KEY="${EMERGENT_LLM_KEY}"
 ADMIN_EMAIL="${ADMIN_EMAIL}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD}"
-CLIENT_EMAIL="${CLIENT_EMAIL:-demo@contoh-digital.co.id}"
-CLIENT_PASSWORD="${CLIENT_PASSWORD:-DemoClient2026!}"
 EOF
 else
   log "Backend .env exists — preserving as-is"

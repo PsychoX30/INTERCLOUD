@@ -164,15 +164,12 @@ const PortalLogin = () => {
           )}
 
           <div className="mt-6 text-xs text-slate-500 border-t border-slate-100 pt-5">
-            <div className="mb-3">
+            <div>
               Don't have an account?{" "}
               <Link to="/portal/register" className="text-[#0a2350] font-semibold hover:text-[#f5b120]" data-testid="login-goto-register">
                 Create one →
               </Link>
             </div>
-            <div className="font-bold text-[#0a2350] mb-1">Demo credentials</div>
-            <div>Admin: <code className="bg-slate-100 px-1.5 py-0.5 rounded">admin@intercloud-digital.com</code> / <code className="bg-slate-100 px-1.5 py-0.5 rounded">AdminIntercloud2026!</code></div>
-            <div>Client: <code className="bg-slate-100 px-1.5 py-0.5 rounded">demo@client.com</code> / <code className="bg-slate-100 px-1.5 py-0.5 rounded">ClientDemo2026!</code></div>
           </div>
         </form>
       </div>
