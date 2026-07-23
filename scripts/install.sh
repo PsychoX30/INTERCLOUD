@@ -11,7 +11,8 @@
 #   REPO_URL     Git URL of the portal repo   (default: https://github.com/PsychoX30/INTERCLOUD.git)
 #   REPO_BRANCH  Branch to check out          (default: main)
 #   APP_DIR      Where to install             (default: /opt/intercloud-portal)
-#   PORTAL_DOMAIN         Public FQDN (e.g. portal.example.com); leave blank for IP-only
+#   PORTAL_DOMAIN         Public FQDN         (default: intercloud-digital.com)
+#   LETSENCRYPT_EMAIL     Email for certbot   (default: support@intercloud-digital.com)
 #   ADMIN_EMAIL           Seed admin email    (default: admin@intercloud-digital.com)
 #   ADMIN_PASSWORD        Seed admin pw       (default: AdminIntercloud2026!)
 #   EMERGENT_LLM_KEY      Optional: paste to enable AI features
@@ -21,8 +22,8 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/PsychoX30/INTERCLOUD.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/intercloud-portal}"
-PORTAL_DOMAIN="${PORTAL_DOMAIN:-}"
-LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}"        # if set + PORTAL_DOMAIN, we run certbot
+PORTAL_DOMAIN="${PORTAL_DOMAIN:-intercloud-digital.com}"
+LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-support@intercloud-digital.com}"  # if set + PORTAL_DOMAIN, we run certbot
 ENABLE_MONGO_AUTH="${ENABLE_MONGO_AUTH:-yes}"      # yes/no
 MONGO_APP_USER="${MONGO_APP_USER:-intercloud_app}"
 MONGO_APP_PASSWORD="${MONGO_APP_PASSWORD:-}"       # auto-generated if blank

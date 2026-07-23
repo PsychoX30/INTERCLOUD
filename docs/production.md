@@ -6,13 +6,20 @@ On a **fresh Ubuntu 24.04** server (as root or with `sudo`):
 
 ```bash
 wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh
-sudo PORTAL_DOMAIN="portal.your-domain.com" \
-     LETSENCRYPT_EMAIL="ops@your-domain.com" \
-     bash install.sh
+sudo bash install.sh
 ```
 
-> `REPO_URL` defaults to `https://github.com/PsychoX30/INTERCLOUD.git`. Override it
-> only if you're deploying from a fork or a private mirror.
+> Defaults baked in: `REPO_URL=https://github.com/PsychoX30/INTERCLOUD.git`,
+> `PORTAL_DOMAIN=intercloud-digital.com`, `LETSENCRYPT_EMAIL=support@intercloud-digital.com`.
+> Override any of them via env var if you're deploying from a fork, on a
+> different domain, or with a different contact email:
+>
+> ```bash
+> sudo REPO_URL="https://github.com/your-fork/INTERCLOUD.git" \
+>      PORTAL_DOMAIN="portal.your-domain.com" \
+>      LETSENCRYPT_EMAIL="ops@your-domain.com" \
+>      bash install.sh
+> ```
 
 The installer runs end-to-end without prompts and configures:
 
@@ -67,8 +74,8 @@ Environment variables:
 | `REPO_URL` | `https://github.com/PsychoX30/INTERCLOUD.git` | HTTPS git URL. Override for forks/mirrors. |
 | `REPO_BRANCH` | `main` | Any branch/tag. |
 | `APP_DIR` | `/opt/intercloud-portal` | Checkout location. |
-| `PORTAL_DOMAIN` | *(empty)* | FQDN → nginx server_name + CORS + certbot. |
-| `LETSENCRYPT_EMAIL` | *(empty)* | Enables automatic HTTPS. |
+| `PORTAL_DOMAIN` | `intercloud-digital.com` | FQDN → nginx server_name + CORS + certbot. |
+| `LETSENCRYPT_EMAIL` | `support@intercloud-digital.com` | Certbot contact email; enables HTTPS. |
 | `ENABLE_MONGO_AUTH` | `yes` | Set to `no` to skip auth (loopback only). |
 | `MONGO_APP_USER` | `intercloud_app` | DB app user. |
 | `MONGO_APP_PASSWORD` | *(random 32-byte)* | Auto-generated + saved. |
