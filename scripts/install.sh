@@ -261,16 +261,29 @@ fi
 # ------------------------------------------------------------------
 if ! id -u intercloud >/dev/null 2>&1; then
   log "Creating system user 'intercloud'"
-  useradd --system --home "$APP_DIR" --shell /bin/bash --create-home intercloud
+  useradd --system --home-dir "$APP_DIR" --shell /bin/bash intercloud
 fi
+
+# Ensure APP_DIR's PARENT exists and APP_DIR itself is owned by 'intercloud'
+# BEFORE we clone. /opt is root:root by default so a `su - intercloud -c git
+# clone` would otherwise fail with 'could not create work tree dir'.
+install -d -m 0755 "$(dirname "$APP_DIR")"
 
 if [[ -d "$APP_DIR/.git" ]]; then
   log "Existing repo at $APP_DIR — pulling latest"
-  su - intercloud -c "cd '$APP_DIR' && git fetch --all && git checkout '$REPO_BRANCH' && git pull --ff-only"
+  chown -R intercloud:intercloud "$APP_DIR"
+  sudo -u intercloud -H bash -c "cd '$APP_DIR' && git fetch --all && git checkout '$REPO_BRANCH' && git pull --ff-only"
 else
   log "Cloning $REPO_URL → $APP_DIR"
   rm -rf "$APP_DIR"
-  su - intercloud -c "git clone --branch '$REPO_BRANCH' '$REPO_URL' '$APP_DIR'"
+  install -d -o intercloud -g intercloud -m 0755 "$APP_DIR"
+  # Clone into a *sub*-path so git doesn't refuse a non-empty target dir.
+  sudo -u intercloud -H bash -c "git clone --branch '$REPO_BRANCH' '$REPO_URL' '$APP_DIR/.checkout' && \
+      shopt -s dotglob && mv '$APP_DIR/.checkout'/* '$APP_DIR/' && rmdir '$APP_DIR/.checkout'"
+fi
+# Sanity check — if the checkout somehow ended up empty, abort loudly.
+if [[ ! -f "$APP_DIR/backend/requirements.txt" ]]; then
+  die "Clone appears empty (no $APP_DIR/backend/requirements.txt). Check the REPO_URL / REPO_BRANCH and re-run."
 fi
 
 # ------------------------------------------------------------------
