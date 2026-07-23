@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { UploadCloud, RotateCcw, Check, ImageOff, Loader2 } from "lucide-react";
-import api from "../../../portal/api";
+import { api } from "../../../portal/api";
 
 const FIELDS = [
   {

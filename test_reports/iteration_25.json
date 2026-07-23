@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend-only test of AdminBranding import fix. IMPORTANT: main agent claimed the one-line import fix was already applied but it was NOT saved to disk — AdminBranding.jsx line 3 still had `import api from ...` (default) and webpack was reporting 3 compile errors + overlaying `Compiled with problems`. I re-applied the exact fix the main agent claimed (`import { api } from ...`), which made webpack compile successfully. After that, every requested flow passes.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "IMPORTANT: verify that the AdminBranding.jsx edit persists in main-agent's working copy. The previous iteration's response claimed the fix was applied on line 3 but the file on disk still contained the broken default import (`import api from \"../../../portal/api\"`), causing the CRA compile-error overlay that the user screenshotted. Testing agent re-applied the intended fix (`import { api } from \"../../../portal/api\"`) so the app could be exercised. Main agent should double-check its edit tooling / diff was actually written and committed."
+  ],
+  "critical_code_review_comments": [
+    "portal/api.js has NO default export — only named exports. Any other file importing it as default would fail identically. A quick repo-wide grep confirmed AdminBranding.jsx was the ONLY offender; every other of the 31 import sites uses `import { api, ... }` correctly.",
+    "Suggest adding an ESLint rule (`import/default` or `import/named` from eslint-plugin-import) so this class of typo fails CI locally before it reaches the CRA dev overlay."
+  ],
+  "updated_files": [
+    "/app/frontend/src/pages/portal/admin/AdminBranding.jsx (line 3: `import api from` -> `import { api } from`)"
+  ],
+  "success_rate": {"backend": "n/a (not tested per request)", "frontend": "100%"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After the one-line import fix, the following were verified on the live preview URL: (a) Landing page (/) loads with the Indonesian hero (‘Bisnis digital butuh infrastruktur…’) and NO `Compiled with problems` overlay, no webpack overlay iframe. (b) Admin login succeeds and redirects to /portal/admin/dashboard. (c) /portal/admin/branding renders the root [data-testid=admin-branding-page] plus all 4 cards (admin-branding-card-logo_dark / logo_light / favicon / email_banner) each with their upload + reset testids, and current logo/favicon previews are drawn correctly. (d) The `Branding` sidebar link (data-testid=nav-branding) is present in the System group and clicking it navigates to /portal/admin/branding. (e) /portal/admin/dashboard and /portal/admin/mikrotik both render (lazy routes unbroken). Backend endpoints were not exercised per `testing_type: frontend only` in the review request.",
+  "rca of the issue": "Root cause: `/app/frontend/src/portal/api.js` exports the axios instance as a NAMED export only (`export const api = axios.create(...)`) — there is no `export default`. AdminBranding.jsx imported it as a default (`import api from ...`), so webpack raised `export 'default' (imported as 'api') was not found` at three call-sites (lines 55, 74, 88 of the file). CRA rendered its red `Compiled with problems:` overlay, which is what the Indonesian user screenshotted. Reproduction: revert line 3 to `import api from \"../../../portal/api\";`, save, wait ~5s for CRA to recompile, and the overlay reappears (confirmed via /var/log/supervisor/frontend.out.log which showed the exact error text). Mitigation applied: change the import to `import { api } from \"../../../portal/api\";` — matches the pattern used by all 30 other portal/api consumers. After the change, webpack logs `Compiled successfully!` and the overlay disappears."
+}
