@@ -39,17 +39,29 @@ See `/app/memory/test_credentials.md`.
   host, port, username, password, use_tls, site.
 - Live ops on any device: Test connection, BGP peers, Looking Glass
   (ping/traceroute/bgp-route from the router), Blackhole
-  (list/add/remove), Backup (list/create/delete), Reboot with
-  double-confirm, Traffic monitor (rx/tx bps, live line chart w/ 30-sample
-  rolling window).
+  (list/add/remove **with optional CIDR prefix filter**), Backup
+  (list/create/delete), Reboot with double-confirm, Traffic monitor
+  (rx/tx bps, live line chart w/ 30-sample rolling window).
 - **Login fallback**: `MikrotikClient._connect` tries `token` login first
   then falls back to `plain` on any auth failure, so pre-6.43 RouterOS and
   plain-only accounts both work without extra config.
 - **Correct librouteros call**: uses positional `api("/path", ...)`. The
   previous `api(cmd="/path", ...)` crashed at runtime because
   `Api.__call__(self, cmd: str, /, **kwargs)` is positional-only.
-  Regression-guarded by `/app/backend/tests/test_mikrotik_signature.py`
-  (9 tests, all wire-level via a fake `ApiProtocol`).
+- **RouterOS 7 blackhole syntax** (fix, 2026-07-23): `/ip/route/add` uses
+  `blackhole=yes` (v7); the previous `type=blackhole` (v6) raised
+  `TrapError: unknown parameter type`. `blackhole_add` now tries v7 first
+  then falls back to v6, so both worlds work.
+- **Fast blackhole list on full-BGP routers** (fix, 2026-07-23):
+  `blackhole_list` uses `api.rawCmd("/ip/route/print", "?blackhole=yes")`
+  so RouterOS filters server-side. Response time on TO.DIST (full BGP
+  table, ~900k prefixes) dropped from timeout to <2s. Optional
+  `prefix_filter` (CIDR) narrows further client-side via
+  `ipaddress.subnet_of`.
+- Regression-guarded by `/app/backend/tests/test_mikrotik_signature.py`
+  (11 tests, wire-level fake `ApiProtocol`) and
+  `/app/backend/tests/test_mikrotik_blackhole_live.py`
+  (12 tests, real RouterOS 7.20.6).
 
 ### Diagnostics dependencies
 - Container packages: `traceroute` (installed via apt, `/usr/sbin/traceroute`),

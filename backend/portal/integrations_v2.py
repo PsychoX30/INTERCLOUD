@@ -374,11 +374,16 @@ class MikrotikClient:
     def blackhole_remove(self, route_id: str) -> dict:
         try:
             api = self._connect()
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        try:
             list(api("/ip/route/remove", **{".id": route_id}))
-            api.close()
             return {"ok": True, "id": route_id}
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        finally:
+            try: api.close()
+            except Exception: pass
 
     # ---------- Backup ----------
     def backup_list(self) -> list:
