@@ -652,7 +652,7 @@ $(tput setaf 2 2>/dev/null)=====================================================
 
 Automated in this run:
   ✓ OS dependencies + build tools
-  ✓ MongoDB 7.0 ${ENABLE_MONGO_AUTH:++ auth}
+  ✓ MongoDB ${MONGO_SERIES:-7.0} ${ENABLE_MONGO_AUTH:++ auth}
   ✓ Node 20 + Yarn, Python 3.12 venv
   ✓ nginx reverse proxy (${PROTO})
   ✓ supervisor-managed uvicorn (2 workers)
@@ -663,8 +663,10 @@ $(if [[ "$PROTO" == "https" ]]; then echo "  ✓ Let's Encrypt HTTPS + auto-rene
 
 Next steps:
 $(if [[ "$PROTO" != "https" && -n "$PORTAL_DOMAIN" ]]; then
-   echo "  • For HTTPS: point $PORTAL_DOMAIN at $IP, then rerun with"
-   echo "     LETSENCRYPT_EMAIL=you@example.com sudo bash install.sh"
+   echo "  • For HTTPS: point $PORTAL_DOMAIN at $IP (currently pointing elsewhere or"
+   echo "     port 80 unreachable), then run:"
+   echo "        sudo certbot --nginx --non-interactive --agree-tos \\"
+   echo "          --email $LETSENCRYPT_EMAIL --redirect -d $PORTAL_DOMAIN"
 fi)
   • Log in, then use $(tput bold 2>/dev/null)Admin ▸ Backup, Restore & Update$(tput sgr0 2>/dev/null) for future upgrades.
   • Store $(tput bold 2>/dev/null)/etc/intercloud/mongo.env$(tput sgr0 2>/dev/null) in your password manager.
