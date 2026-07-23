@@ -22,6 +22,10 @@ REPO_URL="${REPO_URL:-}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/intercloud-portal}"
 PORTAL_DOMAIN="${PORTAL_DOMAIN:-}"
+LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}"        # if set + PORTAL_DOMAIN, we run certbot
+ENABLE_MONGO_AUTH="${ENABLE_MONGO_AUTH:-yes}"      # yes/no
+MONGO_APP_USER="${MONGO_APP_USER:-intercloud_app}"
+MONGO_APP_PASSWORD="${MONGO_APP_PASSWORD:-}"       # auto-generated if blank
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@intercloud-digital.com}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-AdminIntercloud2026!}"
 EMERGENT_LLM_KEY="${EMERGENT_LLM_KEY:-}"
@@ -64,7 +68,9 @@ apt-get install -y --no-install-recommends \
   python3.12 python3.12-venv python3-pip \
   nginx supervisor \
   traceroute dnsutils whois iproute2 \
-  ufw
+  ufw fail2ban \
+  certbot python3-certbot-nginx \
+  jq
 
 # ------------------------------------------------------------------
 # 2. MongoDB 7.0 (official APT repo, matches Ubuntu 24.04 support)
@@ -81,6 +87,75 @@ if ! command -v mongod >/dev/null 2>&1; then
 else
   log "MongoDB already present — skipping install"
 fi
+
+# Wait for mongod to accept connections (up to 30s) so subsequent auth
+# commands don't race the daemon startup.
+for i in {1..30}; do
+  if mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then
+    break
+  fi
+  sleep 1
+done
+
+# ------------------------------------------------------------------
+# 2b. MongoDB auth — create an app-scoped user and enable auth. Idempotent.
+# ------------------------------------------------------------------
+if [[ "$ENABLE_MONGO_AUTH" == "yes" ]]; then
+  if [[ -z "$MONGO_APP_PASSWORD" ]]; then
+    MONGO_APP_PASSWORD="$(openssl rand -base64 32 | tr -d '=+/')"
+  fi
+
+  # Detect whether auth is already configured. If /etc/mongod.conf has
+  # `authorization: enabled` we're done setting up; just trust the existing
+  # user record (we can't read the password anyway).
+  if ! grep -qE '^\s*authorization:\s*enabled' /etc/mongod.conf; then
+    log "Bootstrapping MongoDB user '${MONGO_APP_USER}' + enabling auth"
+    # Create user while auth is still disabled so we don't need a bootstrap admin.
+    mongosh --quiet <<MONGO
+use admin
+db.createUser({
+  user: "${MONGO_APP_USER}",
+  pwd:  "${MONGO_APP_PASSWORD}",
+  roles: [
+    { role: "readWrite", db: "intercloud_portal" },
+    { role: "dbAdmin",   db: "intercloud_portal" },
+    { role: "backup",    db: "admin" },
+    { role: "restore",   db: "admin" }
+  ]
+})
+MONGO
+    # Flip auth on and restart. Keep bind to loopback only.
+    sed -i 's/^\s*bindIp:.*/  bindIp: 127.0.0.1/' /etc/mongod.conf
+    if grep -qE '^\s*#?\s*security:' /etc/mongod.conf; then
+      sed -i 's/^\s*#\?\s*security:.*/security:\n  authorization: enabled/' /etc/mongod.conf
+    else
+      printf "\nsecurity:\n  authorization: enabled\n" >> /etc/mongod.conf
+    fi
+    systemctl restart mongod
+    sleep 3
+    # Save credentials for update.sh + future re-runs of this installer.
+    install -o root -g root -m 600 /dev/stdin /etc/intercloud/mongo.env <<EOF
+MONGO_APP_USER=${MONGO_APP_USER}
+MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
+EOF
+  else
+    log "MongoDB auth already enabled — preserving existing credentials"
+    # If we have the file from a previous run, load it so the .env below picks up matching credentials.
+    if [[ -f /etc/intercloud/mongo.env ]]; then
+      # shellcheck disable=SC1091
+      . /etc/intercloud/mongo.env
+    else
+      warn "MongoDB auth is on but /etc/intercloud/mongo.env is missing — \
+you'll need to set MONGO_URL manually in $APP_DIR/backend/.env"
+    fi
+  fi
+  MONGO_URL_VALUE="mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@127.0.0.1:27017/intercloud_portal?authSource=admin"
+else
+  log "Skipping MongoDB auth setup (ENABLE_MONGO_AUTH=$ENABLE_MONGO_AUTH)"
+  MONGO_URL_VALUE="mongodb://127.0.0.1:27017"
+fi
+
+mkdir -p /etc/intercloud
 
 # ------------------------------------------------------------------
 # 3. Node.js 20 LTS + Yarn (classic)
@@ -134,13 +209,15 @@ if [[ ! -f "$BACKEND_ENV" ]]; then
     CORS="*"
   fi
   install -o intercloud -g intercloud -m 640 /dev/stdin "$BACKEND_ENV" <<EOF
-MONGO_URL="mongodb://127.0.0.1:27017"
+MONGO_URL="${MONGO_URL_VALUE}"
 DB_NAME="intercloud_portal"
-JWT_SECRET="$(head -c 48 /dev/urandom | base64 | tr -d '=+/')"
+JWT_SECRET="$(openssl rand -base64 48 | tr -d '=+/' | head -c 48)"
 CORS_ORIGINS="$CORS"
 EMERGENT_LLM_KEY="${EMERGENT_LLM_KEY}"
-INSTALL_ADMIN_EMAIL="${ADMIN_EMAIL}"
-INSTALL_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+ADMIN_EMAIL="${ADMIN_EMAIL}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+CLIENT_EMAIL="${CLIENT_EMAIL:-demo@contoh-digital.co.id}"
+CLIENT_PASSWORD="${CLIENT_PASSWORD:-DemoClient2026!}"
 EOF
 else
   log "Backend .env exists — preserving as-is"
@@ -236,6 +313,63 @@ supervisorctl update
 supervisorctl restart intercloud-backend || true
 
 # ------------------------------------------------------------------
+# 8b. fail2ban — protect SSH and nginx auth/login endpoints
+# ------------------------------------------------------------------
+if command -v fail2ban-server >/dev/null 2>&1; then
+  log "Configuring fail2ban jails"
+  cat > /etc/fail2ban/jail.d/intercloud.conf <<F2B
+[sshd]
+enabled  = true
+maxretry = 5
+bantime  = 1h
+
+[nginx-portal-auth]
+enabled  = true
+filter   = nginx-portal-auth
+logpath  = /var/log/nginx/access.log
+maxretry = 20
+findtime = 10m
+bantime  = 30m
+port     = http,https
+F2B
+
+  cat > /etc/fail2ban/filter.d/nginx-portal-auth.conf <<F2BFILTER
+# Trip on repeated 401/429 responses to the auth endpoints
+[Definition]
+failregex = ^<HOST> - .* "POST /api/portal/auth/(login|register|forgot-password|reset-password)[^"]*" (401|429) .*$
+ignoreregex =
+F2BFILTER
+
+  systemctl enable --now fail2ban
+  systemctl restart fail2ban || true
+fi
+
+# ------------------------------------------------------------------
+# 8c. Certbot — automatic HTTPS if PORTAL_DOMAIN + LETSENCRYPT_EMAIL set
+# ------------------------------------------------------------------
+if [[ -n "$PORTAL_DOMAIN" && -n "$LETSENCRYPT_EMAIL" ]]; then
+  if certbot certificates 2>/dev/null | grep -q "Domains:.*\\b${PORTAL_DOMAIN}\\b"; then
+    log "Let's Encrypt cert already exists for $PORTAL_DOMAIN — renewing"
+    certbot renew --quiet --nginx || warn "certbot renew failed (non-fatal)"
+  else
+    log "Requesting Let's Encrypt cert for $PORTAL_DOMAIN"
+    # Extra domain: www.$PORTAL_DOMAIN if reachable.
+    EXTRA_D=""
+    if getent hosts "www.$PORTAL_DOMAIN" >/dev/null 2>&1; then
+      EXTRA_D="-d www.$PORTAL_DOMAIN"
+    fi
+    certbot --nginx --non-interactive --agree-tos \
+      --email "$LETSENCRYPT_EMAIL" \
+      --redirect \
+      -d "$PORTAL_DOMAIN" $EXTRA_D \
+      || warn "certbot failed — falling back to HTTP. Fix DNS + rerun:  sudo certbot --nginx -d $PORTAL_DOMAIN"
+  fi
+  systemctl enable --now certbot.timer 2>/dev/null || true
+else
+  warn "Skipping HTTPS — set PORTAL_DOMAIN and LETSENCRYPT_EMAIL to auto-issue a Let's Encrypt cert."
+fi
+
+# ------------------------------------------------------------------
 # 9. Firewall (optional but sensible)
 # ------------------------------------------------------------------
 log "Enabling ufw firewall (22 / 80 / 443)"
@@ -248,9 +382,44 @@ ufw allow 443/tcp
 ufw --force enable >/dev/null
 
 # ------------------------------------------------------------------
-# 10. Done
+# 10. Verify admin seed happened. The backend seeds an admin on first boot
+# ----using INSTALL_ADMIN_EMAIL / INSTALL_ADMIN_PASSWORD. Poll the health
+# ----endpoint until it's up, then try a login to confirm.
+# ------------------------------------------------------------------
+log "Waiting for backend to come online"
+for i in {1..40}; do
+  if curl -fsS "http://127.0.0.1:8001/api/" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+log "Verifying admin login"
+if LOGIN_HTTP=$(curl -sf -o /tmp/ic_login.json -w "%{http_code}" \
+     -X POST "http://127.0.0.1:8001/api/portal/auth/login" \
+     -H "Content-Type: application/json" \
+     -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}" 2>/dev/null); then
+  if command -v jq >/dev/null 2>&1 && jq -e '.token' /tmp/ic_login.json >/dev/null 2>&1; then
+    log "Admin login OK (HTTP $LOGIN_HTTP)"
+  else
+    warn "Login returned $LOGIN_HTTP but no token — seed may have failed. Check logs."
+  fi
+else
+  warn "Admin login attempt failed. The admin seeder runs on the FIRST backend boot only;"
+  warn "if this is a re-install with a pre-existing DB, use the password that was set originally."
+fi
+rm -f /tmp/ic_login.json
+
+# ------------------------------------------------------------------
+# 11. Done
 # ------------------------------------------------------------------
 IP=$(hostname -I | awk '{print $1}')
+PROTO="http"
+if [[ -n "$PORTAL_DOMAIN" && -n "$LETSENCRYPT_EMAIL" ]] && \
+   certbot certificates 2>/dev/null | grep -q "Domains:.*\\b${PORTAL_DOMAIN}\\b"; then
+  PROTO="https"
+fi
+URL="${PROTO}://${PORTAL_DOMAIN:-$IP}"
 cat <<DONE
 
 $(tput setaf 2 2>/dev/null)============================================================
@@ -258,21 +427,34 @@ $(tput setaf 2 2>/dev/null)=====================================================
 ============================================================$(tput sgr0 2>/dev/null)
 
   App directory : $APP_DIR
-  Backend       : http://127.0.0.1:8001 (behind nginx /api)
-  Frontend      : http://$IP/ (served by nginx from build/)
-  MongoDB       : 127.0.0.1:27017 (local, no auth by default)
+  Portal URL    : $URL
+  Backend       : 127.0.0.1:8001 (behind nginx /api)
+  MongoDB       : 127.0.0.1:27017 ${ENABLE_MONGO_AUTH:+(auth enabled, user=${MONGO_APP_USER})}
 
   Admin login   : ${ADMIN_EMAIL}
   Admin passwd  : ${ADMIN_PASSWORD}
 
+Automated in this run:
+  ✓ OS dependencies + build tools
+  ✓ MongoDB 7.0 ${ENABLE_MONGO_AUTH:++ auth}
+  ✓ Node 20 + Yarn, Python 3.12 venv
+  ✓ nginx reverse proxy (${PROTO})
+  ✓ supervisor-managed uvicorn (2 workers)
+  ✓ fail2ban jails (SSH + portal auth brute-force)
+  ✓ UFW firewall (22 / 80 / 443)
+$(if [[ "$PROTO" == "https" ]]; then echo "  ✓ Let's Encrypt HTTPS + auto-renewal via certbot.timer"; fi)
+
 Next steps:
-  1. Point DNS 'A' record for $(tput bold 2>/dev/null)${PORTAL_DOMAIN:-your domain}$(tput sgr0 2>/dev/null) at $IP.
-  2. For HTTPS, run:  sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d ${PORTAL_DOMAIN:-YOUR_DOMAIN}
-  3. Test the update endpoint from Admin ▸ Backup & Restore ▸ "Update system".
-  4. Optional: MongoDB auth — see docs/production.md.
+$(if [[ "$PROTO" != "https" && -n "$PORTAL_DOMAIN" ]]; then
+   echo "  • For HTTPS: point $PORTAL_DOMAIN at $IP, then rerun with"
+   echo "     LETSENCRYPT_EMAIL=you@example.com sudo bash install.sh"
+fi)
+  • Log in, then use $(tput bold 2>/dev/null)Admin ▸ Backup, Restore & Update$(tput sgr0 2>/dev/null) for future upgrades.
+  • Store $(tput bold 2>/dev/null)/etc/intercloud/mongo.env$(tput sgr0 2>/dev/null) in your password manager.
 
 Logs:
-  Backend  :  tail -f /var/log/intercloud-backend.err.log
-  nginx    :  tail -f /var/log/nginx/error.log
-  Mongo    :  journalctl -u mongod -f
+  Backend    :  tail -f /var/log/intercloud-backend.err.log
+  nginx      :  tail -f /var/log/nginx/error.log
+  MongoDB    :  journalctl -u mongod -f
+  fail2ban   :  fail2ban-client status
 DONE

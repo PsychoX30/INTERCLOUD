@@ -140,25 +140,43 @@ See `/app/memory/test_credentials.md`.
   `window.confirm` prompt.
 
 ### One-command production install + in-place updates (2026-07-23)
-- `scripts/install.sh` — Ubuntu 24.04 LTS one-shot installer:
-  OS deps, MongoDB 7.0, Node 20 + Yarn, Python 3.12 venv, nginx SPA
-  reverse-proxy, supervisor-managed uvicorn, ufw firewall. Idempotent —
-  safe to re-run; preserves both `.env` files. Reads config from env vars
-  (`REPO_URL`, `REPO_BRANCH`, `PORTAL_DOMAIN`, `ADMIN_EMAIL`,
-  `ADMIN_PASSWORD`, `EMERGENT_LLM_KEY`).
-- `scripts/update.sh` — auto-snapshots DB to
+- `scripts/install.sh` — Ubuntu 24.04 LTS end-to-end installer:
+  - OS deps + build tools (nginx, supervisor, python 3.12, node 20 + yarn,
+    traceroute / dig / whois, jq, fail2ban, certbot, ufw)
+  - **MongoDB 7.0** with `authorization: enabled`, per-install random
+    password app user saved to `/etc/intercloud/mongo.env` (mode 600),
+    `bindIp` locked to 127.0.0.1
+  - System user `intercloud`, `git clone` into `/opt/intercloud-portal`
+  - Python venv + backend deps
+  - `backend/.env` written with the freshly provisioned Mongo URL, a random
+    48-byte `JWT_SECRET`, CORS whitelist derived from `PORTAL_DOMAIN`, and
+    the seeder's expected `ADMIN_EMAIL` / `ADMIN_PASSWORD` /
+    `CLIENT_EMAIL` / `CLIENT_PASSWORD` variables
+  - `frontend/.env` with `REACT_APP_BACKEND_URL`
+  - `yarn install --frozen-lockfile && yarn build` → static bundle served
+    by nginx from `frontend/build/`
+  - nginx reverse proxy: `/api` → `127.0.0.1:8001`, everything else → SPA
+    fallback; body size 100 MB, read timeout 600 s, gzip on
+  - supervisor program `intercloud-backend` (uvicorn, 2 workers)
+  - **fail2ban** jails — SSH default + custom `nginx-portal-auth` that
+    watches for repeated `401`/`429` on `/api/portal/auth/*` (20 hits in
+    10 min → 30-min ban)
+  - **UFW firewall** (22 / 80 / 443)
+  - **Let's Encrypt HTTPS via certbot** — auto-issues + configures nginx
+    to redirect 80 → 443 when both `PORTAL_DOMAIN` and `LETSENCRYPT_EMAIL`
+    are set; enables `certbot.timer` for auto-renewal
+  - **Admin seed verification** — polls backend `/api/`, then round-trips
+    a real login before exiting so the operator sees "Admin login OK"
+  - Idempotent — safe to re-run; both `.env` files and MongoDB auth are
+    preserved on second execution
+- `scripts/update.sh` — auto-snapshots DB (atomic `.tmp` swap) to
   `/var/backups/intercloud/pre-update-*.archive.gz` (30-day retention),
+  refuses on dirty tree (exit 3), refuses if no git remote (exit 4),
   `git pull --ff-only`, reinstalls Python + Node deps, rebuilds the
-  frontend, restarts the backend via supervisor. Preserves .env + DB.
-  Returns `STATUS=ok OLD=<sha> NEW=<sha> BACKUP=<path>`.
-- `GET  /api/portal/admin/system/version` — current branch/sha/subject/date
-  for the update UI.
-- `POST /api/portal/admin/system/update?confirm=UPDATE` — admin-only,
-  runs `scripts/update.sh` in a subprocess (10-min timeout), returns the
-  status line + log tail.
-- Frontend page at `/portal/admin/backup` now includes an **Update
-  system** card at the top: shows current branch/sha, one-click update
-  with a `window.confirm` gate, and streams the log to the UI.
+  frontend, restarts backend via supervisor. Distinct exit codes surface
+  as distinct HTTP statuses in the admin UI (409 dirty, 422 no-remote).
+- `POST /api/portal/admin/system/update?confirm=UPDATE` — file-locked via
+  `flock(/tmp/intercloud-update.lock)` so concurrent clicks return 409.
 - Full deployment guide at `/app/docs/production.md`.
 
 ---
