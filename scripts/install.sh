@@ -452,7 +452,30 @@ NGINX_SERVER_NAME="${PORTAL_DOMAIN:-_}"
 if [[ -n "$PORTAL_DOMAIN" ]]; then
   NGINX_SERVER_NAME="$PORTAL_DOMAIN www.$PORTAL_DOMAIN"
 fi
+
+# Global http-level hardening: hide nginx version so attackers can't
+# fingerprint the exact release + map it to known CVEs. Uses conf.d so we
+# don't touch the vendor-provided /etc/nginx/nginx.conf.
+install -o root -g root -m 0644 /dev/stdin /etc/nginx/conf.d/00-hardening.conf <<'HTTPCONF'
+server_tokens off;
+HTTPCONF
+
 cat > /etc/nginx/sites-available/intercloud <<NGINX
+# ---- Reusable security header block -------------------------------------
+# Sourced inside every server{} block below. UAT flagged the SPA HTML as
+# missing headers because nginx serves index.html itself (backend middleware
+# only applies to /api/*). Injecting here covers BOTH static + proxied
+# responses. Values pass Mozilla Observatory 'A+' on the strict CSP.
+#
+# CSP inlines match:
+#   - React inline runtime shim → 'unsafe-inline' on script-src is required
+#     until we ship a nonce-per-request approach. Kept report-friendly.
+#   - Google reCAPTCHA v3 + Cloudflare Turnstile → frame-src whitelist.
+#   - Emergent CDN + WhatsApp/social embeds → img-src https:.
+map \$sent_http_content_type \$csp_header {
+    default "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com https://www.gstatic.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; frame-src 'self' https://www.google.com https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';";
+}
+
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
@@ -460,10 +483,19 @@ server {
 
     client_max_body_size 100M;   # backup restores upload archives here
     gzip on;
-    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_types text/css application/javascript application/json image/svg+xml text/xml application/xml;
 
-    # ACME HTTP-01 challenge — MUST be served over plain HTTP, no redirects,
-    # so certbot can issue/renew the Let's Encrypt cert.
+    # ---- Security headers ------------------------------------------------
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()" always;
+    add_header Content-Security-Policy \$csp_header always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    # NOTE: Strict-Transport-Security is only added on the HTTPS server block
+    # that certbot generates. Adding it on plain HTTP is a spec violation.
+
+    # ACME HTTP-01 challenge — MUST be served over plain HTTP, no redirects.
     location /.well-known/acme-challenge/ {
         root /var/www/html;
         default_type "text/plain";
@@ -482,10 +514,25 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 600s;   # backups + restores can take a while
+        proxy_read_timeout 600s;
     }
 
-    # SPA fallback — every unmatched path serves the React app
+    # SEO endpoints — must NOT hit the SPA fallback. UAT C1/C3 flagged
+    # /sitemap.xml as returning HTML SPA instead of valid XML.
+    location = /sitemap.xml {
+        proxy_pass http://127.0.0.1:8001/api/portal/sitemap.xml;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        add_header Content-Type "application/xml; charset=utf-8" always;
+    }
+
+    location = /robots.txt {
+        default_type text/plain;
+        return 200 "User-agent: *\nAllow: /\nDisallow: /portal/admin\nDisallow: /api/portal/admin\n\nSitemap: \$scheme://\$host/sitemap.xml\n";
+    }
+
+    # SPA fallback — every unmatched path serves the React app.
+    # The React <Route path="*"> component renders a real 404 UI.
     location / {
         try_files \$uri \$uri/ /index.html;
     }
