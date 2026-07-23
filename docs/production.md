@@ -5,12 +5,14 @@
 On a **fresh Ubuntu 24.04** server (as root or with `sudo`):
 
 ```bash
-wget -O install.sh https://raw.githubusercontent.com/<OWNER>/<REPO>/main/scripts/install.sh
-sudo REPO_URL="https://github.com/<OWNER>/<REPO>.git" \
-     PORTAL_DOMAIN="portal.your-domain.com" \
+wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh
+sudo PORTAL_DOMAIN="portal.your-domain.com" \
      LETSENCRYPT_EMAIL="ops@your-domain.com" \
      bash install.sh
 ```
+
+> `REPO_URL` defaults to `https://github.com/PsychoX30/INTERCLOUD.git`. Override it
+> only if you're deploying from a fork or a private mirror.
 
 The installer runs end-to-end without prompts and configures:
 
@@ -62,7 +64,7 @@ Environment variables:
 
 | var | default | notes |
 | --- | --- | --- |
-| `REPO_URL` | *(prompts)* | Required. HTTPS git URL. |
+| `REPO_URL` | `https://github.com/PsychoX30/INTERCLOUD.git` | HTTPS git URL. Override for forks/mirrors. |
 | `REPO_BRANCH` | `main` | Any branch/tag. |
 | `APP_DIR` | `/opt/intercloud-portal` | Checkout location. |
 | `PORTAL_DOMAIN` | *(empty)* | FQDN → nginx server_name + CORS + certbot. |

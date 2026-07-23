@@ -4,11 +4,11 @@
 #
 # Usage (from a fresh Ubuntu 24.04 server, as root or sudo user):
 #
-#     wget -O install.sh https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh
+#     wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh
 #     sudo bash install.sh
 #
 # Options via environment variables (all optional):
-#   REPO_URL     Git URL of the portal repo   (default: env var, then prompt)
+#   REPO_URL     Git URL of the portal repo   (default: https://github.com/PsychoX30/INTERCLOUD.git)
 #   REPO_BRANCH  Branch to check out          (default: main)
 #   APP_DIR      Where to install             (default: /opt/intercloud-portal)
 #   PORTAL_DOMAIN         Public FQDN (e.g. portal.example.com); leave blank for IP-only
@@ -18,7 +18,7 @@
 #
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-}"
+REPO_URL="${REPO_URL:-https://github.com/PsychoX30/INTERCLOUD.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/intercloud-portal}"
 PORTAL_DOMAIN="${PORTAL_DOMAIN:-}"
@@ -49,7 +49,8 @@ die()  { echo -e "${BOLD}${RED}xx${RESET} $*" >&2; exit 1; }
 [[ "$VERSION_ID" == "24.04" ]] || warn "This script targets Ubuntu 24.04 LTS. You are on $PRETTY_NAME — continuing but expect issues."
 
 if [[ -z "$REPO_URL" ]]; then
-  read -r -p "Git repository URL for the portal (e.g. https://github.com/you/portal.git): " REPO_URL
+  read -r -p "Git repository URL for the portal [https://github.com/PsychoX30/INTERCLOUD.git]: " REPO_URL
+  REPO_URL="${REPO_URL:-https://github.com/PsychoX30/INTERCLOUD.git}"
 fi
 [[ -n "$REPO_URL" ]] || die "REPO_URL is required."
 
