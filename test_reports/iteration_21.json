@@ -1,0 +1,40 @@
+{
+  "summary": "Live RouterOS 7.20.6 (TO.DIST, 157.20.32.253:8777) testing of the two blackhole bugs. Both fixes VERIFIED end-to-end. Created /app/backend/tests/test_mikrotik_blackhole_live.py — 12 pytest cases, 12/12 pass in 25s. Bug 1 (v7 `blackhole=yes` syntax) — POST /admin/mikrotik/blackhole returns {ok:true, prefix:'198.51.100.77/32'}, no TrapError. Bug 2 (server-side ?blackhole=yes query) — GET returns 100+ blackhole rows in <2s even though TO.DIST carries a full-BGP table (>900k prefixes); `prefix_filter=198.51.100.0/24` correctly narrows to the fresh route, `prefix_filter=10.0.0.0/8` correctly excludes it. DELETE returns {ok:true} and post-delete GET confirms removal. Regression PASS on all 6 previously-fixed mikrotik ops (test-connection, interfaces, LG-ping, LG-traceroute, traffic, backups) and diagnostics traceroute. Router state clean at end (no leaked TEST_ routes).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/portal/admin/diagnostics/run (tool=traceroute)", "issue": "Server returned {output:'', error:'traceroute not installed'} initially — the `traceroute` binary is MISSING from the container image (matches iteration-20 findings for dig/nslookup/whois). Fixed at test-agent level by `apt-get install -y traceroute` so the traceroute regression test could pass. This is an ENVIRONMENT/deploy issue: base image needs `traceroute dnsutils whois` baked in, or the diagnostics endpoint should ship a clearer 501 Not Implemented style response and the deploy pipeline should install these packages."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_mikrotik_blackhole_live.py",
+    "/app/test_reports/pytest/mikrotik_blackhole_live.xml"
+  ],
+  "action_items": [
+    "ENV — bake `traceroute` (and `dnsutils`, `whois` per iteration-20) into the backend container image so /admin/diagnostics/run tools work in production. Currently missing on the running preview container; I installed traceroute at runtime for the test run but that's not persistent across restarts.",
+    "TEST HARNESS — pytest.ini has `-n auto --dist loadscope` baked in. When a suite has intra-module ordering dependencies (like the blackhole ADD→LIST→DELETE chain), xdist's LoadScopeScheduling runs classes on different workers and the ordering breaks. This iteration's file is documented to run with `-o addopts=` (sequential). Consider adding `@pytest.mark.xdist_group('serial')` or moving the ordered flow into a single class so LoadScope keeps it together."
+  ],
+  "critical_code_review_comments": [
+    "GOOD — /app/backend/portal/integrations_v2.py MikrotikClient.blackhole_add (L338-372): clean v7-first / v6-fallback pattern. Tries `blackhole=yes` first, on Exception captures v7_err and retries with `type=blackhole`. Final error message concatenates BOTH failure reasons so ops can tell which router version was targeted. Verified live on RouterOS 7.20.6 — v7 branch succeeded, no fallback needed.",
+    "GOOD — MikrotikClient.blackhole_list (L285-336): uses `api.rawCmd('/ip/route/print', '?blackhole=yes')` — the RouterOS API query word syntax — so the router pre-filters before streaming. On TO.DIST with a full BGP table, response is <2s (previous implementation using `api.path('ip','route')` would stream 900k+ rows). Loop tries both `?blackhole=yes` and `?type=blackhole` so it works on any RouterOS version. Defensive client-side check on `r.get('blackhole') or type=='blackhole'` handles the RouterOS 7 quirk of returning `blackhole` as an empty string.",
+    "GOOD — prefix_filter uses `ipaddress.ip_network(...).subnet_of(...)` which correctly handles /32 subnet-of /24 (verified with real /32 inside /24). Invalid CIDR returns unfiltered rows instead of 500 (graceful degradation).",
+    "GOOD — /admin/mikrotik/blackhole GET route wires `prefix_filter` through _run_mikrotik as a kwarg → integrations_v2.blackhole_list — clean parameter passthrough (routes.py L3913-3917).",
+    "MINOR — MikrotikClient.blackhole_remove (L374-381) does NOT close the api handle on failure (only closes on success inside the try). Since api.close() is inside the try, if `list(api('/ip/route/remove', ...))` raises, api never gets closed. Recommend: mirror blackhole_add's `try: api.close(); except Exception: pass` in the except branch. Not blocking (connection GC-collects) but tidier.",
+    "MINOR — blackhole_list falls back to `?type=blackhole` if the first rawCmd raises OR returns None. But rawCmd will typically return an empty iterator (not None) on RouterOS 6 where the query word `?blackhole=yes` returns no matches. In that scenario the fallback would NOT trigger. Not a bug for RouterOS 7 (verified), but worth documenting: the v6 fallback only kicks in on exceptions, not on empty results."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mikrotik_blackhole_live.py (NEW, 12 tests, live-router)",
+    "container: apt-installed `traceroute` (runtime-only, not persisted in image)"
+  ],
+  "success_rate": {
+    "backend": "12/12 (100%) after sequential run — Bug 1 add-v7 syntax PASS, Bug 2 fast list + prefix_filter PASS (in/out), DELETE + verify PASS, 6/6 regression mikrotik ops PASS, diagnostics traceroute PASS (after installing traceroute binary).",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! — worked",
+  "seed_data_creation": "None persistent. Each test run adds `198.51.100.77/32` (RFC5737 TEST-NET-2) as a blackhole with comment `TEST_blackhole_iter21` and deletes it in the DELETE test. Module-level teardown fixture guarantees cleanup even on partial failure. Verified router state clean after run (GET filter=198.51.100.0/24 returned []).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "1) The blackhole ADD→LIST→DELETE flow MUST run sequentially. Use `pytest -o addopts=` to strip pytest.ini's `-n auto --dist loadscope`. First run with xdist enabled had 3 failures purely due to worker scheduling putting ADD after LIST — the fixes themselves work. 2) Live device TO.DIST id=6a617872f12db51fa9cc268c is real infra at 157.20.32.253:8777, don't spam with rapid ADD/DELETE. 3) `traceroute` was missing from container — apt-installed at runtime but not persisted; expect diagnostics traceroute to break again after container rebuild until deployment installs it (also missing: dig/nslookup/whois per iter-20). 4) RouterOS 7 returns `blackhole` field as empty string `\"\"` (not the string `\"yes\"`) — the defensive filter in integrations_v2.py L314-317 handles this correctly. 5) Route IDs like `*8000000E` need URL-encoding (`%2A`) in DELETE path; the test file uses urllib.parse.quote — verified working.",
+  "rca of the issue": "Bug 1 RCA (confirmed by live test): RouterOS 7 removed the `type` parameter on /ip/route/add. New required syntax is `blackhole=yes` as a boolean flag. Fix in integrations_v2.py::blackhole_add tries v7 syntax first, captures the TrapError in v7_err, then falls back to v6 `type=blackhole`. Live TO.DIST is RouterOS 7.20.6 → v7 branch succeeds directly, TrapError never surfaces to the client. Bug 2 RCA (confirmed by live test): Previous implementation `list(api.path('ip','route'))` streams the ENTIRE routing table over the API before any Python-side filtering. On TO.DIST carrying a full BGP table (~900k prefixes), this either timed out or returned megabytes. Fix uses RouterOS API query words `rawCmd('/ip/route/print', '?blackhole=yes')` so the router pre-filters server-side, reducing the payload from ~900k rows to ~100 rows and response time from timeout to <2s. Optional `prefix_filter` (CIDR) is applied client-side via `ipaddress.subnet_of` for a further narrow. Both fixes verified end-to-end against the production router."
+}

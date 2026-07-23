@@ -76,13 +76,88 @@ def test_looking_glass_traceroute_uses_positional_cmd():
     assert fake.sent[0][0] == "/tool/traceroute"
 
 
-def test_blackhole_add_uses_positional_cmd():
+def test_blackhole_add_uses_v7_boolean_first():
+    """RouterOS 7 uses `blackhole=yes` flag, not `type=blackhole`."""
     c, fake = _client_with_fake()
     out = c.blackhole_add("203.0.113.0/32")
     assert out["ok"] is True, out
     assert fake.sent[0][0] == "/ip/route/add"
-    assert "=type=blackhole" in fake.sent[0][1]
+    assert "=blackhole=yes" in fake.sent[0][1]
     assert "=dst-address=203.0.113.0/32" in fake.sent[0][1]
+    # Only one command should have been sent — v7 succeeded, no fallback.
+    assert len(fake.sent) == 1
+
+
+def test_blackhole_add_falls_back_to_v6_type():
+    """If RouterOS 6 rejects `blackhole` param, fall back to `type=blackhole`."""
+    # First writeSentence queues its reply; then Api reads. We need writeSentence
+    # for the first (v7) call to succeed but readResponse to raise TrapError.
+    from librouteros.exceptions import TrapError
+
+    class RaisingProto(FakeProtocol):
+        def __init__(self):
+            super().__init__(replies=None)
+            self._call = 0
+
+        def writeSentence(self, cmd, *words):
+            self._call += 1
+            self.sent.append((cmd, tuple(words)))
+            if self._call == 1:
+                # First call → simulate v7 rejection via a !trap sentence
+                self._pending = [
+                    ("!trap", _encode({"message": "unknown parameter: blackhole"})),
+                    ("!done", ()),
+                ]
+            else:
+                self._pending = [("!done", ())]
+
+        def readSentence(self):
+            return self._pending.pop(0)
+
+    from portal.integrations_v2 import MikrotikClient
+    proto = RaisingProto()
+    api = Api(proto)
+    c = MikrotikClient({"credentials": {"host": "x", "username": "u", "password": "p"}})
+    c._connect = lambda: api  # type: ignore
+    out = c.blackhole_add("192.0.2.0/32")
+    assert out["ok"] is True, out
+    assert len(proto.sent) == 2
+    # Second (fallback) call must include the legacy `type=blackhole`.
+    assert "=type=blackhole" in proto.sent[1][1]
+
+
+def test_blackhole_list_uses_query_filter_and_prefix_narrowing():
+    """blackhole_list must issue a rawCmd query — not a full /ip/route dump —
+    and honour the optional prefix_filter."""
+    from portal.integrations_v2 import MikrotikClient
+
+    routes = [
+        {"dst-address": "157.20.32.5/32", "blackhole": "",    "distance": 1, ".id": "*1"},
+        {"dst-address": "157.20.33.5/32", "blackhole": "yes", "distance": 1, ".id": "*2"},
+        {"dst-address": "10.0.0.1/32",    "blackhole": "",    "distance": 1, ".id": "*3"},
+    ]
+
+    class QueryProto(FakeProtocol):
+        def writeSentence(self, cmd, *words):
+            self.sent.append((cmd, tuple(words)))
+            # Only reply when the first (v7) query is issued.
+            self._pending = [(("!re"), _encode(r)) for r in routes] + [("!done", ())]
+
+    proto = QueryProto()
+    api = Api(proto)
+    c = MikrotikClient({"credentials": {"host": "x", "username": "u", "password": "p"}})
+    c._connect = lambda: api  # type: ignore
+
+    # Without filter: all 3 rows
+    rows = c.blackhole_list()
+    assert proto.sent[0][0] == "/ip/route/print"
+    assert "?blackhole=yes" in proto.sent[0][1]
+    assert len(rows) == 3
+
+    # With CIDR filter: only the /32 inside 157.20.32.0/24
+    rows2 = c.blackhole_list(prefix_filter="157.20.32.0/24")
+    assert len(rows2) == 1
+    assert rows2[0]["dst-address"] == "157.20.32.5/32"
 
 
 def test_blackhole_remove_uses_positional_cmd():

@@ -282,25 +282,94 @@ class MikrotikClient:
         return {"ok": True, "rows": rows, "tool": tool, "target": target}
 
     # ---------- Blackhole routes (/ip/route type=blackhole) ----------
-    def blackhole_list(self) -> list:
+    def blackhole_list(self, prefix_filter: str | None = None) -> list:
+        """List blackhole routes only, using a server-side query so we don't
+        pull the full BGP table.
+
+        `prefix_filter` (optional, e.g. `157.20.32.0/24`) is applied
+        client-side against `dst-address`, keeping only routes whose
+        destination network is a subnet of the filter.
+        """
         try:
             api = self._connect()
-            rows = list(api.path("ip", "route"))
-            api.close()
-            return [r for r in rows if (r.get("type") or "").lower() == "blackhole"]
         except Exception:
             return []
+        rows: list = []
+        # RouterOS 7 uses the boolean flag `blackhole=yes`; RouterOS 6 uses
+        # `type=blackhole`.  Try both queries so the caller works on either.
+        for query in ("?blackhole=yes", "?type=blackhole"):
+            try:
+                rows = list(api.rawCmd("/ip/route/print", query))
+                if rows is not None:
+                    break
+            except Exception:
+                continue
+        try: api.close()
+        except Exception: pass
+
+        # Server-side query already filtered to blackhole only. Keep a
+        # defensive client-side check for older RouterOS versions where the
+        # query might have been ignored. RouterOS 7 sends the flag as an
+        # empty string (`=blackhole=`), RouterOS 6 sends `type=blackhole`.
+        rows = [r for r in rows if (
+            "blackhole" in r
+            or (str(r.get("type", "")).lower() == "blackhole")
+        )]
+
+        if prefix_filter:
+            import ipaddress
+            try:
+                net = ipaddress.ip_network(prefix_filter.strip(), strict=False)
+            except ValueError:
+                return rows
+            keep = []
+            for r in rows:
+                dst = (r.get("dst-address") or "").strip()
+                if not dst:
+                    continue
+                try:
+                    if ipaddress.ip_network(dst, strict=False).subnet_of(net):
+                        keep.append(r)
+                except ValueError:
+                    continue
+            rows = keep
+        return rows
 
     def blackhole_add(self, prefix: str, *, comment: str = "portal-blackhole") -> dict:
+        """Add a blackhole route.
+
+        RouterOS 7 rejects `type=blackhole` on `/ip/route/add` with
+        `unknown parameter: type` — the new syntax is `blackhole=yes`.
+        We try v7 first and fall back to v6 syntax if the router does not
+        recognise the `blackhole` boolean.
+        """
         try:
             api = self._connect()
-            list(api("/ip/route/add",
-                **{"dst-address": prefix, "type": "blackhole",
-                   "distance": "1", "comment": comment}))
-            api.close()
-            return {"ok": True, "prefix": prefix}
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        # Try RouterOS 7 style first
+        v7_err = None
+        try:
+            list(api("/ip/route/add",
+                     **{"dst-address": prefix, "blackhole": "yes",
+                        "distance": "1", "comment": comment}))
+            try: api.close()
+            except Exception: pass
+            return {"ok": True, "prefix": prefix}
+        except Exception as e:
+            v7_err = f"{type(e).__name__}: {e}"
+        # Fall back to RouterOS 6 style
+        try:
+            list(api("/ip/route/add",
+                     **{"dst-address": prefix, "type": "blackhole",
+                        "distance": "1", "comment": comment}))
+            try: api.close()
+            except Exception: pass
+            return {"ok": True, "prefix": prefix}
+        except Exception as e:
+            try: api.close()
+            except Exception: pass
+            return {"ok": False, "error": f"v7: {v7_err} | v6: {type(e).__name__}: {e}"}
 
     def blackhole_remove(self, route_id: str) -> dict:
         try:

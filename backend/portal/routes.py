@@ -3910,9 +3910,11 @@ async def mikrotik_looking_glass(payload: dict, admin=Depends(get_current_admin)
 
 # ---------- Blackhole ----------
 @router.get("/admin/mikrotik/blackhole")
-async def mikrotik_blackhole_list(admin=Depends(get_current_admin), device_id: str | None = None):
+async def mikrotik_blackhole_list(admin=Depends(get_current_admin),
+                                  device_id: str | None = None,
+                                  prefix_filter: str | None = None):
     db = await _get_db()
-    return await _run_mikrotik(db, device_id, "blackhole_list")
+    return await _run_mikrotik(db, device_id, "blackhole_list", prefix_filter=prefix_filter)
 
 
 @router.post("/admin/mikrotik/blackhole")

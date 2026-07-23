@@ -268,14 +268,21 @@ const LookingGlassTab = ({ deviceId }) => {
 const BlackholeTab = ({ deviceId }) => {
   const [rows, setRows] = useState(null);
   const [prefix, setPrefix] = useState("");
+  const [filter, setFilter] = useState("");
+  const [appliedFilter, setAppliedFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const load = async () => {
-    const q = deviceId ? `?device_id=${deviceId}` : "";
+  const load = async (f = appliedFilter) => {
+    const parts = [];
+    if (deviceId) parts.push(`device_id=${deviceId}`);
+    if (f) parts.push(`prefix_filter=${encodeURIComponent(f)}`);
+    const q = parts.length ? `?${parts.join("&")}` : "";
     try { const { data } = await api.get(`/admin/mikrotik/blackhole${q}`); setRows(data); }
     catch { setRows([]); }
   };
-  useEffect(() => { load(); /* eslint-disable-line */ }, [deviceId]);
+  useEffect(() => { load(""); /* eslint-disable-line */ }, [deviceId]);
+  const applyFilter = (e) => { e.preventDefault(); setAppliedFilter(filter); load(filter); };
+  const clearFilter = () => { setFilter(""); setAppliedFilter(""); load(""); };
   const add = async (e) => {
     e.preventDefault(); setBusy(true); setMsg("");
     try {
@@ -305,8 +312,32 @@ const BlackholeTab = ({ deviceId }) => {
         </form>
         {msg && <div className="mt-3 text-sm text-red-700">{msg}</div>}
       </Card>
+
+      <Card className="p-4 mb-4">
+        <form onSubmit={applyFilter} className="flex items-end gap-3" data-testid="mt-bh-filter-form">
+          <label className="flex-1">
+            <div className={labelClass}>Filter by parent prefix (only show blackhole routes inside this network)</div>
+            <input value={filter} onChange={(e) => setFilter(e.target.value)}
+                   placeholder="e.g. 157.20.32.0/24" className={`${inputClass} font-mono`}
+                   data-testid="mt-bh-filter-input" />
+          </label>
+          <button type="submit" className={btnPrimary} data-testid="mt-bh-filter-apply">
+            <Search className="h-4 w-4" /> Apply
+          </button>
+          {appliedFilter && (
+            <button type="button" onClick={clearFilter} className={btnSecondary} data-testid="mt-bh-filter-clear">
+              Clear
+            </button>
+          )}
+        </form>
+        <div className="mt-2 text-[11px] text-slate-500">
+          Skip a full-BGP-table dump — the query already filters server-side to <span className="font-mono">?blackhole=yes</span>. Add a parent CIDR to narrow further.
+          {appliedFilter && <span className="ml-2 text-[#0a2350] font-bold">Active filter: <span className="font-mono">{appliedFilter}</span></span>}
+        </div>
+      </Card>
+
       <Card className="p-0 overflow-hidden">
-        <div className="px-4 py-2 border-b border-slate-100 bg-slate-50 text-xs font-bold uppercase tracking-widest text-[#0a2350]">Active blackhole routes</div>
+        <div className="px-4 py-2 border-b border-slate-100 bg-slate-50 text-xs font-bold uppercase tracking-widest text-[#0a2350]">Active blackhole routes {appliedFilter && <span className="text-slate-400 font-normal normal-case">— filtered by {appliedFilter}</span>}</div>
         {!rows && <div className="p-6 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin inline mr-2" /> Loading…</div>}
         {rows && (
           <table className="w-full text-sm">
@@ -314,14 +345,14 @@ const BlackholeTab = ({ deviceId }) => {
               <tr><th className="px-4 py-3 text-left">Prefix</th><th className="px-4 py-3 text-left">Distance</th><th className="px-4 py-3 text-left">Comment</th><th className="px-4 py-3"></th></tr>
             </thead>
             <tbody>
-              {rows.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">No blackhole routes on this device.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400" data-testid="mt-bh-empty">No blackhole routes {appliedFilter ? "inside this prefix." : "on this device."}</td></tr>}
               {rows.map((r) => (
-                <tr key={r[".id"]} className="border-t border-slate-100">
+                <tr key={r[".id"]} className="border-t border-slate-100" data-testid={`mt-bh-row-${r[".id"]}`}>
                   <td className="px-4 py-2 font-mono text-xs font-bold">{r["dst-address"]}</td>
                   <td className="px-4 py-2">{r.distance}</td>
                   <td className="px-4 py-2 text-xs text-slate-600">{r.comment || "—"}</td>
                   <td className="px-4 py-2 text-right">
-                    <button onClick={() => del(r[".id"])} className="text-xs text-red-600 hover:text-red-800">
+                    <button onClick={() => del(r[".id"])} className="text-xs text-red-600 hover:text-red-800" data-testid={`mt-bh-del-${r[".id"]}`}>
                       <Trash2 className="h-3 w-3 inline" /> Remove
                     </button>
                   </td>
