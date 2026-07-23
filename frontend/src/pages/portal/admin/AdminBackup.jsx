@@ -1,5 +1,5 @@
-import React, { useState, useRef } from "react";
-import { Download, Upload, ShieldAlert, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import React, { useState, useRef, useEffect } from "react";
+import { Download, Upload, ShieldAlert, Loader2, CheckCircle2, AlertTriangle, RefreshCw, GitBranch } from "lucide-react";
 import { api } from "../../../portal/api";
 
 const API_BASE = process.env.REACT_APP_BACKEND_URL;
@@ -12,6 +12,30 @@ const AdminBackup = () => {
   const [file, setFile] = useState(null);
   const [confirmText, setConfirmText] = useState("");
   const fileRef = useRef(null);
+
+  // ---------- System update ----------
+  const [version, setVersion] = useState(null);
+  const [updating, setUpdating] = useState(false);
+  const [updateLog, setUpdateLog] = useState("");
+
+  useEffect(() => { api.get("/admin/system/version").then(({ data }) => setVersion(data)).catch(() => {}); }, []);
+
+  const runUpdate = async () => {
+    if (!window.confirm("This will git-pull the latest release, install any new dependencies, rebuild the frontend, and restart the backend. A full DB backup is taken automatically before anything changes. Continue?")) return;
+    setUpdating(true); setMsg(null); setUpdateLog("");
+    try {
+      const { data } = await api.post("/admin/system/update?confirm=UPDATE");
+      setUpdateLog(data.log_tail || data.status || "");
+      setMsg({ kind: "ok", text: `Update complete. ${data.status || ""}` });
+      const v = await api.get("/admin/system/version");
+      setVersion(v.data);
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e.message;
+      setUpdateLog(typeof detail === "string" ? detail : JSON.stringify(detail));
+      setMsg({ kind: "error", text: `Update failed. See log below.` });
+    } finally { setUpdating(false); }
+  };
+  // ---------------------------------
 
   const download = async () => {
     setDownloading(true); setMsg(null);
@@ -60,11 +84,10 @@ const AdminBackup = () => {
   return (
     <div className="p-6 md:p-8 max-w-4xl mx-auto" data-testid="admin-backup-page">
       <div className="mb-8">
-        <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Backup &amp; Restore</h1>
+        <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Backup, Restore &amp; Update</h1>
         <p className="mt-1.5 text-sm text-slate-500 max-w-2xl">
-          Download a full, gzipped snapshot of every database collection — users, invoices, tickets,
-          MikroTik devices, articles, branding, everything. Keep the file safe; restoring from it
-          will wipe and replace the live data.
+          Manage full snapshots of the portal — download a backup archive, restore from an existing
+          one, or roll the running system forward to the latest release from GitHub.
         </p>
       </div>
 
@@ -75,6 +98,44 @@ const AdminBackup = () => {
           <div>{msg.text}</div>
         </div>
       )}
+
+      {/* System update */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 mb-6 shadow-sm" data-testid="admin-update-card">
+        <div className="flex items-start gap-4">
+          <div className="h-12 w-12 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center flex-shrink-0">
+            <RefreshCw className="h-6 w-6" />
+          </div>
+          <div className="flex-1">
+            <div className="text-lg font-bold text-[#0a2350]">Update system from GitHub</div>
+            <div className="mt-1 text-sm text-slate-500">
+              Pulls the latest release, installs any new dependencies, rebuilds the frontend, and restarts the backend.
+              Data is <b>always preserved</b> — a full DB snapshot is taken automatically before anything changes.
+            </div>
+
+            {version && (
+              <div className="mt-3 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs font-mono flex items-center gap-3 flex-wrap"
+                   data-testid="admin-update-version">
+                <span className="inline-flex items-center gap-1 text-slate-500"><GitBranch className="h-3.5 w-3.5" /> {version.branch || "?"}</span>
+                <span className="text-[#0a2350] font-bold">@ {version.short || version.sha?.slice(0, 7) || "unknown"}</span>
+                {version.subject && <span className="text-slate-500">— {version.subject}</span>}
+                {version.date && <span className="ml-auto text-slate-400">{version.date.slice(0, 16)}</span>}
+              </div>
+            )}
+
+            <button onClick={runUpdate} disabled={updating}
+                    className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold disabled:opacity-60"
+                    data-testid="admin-update-run">
+              {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {updating ? "Updating (may take a few minutes)…" : "Update to latest release"}
+            </button>
+
+            {updateLog && (
+              <pre className="mt-4 rounded-lg bg-slate-900 text-emerald-200 text-[11px] p-3 overflow-x-auto max-h-64 whitespace-pre-wrap"
+                   data-testid="admin-update-log">{updateLog}</pre>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Download */}
       <div className="rounded-2xl border border-slate-200 bg-white p-6 mb-6 shadow-sm">
@@ -155,7 +216,7 @@ const AdminBackup = () => {
           <li>Backups use <span className="font-mono">mongodump --archive --gzip</span>. Restores use <span className="font-mono">mongorestore --archive --gzip --drop</span>.</li>
           <li>Best practice: download a backup <b>immediately before</b> any maintenance activity — MikroTik migrations, schema changes, bulk imports.</li>
           <li>Store archives off-server (cloud storage, S3, private git-lfs) so the loss of this preview environment doesn't also lose the recovery snapshot.</li>
-          <li>Restore triggers all indexes to be rebuilt at first read; expect a brief burst of CPU right after.</li>
+          <li>Updates auto-snapshot the DB into <span className="font-mono">/var/backups/intercloud/pre-update-*.archive.gz</span> (30-day retention).</li>
         </ul>
       </div>
     </div>
@@ -163,3 +224,4 @@ const AdminBackup = () => {
 };
 
 export default AdminBackup;
+

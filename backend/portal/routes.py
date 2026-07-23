@@ -3283,6 +3283,81 @@ async def backup_restore(request: Request, admin=Depends(get_current_admin), con
     }
 
 
+# ============================================================
+# System update — runs scripts/update.sh which git-pulls, installs deps,
+# rebuilds the frontend, and restarts supervisor. Auto-backs up first.
+# ============================================================
+@router.get("/admin/system/version")
+async def system_version(admin=Depends(get_current_admin)):
+    """Return current git SHA + short version info for the update UI."""
+    import asyncio as _asyncio, os as _os
+    repo_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", ".."))
+    async def _run(cmd):
+        p = await _asyncio.create_subprocess_exec(
+            *cmd, cwd=repo_root,
+            stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE,
+        )
+        out, err = await p.communicate()
+        return (out.decode(errors="replace").strip() if p.returncode == 0 else "")
+    sha    = await _run(["git", "rev-parse", "HEAD"])
+    short  = await _run(["git", "rev-parse", "--short", "HEAD"])
+    branch = await _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    subject= await _run(["git", "log", "-1", "--pretty=%s"])
+    date   = await _run(["git", "log", "-1", "--pretty=%cI"])
+    return {
+        "sha": sha or None,
+        "short": short or None,
+        "branch": branch or None,
+        "subject": subject or None,
+        "date": date or None,
+        "repo_root": repo_root,
+    }
+
+
+@router.post("/admin/system/update")
+async def system_update(admin=Depends(get_current_admin), confirm: str = ""):
+    """Run `scripts/update.sh` in the checkout — auto-backs up first, then
+    `git pull`, `pip install`, `yarn install && yarn build`, and restarts
+    supervisor. **Preserves both .env files and the live database**.
+
+    Guarded by `?confirm=UPDATE` so a stray click cannot trigger an update.
+    Returns the STATUS line (`STATUS=ok OLD=<sha> NEW=<sha> BACKUP=<path>`)
+    and the last ~2 KB of the script's log for diagnostics."""
+    if confirm != "UPDATE":
+        raise HTTPException(status_code=400,
+                            detail="Confirmation required: pass ?confirm=UPDATE")
+    import asyncio as _asyncio, os as _os
+    repo_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", ".."))
+    script = _os.path.join(repo_root, "scripts", "update.sh")
+    if not _os.path.isfile(script):
+        raise HTTPException(status_code=500,
+                            detail=f"update.sh not found at {script}")
+    proc = await _asyncio.create_subprocess_exec(
+        "/bin/bash", script,
+        cwd=repo_root,
+        stdout=_asyncio.subprocess.PIPE,
+        stderr=_asyncio.subprocess.STDOUT,
+    )
+    try:
+        stdout_b, _ = await _asyncio.wait_for(proc.communicate(), timeout=600)
+    except _asyncio.TimeoutError:
+        proc.kill()
+        raise HTTPException(status_code=504,
+                            detail="Update timed out after 10 min")
+    text = stdout_b.decode(errors="replace")
+    status_line = next((l for l in text.splitlines() if l.startswith("STATUS=")), "")
+    ok = (proc.returncode == 0)
+    if not ok:
+        raise HTTPException(status_code=500,
+                            detail=f"update.sh exited {proc.returncode}: {text[-800:]}")
+    return {
+        "ok": True,
+        "status": status_line,
+        "return_code": proc.returncode,
+        "log_tail": text[-2400:],
+    }
+
+
 def _pdf_template(
     *,
     doc_kind: str,           # "invoice" or "quotation"

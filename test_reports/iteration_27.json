@@ -1,0 +1,69 @@
+{
+  "summary": "Iteration 27 (System install/update pipeline) — 15/15 backend pytest cases GREEN + all 6 requested frontend testids verified via Playwright. GET /api/portal/admin/system/version returns full JSON (sha, short, branch, subject, date, repo_root — all non-null, short is prefix of sha). Unauth returns 403. POST /admin/system/update without confirm returns 400 with exact detail 'Confirmation required: pass ?confirm=UPDATE'. POST /admin/system/update?confirm=UPDATE end-to-end: mongodump snapshot succeeds (new pre-update-*.archive.gz appears in /var/backups/intercloud), then update.sh exits 1 because the preview /app checkout has NO `origin` git remote — captured as expected hard-fail per main-agent note. Backend recovers, users count unchanged. Both scripts pass `bash -n`, are +x, and contain every requested keyword. Regression: login 200, backup download gzip magic + filename regex OK, restore requires confirm=REPLACE, mikrotik/devices + branding endpoints reachable. Frontend at /portal/admin/backup renders admin-backup-page + admin-update-card + admin-update-version chip ('main @ 18cbca8 — auto-commit …') + admin-update-run (enabled) + admin-backup-download (visible) + admin-backup-restore (visible & DISABLED by default). Update button was NOT actually clicked in the browser (static assertion only, per main-agent instructions).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/portal/admin/system/update",
+        "issue": "update.sh calls `git stash push` whenever the working tree is dirty. In the preview /app checkout (and any prod deployment where Emergent auto-commit has not yet run, or where local files like backend/.env / frontend/.env / yarn.lock / test artefacts are considered modified) this stashes real source changes — INCLUDING the freshly added /admin/system/version and /admin/system/update endpoints in backend/portal/routes.py — reverting the routes.py file on disk. WatchFiles then hot-reloads uvicorn and the update endpoint disappears (returned 404 immediately after the failed run). Backup was created, but the running system was silently rolled back to the previous commit. This is dangerous in production if any developer, admin, or Emergent process leaves a hunk uncommitted (yarn.lock changes, .env edits, log dirs). Recommended fix: (a) refuse to run if `git status --porcelain` is non-empty and surface the offending files, OR (b) run `git stash pop` in an EXIT trap so the stash always comes back, OR (c) `git reset --hard origin/BRANCH` intentionally — but only when the operator has explicitly opted-in via a flag. I ran `git stash pop` manually to restore the environment for subsequent tests.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/portal/admin/system/update",
+        "issue": "In preview /app there is no `origin` remote → `git fetch --all --prune` fails and update.sh exits 1 → endpoint returns HTTP 500 with the full stderr baked into detail. That is fine for the preview environment, but the endpoint should probably map the 'no git remote' case to a distinct 4xx / STATUS=nogit so the UI can render 'this checkout is not deployable' instead of a raw traceback."
+      },
+      {
+        "endpoint": "POST /api/portal/admin/system/update",
+        "issue": "No lockfile / mutex — two admins clicking 'Update' at the same time will race, both spawn `bash update.sh`, and can produce conflicting git states. Consider a per-process file-lock (e.g. /var/run/intercloud-update.lock) that returns 409 if already held."
+      },
+      {
+        "endpoint": "GET /api/portal/admin/system/version",
+        "issue": "Spawns 5 sequential `git` subprocesses per request. Cheap today, but for a status polled from the UI a single `git log -1 --pretty=%H|%h|%s|%cI` + one `git rev-parse --abbrev-ref HEAD` would cut it to two."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/portal/admin/backup — admin-update-version chip",
+        "issues": [
+          "The 'branch @ shortsha — subject date' string is rendered as a single flex row with no separators between fields, producing a run-on line like 'main@ 18cbca8— auto-commit…2026-07-23T04:36'. Adding a small margin-left/right (or explicit ' · ' bullet) between spans would improve readability. Non-blocking cosmetic."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_system_update.py",
+    "/app/test_reports/pytest/iter27_system_update.xml"
+  ],
+  "action_items": [
+    "CRITICAL: harden scripts/update.sh against dirty working trees — either abort with a clear error or auto-`git stash pop` in an EXIT trap. Silent stash-on-dirty-tree combined with hot-reload actively deletes newly-added code in the preview and will bite production the first time anyone leaves an uncommitted file.",
+    "Add a concurrency lock to /admin/system/update so double-clicks / two admins can't race two `bash update.sh` invocations.",
+    "Distinguish 'git remote missing / fetch failed' from other update failures in the endpoint response so the UI can render a helpful message instead of a raw traceback tail.",
+    "Micro-polish: separators (·) between segments in admin-update-version chip."
+  ],
+  "critical_code_review_comments": [
+    "scripts/update.sh:55-58 — `git stash push` triggered by any dirty tree is a footgun. Recommend replacing with either a hard refusal (`[[ -z $(git status --porcelain) ]] || die 'commit or discard local changes first'`) or an EXIT trap `trap 'git stash pop --index || true' EXIT` that guarantees the stash comes back.",
+    "scripts/update.sh:41 — mongodump output redirected with `> $ARCHIVE`; if disk is full the archive will be a truncated gz that later `mongorestore` will happily consume and destroy data. Consider `mongodump --archive=$ARCHIVE.tmp --gzip && mv $ARCHIVE.tmp $ARCHIVE` for atomic swap.",
+    "backend/portal/routes.py:3317 — the update endpoint blocks the FastAPI worker for up to 600 s while `yarn build` runs. With only 2 uvicorn workers configured in install.sh, one long-running update reduces effective concurrency by 50%. Consider fire-and-forget with a status endpoint that polls a shared state file written by update.sh.",
+    "install.sh:139 — `head -c 48 /dev/urandom | base64 | tr -d '=+/'` occasionally yields <48 usable chars after tr; harmless for JWT_SECRET but if the app later requires exact-length secret this needs `openssl rand -base64 48 | tr -d '=+/' | head -c 48`.",
+    "install.sh:83 — writing sources.list.d/mongodb-org-7.0.list with the `jammy` component on Noble (24.04): MongoDB 7.0 does not officially ship a Noble apt repo yet, so this pins to Jammy packages. Works today, but note it in production.md so ops know it's intentional.",
+    "install.sh:170 — `yarn install --frozen-lockfile` then falls back to `yarn install` if build fails. Falling back masks legit dependency drift. Recommend logging the fallback so ops can catch it."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_system_update.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15)",
+    "frontend": "100% (all 6 requested testids verified)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md — unchanged)",
+  "seed_data_creation": "Test suite created one real backup archive under /var/backups/intercloud/pre-update-<UTC>.archive.gz (mongodump snapshot of live DB). The archive is retained (update.sh prunes anything >30 days old on next invocation). Test also invoked the destructive scripts/update.sh once with confirm=UPDATE; the tree was dirty so update.sh stashed local changes — the test suite auto-popped the stash so /app is functionally identical to how it was found (routes.py, AdminBackup.jsx, memory/PRD.md restored).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Regression file /app/backend/tests/test_system_update.py covers system-version + system-update + install.sh/update.sh sanity + backup/login/mikrotik/branding regression. Runs in ~10 s with `python -m pytest backend/tests/test_system_update.py -o 'addopts='` (project pytest.ini enables xdist which breaks the session-scoped admin_token fixture across workers). test_update_confirmed AUTO-POPS any stash update.sh creates so it's safe to re-run in the preview. Iteration_26 tests in test_landing_cms_and_backup.py remain valid — nothing was changed on the landing-cms / backup-download endpoints.",
+  "rca of the issue": "RCA of the update-sh-stash bug: (1) Emergent's auto-commit does not commit .env files, yarn.lock, or freshly generated files, and it doesn't run instantly — so between an E1 code edit and the auto-commit the working tree is dirty. (2) The moment admin clicks Update, update.sh calls `git stash push` on that dirty tree — silently pocketing the very files that contain the new endpoints. (3) uvicorn --reload notices routes.py mtime change and reloads with the OLD routes → new endpoints 404. (4) The subsequent `git fetch --all --prune` also fails in the preview because /app has no `origin`, so update.sh exits 1 and NEVER pops the stash. Combined effect: the running system silently rolls back to the previous commit and the operator has no idea the stash exists. Mitigation applied by the test suite: it re-runs `git stash pop` and waits for uvicorn to hot-reload before continuing. Real fix belongs in update.sh itself as described in action_items[0]."
+}

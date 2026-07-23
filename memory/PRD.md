@@ -139,6 +139,28 @@ See `/app/memory/test_credentials.md`.
   two-step Restore form: file picker + typed `REPLACE` confirmation +
   `window.confirm` prompt.
 
+### One-command production install + in-place updates (2026-07-23)
+- `scripts/install.sh` — Ubuntu 24.04 LTS one-shot installer:
+  OS deps, MongoDB 7.0, Node 20 + Yarn, Python 3.12 venv, nginx SPA
+  reverse-proxy, supervisor-managed uvicorn, ufw firewall. Idempotent —
+  safe to re-run; preserves both `.env` files. Reads config from env vars
+  (`REPO_URL`, `REPO_BRANCH`, `PORTAL_DOMAIN`, `ADMIN_EMAIL`,
+  `ADMIN_PASSWORD`, `EMERGENT_LLM_KEY`).
+- `scripts/update.sh` — auto-snapshots DB to
+  `/var/backups/intercloud/pre-update-*.archive.gz` (30-day retention),
+  `git pull --ff-only`, reinstalls Python + Node deps, rebuilds the
+  frontend, restarts the backend via supervisor. Preserves .env + DB.
+  Returns `STATUS=ok OLD=<sha> NEW=<sha> BACKUP=<path>`.
+- `GET  /api/portal/admin/system/version` — current branch/sha/subject/date
+  for the update UI.
+- `POST /api/portal/admin/system/update?confirm=UPDATE` — admin-only,
+  runs `scripts/update.sh` in a subprocess (10-min timeout), returns the
+  status line + log tail.
+- Frontend page at `/portal/admin/backup` now includes an **Update
+  system** card at the top: shows current branch/sha, one-click update
+  with a `window.confirm` gate, and streams the log to the UI.
+- Full deployment guide at `/app/docs/production.md`.
+
 ---
 
 ## Verified endpoints (2026-07-23)
