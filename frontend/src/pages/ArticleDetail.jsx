@@ -70,7 +70,7 @@ const useArticleSEO = (a) => {
       "publisher": {
         "@type": "Organization",
         "name": "PT Intercloud Digital Inovasi",
-        "logo": { "@type": "ImageObject", "url": "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/cqypbf3r_image.png" },
+        "logo": { "@type": "ImageObject", "url": "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png" },
       },
       "keywords": (a.meta_keywords || a.tags || []).join(", "),
       "mainEntityOfPage": window.location.href,

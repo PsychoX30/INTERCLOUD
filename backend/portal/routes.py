@@ -3110,7 +3110,7 @@ COMPANY_HEADER_HTML = """
 """
 
 
-LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/cqypbf3r_image.png"
+LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png"
 
 
 def _pdf_template(

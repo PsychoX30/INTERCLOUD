@@ -46,7 +46,7 @@ log = logging.getLogger("portal.emails")
 # transactional mail share consistent branding.
 BRAND_HEADER = "#0a2350"
 BRAND_ACCENT = "#f5b120"
-LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/cqypbf3r_image.png"
+LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png"
 
 _WRAPPER = """<!doctype html>
 <html><body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;color:#0a2350">
