@@ -134,7 +134,7 @@ const ArticlesList = () => {
             <Link to={`/articles/${featured.slug}`} className="block group mb-10" data-testid={`featured-${featured.slug}`}>
               <div className="grid md:grid-cols-2 gap-8 rounded-3xl overflow-hidden bg-white border border-slate-200 hover:border-[#f5b120] transition-colors">
                 <div className="aspect-video md:aspect-auto overflow-hidden bg-slate-100">
-                  {featured.cover_image_url && <img src={featured.cover_image_url} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />}
+                  {featured.cover_image_url && <img src={featured.cover_image_url} alt={featured.cover_image_alt || featured.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />}
                 </div>
                 <div className="p-6 md:p-10 flex flex-col justify-center">
                   <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">Featured · {featured.category || "Article"}</div>
@@ -173,7 +173,7 @@ const ArticleCard = ({ a }) => (
   <Link to={`/articles/${a.slug}`} className="group block rounded-2xl overflow-hidden bg-white border border-slate-200 hover:border-[#f5b120] transition-colors" data-testid={`article-card-${a.slug}`}>
     <div className="aspect-video overflow-hidden bg-slate-100">
       {a.cover_image_url ? (
-        <img src={a.cover_image_url} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" />
+        <img src={a.cover_image_url} alt={a.cover_image_alt || a.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" />
       ) : (
         <div className="w-full h-full bg-gradient-to-br from-[#0a2350] to-[#1a3a70] flex items-center justify-center text-white/40 text-xs font-bold uppercase tracking-widest">Intercloud</div>
       )}

@@ -197,7 +197,7 @@ const ArticleDetail = () => {
         {article.cover_image_url && (
           <div className="max-w-5xl mx-auto px-6 mt-10">
             <div className="rounded-3xl overflow-hidden bg-slate-100 aspect-video">
-              <img src={article.cover_image_url} alt={article.title} className="w-full h-full object-cover" data-testid="article-cover" />
+              <img src={article.cover_image_url} alt={article.cover_image_alt || article.title} className="w-full h-full object-cover" data-testid="article-cover" />
             </div>
           </div>
         )}
@@ -247,7 +247,7 @@ const ArticleDetail = () => {
               {related.map((a) => (
                 <Link key={a.id} to={`/articles/${a.slug}`} className="group block rounded-2xl overflow-hidden bg-white border border-slate-200 hover:border-[#f5b120] transition-colors">
                   <div className="aspect-video overflow-hidden bg-slate-100">
-                    {a.cover_image_url ? <img src={a.cover_image_url} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" /> : <div className="w-full h-full bg-gradient-to-br from-[#0a2350] to-[#1a3a70]" />}
+                    {a.cover_image_url ? <img src={a.cover_image_url} alt={a.cover_image_alt || a.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" /> : <div className="w-full h-full bg-gradient-to-br from-[#0a2350] to-[#1a3a70]" />}
                   </div>
                   <div className="p-5">
                     <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">{a.category || "Article"}</div>

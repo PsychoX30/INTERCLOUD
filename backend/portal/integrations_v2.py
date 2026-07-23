@@ -1041,22 +1041,49 @@ class IMAPClient:
             return {"ok": False, "message": f"{type(e).__name__}: {e}"}
 
     def fetch_recent(self, limit: int | None = None) -> list[dict]:
-        """Return the most recent messages (newest first). Best-effort — errors
-        surface as an empty list; higher-level callers fall back to mocked data.
+        """Return the most recent messages (newest first).
+
+        Distinguishes two failure modes:
+          * **Connection / auth failure** → raises `IMAPConnectionError` so the
+            HTTP layer can respond with a `connection_failed` hint instead of
+            a misleading "empty inbox".
+          * **Per-message parse failure** → the offending message is skipped
+            silently; the rest of the inbox still comes back.
+
+        An empty inbox (no messages) legitimately returns `[]`.
         """
         import email
         from email.header import decode_header, make_header
         limit = int(limit or self.fetch_limit)
+
+        # ---- 1. Connect + select mailbox (any failure ⇒ connection error) ----
         try:
             m = self._connect()
-            m.select(self.mailbox, readonly=True)
+        except Exception as e:
+            raise IMAPConnectionError(f"IMAP connect failed: {type(e).__name__}: {e}") from e
+        try:
+            typ, _ = m.select(self.mailbox, readonly=True)
+            if typ != "OK":
+                try: m.logout()
+                except Exception: pass
+                raise IMAPConnectionError(f"IMAP SELECT {self.mailbox!r} rejected")
             typ, data = m.search(None, "ALL")
             if typ != "OK":
-                m.logout()
-                return []
-            ids = data[0].split()[-limit:][::-1]
-            out = []
-            for i in ids:
+                try: m.logout()
+                except Exception: pass
+                raise IMAPConnectionError("IMAP SEARCH failed")
+        except IMAPConnectionError:
+            raise
+        except Exception as e:
+            try: m.logout()
+            except Exception: pass
+            raise IMAPConnectionError(f"IMAP command failed: {type(e).__name__}: {e}") from e
+
+        # ---- 2. Fetch + parse each message (per-message errors → skip) ----
+        ids = data[0].split()[-limit:][::-1]
+        out = []
+        for i in ids:
+            try:
                 typ, msg_data = m.fetch(i, "(RFC822)")
                 if typ != "OK" or not msg_data or not msg_data[0]:
                     continue
@@ -1080,10 +1107,18 @@ class IMAPClient:
                     "date": date_, "preview": body[:220].replace("\n", " "),
                     "body": body,
                 })
-            m.logout()
-            return out
-        except Exception:
-            return []
+            except Exception:
+                # skip this message; keep going with the rest
+                continue
+        try: m.logout()
+        except Exception: pass
+        return out
+
+
+class IMAPConnectionError(RuntimeError):
+    """Raised by IMAPClient when the mailbox is unreachable / rejects login.
+    Distinct from an empty inbox so the HTTP layer can surface a
+    'connection_failed' hint to the user."""
 
 
 

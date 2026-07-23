@@ -26,8 +26,20 @@ UAT-compliant security, self-installer for Ubuntu 24.04 Proxmox VMs.
   - `PUT/DELETE /admin/followups/{id}` — 403 if sales tries to touch another rep's follow-up
 - **P2** DataTable rolled out to `AdminQuotations`, `AdminProducts`,
   `AdminCategories`, `AdminTickets` (sort, search, empty state, skeleton).
-- Regression: `/app/backend/tests/test_sales_scoping.py` — 9 tests
-  (invoices/CRM/followups scoping + admin sees-all + mail-send 400).
+- **P1** New `iv2.IMAPConnectionError` — `IMAPClient.fetch_recent` now
+  distinguishes connect/auth failures (raises) from an empty inbox
+  (returns `[]`) and per-message parse errors (skipped). `admin_mail_inbox`
+  surfaces `{not_setup:true, reason:"connection_failed", detail:…}` with the
+  underlying diagnostic instead of a silent empty inbox. `admin_mail_message`
+  now returns 502 on IMAP connection failure.
+- **SEO polish**: `ArticleIn.cover_image_alt` added (Pydantic + serializer +
+  `AdminArticles` editor field). Frontend `ArticlesList` and `ArticleDetail`
+  use `cover_image_alt || title` for every `<img alt=…>`. SVG favicon +
+  apple-touch-icon shipped in `/frontend/public/`, wired into `index.html`
+  (mask-icon + rel=icon type=image/svg+xml).
+- Regression suites:
+  - `/app/backend/tests/test_sales_scoping.py` — 9 tests (invoices/CRM/followups scoping + admin sees-all + mail-send 400)
+  - `/app/backend/tests/test_imap_and_seo.py` — 6 tests (IMAP raise vs empty, no_credentials vs connection_failed, cover_image_alt round-trip, favicon + apple-touch-icon served)
 
 ### Batch 3 — F1 Per-admin email + F3 Sales scoping (iter30 15/15 pass)
 - Every staff member configures own cPanel IMAP/SMTP creds via
@@ -93,13 +105,10 @@ template (no `map` directive), `/var/www/html/.well-known/acme-challenge`
 webroot pre-created, `server_tokens off`.
 
 ## Roadmap / Backlog
-- **P1** Distinguish IMAP connect-failure from empty inbox in
-  `iv2.IMAPClient.fetch_recent` so the `connection_failed` hint surfaces
-  in AdminMail. Currently silent try/except swallows the error.
 - **P2** DataTable rollout to remaining screens (AdminOrders, AdminMikrotik).
 - **P2** Zod + react-hook-form inline validation on Login/Register/ForgotPassword.
 - **P2** Factory-reset snapshot retention (keep last 5).
-- **P3** SEO polish (image alt, meta descriptions per article, favicon,
-  apple-touch-icon, react-snap for SPA prerender).
+- **P3** react-snap prerender for SPA landing (needs puppeteer; Googlebot
+  already handles the client-side meta but some crawlers don't).
+- **P3** Phase 6 QA & Handover smoke test across all modules.
 - **P3** Full SSR (Next.js migration) for UAT M3 SEO parity.
-- **Backlog** Phase 6 QA & Handover smoke test across all modules.

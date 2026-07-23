@@ -2042,21 +2042,23 @@ async def admin_mail_inbox(staff=Depends(get_current_staff)):
     if my_imap.get("credentials", {}).get("host") and my_imap.get("credentials", {}).get("username"):
         try:
             live = iv2.IMAPClient(my_imap).fetch_recent()
-            return [{
-                "id": f"imap-{msg['id']}",
-                "from_name": msg["from"].split("<")[0].strip(" \""),
-                "from_email": (msg["from"].split("<")[-1].rstrip(">") if "<" in msg["from"] else msg["from"]),
-                "subject": msg["subject"],
-                "preview": msg["preview"],
-                "received_at": msg["date"],
-                "unread": False,
-                "starred": False,
-                "_live": True,
-            } for msg in live]
-        except Exception:
-            # Fall through to setup-hint if the personal IMAP fails to connect.
+        except iv2.IMAPConnectionError as e:
+            # Personal IMAP creds are set but the mailbox can't be reached —
+            # tell the operator exactly why so they can fix it.
             return {"not_setup": True, "reason": "connection_failed",
-                    "message": "IMAP kredensial Anda tidak bisa terhubung — periksa host / port / password."}
+                    "message": f"IMAP tidak bisa terhubung. {e}",
+                    "detail": str(e)}
+        return [{
+            "id": f"imap-{msg['id']}",
+            "from_name": msg["from"].split("<")[0].strip(" \""),
+            "from_email": (msg["from"].split("<")[-1].rstrip(">") if "<" in msg["from"] else msg["from"]),
+            "subject": msg["subject"],
+            "preview": msg["preview"],
+            "received_at": msg["date"],
+            "unread": False,
+            "starred": False,
+            "_live": True,
+        } for msg in live]
 
     # No personal creds → surface an actionable "click to setup" hint.
     # Frontend AdminMail.jsx renders a big card with a Configure button.
@@ -2085,8 +2087,8 @@ async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
                             "received_at": msg.get("date"),
                             "starred": False,
                         }
-            except Exception:
-                pass
+            except iv2.IMAPConnectionError as e:
+                raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
         raise HTTPException(status_code=404, detail="IMAP message no longer available (mailbox may have been re-synced)")
 
     # ---- Mongo-backed message (legacy seeded demo — no per-user creds path) ----
@@ -5730,6 +5732,7 @@ def _serialize_article(d: dict, *, include_body: bool = True) -> dict:
         "slug": d.get("slug", ""),
         "excerpt": d.get("excerpt", ""),
         "cover_image_url": d.get("cover_image_url", ""),
+        "cover_image_alt": d.get("cover_image_alt", ""),
         "video_url": d.get("video_url", ""),
         "author_name": d.get("author_name", ""),
         "tags": d.get("tags", []),

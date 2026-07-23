@@ -132,7 +132,7 @@ const AdminArticles = () => {
 
 const newArticle = () => ({
   title: "", slug: "", excerpt: "", body_html: "",
-  cover_image_url: "", video_url: "", author_name: "",
+  cover_image_url: "", cover_image_alt: "", video_url: "", author_name: "",
   tags: [], category: "", status: "draft", published_at: null,
   meta_title: "", meta_description: "", meta_keywords: [], og_image_url: "",
   is_featured: false,
@@ -168,6 +168,7 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
         excerpt: form.excerpt || "",
         body_html: form.body_html || "",
         cover_image_url: form.cover_image_url || "",
+        cover_image_alt: form.cover_image_alt || "",
         video_url: form.video_url || "",
         author_name: form.author_name || "",
         tags: (typeof form.tags === "string" ? form.tags.split(/[,\n]+/) : form.tags || []).map((t) => t.trim()).filter(Boolean),
@@ -285,8 +286,12 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
                   <div className={labelClass}>Cover image URL</div>
                   <input value={form.cover_image_url} onChange={(e) => set("cover_image_url", e.target.value)} className={inputClass} placeholder="https://…" data-testid="editor-cover" />
                 </label>
+                <label className="block">
+                  <div className={labelClass}>Cover image alt text <span className="ml-1 text-slate-400 normal-case">(describe the image for SEO + screen readers)</span></div>
+                  <input value={form.cover_image_alt || ""} onChange={(e) => set("cover_image_alt", e.target.value)} className={inputClass} placeholder="e.g., Server rack in Intercloud Jakarta data center" data-testid="editor-cover-alt" />
+                </label>
                 {form.cover_image_url && (
-                  <div className="rounded-xl overflow-hidden border border-slate-200"><img src={form.cover_image_url} alt="cover" className="w-full max-h-[240px] object-cover" /></div>
+                  <div className="rounded-xl overflow-hidden border border-slate-200"><img src={form.cover_image_url} alt={form.cover_image_alt || form.title || "cover"} className="w-full max-h-[240px] object-cover" /></div>
                 )}
                 <label className="block">
                   <div className={labelClass}>Video URL <span className="ml-1 text-slate-400 normal-case">(YouTube / Vimeo / MP4)</span></div>

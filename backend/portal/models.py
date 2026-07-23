@@ -441,6 +441,7 @@ class ArticleIn(BaseModel):
     excerpt: str = Field("", max_length=500)
     body_html: str = ""
     cover_image_url: str = ""
+    cover_image_alt: str = ""                 # descriptive alt text for the hero image (SEO + a11y)
     video_url: str = ""                       # optional embedded video (YouTube, Vimeo, direct MP4)
     author_name: str = ""
     tags: List[str] = []                      # normalised lowercase slugs
