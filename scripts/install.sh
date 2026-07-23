@@ -362,12 +362,15 @@ fi
 # 5. Backend — venv + deps + .env
 # ------------------------------------------------------------------
 log "Setting up Python venv + backend deps"
-su - intercloud -c "
+sudo -u intercloud -H bash -c "
+  set -e
   cd '$APP_DIR/backend'
   python3.12 -m venv .venv
   . .venv/bin/activate
   pip install --upgrade pip wheel
-  pip install -r requirements.txt
+  # emergentintegrations lives on a private index; pass it as an extra so
+  # the rest of the deps still resolve from PyPI.
+  pip install --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ -r requirements.txt
 "
 
 BACKEND_ENV="$APP_DIR/backend/.env"
