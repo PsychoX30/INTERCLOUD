@@ -70,7 +70,7 @@ const useArticleSEO = (a) => {
       "publisher": {
         "@type": "Organization",
         "name": "PT Intercloud Digital Inovasi",
-        "logo": { "@type": "ImageObject", "url": "https://intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png" },
+        "logo": { "@type": "ImageObject", "url": "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/cqypbf3r_image.png" },
       },
       "keywords": (a.meta_keywords || a.tags || []).join(", "),
       "mainEntityOfPage": window.location.href,

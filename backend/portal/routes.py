@@ -3110,7 +3110,7 @@ COMPANY_HEADER_HTML = """
 """
 
 
-LOGO_URL = "https://intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png"
+LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/cqypbf3r_image.png"
 
 
 def _pdf_template(
