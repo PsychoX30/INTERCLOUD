@@ -407,25 +407,40 @@ fi
 # ------------------------------------------------------------------
 log "Installing frontend deps and building production bundle"
 
-FRONTEND_ENV="$APP_DIR/frontend/.env"
-if [[ ! -f "$FRONTEND_ENV" ]]; then
-  if [[ -n "$PORTAL_DOMAIN" ]]; then
+# Compute the URL the browser will use to reach this portal. React inlines
+# REACT_APP_* env vars at BUILD time, so this MUST match the final URL the
+# user visits — otherwise the SPA will call the wrong host and every request
+# fails as "Network Error" in the browser.
+if [[ -n "$PORTAL_DOMAIN" ]]; then
+  # If we're going to enable HTTPS, the browser will hit https://. Otherwise
+  # nginx will still serve on port 80 → http://.
+  if [[ -n "$LETSENCRYPT_EMAIL" ]]; then
     BACKEND_ORIGIN="https://$PORTAL_DOMAIN"
   else
-    BACKEND_ORIGIN="http://$(hostname -I | awk '{print $1}')"
+    BACKEND_ORIGIN="http://$PORTAL_DOMAIN"
   fi
-  install -o intercloud -g intercloud -m 640 /dev/stdin "$FRONTEND_ENV" <<EOF
-REACT_APP_BACKEND_URL=$BACKEND_ORIGIN
-EOF
 else
-  log "Frontend .env exists — preserving"
+  BACKEND_ORIGIN="http://$(hostname -I | awk '{print $1}')"
 fi
 
-su - intercloud -c "
+FRONTEND_ENV="$APP_DIR/frontend/.env"
+# ALWAYS overwrite — the repo may contain a leftover dev-preview URL from
+# the source environment; we don't want that baked into the production build.
+install -o intercloud -g intercloud -m 640 /dev/stdin "$FRONTEND_ENV" <<EOF
+REACT_APP_BACKEND_URL=$BACKEND_ORIGIN
+WDS_SOCKET_PORT=443
+ENABLE_HEALTH_CHECK=false
+REACT_APP_TURNSTILE_SITE_KEY=
+REACT_APP_TURNSTILE_ENABLED=false
+EOF
+log "Frontend will call backend at $BACKEND_ORIGIN"
+
+sudo -u intercloud -H bash -c "
+  set -e
   cd '$APP_DIR/frontend'
-  yarn install --frozen-lockfile
-  # Fall back to loose install if lockfile is stale — production must build.
-  yarn build || (yarn install && yarn build)
+  yarn install --frozen-lockfile || yarn install
+  # Cap Node heap for low-RAM VPS builds. React build otherwise OOMs at ~1.5GB.
+  NODE_OPTIONS='--max-old-space-size=2048' yarn build
 "
 
 # ------------------------------------------------------------------
