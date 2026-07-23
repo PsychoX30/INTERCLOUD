@@ -186,6 +186,11 @@ fi
 # ------------------------------------------------------------------
 # 2b. MongoDB auth — create an app-scoped user and enable auth. Idempotent.
 # ------------------------------------------------------------------
+# Credentials file lives here — create the dir FIRST so downstream `install`
+# calls don't blow up with "no such directory".
+mkdir -p /etc/intercloud
+chmod 0755 /etc/intercloud
+
 if [[ "$ENABLE_MONGO_AUTH" == "yes" ]]; then
   if [[ -z "$MONGO_APP_PASSWORD" ]]; then
     MONGO_APP_PASSWORD="$(openssl rand -base64 32 | tr -d '=+/')"
@@ -231,8 +236,41 @@ EOF
       # shellcheck disable=SC1091
       . /etc/intercloud/mongo.env
     else
-      warn "MongoDB auth is on but /etc/intercloud/mongo.env is missing — \
-you'll need to set MONGO_URL manually in $APP_DIR/backend/.env"
+      # Auth is enabled but we never persisted the password (usually because
+      # a prior installer run crashed BEFORE writing this file). Recover by
+      # temporarily disabling auth, resetting the user, and re-enabling.
+      warn "MongoDB auth is on but /etc/intercloud/mongo.env is missing — auto-recovering by resetting the app user"
+      MONGO_APP_PASSWORD="$(openssl rand -base64 32 | tr -d '=+/')"
+      sed -i 's/^\s*authorization:\s*enabled/# authorization: enabled (temp off for recovery)/' /etc/mongod.conf
+      systemctl restart mongod
+      # Wait for mongod to come back up without auth.
+      for i in {1..30}; do
+        if mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then break; fi
+        sleep 1
+      done
+      mongosh --quiet <<MONGO
+use admin
+try { db.dropUser("${MONGO_APP_USER}") } catch(e) {}
+db.createUser({
+  user: "${MONGO_APP_USER}",
+  pwd:  "${MONGO_APP_PASSWORD}",
+  roles: [
+    { role: "readWrite", db: "intercloud_portal" },
+    { role: "dbAdmin",   db: "intercloud_portal" },
+    { role: "backup",    db: "admin" },
+    { role: "restore",   db: "admin" }
+  ]
+})
+MONGO
+      # Re-enable auth
+      sed -i 's/^# authorization: enabled (temp off for recovery)/  authorization: enabled/' /etc/mongod.conf
+      systemctl restart mongod
+      sleep 3
+      install -o root -g root -m 600 /dev/stdin /etc/intercloud/mongo.env <<EOF
+MONGO_APP_USER=${MONGO_APP_USER}
+MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
+EOF
+      log "MongoDB app user password reset — new credentials saved to /etc/intercloud/mongo.env"
     fi
   fi
   MONGO_URL_VALUE="mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@127.0.0.1:27017/intercloud_portal?authSource=admin"
@@ -240,8 +278,6 @@ else
   log "Skipping MongoDB auth setup (ENABLE_MONGO_AUTH=$ENABLE_MONGO_AUTH)"
   MONGO_URL_VALUE="mongodb://127.0.0.1:27017"
 fi
-
-mkdir -p /etc/intercloud
 
 # ------------------------------------------------------------------
 # 3. Node.js 20 LTS + Yarn (classic)
