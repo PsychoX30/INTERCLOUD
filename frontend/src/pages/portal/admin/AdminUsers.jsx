@@ -31,8 +31,10 @@ const AdminUsers = () => {
     { key: "role", label: "Role", sortable: true,
       render: (v) => (
         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${
-          v === "admin"  ? "bg-[#f5b120]/20 text-[#0a2350]"
+          v === "admin"   ? "bg-[#f5b120]/20 text-[#0a2350]"
           : v === "client" ? "bg-emerald-100 text-emerald-700"
+          : v === "finance" ? "bg-purple-100 text-purple-700"
+          : v === "sales"   ? "bg-amber-100 text-amber-700"
           : "bg-sky-100 text-sky-700"
         }`}>{v}</span>
       ) },
@@ -333,6 +335,7 @@ const NewUserModal = ({ onClose, onDone }) => {
               <option value="client">Client</option>
               <option value="admin">Admin</option>
               <option value="sales">Sales</option>
+              <option value="finance">Finance</option>
               <option value="support">Support</option>
               <option value="ticket_only">Ticket only</option>
             </select>

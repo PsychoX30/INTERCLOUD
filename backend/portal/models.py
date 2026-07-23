@@ -66,7 +66,7 @@ class UserOut(BaseModel):
     id: str
     email: EmailStr
     name: str
-    role: Literal["client", "admin", "sales", "support", "ticket_only"]
+    role: Literal["client", "admin", "sales", "finance", "support", "ticket_only"]
     company: Optional[str] = None
     phone: Optional[str] = None
     created_at: str
@@ -97,7 +97,7 @@ class UserCreateIn(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: Literal["client", "admin", "sales", "support", "ticket_only"] = "client"
+    role: Literal["client", "admin", "sales", "finance", "support", "ticket_only"] = "client"
     company: Optional[str] = None
     phone: Optional[str] = None
     assigned_client_ids: List[str] = []
@@ -117,7 +117,7 @@ class UserCreateIn(BaseModel):
 
 class UserUpdateIn(BaseModel):
     name: Optional[str] = None
-    role: Optional[Literal["client", "admin", "sales", "support", "ticket_only"]] = None
+    role: Optional[Literal["client", "admin", "sales", "finance", "support", "ticket_only"]] = None
     company: Optional[str] = None
     phone: Optional[str] = None
     assigned_client_ids: Optional[List[str]] = None

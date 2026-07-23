@@ -21,16 +21,16 @@ const CLIENT_NAV = [
 const ADMIN_NAV_GROUPS = [
   {
     label: "Overview",
-    items: [{ key: "dashboard", to: "/portal/admin/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard", roles: ["admin", "sales", "support", "ticket_only"] }],
+    items: [{ key: "dashboard", to: "/portal/admin/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard", roles: ["admin", "sales", "finance", "support", "ticket_only"] }],
   },
   {
     label: "Sales & Billing",
     items: [
-      { key: "orders",     to: "/portal/admin/orders",     label: "Orders",     icon: ShoppingCart, testid: "nav-orders",     roles: ["admin", "sales"] },
-      { key: "invoices",   to: "/portal/admin/invoices",   label: "Invoices",   icon: Receipt,      testid: "nav-invoices",   roles: ["admin"] },
-      { key: "quotations", to: "/portal/admin/quotations", label: "Quotations", icon: FileText,     testid: "nav-quotations", roles: ["admin", "sales"] },
-      { key: "finance",    to: "/portal/admin/finance",    label: "Finance",    icon: Wallet,       testid: "nav-finance",    roles: ["admin"] },
-      { key: "assets",     to: "/portal/admin/assets",     label: "Assets",     icon: HardDrive,    testid: "nav-assets",     roles: ["admin"] },
+      { key: "orders",     to: "/portal/admin/orders",     label: "Orders",     icon: ShoppingCart, testid: "nav-orders",     roles: ["admin", "sales", "finance"] },
+      { key: "invoices",   to: "/portal/admin/invoices",   label: "Invoices",   icon: Receipt,      testid: "nav-invoices",   roles: ["admin", "finance"] },
+      { key: "quotations", to: "/portal/admin/quotations", label: "Quotations", icon: FileText,     testid: "nav-quotations", roles: ["admin", "sales", "finance"] },
+      { key: "finance",    to: "/portal/admin/finance",    label: "Finance",    icon: Wallet,       testid: "nav-finance",    roles: ["admin", "finance"] },
+      { key: "assets",     to: "/portal/admin/assets",     label: "Assets",     icon: HardDrive,    testid: "nav-assets",     roles: ["admin", "finance"] },
     ],
   },
   {
@@ -39,17 +39,17 @@ const ADMIN_NAV_GROUPS = [
       { key: "products",   to: "/portal/admin/products",   label: "Products",   icon: Package,      testid: "nav-products",   roles: ["admin", "support"] },
       { key: "addons",     to: "/portal/admin/addons",     label: "Add-ons",    icon: Puzzle,       testid: "nav-addons",     roles: ["admin", "support"] },
       { key: "categories", to: "/portal/admin/categories", label: "Categories", icon: FolderTree,   testid: "nav-categories", roles: ["admin"] },
-      { key: "services",   to: "/portal/admin/services",   label: "Services",   icon: ServerCog,    testid: "nav-services",   roles: ["admin", "sales", "support"] },
+      { key: "services",   to: "/portal/admin/services",   label: "Services",   icon: ServerCog,    testid: "nav-services",   roles: ["admin", "finance", "support"] },
     ],
   },
   {
     label: "Support & CRM",
     items: [
-      { key: "users",    to: "/portal/admin/users",    label: "Users / Clients", icon: Users,   testid: "nav-users",    roles: ["admin", "sales"] },
-      { key: "tickets",  to: "/portal/admin/tickets",  label: "Tickets",         icon: LifeBuoy, testid: "nav-tickets",  roles: ["admin", "sales", "support", "ticket_only"] },
-      { key: "mail",     to: "/portal/admin/mail",     label: "Webmail",         icon: Send,    testid: "nav-mail",     roles: ["admin", "sales", "support"] },
-      { key: "email",    to: "/portal/admin/email",    label: "Email Automation", icon: Send,    testid: "nav-email",    roles: ["admin", "support"] },
-      { key: "articles", to: "/portal/admin/articles", label: "Articles",         icon: Newspaper, testid: "nav-articles", roles: ["admin", "sales", "support"] },
+      { key: "users",    to: "/portal/admin/users",    label: "Users / Clients", icon: Users,   testid: "nav-users",    roles: ["admin", "sales", "finance", "support"] },
+      { key: "tickets",  to: "/portal/admin/tickets",  label: "Tickets",         icon: LifeBuoy, testid: "nav-tickets",  roles: ["admin", "sales", "finance", "support", "ticket_only"] },
+      { key: "mail",     to: "/portal/admin/mail",     label: "Webmail",         icon: Send,    testid: "nav-mail",     roles: ["admin", "sales", "finance", "support"] },
+      { key: "email",    to: "/portal/admin/email",    label: "Email Automation", icon: Send,    testid: "nav-email",    roles: ["admin"] },
+      { key: "articles", to: "/portal/admin/articles", label: "Articles",         icon: Newspaper, testid: "nav-articles", roles: ["admin", "sales", "finance", "support"] },
     ],
   },
   {
@@ -58,17 +58,17 @@ const ADMIN_NAV_GROUPS = [
       { key: "provisioning", to: "/portal/admin/provisioning", label: "Provisioning", icon: Cloud,          testid: "nav-provisioning", roles: ["admin", "support"] },
       { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
       { key: "dcim",         to: "/portal/admin/dcim",         label: "DCIM & IPAM",  icon: HardDrive,      testid: "nav-dcim",         roles: ["admin", "support"] },
-      { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "sales", "support"] },
+      { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
     ],
   },
   {
     label: "Business",
     items: [
-      { key: "crm",       to: "/portal/admin/crm",       label: "Customer DB (CRM)", icon: UserSquare,    testid: "nav-crm",       roles: ["admin", "sales"] },
+      { key: "crm",       to: "/portal/admin/crm",       label: "Customer DB (CRM)", icon: UserSquare,    testid: "nav-crm",       roles: ["admin", "sales", "finance", "support"] },
       { key: "projects",  to: "/portal/admin/projects",  label: "Project Tracker",   icon: ClipboardList, testid: "nav-projects",  roles: ["admin", "sales", "support"] },
-      { key: "content",   to: "/portal/admin/content",   label: "Content Planner",   icon: CalendarDays,  testid: "nav-content",   roles: ["admin", "sales"] },
-      { key: "followups", to: "/portal/admin/followups", label: "Follow-ups",        icon: CheckSquare,   testid: "nav-followups", roles: ["admin", "sales"] },
-      { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "sales", "support"] },
+      { key: "content",   to: "/portal/admin/content",   label: "Content Planner",   icon: CalendarDays,  testid: "nav-content",   roles: ["admin", "sales", "finance", "support"] },
+      { key: "followups", to: "/portal/admin/followups", label: "Follow-ups",        icon: CheckSquare,   testid: "nav-followups", roles: ["admin", "sales", "finance", "support"] },
+      { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "sales", "finance", "support"] },
     ],
   },
   {
