@@ -95,6 +95,21 @@ See `/app/memory/test_credentials.md`.
 - New `<Skeleton />` / `<SkeletonText />` / `<SkeletonCard />` primitives.
 - Improved lazy-route fallback (branded spinner instead of blank screen).
 
+### Admin ▸ Branding (2026-07-23)
+- Upload logo variants (`logo_light`, `logo_dark`), favicon, and email
+  banner as base64 data-URIs stored in Mongo `settings.branding`. No
+  filesystem writes, no re-deploy required.
+- `GET  /api/portal/branding` — public (merges DB overrides on defaults).
+- `POST /api/portal/admin/branding` — accepts any subset of the four keys;
+  4 MB cap; unknown keys dropped.
+- `DELETE /api/portal/admin/branding/{key}` — resets one field.
+- Invoice / Quotation PDF renderers pass `logo_url=…` from the branding
+  doc at request time; email `wrap_html(body, logo_url=…)` accepts the
+  same override.
+- Frontend page at `/portal/admin/branding` with drag-drop image upload,
+  live preview against white/navy/slate backgrounds, per-field reset.
+  Nav entry under `Admin ▸ System ▸ Branding`.
+
 ---
 
 ## Verified endpoints (2026-07-23)

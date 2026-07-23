@@ -47,6 +47,7 @@ const AdminTickets      = lazy(() => import("./pages/portal/admin/AdminTickets")
 const AdminFinance      = lazy(() => import("./pages/portal/admin/AdminFinance"));
 const AdminIntegrations = lazy(() => import("./pages/portal/admin/AdminIntegrations"));
 const AdminSecurity     = lazy(() => import("./pages/portal/admin/AdminSecurity"));
+const AdminBranding     = lazy(() => import("./pages/portal/admin/AdminBranding"));
 const AdminMail         = lazy(() => import("./pages/portal/admin/AdminMail"));
 const AdminServices     = lazy(() => import("./pages/portal/admin/AdminServices"));
 const AdminAssets       = lazy(() => import("./pages/portal/admin/AdminAssets"));
@@ -144,6 +145,7 @@ function App() {
                   <Route path="documents" element={<AdminDocuments />} />
                   <Route path="integrations" element={<AdminIntegrations />} />
                   <Route path="security" element={<AdminSecurity />} />
+                  <Route path="branding" element={<AdminBranding />} />
                   <Route path="real-integrations" element={<Navigate to="/portal/admin/integrations" replace />} />
                   <Route path="settings/password" element={<ChangePassword />} />
                 </Route>

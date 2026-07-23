@@ -3110,7 +3110,64 @@ COMPANY_HEADER_HTML = """
 """
 
 
-LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png"
+from portal.branding import get_branding as _get_branding_dict, DEFAULTS as _BRANDING_DEFAULTS, BRANDING_KEYS as _BRANDING_KEYS
+LOGO_URL = _BRANDING_DEFAULTS["logo_dark"]
+
+
+# ============================================================
+# Branding endpoints (Admin ▸ Branding)
+# ============================================================
+@router.get("/branding")
+async def branding_get():
+    """Public read — landing/emails/frontend fetch the current branding."""
+    db = await _get_db()
+    return await _get_branding_dict(db)
+
+
+@router.post("/admin/branding")
+async def branding_set(payload: dict, admin=Depends(get_current_admin)):
+    """Update one or more branding fields. Payload example:
+        { "logo_dark": "data:image/png;base64,....",
+          "favicon":   "https://cdn.example.com/favicon.png" }
+    Only the four known keys (logo_light, logo_dark, favicon, email_banner)
+    are stored; unknown keys are dropped for safety.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    incoming = {k: v for k, v in payload.items() if k in _BRANDING_KEYS and isinstance(v, str)}
+    # data-URI size sanity: refuse anything over 4 MB to keep the settings doc small
+    for k, v in list(incoming.items()):
+        if v.startswith("data:") and len(v) > 4 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"{k}: image is larger than 4 MB")
+    if not incoming:
+        raise HTTPException(status_code=400, detail="No valid branding fields provided")
+    db = await _get_db()
+    existing = await db.settings.find_one({"key": "branding"}) or {}
+    merged = dict(existing.get("value") or {})
+    merged.update(incoming)
+    await db.settings.update_one(
+        {"key": "branding"},
+        {"$set": {"value": merged, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return await _get_branding_dict(db)
+
+
+@router.delete("/admin/branding/{key}")
+async def branding_reset(key: str, admin=Depends(get_current_admin)):
+    """Reset one field to its hardcoded default."""
+    if key not in _BRANDING_KEYS:
+        raise HTTPException(status_code=400, detail=f"Unknown branding key: {key}")
+    db = await _get_db()
+    existing = await db.settings.find_one({"key": "branding"}) or {}
+    merged = dict(existing.get("value") or {})
+    merged.pop(key, None)
+    await db.settings.update_one(
+        {"key": "branding"},
+        {"$set": {"value": merged, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return await _get_branding_dict(db)
 
 
 def _pdf_template(
@@ -3122,8 +3179,7 @@ def _pdf_template(
     due_or_valid_label: str, # "Due Date" or "Valid Until"
     items: list,
     subtotal: float,
-    tax_amount: float,
-    total: float,
+    tax_amount: float,    total: float,
     tax_percent: float,
     status: str,
     billed_to: dict,
@@ -3133,6 +3189,7 @@ def _pdf_template(
     banks: list = None,
     extra_footer: str = "",
     for_pdf: bool = False,
+    logo_url: str = LOGO_URL,
 ) -> str:
     """Renders the invoice/quotation HTML matching the reference layout."""
     transactions = transactions or []
@@ -3292,7 +3349,7 @@ def _pdf_template(
   {ribbon}
 
   <div class="head">
-    <div class="logo"><img src="{LOGO_URL}" alt="Intercloud Digital Inovasi"/></div>
+    <div class="logo"><img src="{logo_url}" alt="Intercloud Digital Inovasi"/></div>
     {COMPANY_HEADER_HTML}
   </div>
 
@@ -3390,6 +3447,7 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
         banks=banks if status in ("unpaid", "overdue") else None,
         notes=d.get("notes", ""),
         for_pdf=(format == "pdf"),
+        logo_url=(await _get_branding_dict(db))["logo_dark"],
     )
 
     if format == "pdf":
@@ -3439,6 +3497,7 @@ async def render_quotation_pdf(qid: str, format: str = "html", staff=Depends(get
             "</div>"
         ),
         for_pdf=(format == "pdf"),
+        logo_url=(await _get_branding_dict(db))["logo_dark"],
     )
 
     if format == "pdf":

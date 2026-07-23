@@ -48,7 +48,7 @@ BRAND_HEADER = "#0a2350"
 BRAND_ACCENT = "#f5b120"
 LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png"
 
-_WRAPPER = """<!doctype html>
+_WRAPPER_TEMPLATE = """<!doctype html>
 <html><body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;color:#0a2350">
   <div style="max-width:640px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 6px 28px rgba(10,35,80,.08);border:1px solid #e2e8f0">
     <div style="background:#0a2350;padding:22px 28px;color:#fff">
@@ -67,7 +67,12 @@ _WRAPPER = """<!doctype html>
       <div style="margin-top:8px;color:#94a3b8;font-size:10px">This is an automated message from the Intercloud Client Portal. Please do not reply directly — use the portal or contact channels above.</div>
     </div>
   </div>
-</body></html>""".replace("__LOGO__", LOGO_URL)
+</body></html>"""
+
+# Kept for callers that import the constant; resolved at import time using the
+# static LOGO_URL default. New code should pass an explicit logo_url to
+# wrap_html() (defined below) which allows runtime overrides via Admin ▸ Branding.
+_WRAPPER = _WRAPPER_TEMPLATE.replace("__LOGO__", LOGO_URL)
 
 
 # Bump this whenever the shipped default templates meaningfully change — startup
@@ -417,11 +422,14 @@ def render(template_str: str, ctx: dict) -> str:
     return _TAG_RE.sub(lambda mm: _get(ctx, mm.group(1)), template_str or "")
 
 
-def wrap_html(inner_html: str) -> str:
-    """Wrap a raw HTML fragment in the Intercloud brand chrome."""
+def wrap_html(inner_html: str, logo_url: str | None = None) -> str:
+    """Wrap a raw HTML fragment in the Intercloud brand chrome. If `logo_url`
+    is provided (typically fetched from Admin ▸ Branding) it overrides the
+    hardcoded default."""
     if "<html" in (inner_html or "").lower():
         return inner_html
-    return _WRAPPER.replace("{body}", inner_html)
+    wrapper = _WRAPPER_TEMPLATE.replace("__LOGO__", logo_url or LOGO_URL)
+    return wrapper.replace("{body}", inner_html)
 
 
 def _portal_urls(invoice_id: Optional[str] = None) -> dict:

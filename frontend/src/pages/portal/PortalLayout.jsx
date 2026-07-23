@@ -5,7 +5,7 @@ import {
   Users, Package, FileText, Wallet, Plug, HardDrive, Network, TerminalSquare,
   Send, Puzzle, Cloud, Menu, X, ChevronDown, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
-  Newspaper, ShieldCheck,
+  Newspaper, ShieldCheck, Image as ImageIcon,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 
@@ -74,8 +74,9 @@ const ADMIN_NAV_GROUPS = [
   {
     label: "System",
     items: [
-      { key: "integrations", to: "/portal/admin/integrations", label: "Integrations", icon: Plug, testid: "nav-integrations", roles: ["admin"] },
-      { key: "security",     to: "/portal/admin/security",     label: "Security",     icon: ShieldCheck, testid: "nav-security", roles: ["admin"] },
+      { key: "integrations", to: "/portal/admin/integrations", label: "Integrations", icon: Plug,        testid: "nav-integrations", roles: ["admin"] },
+      { key: "security",     to: "/portal/admin/security",     label: "Security",     icon: ShieldCheck, testid: "nav-security",     roles: ["admin"] },
+      { key: "branding",     to: "/portal/admin/branding",     label: "Branding",     icon: ImageIcon,   testid: "nav-branding",     roles: ["admin"] },
     ],
   },
 ];
