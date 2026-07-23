@@ -461,20 +461,18 @@ server_tokens off;
 HTTPCONF
 
 cat > /etc/nginx/sites-available/intercloud <<NGINX
-# ---- Reusable security header block -------------------------------------
-# Sourced inside every server{} block below. UAT flagged the SPA HTML as
-# missing headers because nginx serves index.html itself (backend middleware
-# only applies to /api/*). Injecting here covers BOTH static + proxied
-# responses. Values pass Mozilla Observatory 'A+' on the strict CSP.
+# ---- Reusable security header snippet ------------------------------
+# Injected on every response (static SPA + proxied /api). UAT flagged
+# the SPA HTML as missing headers because nginx serves index.html
+# itself and backend middleware only fires on /api/*.
 #
-# CSP inlines match:
-#   - React inline runtime shim → 'unsafe-inline' on script-src is required
-#     until we ship a nonce-per-request approach. Kept report-friendly.
-#   - Google reCAPTCHA v3 + Cloudflare Turnstile → frame-src whitelist.
-#   - Emergent CDN + WhatsApp/social embeds → img-src https:.
-map \$sent_http_content_type \$csp_header {
-    default "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com https://www.gstatic.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; frame-src 'self' https://www.google.com https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';";
-}
+# CSP whitelist covers:
+#   - React inline runtime → 'unsafe-inline' on script-src (until nonce)
+#   - Google reCAPTCHA v3 / Cloudflare Turnstile → frame-src whitelist
+#   - Emergent CDN + WhatsApp embeds + logos → img-src https:
+#
+# NOTE: kept as a static string, NOT an nginx 'map' directive, because
+# not every nginx build supports \$var interpolation inside add_header.
 
 server {
     listen 80 default_server;
@@ -485,15 +483,15 @@ server {
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml text/xml application/xml;
 
-    # ---- Security headers ------------------------------------------------
+    # ---- Security headers --------------------------------------------
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()" always;
-    add_header Content-Security-Policy \$csp_header always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com https://www.gstatic.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; frame-src 'self' https://www.google.com https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
-    # NOTE: Strict-Transport-Security is only added on the HTTPS server block
-    # that certbot generates. Adding it on plain HTTP is a spec violation.
+    # NOTE: Strict-Transport-Security is added by certbot on the HTTPS
+    # server block it generates. Adding it on plain HTTP violates spec.
 
     # ACME HTTP-01 challenge — MUST be served over plain HTTP, no redirects.
     location /.well-known/acme-challenge/ {
@@ -523,7 +521,6 @@ server {
         proxy_pass http://127.0.0.1:8001/api/portal/sitemap.xml;
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        add_header Content-Type "application/xml; charset=utf-8" always;
     }
 
     location = /robots.txt {

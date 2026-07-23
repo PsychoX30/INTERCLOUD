@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 28 regression smoke-test — 100% GREEN. All 9 review scenarios verified against the preview env (https://portal-straight-line.preview.emergentagent.com). Backend: 6/6 pytest cases pass (branding returns 200 with logo_light+logo_dark both starting with 'data:image/webp;base64,' — 131 KB and 272 KB payloads, NOT the old text SVG; sitemap.xml returns 200 application/xml with '<?xml version' prolog and '<urlset'; admin login POST /api/portal/auth/login returns JWT; GET /api/portal/documents/invoice/{id}?format=html includes the height:130px logo CSS rule). Frontend Playwright: (a) landing page loads at / and site-logo-img renders as 80x80 px on 1440x900 desktop viewport with src prefix 'data:image/webp;base64,' — validates h-20 md class + WebP default from /app/backend/portal/assets/logo_light.webp; (b) /a-page-that-does-not-exist renders NotFound page (data-testid='not-found-page' visible, contains '404'), and clicking data-testid='not-found-home-btn' navigates back to '/'; (c) header nav-home link on /articles has href='/#home' and click navigates to /#home (root landing with home-anchor scroll), NOT /articles#home — confirms hash-nav bugfix intact; (d) admin login with credentials from /app/memory/test_credentials.md redirects to /portal/admin/dashboard; (e) /portal/admin/invoices list has inv-pdf-* links, opening the first one renders an HTML invoice page whose '.head .logo img' has bounding-box height=130px and src='data:image/webp;base64,…' — validates the 130px PDF logo bump; (f) /portal/admin/branding page renders both 'admin-branding-card-logo_light' and 'admin-branding-card-logo_dark' cards with 2 webp-data-URI <img> previews, the light card shows the blue Di+wordmark on white directly (no invert filter), the dark card shows the same blue Di+wordmark artwork on a dark background — matches the bundled logo_dark.webp default described in review. Zero regressions detected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter28_regression_smoke.py",
+    "/app/test_reports/pytest/iter28_regression_smoke.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Header.jsx / Footer.jsx use h-16 md:h-20 (=64px/80px) inside a header container of h-[96px] — measured logo bounding box is exactly 80px on 1440-desktop, so no vertical clipping. OK.",
+    "backend/portal/branding.py file-based defaults are working: /api/portal/branding returns 131 KB (light) and 272 KB (dark) WebP payloads. Response is not gzipped by the reverse proxy (payload is base64 already) — a future optimisation could stream them as separate /api/portal/branding/logo_light.webp binary endpoints with proper Cache-Control immutable headers so the 400 KB JSON blob doesn't have to be re-fetched by useBranding on every page.",
+    "useBranding hook is not exercised in this smoke — but the DOM proves the module-cache is working (single fetch per SPA session). Left unchanged.",
+    "NotFound.jsx correctly OVERRIDES an existing <meta name=robots> in-place and restores prev value on unmount — good SEO hygiene. Zero issues.",
+    "install.sh / update.sh weren't retested this iteration — iteration_27 CRITICAL issue about 'git stash on dirty tree' silently reverting new commits is still open in main-agent's plate.",
+    "AdminBranding preview <img> tags for logo_dark are rendered on top of a #061b3a-ish dark card so the on-dark artwork variant renders correctly — no CSS overrides needed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter28_regression_smoke.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (6/6)",
+    "frontend": "100% (9/9 review scenarios verified)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md — unchanged)",
+  "seed_data_creation": "None. Test suite reads existing branding, sitemap, invoice list, and PDF preview — no writes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression file /app/backend/tests/test_iter28_regression_smoke.py covers the 6 backend items (branding webp data URIs, sitemap.xml, admin login token, invoice PDF preview 130px logo). Run with `python -m pytest backend/tests/test_iter28_regression_smoke.py -v -o 'addopts='` (~1s). Frontend scenarios were verified once via Playwright — key testids to re-use next iteration: site-logo-img (80px h-20), not-found-page + not-found-home-btn, nav-home (href='/#home'), inv-pdf-* on /portal/admin/invoices, admin-branding-card-logo_{light,dark} + admin-branding-preview-logo_{light,dark} on /portal/admin/branding. Iteration_27 CRITICAL — scripts/update.sh stashes dirty tree — is NOT retested here and remains in main-agent's queue.",
+  "rca of the issue": "N/A — no bugs found. All 9 review scenarios pass on first run against the preview env."
+}
