@@ -79,7 +79,7 @@ Environment variables:
 | `ENABLE_MONGO_AUTH` | `yes` | Set to `no` to skip auth (loopback only). |
 | `MONGO_APP_USER` | `intercloud_app` | DB app user. |
 | `MONGO_APP_PASSWORD` | *(random 32-byte)* | Auto-generated + saved. |
-| `ADMIN_EMAIL` | `admin@intercloud-digital.com` | Seed admin. Written to backend/.env; seeder resets the admin's password to this on first boot. |
+| `ADMIN_EMAIL` | `support@intercloud-digital.com` | Seed admin. Written to backend/.env; seeder resets the admin's password to this on first boot. |
 | `ADMIN_PASSWORD` | `AdminIntercloud2026!` | Change after login. |
 | `EMERGENT_LLM_KEY` | *(empty)* | Paste for AI features. |
 

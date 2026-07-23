@@ -30,7 +30,7 @@ async def seed_all(db):
 async def _seed_admin(db):
     """Create the admin user on first boot; re-sync the password hash if
     ADMIN_PASSWORD later changes in backend/.env."""
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@intercloud-digital.com").lower()
+    admin_email = os.environ.get("ADMIN_EMAIL", "support@intercloud-digital.com").lower()
     admin_pw    = os.environ.get("ADMIN_PASSWORD", "AdminIntercloud2026!")
 
     a = await db.users.find_one({"email": admin_email})
@@ -88,7 +88,7 @@ async def _write_credentials_file(db):
     """Write the admin credentials to /app/memory/test_credentials.md for the
     test harness. In production this file is informational only; feel free
     to delete after first login."""
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@intercloud-digital.com")
+    admin_email = os.environ.get("ADMIN_EMAIL", "support@intercloud-digital.com")
     admin_pw    = os.environ.get("ADMIN_PASSWORD", "AdminIntercloud2026!")
     path = "/app/memory/test_credentials.md"
     try:

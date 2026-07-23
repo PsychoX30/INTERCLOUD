@@ -123,7 +123,7 @@ const PortalLogin = () => {
               required
               data-testid="login-email"
               className="mt-1.5 w-full h-11 rounded-xl border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120]"
-              placeholder="admin@intercloud-digital.com"
+              placeholder="support@intercloud-digital.com"
             />
           </label>
           <label className="block mt-4 text-sm">
