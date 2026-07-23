@@ -110,6 +110,35 @@ See `/app/memory/test_credentials.md`.
   live preview against white/navy/slate backgrounds, per-field reset.
   Nav entry under `Admin ▸ System ▸ Branding`.
 
+### Admin ▸ Landing CMS (2026-07-23)
+- New Mongo doc `settings.landing_content` with three sections:
+  `overrides` (i18n key → {id,en} map), `faqs` (list of Q/A pairs),
+  `contact` (phone/email/address overrides — reserved for future).
+- `GET  /api/portal/landing-content` — public (falls back to shipped
+  defaults when empty).
+- `POST /api/portal/admin/landing-content` — replaces the whole doc;
+  128 KB cap; unknown top-level keys dropped.
+- `DELETE /api/portal/admin/landing-content` — wipes all overrides.
+- `LanguageProvider` fetches `/landing-content` at mount and merges
+  `overrides` on top of the shipped translation dict. FAQ component
+  reads `cmsFaqs` and falls back to `mock/data.js` if empty.
+- Frontend page at `/portal/admin/site-content` with three tabs:
+  **Text (curated)** — form editor for the 22 highest-value keys
+  (hero, features, services, pricing, CTA, FAQ, footer);
+  **FAQs** — add/remove bilingual Q/A pairs;
+  **Raw JSON** — power-user full-document editor.
+
+### Admin ▸ Backup / Restore (2026-07-23)
+- `GET  /api/portal/admin/backup/download` — streams a
+  `mongodump --archive --gzip` of every collection. Timestamped filename,
+  no-store cache, downloadable via the browser.
+- `POST /api/portal/admin/backup/restore?confirm=REPLACE` — raw request
+  body is fed into `mongorestore --archive --gzip --drop`. Refuses to
+  run without the `confirm=REPLACE` query string; refuses if body <32 B.
+- Frontend page at `/portal/admin/backup` with Download button and a
+  two-step Restore form: file picker + typed `REPLACE` confirmation +
+  `window.confirm` prompt.
+
 ---
 
 ## Verified endpoints (2026-07-23)
