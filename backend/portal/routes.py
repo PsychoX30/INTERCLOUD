@@ -337,7 +337,15 @@ async def _is_ip_blocked(db, ip: str) -> bool:
     return False
 
 
+from portal.security import (
+    limiter as _rl_limiter,
+    AUTH_LOGIN_LIMIT, AUTH_REGISTER_LIMIT,
+    AUTH_FORGOT_LIMIT, AUTH_RESET_LIMIT,
+)
+
+
 @router.post("/auth/login", response_model=m.LoginOut)
+@_rl_limiter.limit(AUTH_LOGIN_LIMIT)
 async def login(payload: m.LoginIn, request: Request):
     db = await _get_db()
     from portal import integrations_v2 as _iv2
@@ -418,6 +426,7 @@ async def _upsert_crm_from_user(db, u: dict, *, status: str = "prospect", extra_
 
 
 @router.post("/auth/register", response_model=m.LoginOut)
+@_rl_limiter.limit(AUTH_REGISTER_LIMIT)
 async def register(payload: m.RegisterIn, request: Request):
     """Public self-registration endpoint.
 
@@ -3537,6 +3546,7 @@ async def admin_reset_user_password(uid: str, payload: m.AdminResetPasswordIn,
 
 
 @router.post("/auth/forgot-password")
+@_rl_limiter.limit(AUTH_FORGOT_LIMIT)
 async def auth_forgot_password(payload: m.ForgotPasswordIn, request: Request):
     """Public. Always returns 200 to avoid email enumeration.
 
@@ -3577,7 +3587,8 @@ async def auth_forgot_password(payload: m.ForgotPasswordIn, request: Request):
 
 
 @router.post("/auth/reset-password")
-async def auth_reset_password(payload: m.ResetPasswordIn):
+@_rl_limiter.limit(AUTH_RESET_LIMIT)
+async def auth_reset_password(payload: m.ResetPasswordIn, request: Request):
     db = await _get_db()
     token_hash = hashlib.sha256(payload.token.encode()).hexdigest()
     row = await db.password_resets.find_one({"token_hash": token_hash, "used": False})
@@ -5318,3 +5329,72 @@ async def public_article_detail(slug: str):
     ).sort("published_at", -1).limit(3)
     related = [_serialize_article(x, include_body=False) for x in await related_cursor.to_list(3)]
     return {"article": _serialize_article(d), "related": related}
+
+
+# ============================================================
+# Sitemap — dynamic XML for search engines
+# ============================================================
+_SITEMAP_STATIC_ROUTES = [
+    ("", "1.0", "daily"),                # /
+    ("articles", "0.9", "daily"),         # /articles
+    ("legal/terms", "0.3", "yearly"),
+    ("legal/aup", "0.3", "yearly"),
+    ("legal/sla", "0.3", "yearly"),
+]
+
+_SITEMAP_ORIGINS = ("https://intercloud-digital.com",)
+
+
+@router.get("/sitemap.xml", include_in_schema=False)
+async def sitemap_xml():
+    """Serve a Google-friendly sitemap covering static routes + all
+    published articles. Cache-friendly (5-min public cache)."""
+    from fastapi.responses import Response as _R
+    db = await _get_db()
+    origin = _SITEMAP_ORIGINS[0]
+    urls: list[str] = []
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    for path, prio, freq in _SITEMAP_STATIC_ROUTES:
+        loc = f"{origin}/{path}" if path else f"{origin}/"
+        urls.append(
+            "  <url>\n"
+            f"    <loc>{loc}</loc>\n"
+            f"    <lastmod>{now_iso}</lastmod>\n"
+            f"    <changefreq>{freq}</changefreq>\n"
+            f"    <priority>{prio}</priority>\n"
+            "  </url>"
+        )
+
+    # Published articles
+    try:
+        cur = db.articles.find({"status": "published"},
+                               {"slug": 1, "updated_at": 1, "published_at": 1}
+                               ).sort("published_at", -1).limit(5000)
+        async for row in cur:
+            slug = row.get("slug")
+            if not slug:
+                continue
+            lm = row.get("updated_at") or row.get("published_at") or ""
+            lm = (str(lm)[:10]) or now_iso
+            urls.append(
+                "  <url>\n"
+                f"    <loc>{origin}/articles/{slug}</loc>\n"
+                f"    <lastmod>{lm}</lastmod>\n"
+                "    <changefreq>weekly</changefreq>\n"
+                "    <priority>0.7</priority>\n"
+                "  </url>"
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger("portal.sitemap").warning(f"sitemap articles fetch failed: {e}")
+
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(urls) +
+        "\n</urlset>\n"
+    )
+    return _R(content=body, media_type="application/xml",
+              headers={"Cache-Control": "public, max-age=300"})

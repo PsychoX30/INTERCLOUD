@@ -1,6 +1,8 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.responses import Response
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -9,6 +11,12 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List
 import uuid
 from datetime import datetime, timezone
+
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from portal.security import (
+    limiter, SecurityHeadersMiddleware, install_log_filter, log_csp_report,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -21,6 +29,18 @@ db = client[os.environ['DB_NAME']]
 
 # Create the main app without a prefix
 app = FastAPI()
+
+# Wire the shared slowapi limiter (defined in portal/security.py)
+app.state.limiter = limiter
+
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return Response(
+        content='{"detail":"Too many requests. Please slow down and try again shortly."}',
+        status_code=429, media_type="application/json",
+        headers={"Retry-After": "60"},
+    )
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -71,19 +91,41 @@ from portal.routes import router as portal_router  # noqa: E402
 app.include_router(portal_router)
 
 
+# Slowapi rate-limit middleware (checks decorated routes)
+app.add_middleware(SlowAPIMiddleware)
+
+# Security headers (HSTS, X-Frame-Options, CSP report-only, …)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# GZip large JSON payloads (dashboard rollups, invoice lists, article bodies…)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# CORS — read whitelist from env; blanks fall through to a single-line "*"
+_cors_raw = os.environ.get('CORS_ORIGINS', '*').strip()
+_cors_origins = [o.strip() for o in _cors_raw.split(',') if o.strip()] or ['*']
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=(_cors_origins != ['*']),
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# CSP violation reporter (report-only mode → browsers POST here)
+@app.post("/api/csp-report")
+async def csp_report(request: Request):
+    body = await request.body()
+    await log_csp_report(body)
+    return Response(status_code=204)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
 )
 logger = logging.getLogger(__name__)
+
+# Mask JWT/bearer/password/token/email in log lines
+install_log_filter()
 
 
 @app.on_event("startup")
@@ -101,6 +143,23 @@ async def startup_seed():
         await db.blocked_ips.create_index("ip", unique=True)
         await db.blocked_ips.create_index("expires_at")
         await db.security_notifications.create_index("created_at")
+        # ---- Hot-path compound indexes (Phase-1 performance) -----------
+        # Client dashboard: services/invoices/orders scoped to a user
+        await db.services.create_index([("user_id", 1), ("status", 1)])
+        await db.orders.create_index([("user_id", 1), ("created_at", -1)])
+        await db.invoices.create_index([("user_id", 1), ("status", 1)])
+        await db.invoices.create_index([("status", 1), ("due_date", 1)])
+        await db.tickets.create_index([("user_id", 1), ("status", 1)])
+        await db.tickets.create_index([("status", 1), ("updated_at", -1)])
+        # MikroTik devices: ordered listing + fast name lookup
+        await db.mikrotik_devices.create_index("created_at")
+        await db.mikrotik_devices.create_index("name")
+        # Articles: public listing sorted by publish date, unique slug already set
+        await db.articles.create_index([("published", 1), ("published_at", -1)])
+        # Assets: filter by category + status combo
+        await db.assets.create_index([("category", 1), ("status", 1)])
+        # Email queue / templates
+        await db.email_queue.create_index([("status", 1), ("scheduled_at", 1)])
     except Exception as e:
         logger.warning(f"Index create issue: {e}")
     try:

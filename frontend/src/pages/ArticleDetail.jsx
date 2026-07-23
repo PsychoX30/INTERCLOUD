@@ -76,10 +76,29 @@ const useArticleSEO = (a) => {
       "mainEntityOfPage": window.location.href,
     });
     document.head.appendChild(s);
+
+    // BreadcrumbList JSON-LD — helps Google surface breadcrumb rich results.
+    const existingBc = document.getElementById("article-breadcrumb-jsonld");
+    if (existingBc) existingBc.remove();
+    const bc = document.createElement("script");
+    bc.id = "article-breadcrumb-jsonld";
+    bc.type = "application/ld+json";
+    bc.text = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home",     "item": window.location.origin + "/" },
+        { "@type": "ListItem", "position": 2, "name": "Articles", "item": window.location.origin + "/articles" },
+        { "@type": "ListItem", "position": 3, "name": a.title,     "item": window.location.origin + `/articles/${a.slug}` },
+      ],
+    });
+    document.head.appendChild(bc);
     return () => {
       document.title = "Intercloud Digital Inovasi";
       const j = document.getElementById("article-jsonld");
       if (j) j.remove();
+      const b = document.getElementById("article-breadcrumb-jsonld");
+      if (b) b.remove();
     };
   }, [a]);
 };

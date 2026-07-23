@@ -1,0 +1,19 @@
+User-agent: *
+Allow: /
+Allow: /articles
+Allow: /articles/*
+
+# Portal area — no value for search indexing, protect from crawlers
+Disallow: /portal
+Disallow: /portal/*
+Disallow: /api/portal
+Disallow: /api/portal/*
+
+# Emergent preview canonical redirect target — indexing lives at the
+# production domain. Search engines that also honour <link rel="canonical">
+# on individual pages will merge duplicates automatically.
+Host: https://intercloud-digital.com
+
+# Sitemap
+Sitemap: https://intercloud-digital.com/api/portal/sitemap.xml
+Sitemap: https://www.intercloud-digital.com/api/portal/sitemap.xml

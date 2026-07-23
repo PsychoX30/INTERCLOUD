@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import Header from "../components/Header";
 import Hero from "../components/Hero";
 import Features from "../components/Features";
@@ -14,6 +14,58 @@ import Footer from "../components/Footer";
 import { MessageCircle } from "lucide-react";
 import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN } from "../mock/data";
 import { useLang } from "../i18n/LanguageContext";
+
+const CANONICAL = "https://intercloud-digital.com/";
+const BREADCRUMB_ID = "landing-breadcrumb-jsonld";
+const WEBSITE_ID    = "landing-website-jsonld";
+
+const upsertLink = (rel, href) => {
+  let el = document.head.querySelector(`link[rel="${rel}"]`);
+  if (!el) {
+    el = document.createElement("link");
+    el.setAttribute("rel", rel);
+    document.head.appendChild(el);
+  }
+  el.setAttribute("href", href);
+};
+
+const upsertScript = (id, obj) => {
+  const existing = document.getElementById(id);
+  if (existing) existing.remove();
+  const s = document.createElement("script");
+  s.id = id;
+  s.type = "application/ld+json";
+  s.text = JSON.stringify(obj);
+  document.head.appendChild(s);
+};
+
+const useLandingSEO = () => {
+  useEffect(() => {
+    upsertLink("canonical", CANONICAL);
+    upsertScript(BREADCRUMB_ID, {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": CANONICAL },
+      ],
+    });
+    upsertScript(WEBSITE_ID, {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "PT. Intercloud Digital Inovasi",
+      "url": CANONICAL,
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": CANONICAL + "articles?q={search_term_string}",
+        "query-input": "required name=search_term_string",
+      },
+    });
+    return () => {
+      document.getElementById(BREADCRUMB_ID)?.remove();
+      document.getElementById(WEBSITE_ID)?.remove();
+    };
+  }, []);
+};
 
 const FloatingWA = () => {
   const { lang } = useLang();
@@ -33,6 +85,7 @@ const FloatingWA = () => {
 };
 
 const Landing = () => {
+  useLandingSEO();
   return (
     <div className="bg-white text-[#0a2350]">
       <Header />

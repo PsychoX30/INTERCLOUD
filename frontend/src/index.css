@@ -2,6 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+ * Global a11y + polish (Phase-4 UI/UX)
+ * ============================================================ */
+
+/* Consistent, subtle focus ring only when navigating via keyboard */
+*:focus:not(:focus-visible) { outline: none; }
+*:focus-visible {
+    outline: 2px solid #0a2540;
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* Respect user motion preferences (motion sickness / low-power devices) */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Custom text-selection colour matches the primary brand */
+::selection {
+    background-color: rgba(245, 177, 32, 0.35); /* #f5b120 @ 35% */
+    color: #0a2540;
+}
+
+/* Prevent long CDN image URLs from horizontally overflowing dashboards */
+img { max-width: 100%; height: auto; }
+
 body {
     margin: 0;
     font-family:
@@ -10,6 +41,8 @@ body {
         sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    /* Anti-flash white when scrolling on iOS (matches brand backdrop) */
+    background-color: #ffffff;
 }
 
 code {
