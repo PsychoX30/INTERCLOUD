@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
 
 const LanguageContext = createContext({ lang: "id", setLang: () => {}, t: (x) => x });
 
@@ -292,6 +292,26 @@ export const LanguageProvider = ({ children }) => {
     return localStorage.getItem("ic_lang") || "id";
   });
 
+  // Runtime overrides fetched from Admin ▸ Site Content (Landing CMS).
+  // Shape: { "hero.h1a": { id: "...", en: "..." }, ... }
+  const [overrides, setOverrides] = useState({});
+  const [cmsFaqs, setCmsFaqs] = useState(null);        // null = use hardcoded default
+  const [contactOverride, setContactOverride] = useState(null);
+
+  useEffect(() => {
+    const base = process.env.REACT_APP_BACKEND_URL;
+    if (!base) return;
+    fetch(`${base}/api/portal/landing-content`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        setOverrides(data.overrides && typeof data.overrides === "object" ? data.overrides : {});
+        setCmsFaqs(Array.isArray(data.faqs) && data.faqs.length ? data.faqs : null);
+        setContactOverride(data.contact && typeof data.contact === "object" ? data.contact : null);
+      })
+      .catch(() => { /* stay on hardcoded defaults */ });
+  }, []);
+
   useEffect(() => {
     document.documentElement.lang = lang;
     try { localStorage.setItem("ic_lang", lang); } catch (_) {}
@@ -299,15 +319,28 @@ export const LanguageProvider = ({ children }) => {
 
   const setLang = useCallback((next) => setLangState(next), []);
 
+  // Merged translation dict — overrides win over shipped defaults.
+  const mergedDict = useMemo(
+    () => ({ ...dict, ...(overrides || {}) }),
+    [overrides]
+  );
+
   const t = useCallback((key) => {
-    const entry = dict[key];
+    const entry = mergedDict[key];
     if (!entry) return key;
+    // Overrides may arrive as either { id, en } or a raw string.
+    if (typeof entry === "string") return entry;
     const v = entry[lang];
     return v === undefined ? entry.id : v;
-  }, [lang]);
+  }, [lang, mergedDict]);
+
+  const value = useMemo(
+    () => ({ lang, setLang, t, cmsFaqs, contactOverride }),
+    [lang, setLang, t, cmsFaqs, contactOverride]
+  );
 
   return (
-    <LanguageContext.Provider value={{ lang, setLang, t }}>
+    <LanguageContext.Provider value={value}>
       {children}
     </LanguageContext.Provider>
   );

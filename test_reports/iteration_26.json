@@ -1,0 +1,34 @@
+{
+  "summary": "Both backend and frontend for iteration_26 (Landing CMS + DB Backup/Restore) pass 100%. 14/14 pytest cases green: public GET /landing-content, admin POST + persistence, non-admin 401/403, 128 KB cap 413, admin DELETE wipe, backup download (gzip magic 0x1f 0x8b + filename regex intercloud-backup-\\d{8}T\\d{6}Z\\.archive\\.gz + Cache-Control no-store), auth-guarded restore, 400 on missing confirm, 400 on empty body, and a full round-trip (dump → restore --drop → admin/users count unchanged). Frontend Playwright verified: landing page (/) renders with NO compile overlay + FAQ still visible from fallback, admin login OK, /portal/admin/site-content [data-testid=admin-site-content-page] with all 3 tabs (cms-tab-curated/faqs/json) and cms-save + 46 curated inputs, /portal/admin/backup [data-testid=admin-backup-page] with admin-backup-download/file/confirm/restore and restore button correctly disabled until BOTH file + REPLACE, real download triggered (35 KB gz, filename intercloud-backup-20260723T043510Z.archive.gz). Sidebar 'Landing CMS' + 'Backup & Restore' links exist. Regressions: /portal/admin/branding + /portal/admin/mikrotik still render, /api/portal/admin/mikrotik/devices still responds. DB left clean (landing-content empty after teardown).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_landing_cms_and_backup.py",
+    "/app/test_reports/pytest/iter26_landing_cms_backup.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "backend/portal/backups.py: mongodump result is buffered fully into RAM via subprocess PIPE. Fine for a portal with a few thousand rows, but if the archive ever grows past ~200 MB the FastAPI worker will spike. Consider streaming via StreamingResponse with an asyncio Queue if the DB grows.",
+    "backend/portal/routes.py:3211 uses len(str(clean)) to enforce the 128 KB cap. That is Python repr length, not JSON byte length. In practice repr is larger than JSON so users get rejected earlier than 128 KB (safe direction) — but the error message ('landing-content is <n> KB; cap is 128 KB') is technically misleading. Prefer len(json.dumps(clean).encode('utf-8')). Not a blocker.",
+    "backend/portal/routes.py:3262 accepts confirm as a plain string query parameter; if someone omits it the check `if confirm != 'REPLACE'` correctly rejects. Consider explicit HTTPException-based logging so accidental clicks are auditable.",
+    "AdminBackup.jsx builds the fetch URL from process.env.REACT_APP_BACKEND_URL + '/api/portal/...' directly (bypassing the shared axios `api` instance). That is deliberate because axios can garble binary blobs, but the manual Authorization header must be kept in sync with any future auth-scheme change (e.g. cookies) — worth a comment on why axios is bypassed.",
+    "portal/routes.py: 5573 lines in one file. This file has grown well past the 700-line guideline; splitting Landing-CMS + Backup routes into portal/routes_admin_ops.py would help maintainability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_landing_cms_and_backup.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (all requested testids + flows)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md, unchanged)",
+  "seed_data_creation": "During TestLandingCMS.test_admin_post_and_persist we wrote a single settings.landing_content override; teardown_module then DELETE'd it and public GET now returns {overrides:{},faqs:[],contact:{}}. Backup round-trip did an idempotent dump→restore --drop on the live DB; admin-users count matched before/after and no other data changed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression file /app/backend/tests/test_landing_cms_and_backup.py covers Landing CMS + Backup/Restore + login regression + a light mikrotik/devices reachability probe. Safe to run pytest with `python -m pytest backend/tests/test_landing_cms_and_backup.py -o 'addopts='` (project pytest.ini enables -n via xdist which conflicts with class-scoped session fixtures). Round-trip restore is destructive but idempotent — running it while other destructive tests are in-flight is not recommended.",
+  "rca of the issue": "N/A — no bugs found."
+}

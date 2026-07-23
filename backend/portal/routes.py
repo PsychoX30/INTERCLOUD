@@ -3170,6 +3170,119 @@ async def branding_reset(key: str, admin=Depends(get_current_admin)):
     return await _get_branding_dict(db)
 
 
+# ============================================================
+# Landing-page CMS
+# ============================================================
+from portal.backups import (
+    get_landing_content as _get_landing_content,
+    LANDING_CONTENT_DEFAULT as _LANDING_DEFAULT,
+    run_mongodump as _run_mongodump,
+    run_mongorestore as _run_mongorestore,
+)
+
+
+@router.get("/landing-content")
+async def landing_content_get():
+    """Public — Landing page fetches on mount and merges overrides on top of
+    the shipped i18n dict + hardcoded FAQ list."""
+    db = await _get_db()
+    return await _get_landing_content(db)
+
+
+@router.post("/admin/landing-content")
+async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
+    """Replace the landing-content JSON. Body:
+        {
+          "overrides": {"hero.h1a": {"id": "...", "en": "..."}},
+          "faqs":      [{"q": {"id": "...", "en": "..."},
+                          "a": {"id": "...", "en": "..."}}, ...],
+          "contact":   {"phone": "...", "email": "...", "address_id": "...", ...}
+        }
+    Unknown top-level keys are ignored. Any missing top-level key is set to
+    an empty dict/list so the page never crashes on missing shape."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    clean = {
+        "overrides": payload.get("overrides") if isinstance(payload.get("overrides"), dict) else {},
+        "faqs":      payload.get("faqs")      if isinstance(payload.get("faqs"), list)      else [],
+        "contact":   payload.get("contact")   if isinstance(payload.get("contact"), dict)   else {},
+    }
+    # 128 KB cap on the whole doc — plenty for a landing page's worth of text.
+    approx = len(str(clean))
+    if approx > 128 * 1024:
+        raise HTTPException(status_code=413,
+                            detail=f"landing-content is {approx // 1024} KB; cap is 128 KB")
+    db = await _get_db()
+    await db.settings.update_one(
+        {"key": "landing_content"},
+        {"$set": {"value": clean, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return await _get_landing_content(db)
+
+
+@router.delete("/admin/landing-content")
+async def landing_content_reset(admin=Depends(get_current_admin)):
+    """Wipe all landing overrides — Landing renders the shipped defaults."""
+    db = await _get_db()
+    await db.settings.update_one(
+        {"key": "landing_content"},
+        {"$set": {"value": {"overrides": {}, "faqs": [], "contact": {}},
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return dict(_LANDING_DEFAULT)
+
+
+# ============================================================
+# Backup / Restore
+# ============================================================
+@router.get("/admin/backup/download")
+async def backup_download(admin=Depends(get_current_admin)):
+    """Download a full gzipped BSON archive of every collection.
+    Streams via a plain `bytes` response — the archive is small enough
+    for the ~1000-row datasets this portal carries."""
+    from fastapi.responses import Response as _R
+    try:
+        blob, filename = await _run_mongodump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
+    return _R(
+        content=blob,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Backup-Size":       str(len(blob)),
+            "Cache-Control":       "no-store",
+        },
+    )
+
+
+@router.post("/admin/backup/restore")
+async def backup_restore(request: Request, admin=Depends(get_current_admin), confirm: str = ""):
+    """Restore a full snapshot. **Wipes every collection contained in the
+    archive** (mongorestore --drop) and reinstates the uploaded content.
+
+    Expects the archive as the raw request body (`Content-Type` is
+    ignored; slugs like `application/gzip` or `application/octet-stream`
+    both work). Requires `?confirm=REPLACE` as a safety guard."""
+    if confirm != "REPLACE":
+        raise HTTPException(status_code=400,
+                            detail="Confirmation required: pass ?confirm=REPLACE")
+    blob = await request.body()
+    if not blob or len(blob) < 32:
+        raise HTTPException(status_code=400, detail="Empty or too-small upload")
+    try:
+        log = await _run_mongorestore(blob, drop=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Restore failed: {e}")
+    return {
+        "ok": True,
+        "bytes_received": len(blob),
+        "log_tail": log[-1200:],
+    }
+
+
 def _pdf_template(
     *,
     doc_kind: str,           # "invoice" or "quotation"
