@@ -1,20 +1,51 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
+import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Edit, Trash2, Package as PackageIcon } from "lucide-react";
+import { DataTable } from "../../../components/ui/data-table";
 
 const AdminCategories = () => {
   const [rows, setRows] = useState(null);
   const [editing, setEditing] = useState(null);
   const load = () => api.get("/admin/categories").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
-  if (!rows) return <Loading />;
 
   const del = async (id) => {
     if (!window.confirm("Delete this category?")) return;
     try { await api.delete(`/admin/categories/${id}`); load(); }
     catch (e) { alert(e?.response?.data?.detail || "Failed to delete"); }
   };
+
+  const columns = [
+    { key: "label", label: "Label / Slug", sortable: true,
+      render: (_v, c) => (
+        <>
+          <div className="font-semibold text-[#0a2350]">{c.label}</div>
+          <div className="text-[11px] text-slate-500 font-mono">{c.slug}</div>
+        </>
+      ) },
+    { key: "description", label: "Description", sortable: false,
+      render: (v) => <span className="text-slate-600">{v || "—"}</span> },
+    { key: "sort_order", label: "Sort", sortable: true, align: "right",
+      render: (v) => <span className="text-slate-600 tabular-nums">{v}</span> },
+    { key: "product_count", label: "Products", sortable: true,
+      render: (v) => (
+        <span className="inline-flex items-center gap-1 text-xs font-bold text-[#0a2350] bg-slate-100 px-2 py-1 rounded">
+          <PackageIcon className="h-3 w-3" /> {v}
+        </span>
+      ) },
+    { key: "_actions", label: "Actions", sortable: false, align: "right",
+      render: (_v, c) => (
+        <span onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
+          <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(c)} data-testid={`cat-edit-${c.slug}`}>
+            <Edit className="h-4 w-4 inline" />
+          </button>
+          <button className="ml-3 text-slate-600 hover:text-red-600" onClick={() => del(c.id)} data-testid={`cat-del-${c.slug}`}>
+            <Trash2 className="h-4 w-4 inline" />
+          </button>
+        </span>
+      ) },
+  ];
 
   return (
     <div>
@@ -24,43 +55,15 @@ const AdminCategories = () => {
         actions={<button onClick={() => setEditing("new")} data-testid="new-cat-btn" className={btnPrimary}><Plus className="h-4 w-4" /> Add category</button>}
       />
 
-      {rows.length === 0 && <EmptyState title="No categories yet" />}
-      {rows.length > 0 && (
-        <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-          <table className="w-full min-w-[720px] text-sm">
-            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-              <tr>
-                <th className="px-4 py-3 text-left">Label / Slug</th>
-                <th className="px-4 py-3 text-left">Description</th>
-                <th className="px-4 py-3 text-left">Sort</th>
-                <th className="px-4 py-3 text-left">Products</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((c) => (
-                <tr key={c.id} className="border-t border-slate-100" data-testid={`cat-${c.slug}`}>
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-[#0a2350]">{c.label}</div>
-                    <div className="text-[11px] text-slate-500 font-mono">{c.slug}</div>
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{c.description || "—"}</td>
-                  <td className="px-4 py-3 text-slate-600">{c.sort_order}</td>
-                  <td className="px-4 py-3">
-                    <span className="inline-flex items-center gap-1 text-xs font-bold text-[#0a2350] bg-slate-100 px-2 py-1 rounded">
-                      <PackageIcon className="h-3 w-3" /> {c.product_count}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(c)}><Edit className="h-4 w-4 inline" /></button>
-                    <button className="ml-3 text-slate-600 hover:text-red-600" onClick={() => del(c.id)}><Trash2 className="h-4 w-4 inline" /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        rows={rows || []}
+        loading={rows === null}
+        columns={columns}
+        searchKeys={["label", "slug", "description"]}
+        rowKey={(r) => r.id}
+        empty={{ title: "No categories yet", hint: "Add your first product category." }}
+        testid="admin-categories-table"
+      />
 
       {editing && (
         <CategoryModal

@@ -75,6 +75,37 @@ def _oid(id_str: str) -> ObjectId:
         raise HTTPException(status_code=400, detail=f"Invalid id: {id_str}")
 
 
+def _sales_scope_filter(staff: dict, key: str = "user_id") -> dict:
+    """Return an extra Mongo filter clause that restricts sales to their
+    assigned clients. Returns {} for non-sales roles (no restriction).
+
+    For sales with an empty assignment list we deliberately match nothing so
+    the endpoint returns an empty list rather than leaking global data.
+    """
+    if staff.get("role") != "sales":
+        return {}
+    assigned = staff.get("assigned_client_ids") or []
+    if not assigned:
+        return {"_id": None}  # matches nothing
+    return {key: {"$in": [ObjectId(x) for x in assigned]}}
+
+
+async def _sales_visible_crm_ids(db, staff: dict) -> list | None:
+    """Return the list of crm_customers._id that a sales staff can access.
+
+    Returns None if the staff is not a sales role (i.e., no restriction).
+    For sales, we consider a CRM row "theirs" if its `user_id` is in their
+    assigned_client_ids. This is what powers scoping on the Follow-ups table.
+    """
+    if staff.get("role") != "sales":
+        return None
+    assigned = [ObjectId(x) for x in (staff.get("assigned_client_ids") or [])]
+    if not assigned:
+        return []
+    cur = db.crm_customers.find({"user_id": {"$in": assigned}}, {"_id": 1})
+    return [d["_id"] async for d in cur]
+
+
 async def _next_number(db, coll: str, prefix: str) -> str:
     year = datetime.now(timezone.utc).year
     count = await db[coll].count_documents({}) + 1
@@ -1591,12 +1622,13 @@ async def client_confirm_transfer(oid: str, payload: dict, user=Depends(get_curr
     return _serialize_order(d)
 
 
-# Invoices (admin)
+# Invoices (staff — Sales sees only invoices of their assigned clients)
 @router.get("/admin/invoices")
-async def admin_list_invoices(admin=Depends(get_current_admin)):
+async def admin_list_invoices(staff=Depends(get_current_staff)):
     db = await _get_db()
     await _mark_overdue(db)
-    docs = await db.invoices.find({}).sort("created_at", -1).to_list(2000)
+    q = _sales_scope_filter(staff, key="user_id")
+    docs = await db.invoices.find(q).sort("created_at", -1).to_list(2000)
     return [await _serialize_invoice(db, d) for d in docs]
 
 
@@ -2090,32 +2122,58 @@ async def admin_mail_toggle_star(mid: str, staff=Depends(get_current_staff)):
 
 @router.post("/admin/mail/send")
 async def admin_mail_send(payload: dict, staff=Depends(get_current_staff)):
+    """Send outgoing email using the *caller's own* SMTP credentials.
+
+    Every staff member configures their personal cPanel SMTP under
+    Settings ▸ Email; the outbox uses those creds so replies come back to
+    the same mailbox they read from. If no personal SMTP is configured,
+    we hard-fail with 400 so the user is nudged to set it up.
+    """
     db = await _get_db()
-    smtp_v2 = await iv2.get_settings(db, "smtp")
-    smtp_v1 = await db.integrations.find_one({"module": "smtp", "status": "enabled"})
     to = payload.get("to", "")
     subject = payload.get("subject", "")
     body = payload.get("body", "")
     if not to or not subject:
         raise HTTPException(status_code=400, detail="to and subject are required")
-    # Determine sender identity + delivery status
-    from_email = ""
-    from_name = "Intercloud"
+
+    # ---- Load caller's personal SMTP settings ----
+    user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
+    my_settings = (user_doc or {}).get("email_settings") or {}
+    my_smtp = my_settings.get("smtp") or {}
+    smtp_creds = my_smtp.get("credentials") or {}
+    if not (smtp_creds.get("host") and smtp_creds.get("username") and smtp_creds.get("password")):
+        raise HTTPException(
+            status_code=400,
+            detail="Silakan setup SMTP dulu di Settings ▸ Email sebelum mengirim.",
+        )
+
+    # Build a settings dict compatible with SMTPMailer, merging in the
+    # caller's display name / from-address from the per-user config.
+    smtp_settings = {
+        "credentials": smtp_creds,
+        "options": {
+            **(my_smtp.get("options") or {}),
+            "from_email": my_settings.get("from_email") or smtp_creds.get("username"),
+            "from_name":  my_settings.get("from_name")  or staff.get("name") or "Intercloud",
+        },
+    }
+
     delivered = False
-    delivered_via = "queued (SMTP not configured)"
-    if smtp_v2 and smtp_v2.get("enabled"):
-        try:
-            iv2.SMTPMailer(smtp_v2).send(to=to, subject=subject, html=body or "")
-            delivered = True; delivered_via = "smtp"
-            from_email = (smtp_v2.get("options") or {}).get("from_email") or (smtp_v2.get("credentials") or {}).get("username") or ""
-            from_name = (smtp_v2.get("options") or {}).get("from_name") or "Intercloud"
-        except Exception as e:
-            delivered = False; delivered_via = f"smtp-failed: {type(e).__name__}"
-    elif smtp_v1:
-        # Legacy mocked delivery
-        delivered = True; delivered_via = "smtp-mock"
-        from_email = smtp_v1.get("config", {}).get("from_email") or "no-reply@intercloud-digital.com"
-        from_name = smtp_v1.get("config", {}).get("from_name") or "Intercloud"
+    delivered_via = "queued"
+    from_email = smtp_settings["options"]["from_email"]
+    from_name  = smtp_settings["options"]["from_name"]
+    try:
+        iv2.SMTPMailer(smtp_settings).send(to=to, subject=subject, html=body or "")
+        delivered = True
+        delivered_via = "smtp"
+    except Exception as e:
+        # Surface the underlying reason to the caller so the UI can show a
+        # meaningful error instead of a silent "queued".
+        raise HTTPException(
+            status_code=502,
+            detail=f"SMTP kirim gagal ({type(e).__name__}): {e}",
+        )
+
     doc = {
         "from_email": from_email or "no-reply@intercloud-digital.com",
         "from_name": from_name,
@@ -2240,7 +2298,8 @@ async def _crm_enrichment_by_uid(db, user_ids: list) -> dict:
 @router.get("/admin/crm")
 async def crm_list(staff=Depends(get_current_staff)):
     db = await _get_db()
-    docs = await db.crm_customers.find({}).sort("updated_at", -1).to_list(2000)
+    q = _sales_scope_filter(staff, key="user_id")
+    docs = await db.crm_customers.find(q).sort("updated_at", -1).to_list(2000)
     # Collect user_ids for enrichment
     uid_pairs = [(str(d.get("user_id")), d.get("user_id")) for d in docs if d.get("user_id")]
     uids = [pair[1] for pair in uid_pairs]
@@ -2281,9 +2340,23 @@ async def crm_create(payload: dict, staff=Depends(get_current_staff)):
     return _serialize_crm(doc)
 
 
+async def _assert_sales_can_touch_crm(db, staff: dict, cid: str) -> dict:
+    """Load a CRM row and 403 if `staff` is a sales user whose assigned
+    clients don't include the row's linked user_id."""
+    d = await db.crm_customers.find_one({"_id": _oid(cid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    if staff.get("role") == "sales":
+        assigned = {str(x) for x in (staff.get("assigned_client_ids") or [])}
+        if not (d.get("user_id") and str(d["user_id"]) in assigned):
+            raise HTTPException(status_code=403, detail="Not your client")
+    return d
+
+
 @router.put("/admin/crm/{cid}")
 async def crm_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
+    await _assert_sales_can_touch_crm(db, staff, cid)
     payload = {k: v for k, v in payload.items() if k in {
         "name", "email", "phone", "company", "position", "industry", "status", "notes"
     }}
@@ -2300,6 +2373,7 @@ async def crm_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
 @router.delete("/admin/crm/{cid}")
 async def crm_delete(cid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
+    await _assert_sales_can_touch_crm(db, staff, cid)
     r = await db.crm_customers.delete_one({"_id": _oid(cid)})
     return {"deleted": r.deleted_count}
 
@@ -2451,18 +2525,50 @@ def _serialize_followup(d):
     }
 
 
+async def _sales_followup_filter(db, staff: dict) -> dict | None:
+    """Return a Mongo filter that restricts follow-ups to CRM rows the sales
+    staff can access. Returns {} for non-sales. Returns None if the caller is
+    a sales user with zero visible CRM rows (endpoint should short-circuit)."""
+    if staff.get("role") != "sales":
+        return {}
+    ids = await _sales_visible_crm_ids(db, staff)
+    if not ids:
+        return None
+    return {"customer_id": {"$in": ids}}
+
+
+async def _assert_sales_can_touch_followup(db, staff: dict, fid: str) -> dict:
+    d = await db.followups.find_one({"_id": _oid(fid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    if staff.get("role") == "sales":
+        visible = await _sales_visible_crm_ids(db, staff) or []
+        cust_id = d.get("customer_id")
+        if not (cust_id and any(str(cust_id) == str(x) for x in visible)):
+            raise HTTPException(status_code=403, detail="Not your follow-up")
+    return d
+
+
 @router.get("/admin/followups")
 async def followups_list(staff=Depends(get_current_staff)):
     db = await _get_db()
-    docs = await db.followups.find({}).sort("due_date", 1).to_list(1000)
+    q = await _sales_followup_filter(db, staff)
+    if q is None:
+        return []
+    docs = await db.followups.find(q).sort("due_date", 1).to_list(1000)
     return [_serialize_followup(d) for d in docs]
 
 
 @router.post("/admin/followups")
 async def followups_create(payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
+    cust_id = _oid(payload["customer_id"]) if payload.get("customer_id") else None
+    if staff.get("role") == "sales":
+        visible = await _sales_visible_crm_ids(db, staff) or []
+        if not (cust_id and any(str(cust_id) == str(x) for x in visible)):
+            raise HTTPException(status_code=403, detail="Follow-up harus untuk pelanggan yang di-assign ke Anda")
     doc = {
-        "customer_id": _oid(payload["customer_id"]) if payload.get("customer_id") else None,
+        "customer_id": cust_id,
         "customer_name": payload.get("customer_name", ""),
         "task": payload.get("task", ""),
         "channel": payload.get("channel", "whatsapp"),
@@ -2479,6 +2585,7 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
 @router.put("/admin/followups/{fid}")
 async def followups_update(fid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
+    await _assert_sales_can_touch_followup(db, staff, fid)
     upd = {k: v for k, v in payload.items() if k in {"task", "channel", "due_date", "done", "owner", "customer_name"}}
     await db.followups.update_one({"_id": _oid(fid)}, {"$set": upd})
     d = await db.followups.find_one({"_id": _oid(fid)})
@@ -2488,6 +2595,7 @@ async def followups_update(fid: str, payload: dict, staff=Depends(get_current_st
 @router.delete("/admin/followups/{fid}")
 async def followups_delete(fid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
+    await _assert_sales_can_touch_followup(db, staff, fid)
     r = await db.followups.delete_one({"_id": _oid(fid)})
     return {"deleted": r.deleted_count}
 

@@ -1,17 +1,53 @@
 import React, { useEffect, useState } from "react";
 import { api, money, shortDate } from "../../../portal/api";
 import { docUrl } from "../../../portal/api";
-import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
+import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Trash2, FileDown, Download } from "lucide-react";
+import { DataTable } from "../../../components/ui/data-table";
 
 const AdminQuotations = () => {
   const [rows, setRows] = useState(null);
   const [modal, setModal] = useState(false);
   const load = () => api.get("/admin/quotations").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
-  if (!rows) return <Loading />;
 
   const setStatus = async (id, status) => { await api.put(`/admin/quotations/${id}/status`, { status }); load(); };
+
+  const columns = [
+    { key: "number", label: "#", sortable: true, mono: true,
+      render: (v) => <span className="font-mono font-bold text-[#0a2350]">{v}</span> },
+    { key: "user_name", label: "Client", sortable: true,
+      render: (_v, r) => (
+        <>
+          <div className="font-semibold text-[#0a2350]">{r.user_name}</div>
+          <div className="text-xs text-slate-500">{r.user_email}</div>
+        </>
+      ) },
+    { key: "valid_until", label: "Valid until", sortable: true,
+      render: (v) => <span className="text-slate-500">{shortDate(v)}</span> },
+    { key: "total", label: "Total", sortable: true, align: "right",
+      render: (v) => <span className="font-extrabold text-[#0a2350]">{money(v)}</span> },
+    { key: "status", label: "Status", sortable: true,
+      render: (v) => <StatusBadge status={v} /> },
+    { key: "_actions", label: "Actions", sortable: false, align: "right",
+      render: (_v, q) => (
+        <span className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+          <a href={docUrl("quotation", q.id)} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120] mr-3" title="Preview" data-testid={`qtn-pdf-${q.number}`}>
+            <FileDown className="h-4 w-4 inline" />
+          </a>
+          <a href={docUrl("quotation", q.id, "pdf")} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120] mr-3" title="Download PDF" data-testid={`qtn-download-${q.number}`}>
+            <Download className="h-4 w-4 inline" />
+          </a>
+          <select value={q.status} onChange={(e) => setStatus(q.id, e.target.value)} className="text-xs h-8 rounded border border-slate-300 px-1.5" data-testid={`qtn-status-${q.number}`}>
+            <option value="draft">draft</option>
+            <option value="sent">sent</option>
+            <option value="accepted">accepted</option>
+            <option value="rejected">rejected</option>
+            <option value="expired">expired</option>
+          </select>
+        </span>
+      ) },
+  ];
 
   return (
     <div>
@@ -20,50 +56,15 @@ const AdminQuotations = () => {
         subtitle="Send tailored quotes to prospects. Accepted quotes can be converted into invoices."
         actions={<button className={btnPrimary} onClick={() => setModal(true)} data-testid="new-qtn-btn"><Plus className="h-4 w-4" /> New Quotation</button>}
       />
-      {rows.length === 0 && <EmptyState title="No quotations yet" />}
-      <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-        <table className="w-full min-w-[720px] text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-            <tr>
-              <th className="px-4 py-3 text-left">#</th>
-              <th className="px-4 py-3 text-left">Client</th>
-              <th className="px-4 py-3 text-left">Valid until</th>
-              <th className="px-4 py-3 text-right">Total</th>
-              <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((q) => (
-              <tr key={q.id} className="border-t border-slate-100" data-testid={`qtn-${q.number}`}>
-                <td className="px-4 py-3 font-mono font-bold text-[#0a2350]">{q.number}</td>
-                <td className="px-4 py-3">
-                  <div className="font-semibold text-[#0a2350]">{q.user_name}</div>
-                  <div className="text-xs text-slate-500">{q.user_email}</div>
-                </td>
-                <td className="px-4 py-3 text-slate-500">{shortDate(q.valid_until)}</td>
-                <td className="px-4 py-3 text-right font-extrabold text-[#0a2350]">{money(q.total)}</td>
-                <td className="px-4 py-3"><StatusBadge status={q.status} /></td>
-                <td className="px-4 py-3 text-right">
-                  <a href={docUrl("quotation", q.id)} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120] mr-3" title="Preview" data-testid={`qtn-pdf-${q.number}`}>
-                    <FileDown className="h-4 w-4 inline" />
-                  </a>
-                  <a href={docUrl("quotation", q.id, "pdf")} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120] mr-3" title="Download PDF" data-testid={`qtn-download-${q.number}`}>
-                    <Download className="h-4 w-4 inline" />
-                  </a>
-                  <select value={q.status} onChange={(e) => setStatus(q.id, e.target.value)} className="text-xs h-8 rounded border border-slate-300 px-1.5">
-                    <option value="draft">draft</option>
-                    <option value="sent">sent</option>
-                    <option value="accepted">accepted</option>
-                    <option value="rejected">rejected</option>
-                    <option value="expired">expired</option>
-                  </select>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        rows={rows || []}
+        loading={rows === null}
+        columns={columns}
+        searchKeys={["number", "user_name", "user_email", "status"]}
+        rowKey={(r) => r.id}
+        empty={{ title: "No quotations yet", hint: "Send your first quote to a prospect." }}
+        testid="admin-quotations-table"
+      />
       {modal && <NewQuotation onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
     </div>
   );

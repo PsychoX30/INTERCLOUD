@@ -7,7 +7,27 @@ Enterprise-ready admin portal for ISP/DC operator "Intercloud Digital Inovasi"
 with role-based access, per-admin email, PDF invoices, MikroTik live ops,
 UAT-compliant security, self-installer for Ubuntu 24.04 Proxmox VMs.
 
-## Implemented (as of 2026-07-23)
+## Implemented (as of 2026-07-23 — batch 4)
+
+### Batch 4 — Per-user SMTP send + Sales scoping expansion (this session)
+- **P0** `POST /api/portal/admin/mail/send` now uses the caller's own
+  `users.email_settings.smtp` — no more global iv2 SMTP fallback. Returns
+  HTTP 400 with `"Silakan setup SMTP dulu di Settings ▸ Email…"` when
+  personal SMTP isn't configured. Actual SMTP send errors surface as 502
+  (previously silently marked "queued").
+- **P1** New helpers `_sales_scope_filter()` and `_sales_visible_crm_ids()`
+  in `routes.py` — single source of truth for Sales scoping filters.
+- **P1** Applied Sales scoping to:
+  - `GET /admin/invoices` — role switched from admin→staff, filter by user_id∈assigned
+  - `GET /admin/crm` — filter by user_id∈assigned
+  - `PUT/DELETE /admin/crm/{id}` — 403 if sales tries to touch another rep's client (`_assert_sales_can_touch_crm`)
+  - `GET /admin/followups` — filter customer_id to sales-visible CRM rows
+  - `POST /admin/followups` — 403 if creating for a non-assigned customer
+  - `PUT/DELETE /admin/followups/{id}` — 403 if sales tries to touch another rep's follow-up
+- **P2** DataTable rolled out to `AdminQuotations`, `AdminProducts`,
+  `AdminCategories`, `AdminTickets` (sort, search, empty state, skeleton).
+- Regression: `/app/backend/tests/test_sales_scoping.py` — 9 tests
+  (invoices/CRM/followups scoping + admin sees-all + mail-send 400).
 
 ### Batch 3 — F1 Per-admin email + F3 Sales scoping (iter30 15/15 pass)
 - Every staff member configures own cPanel IMAP/SMTP creds via
@@ -73,16 +93,13 @@ template (no `map` directive), `/var/www/html/.well-known/acme-challenge`
 webroot pre-created, `server_tokens off`.
 
 ## Roadmap / Backlog
-- **P1** admin_mail_send refactor to use per-user SMTP (currently still
-  uses shared iv2.get_settings). Straightforward follow-up.
 - **P1** Distinguish IMAP connect-failure from empty inbox in
-  `iv2.IMAPClient.fetch_recent` so the connection_failed hint can
-  surface in AdminMail. Currently silent try/except swallows the error.
-- **P2** Sales scoping for CRM, Follow-ups, Documents (dashboard already
-  scoped this batch; extend to /admin/crm, /admin/followups etc.).
-- **P2** Sales scoping for /admin/invoices list (currently unscoped).
-- **P2** Roll out `<DataTable>` to remaining admin screens (Quotations,
-  Products, Add-ons, Tickets, Categories).
-- **P2** Zod + react-hook-form inline validation on Login/Register.
+  `iv2.IMAPClient.fetch_recent` so the `connection_failed` hint surfaces
+  in AdminMail. Currently silent try/except swallows the error.
+- **P2** DataTable rollout to remaining screens (AdminOrders, AdminMikrotik).
+- **P2** Zod + react-hook-form inline validation on Login/Register/ForgotPassword.
 - **P2** Factory-reset snapshot retention (keep last 5).
+- **P3** SEO polish (image alt, meta descriptions per article, favicon,
+  apple-touch-icon, react-snap for SPA prerender).
 - **P3** Full SSR (Next.js migration) for UAT M3 SEO parity.
+- **Backlog** Phase 6 QA & Handover smoke test across all modules.

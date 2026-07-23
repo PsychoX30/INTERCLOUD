@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api, money } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
+import { PageHeader, Loading, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Edit, Trash2, Plus, ChevronDown, ChevronUp, X, Puzzle, Package } from "lucide-react";
+import { DataTable } from "../../../components/ui/data-table";
 
 /* ---------------------------------------------------------------
    Admin Products page — WHMCS-style catalog editor
@@ -59,58 +60,56 @@ const AdminProducts = () => {
         ))}
       </div>
 
-      {visible.length === 0 && <EmptyState title="No products in this view" />}
-      {visible.length > 0 && (
-        <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-          <table className="w-full min-w-[720px] text-sm">
-            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-              <tr>
-                <th className="px-4 py-3 text-left">Name</th>
-                <th className="px-4 py-3 text-left">Category</th>
-                <th className="px-4 py-3 text-left">Type</th>
-                <th className="px-4 py-3 text-left">Options</th>
-                <th className="px-4 py-3 text-right">Monthly</th>
-                <th className="px-4 py-3 text-right">Setup</th>
-                <th className="px-4 py-3 text-left">Status</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((p) => (
-                <tr key={p.id} className="border-t border-slate-100" data-testid={`product-${p.id}`}>
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-[#0a2350]">{p.name}</div>
-                    <div className="text-xs text-slate-500 line-clamp-1">{p.description}</div>
-                  </td>
-                  <td className="px-4 py-3 uppercase text-xs font-bold text-[#f5b120]">{p.category}</td>
-                  <td className="px-4 py-3">
-                    {p.is_addon ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-purple-100 text-purple-700 px-2 py-0.5 rounded"><Puzzle className="h-3 w-3" /> Add-on</span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-slate-100 text-slate-700 px-2 py-0.5 rounded"><Package className="h-3 w-3" /> Base</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-slate-500">
-                    {(p.option_groups || []).length > 0 ? `${p.option_groups.length} groups` : "—"}
-                  </td>
-                  <td className="px-4 py-3 text-right font-semibold">{p.price_monthly ? money(p.price_monthly) : "—"}</td>
-                  <td className="px-4 py-3 text-right">{p.setup_fee ? money(p.setup_fee) : "—"}</td>
-                  <td className="px-4 py-3"><StatusBadge status={p.is_active ? "enabled" : "disabled"} /></td>
-                  <td className="px-4 py-3 text-right">
-                    <button onClick={() => setEditing(p)} className="text-slate-600 hover:text-[#f5b120]"><Edit className="h-4 w-4 inline" /></button>
-                    <button
-                      onClick={async () => {
-                        if (window.confirm(`Delete "${p.name}"?`)) { await api.delete(`/admin/products/${p.id}`); load(); }
-                      }}
-                      className="text-slate-600 hover:text-red-600 ml-3"
-                    ><Trash2 className="h-4 w-4 inline" /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        rows={visible}
+        loading={false}
+        columns={[
+          { key: "name", label: "Name", sortable: true,
+            render: (_v, p) => (
+              <>
+                <div className="font-semibold text-[#0a2350]">{p.name}</div>
+                <div className="text-xs text-slate-500 line-clamp-1">{p.description}</div>
+              </>
+            ) },
+          { key: "category", label: "Category", sortable: true,
+            render: (v) => <span className="uppercase text-xs font-bold text-[#f5b120]">{v}</span> },
+          { key: "is_addon", label: "Type", sortable: true,
+            render: (v) => v ? (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-purple-100 text-purple-700 px-2 py-0.5 rounded"><Puzzle className="h-3 w-3" /> Add-on</span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-slate-100 text-slate-700 px-2 py-0.5 rounded"><Package className="h-3 w-3" /> Base</span>
+            ) },
+          { key: "option_groups", label: "Options", sortable: false,
+            render: (v) => <span className="text-xs text-slate-500">{(v || []).length > 0 ? `${v.length} groups` : "—"}</span> },
+          { key: "price_monthly", label: "Monthly", sortable: true, align: "right",
+            render: (v) => <span className="font-semibold">{v ? money(v) : "—"}</span> },
+          { key: "setup_fee", label: "Setup", sortable: true, align: "right",
+            render: (v) => v ? money(v) : "—" },
+          { key: "is_active", label: "Status", sortable: true,
+            render: (v) => <StatusBadge status={v ? "enabled" : "disabled"} /> },
+          { key: "_actions", label: "Actions", sortable: false, align: "right",
+            render: (_v, p) => (
+              <span onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
+                <button onClick={() => setEditing(p)} className="text-slate-600 hover:text-[#f5b120]" data-testid={`product-edit-${p.id}`}>
+                  <Edit className="h-4 w-4 inline" />
+                </button>
+                <button
+                  onClick={async () => {
+                    if (window.confirm(`Delete "${p.name}"?`)) { await api.delete(`/admin/products/${p.id}`); load(); }
+                  }}
+                  className="text-slate-600 hover:text-red-600 ml-3"
+                  data-testid={`product-del-${p.id}`}
+                >
+                  <Trash2 className="h-4 w-4 inline" />
+                </button>
+              </span>
+            ) },
+        ]}
+        searchKeys={["name", "category", "description"]}
+        rowKey={(r) => r.id}
+        empty={{ title: "No products in this view", hint: "Create products or add-ons to sell." }}
+        testid="admin-products-table"
+      />
 
       {editing && (
         <ProductForm

@@ -1,39 +1,50 @@
 import React, { useEffect, useState } from "react";
 import { api, fullDateTime } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass } from "../ui";
+import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass } from "../ui";
 import { MessageCircle } from "lucide-react";
+import { DataTable } from "../../../components/ui/data-table";
 
 const AdminTickets = () => {
   const [rows, setRows] = useState(null);
   const [active, setActive] = useState(null);
   const load = () => api.get("/admin/tickets").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
-  if (!rows) return <Loading />;
+
+  const columns = [
+    { key: "number", label: "Ticket", sortable: true, mono: true,
+      render: (v) => <span className="font-mono text-xs font-bold text-[#f5b120]">{v}</span> },
+    { key: "subject", label: "Subject", sortable: true,
+      render: (_v, t) => (
+        <>
+          <div className="font-extrabold text-[#0a2350]">{t.subject}</div>
+          <div className="text-xs text-slate-500">{t.user_name} · {t.user_email}</div>
+        </>
+      ) },
+    { key: "department", label: "Dept.", sortable: true,
+      render: (v) => <span className="text-[10px] uppercase tracking-widest text-slate-500">{v}</span> },
+    { key: "priority", label: "Priority", sortable: true,
+      render: (v) => <span className="text-[10px] uppercase tracking-widest text-slate-500">{v}</span> },
+    { key: "status", label: "Status", sortable: true,
+      render: (v) => <StatusBadge status={v} /> },
+    { key: "replies", label: "Msgs", sortable: true, align: "right",
+      render: (v) => <span className="tabular-nums text-slate-500">{(v || []).length}</span> },
+    { key: "updated_at", label: "Updated", sortable: true, align: "right",
+      render: (v) => <span className="text-[11px] text-slate-500">{fullDateTime(v)}</span> },
+  ];
+
   return (
     <div>
       <PageHeader title="Support Tickets" subtitle="All client tickets across departments and priorities." />
-      {rows.length === 0 && <EmptyState title="No tickets yet" />}
-      <div className="grid gap-3">
-        {rows.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActive(t)}
-            data-testid={`admin-ticket-${t.number}`}
-            className="text-left rounded-2xl bg-white border border-slate-200 hover:border-[#f5b120] p-4 transition-colors"
-          >
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-mono text-xs font-bold text-[#f5b120]">{t.number}</span>
-              <StatusBadge status={t.status} />
-              <span className="text-[10px] uppercase tracking-widest text-slate-500">{t.department} · {t.priority}</span>
-              <span className="ml-auto text-[11px] text-slate-500">{fullDateTime(t.updated_at)}</span>
-            </div>
-            <div className="mt-1 text-base font-extrabold text-[#0a2350]">{t.subject}</div>
-            <div className="text-xs text-slate-500">
-              {t.user_name} · {t.user_email} · {t.replies.length} message(s)
-            </div>
-          </button>
-        ))}
-      </div>
+      <DataTable
+        rows={rows || []}
+        loading={rows === null}
+        columns={columns}
+        searchKeys={["number", "subject", "user_name", "user_email", "status", "priority"]}
+        rowKey={(r) => r.id}
+        onRowClick={(r) => setActive(r)}
+        empty={{ title: "No tickets yet", hint: "Waiting for your first support ticket." }}
+        testid="admin-tickets-table"
+      />
       {active && <TicketDetail ticket={active} onClose={() => { setActive(null); load(); }} />}
     </div>
   );
