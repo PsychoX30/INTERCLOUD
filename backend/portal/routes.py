@@ -974,16 +974,21 @@ def _mask_email_settings(es: dict) -> dict:
     """Return a copy with the password redacted for GET responses."""
     if not es:
         return {}
-    creds = dict(es.get("credentials") or {})
-    if creds.get("password"):
-        creds["password"] = "•" * 8
+    def _redact(creds: dict) -> dict:
+        c = dict(creds or {})
+        if c.get("password"):
+            c["password"] = "•" * 8
+        return c
+    imap_creds_legacy = _redact(es.get("credentials") or {})
+    smtp_creds = _redact((es.get("smtp") or {}).get("credentials") or {})
+    imap_creds = _redact((es.get("imap") or {}).get("credentials") or imap_creds_legacy)
     return {
-        "smtp": {"credentials": dict((es.get("smtp") or {}).get("credentials") or {}),
+        "smtp": {"credentials": smtp_creds,
                   "options": dict((es.get("smtp") or {}).get("options") or {})},
-        "imap": {"credentials": creds, "options": dict(es.get("options") or {})},
+        "imap": {"credentials": imap_creds, "options": dict(es.get("options") or {})},
         "from_name": es.get("from_name") or "",
-        "from_email": es.get("from_email") or (creds.get("username") or ""),
-        "configured": bool(creds.get("host") and creds.get("username")),
+        "from_email": es.get("from_email") or (imap_creds.get("username") or ""),
+        "configured": bool(imap_creds.get("host") and imap_creds.get("username")),
     }
 
 
