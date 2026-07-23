@@ -188,17 +188,31 @@ class MikrotikClient:
         self.use_tls = bool(c.get("use_tls", False))
 
     def _connect(self):
+        """Connect to RouterOS, transparently handling the two login flavours.
+
+        `librouteros.connect()` defaults to `token` login which works on
+        RouterOS ≥6.43. On older devices — or when the user configured a
+        "plain" account — the handshake fails. We try token first, then fall
+        back to `plain` so both worlds work without extra configuration.
+        """
         import librouteros
-        kwargs = {"host": self.host, "port": self.port, "username": self.username, "password": self.password, "timeout": 8}
+        from librouteros.login import plain, token
+        base = {"host": self.host, "port": self.port,
+                "username": self.username, "password": self.password,
+                "timeout": 8}
         if self.use_tls:
-            from librouteros.login import plain
             import ssl
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            kwargs["ssl_wrapper"] = ctx.wrap_socket
-            kwargs["login_method"] = plain
-        return librouteros.connect(**kwargs)
+            base["ssl_wrapper"] = ctx.wrap_socket
+            # For TLS the classic recommendation is `plain`.
+            return librouteros.connect(**base, login_method=plain)
+        # Non-TLS: try token first, then plain on any login-related failure.
+        try:
+            return librouteros.connect(**base, login_method=token)
+        except Exception:
+            return librouteros.connect(**base, login_method=plain)
 
     def test_connection(self) -> dict:
         try:
@@ -247,9 +261,9 @@ class MikrotikClient:
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": []}
         try:
             if tool == "ping":
-                rows = list(api(cmd="/ping", address=target, count="5"))
+                rows = list(api("/ping", address=target, count="5"))
             elif tool == "traceroute":
-                rows = list(api(cmd="/tool/traceroute", address=target, count="1"))
+                rows = list(api("/tool/traceroute", address=target, count="1"))
             elif tool == "bgp_route":
                 # Try both v6 and v7 route tables
                 try:
@@ -280,9 +294,9 @@ class MikrotikClient:
     def blackhole_add(self, prefix: str, *, comment: str = "portal-blackhole") -> dict:
         try:
             api = self._connect()
-            api(cmd="/ip/route/add",
+            list(api("/ip/route/add",
                 **{"dst-address": prefix, "type": "blackhole",
-                   "distance": "1", "comment": comment})
+                   "distance": "1", "comment": comment}))
             api.close()
             return {"ok": True, "prefix": prefix}
         except Exception as e:
@@ -291,7 +305,7 @@ class MikrotikClient:
     def blackhole_remove(self, route_id: str) -> dict:
         try:
             api = self._connect()
-            api(cmd="/ip/route/remove", **{".id": route_id})
+            list(api("/ip/route/remove", **{".id": route_id}))
             api.close()
             return {"ok": True, "id": route_id}
         except Exception as e:
@@ -315,7 +329,7 @@ class MikrotikClient:
         name = name or _dt.datetime.utcnow().strftime("portal-%Y%m%d-%H%M%S")
         try:
             api = self._connect()
-            api(cmd="/system/backup/save", **{"name": name, "dont-encrypt": "yes"})
+            list(api("/system/backup/save", **{"name": name, "dont-encrypt": "yes"}))
             api.close()
             return {"ok": True, "name": name}
         except Exception as e:
@@ -324,7 +338,7 @@ class MikrotikClient:
     def backup_delete(self, filename: str) -> dict:
         try:
             api = self._connect()
-            api(cmd="/file/remove", **{"numbers": filename})
+            list(api("/file/remove", **{"numbers": filename}))
             api.close()
             return {"ok": True, "name": filename}
         except Exception as e:
@@ -334,7 +348,7 @@ class MikrotikClient:
     def reboot(self) -> dict:
         try:
             api = self._connect()
-            api(cmd="/system/reboot")
+            list(api("/system/reboot"))
             try: api.close()
             except Exception: pass
             return {"ok": True, "message": "Reboot command dispatched"}
@@ -354,7 +368,7 @@ class MikrotikClient:
     def traffic_monitor(self, interface: str) -> dict:
         try:
             api = self._connect()
-            rows = list(api(cmd="/interface/monitor-traffic", **{"interface": interface, "once": ""}))
+            rows = list(api("/interface/monitor-traffic", **{"interface": interface, "once": ""}))
             api.close()
             return rows[0] if rows else {}
         except Exception as e:
@@ -390,7 +404,7 @@ class MikrotikClient:
 
         try:
             api = self._connect()
-            rows = list(api(cmd="/tool/torch", **params))
+            rows = list(api("/tool/torch", **params))
             api.close()
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": []}
