@@ -39,10 +39,13 @@ def _file_datauri(filename: str, mime: str) -> str:
     return f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
 
 
-# Wordmark logo — navy "INTERCLOUD" wordmark for invoice PDFs, email headers,
-# and any white-background surface. Kept as an SVG placeholder — operators
-# should upload their bespoke navy artwork via Admin ▸ Branding on first boot.
-_DEFAULT_LOGO_DARK = _svg_datauri(
+# Wordmark logo — navy artwork for invoice PDFs, email headers, and any
+# white-background surface. Loaded from the bundled `assets/logo_dark.webp`
+# (the official Intercloud Digital Inovasi navy artwork). Falls back to an
+# SVG wordmark placeholder if the file is missing so the portal always has
+# a renderable default. Operators may still upload a bespoke variant via
+# Admin ▸ Branding — that upload takes precedence.
+_DEFAULT_LOGO_DARK = _file_datauri("logo_dark.webp", "image/webp") or _svg_datauri(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 60">'
     '<text x="0" y="45" font-family="Inter,Arial,sans-serif" font-size="40" '
     'font-weight="800" letter-spacing="-1" fill="#0a2350">INTERCLOUD</text></svg>'
