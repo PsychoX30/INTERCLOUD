@@ -33,13 +33,17 @@ cd "$APP_DIR" || { echo "Missing $APP_DIR"; exit 1; }
 STAMP=$(date -u +'%Y%m%dT%H%M%SZ')
 ARCHIVE="$BACKUP_DIR/pre-update-$STAMP.archive.gz"
 
-# ---- 1. Snapshot DB first --------------------------------------------------
+# ---- 1. Snapshot DB first (atomic swap so a full disk can't produce a
+# ----    half-written archive that later mongorestore would happily eat) --
 log "Snapshotting DB → $ARCHIVE"
 source "$APP_DIR/backend/.env" 2>/dev/null || true
 MONGO_URL="${MONGO_URL:-mongodb://127.0.0.1:27017}"
 DB_NAME="${DB_NAME:-intercloud_portal}"
-mongodump --uri "$MONGO_URL" --db "$DB_NAME" --archive --gzip > "$ARCHIVE" \
-    || { echo "!! Backup failed — aborting update"; exit 2; }
+if ! mongodump --uri "$MONGO_URL" --db "$DB_NAME" --archive="$ARCHIVE.tmp" --gzip; then
+    rm -f "$ARCHIVE.tmp"
+    echo "!! Backup failed — aborting update"; exit 2
+fi
+mv -f "$ARCHIVE.tmp" "$ARCHIVE"
 
 # Prune backups older than 30 days so /var doesn't fill up.
 find "$BACKUP_DIR" -type f -name 'pre-update-*.archive.gz' -mtime +30 -delete 2>/dev/null || true
@@ -47,15 +51,26 @@ find "$BACKUP_DIR" -type f -name 'pre-update-*.archive.gz' -mtime +30 -delete 2>
 # ---- 2. Snapshot HEAD before pull ------------------------------------------
 OLD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 
-# ---- 3. Fetch + fast-forward ------------------------------------------------
+# ---- 3. Fetch + fast-forward -----------------------------------------------
+# Refuse to run on a dirty tree — silently stashing risks pocketing code that
+# hasn't yet been committed (Emergent auto-commit lag, live .env edits, log
+# artefacts) and reverting the running system to an older commit. If ops
+# genuinely wants to discard local changes, they can `git reset --hard` first.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "!! Refusing to update: working tree has uncommitted changes."
+    echo "!! Run 'git status' to inspect; commit / stash / reset manually first."
+    exit 3
+fi
+
+# Detect a remote so we don't hard-fail on non-git checkouts.
+if ! git remote -v | grep -q .; then
+    echo "STATUS=nogit OLD=$OLD_SHA NEW=$OLD_SHA BACKUP=$ARCHIVE"
+    echo "!! No git remote configured — nothing to pull."
+    exit 4
+fi
+
 log "Fetching origin/$BRANCH"
 git fetch --all --prune
-
-# Refuse to run if there are local uncommitted changes we'd trample.
-if ! git diff --quiet || ! git diff --cached --quiet; then
-    log "Local uncommitted changes detected — stashing"
-    git stash push -m "update.sh @ $STAMP"
-fi
 
 git checkout "$BRANCH"
 git pull --ff-only origin "$BRANCH"

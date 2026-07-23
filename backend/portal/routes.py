@@ -3322,40 +3322,68 @@ async def system_update(admin=Depends(get_current_admin), confirm: str = ""):
 
     Guarded by `?confirm=UPDATE` so a stray click cannot trigger an update.
     Returns the STATUS line (`STATUS=ok OLD=<sha> NEW=<sha> BACKUP=<path>`)
-    and the last ~2 KB of the script's log for diagnostics."""
+    and the last ~2 KB of the script's log for diagnostics.
+
+    Uses a filesystem lock at `/tmp/intercloud-update.lock` so two concurrent
+    clicks return 409 instead of racing two `bash update.sh` invocations."""
     if confirm != "UPDATE":
         raise HTTPException(status_code=400,
                             detail="Confirmation required: pass ?confirm=UPDATE")
-    import asyncio as _asyncio, os as _os
+    import asyncio as _asyncio, os as _os, fcntl as _fcntl
     repo_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", ".."))
     script = _os.path.join(repo_root, "scripts", "update.sh")
     if not _os.path.isfile(script):
         raise HTTPException(status_code=500,
                             detail=f"update.sh not found at {script}")
-    proc = await _asyncio.create_subprocess_exec(
-        "/bin/bash", script,
-        cwd=repo_root,
-        stdout=_asyncio.subprocess.PIPE,
-        stderr=_asyncio.subprocess.STDOUT,
-    )
+
+    lock_path = "/tmp/intercloud-update.lock"
+    lock_fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR, 0o644)
     try:
-        stdout_b, _ = await _asyncio.wait_for(proc.communicate(), timeout=600)
-    except _asyncio.TimeoutError:
-        proc.kill()
-        raise HTTPException(status_code=504,
-                            detail="Update timed out after 10 min")
-    text = stdout_b.decode(errors="replace")
-    status_line = next((l for l in text.splitlines() if l.startswith("STATUS=")), "")
-    ok = (proc.returncode == 0)
-    if not ok:
+        try:
+            _fcntl.flock(lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise HTTPException(status_code=409,
+                                detail="Another update is already running.")
+
+        proc = await _asyncio.create_subprocess_exec(
+            "/bin/bash", script,
+            cwd=repo_root,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout_b, _ = await _asyncio.wait_for(proc.communicate(), timeout=600)
+        except _asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(status_code=504,
+                                detail="Update timed out after 10 min")
+        text = stdout_b.decode(errors="replace")
+        status_line = next((l for l in text.splitlines() if l.startswith("STATUS=")), "")
+        rc = proc.returncode
+
+        # Map well-known exit codes to distinct 4xx statuses so the UI can
+        # render a helpful message instead of a raw stderr traceback:
+        # 0 = ok/noop | 2 = backup failed | 3 = dirty tree | 4 = no remote
+        if rc == 0:
+            return {"ok": True, "status": status_line, "return_code": 0,
+                    "log_tail": text[-2400:]}
+        if rc == 3:
+            raise HTTPException(status_code=409,
+                                detail="Working tree has uncommitted changes; "
+                                       "commit or reset before updating. "
+                                       f"Log: {text[-800:]}")
+        if rc == 4:
+            raise HTTPException(status_code=422,
+                                detail="This checkout has no git remote — "
+                                       "cannot update. Deploy a proper git "
+                                       "clone (see docs/production.md).")
         raise HTTPException(status_code=500,
-                            detail=f"update.sh exited {proc.returncode}: {text[-800:]}")
-    return {
-        "ok": True,
-        "status": status_line,
-        "return_code": proc.returncode,
-        "log_tail": text[-2400:],
-    }
+                            detail=f"update.sh exited {rc}: {text[-800:]}")
+    finally:
+        try: _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+        except Exception: pass
+        try: _os.close(lock_fd)
+        except Exception: pass
 
 
 def _pdf_template(
