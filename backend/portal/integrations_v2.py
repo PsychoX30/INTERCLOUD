@@ -252,25 +252,33 @@ class MikrotikClient:
         return rows
 
     # ---------- Looking Glass (ping / traceroute / bgp-route lookup) ----------
-    def looking_glass(self, *, tool: str, target: str) -> dict:
+    def looking_glass(self, *, tool: str, target: str,
+                      src_address: str | None = None) -> dict:
         """Run a read-only lookup from the RouterOS itself.
-        tool ∈ {ping, traceroute, bgp_route}."""
+        tool ∈ {ping, traceroute, bgp_route}.
+
+        `src_address` (optional) is forwarded to RouterOS as `src-address=…`
+        for ping/traceroute so operators can probe from a specific interface
+        or loopback. Ignored for bgp_route.
+        """
+        if tool == "bgp_route":
+            return self._bgp_route_lookup(target)
+
         try:
             api = self._connect()
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": []}
         try:
             if tool == "ping":
-                rows = list(api("/ping", address=target, count="5"))
+                params = {"address": target, "count": "5"}
+                if src_address:
+                    params["src-address"] = src_address
+                rows = list(api("/ping", **params))
             elif tool == "traceroute":
-                rows = list(api("/tool/traceroute", address=target, count="1"))
-            elif tool == "bgp_route":
-                # Try both v6 and v7 route tables
-                try:
-                    rows = list(api.path("routing", "route"))
-                except Exception:
-                    rows = list(api.path("ip", "route"))
-                rows = [r for r in rows if (r.get("dst-address") or "").startswith(target)]
+                params = {"address": target, "count": "1"}
+                if src_address:
+                    params["src-address"] = src_address
+                rows = list(api("/tool/traceroute", **params))
             else:
                 return {"ok": False, "error": f"Unknown tool '{tool}'", "rows": []}
         except Exception as e:
@@ -279,7 +287,69 @@ class MikrotikClient:
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": []}
         try: api.close()
         except Exception: pass
-        return {"ok": True, "rows": rows, "tool": tool, "target": target}
+        return {"ok": True, "rows": rows, "tool": tool, "target": target,
+                "src_address": src_address or None}
+
+    def _bgp_route_lookup(self, target: str) -> dict:
+        """Longest-prefix-match lookup for a given IP or prefix.
+
+        RouterOS API queries don't support CIDR containment, but they DO
+        support exact `?dst-address=IP/LEN`. We scan from /32 (or the user's
+        supplied prefix length) down to /0 — the router pre-filters each
+        query server-side, so on a full-BGP table this is ~O(33) fast
+        queries instead of streaming ~900k rows.
+
+        Accepts either a bare IP ("103.133.20.5") or a prefix
+        ("103.133.20.0/24").
+        """
+        import ipaddress
+        target = (target or "").strip()
+        try:
+            if "/" in target:
+                net = ipaddress.ip_network(target, strict=False)
+                start_len = net.prefixlen
+                base_ip = str(net.network_address)
+                is_v6 = net.version == 6
+            else:
+                addr = ipaddress.ip_address(target)
+                is_v6 = addr.version == 6
+                start_len = 128 if is_v6 else 32
+                base_ip = str(addr)
+        except ValueError as e:
+            return {"ok": False, "error": f"Invalid IP/prefix: {target} ({e})",
+                    "rows": [], "tool": "bgp_route", "target": target}
+
+        try:
+            api = self._connect()
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}", "rows": [],
+                    "tool": "bgp_route", "target": target}
+
+        matches: list = []
+        try:
+            for plen in range(start_len, -1, -1):
+                try:
+                    net = ipaddress.ip_network(f"{base_ip}/{plen}", strict=False)
+                except ValueError:
+                    continue
+                candidate = f"{net.network_address}/{plen}"
+                for path in ("/ip/route/print", "/ipv6/route/print") if is_v6 else ("/ip/route/print",):
+                    try:
+                        rows = list(api.rawCmd(path, f"?dst-address={candidate}"))
+                    except Exception:
+                        continue
+                    if rows:
+                        matches = rows
+                        break
+                if matches:
+                    break
+        finally:
+            try: api.close()
+            except Exception: pass
+
+        return {"ok": True, "rows": matches, "tool": "bgp_route",
+                "target": target,
+                "match_prefix": (matches[0].get("dst-address") if matches else None)}
 
     # ---------- Blackhole routes (/ip/route type=blackhole) ----------
     def blackhole_list(self, prefix_filter: str | None = None) -> list:

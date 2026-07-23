@@ -221,12 +221,16 @@ const BGPTab = ({ deviceId }) => {
 const LookingGlassTab = ({ deviceId }) => {
   const [tool, setTool] = useState("ping");
   const [target, setTarget] = useState("8.8.8.8");
+  const [srcAddress, setSrcAddress] = useState("");
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState(null);
+  const isBgp = tool === "bgp_route";
   const run = async (e) => {
     e.preventDefault(); setBusy(true); setOut(null);
     try {
-      const { data } = await api.post("/admin/mikrotik/looking-glass", { device_id: deviceId, tool, target });
+      const body = { device_id: deviceId, tool, target };
+      if (!isBgp && srcAddress.trim()) body.src_address = srcAddress.trim();
+      const { data } = await api.post("/admin/mikrotik/looking-glass", body);
       setOut(data);
     } catch (e) { setOut({ ok: false, error: e?.response?.data?.detail || e.message }); }
     finally { setBusy(false); }
@@ -234,8 +238,8 @@ const LookingGlassTab = ({ deviceId }) => {
   return (
     <div>
       <Card className="p-5 mb-4">
-        <form onSubmit={run} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
-          <div>
+        <form onSubmit={run} className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+          <div className="md:col-span-2">
             <div className={labelClass}>Tool</div>
             <select value={tool} onChange={(e) => setTool(e.target.value)} className={inputClass} data-testid="mt-lg-tool">
               <option value="ping">Ping (from router)</option>
@@ -244,19 +248,42 @@ const LookingGlassTab = ({ deviceId }) => {
             </select>
           </div>
           <div className="md:col-span-2">
-            <div className={labelClass}>Target ({tool === "bgp_route" ? "IP or prefix" : "hostname or IP"})</div>
+            <div className={labelClass}>Target ({isBgp ? "IP or prefix" : "hostname or IP"})</div>
             <input required value={target} onChange={(e) => setTarget(e.target.value)} className={inputClass} data-testid="mt-lg-target" />
           </div>
+          <div className="md:col-span-1">
+            <div className={labelClass}>Src-address {isBgp && <span className="text-slate-400 font-normal">(n/a)</span>}</div>
+            <input value={srcAddress} onChange={(e) => setSrcAddress(e.target.value)}
+                   disabled={isBgp} placeholder="optional"
+                   className={inputClass + (isBgp ? " opacity-40" : "")}
+                   data-testid="mt-lg-src-address" />
+          </div>
           <button className={btnPrimary} disabled={busy} data-testid="mt-lg-run">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Run from router
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Run
           </button>
         </form>
+        {!isBgp && (
+          <div className="mt-2 text-[11px] text-slate-500">
+            Src-address lets the router originate the ICMP probe from a specific interface/loopback (e.g. <span className="font-mono">10.87.10.45</span>). Leave blank for the default.
+          </div>
+        )}
+        {isBgp && (
+          <div className="mt-2 text-[11px] text-slate-500">
+            Longest-prefix scan — enter a bare IP (e.g. <span className="font-mono">103.133.20.5</span>) and the router will return the BGP-covering prefix, or use <span className="font-mono">x.x.x.x/xx</span> for an exact-prefix lookup.
+          </div>
+        )}
       </Card>
       {out && (
         <Card className="p-0 overflow-hidden">
-          <div className="px-4 py-2 border-b border-slate-100 text-xs font-bold uppercase tracking-widest text-[#0a2350]">Result</div>
+          <div className="px-4 py-2 border-b border-slate-100 text-xs font-bold uppercase tracking-widest text-[#0a2350] flex items-center gap-2">
+            <span>Result</span>
+            {out.match_prefix && <span className="text-slate-500 font-mono normal-case">· matched prefix <b>{out.match_prefix}</b></span>}
+            {out.src_address && <span className="text-slate-500 font-mono normal-case">· src <b>{out.src_address}</b></span>}
+          </div>
           <pre className="bg-slate-900 text-emerald-300 text-xs p-5 overflow-x-auto min-h-[240px] font-mono whitespace-pre-wrap" data-testid="mt-lg-output">
-{out.ok === false ? `Error: ${out.error}` : JSON.stringify(out.rows, null, 2)}
+{out.ok === false ? `Error: ${out.error}` :
+ (isBgp && (!out.rows || out.rows.length === 0)) ? `No BGP route in the RIB covers ${target}.` :
+ JSON.stringify(out.rows, null, 2)}
           </pre>
         </Card>
       )}

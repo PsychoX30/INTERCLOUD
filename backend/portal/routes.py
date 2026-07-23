@@ -3904,8 +3904,10 @@ async def mikrotik_looking_glass(payload: dict, admin=Depends(get_current_admin)
     target = (payload.get("target") or "").strip()
     if not target:
         raise HTTPException(status_code=400, detail="target is required")
+    src_address = (payload.get("src_address") or payload.get("src-address") or "").strip() or None
     return await _run_mikrotik(db, payload.get("device_id"),
-                               "looking_glass", tool=tool, target=target)
+                               "looking_glass", tool=tool, target=target,
+                               src_address=src_address)
 
 
 # ---------- Blackhole ----------

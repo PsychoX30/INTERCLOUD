@@ -34,6 +34,15 @@ See `/app/memory/test_credentials.md`.
   (`dig`), WHOIS, DNSBL blacklist, TCP port scan, HTTP HEAD, and Torch (via
   MikroTik `/tool/torch`).
 
+### MikroTik Looking Glass
+- Ping and Traceroute now accept an optional **src-address** — forwarded to
+  RouterOS so ops can probe from a specific interface / loopback.
+- BGP Route Lookup now uses **longest-prefix scan via server-side query**
+  (`rawCmd('/ip/route/print', '?dst-address=IP/LEN')` from /32 down to /0),
+  replacing the previous `startswith` filter that never matched a covering
+  prefix (e.g. `103.133.20.0/24` for the IP `103.133.20.5`). Response
+  populates `match_prefix` so the UI can show the covering route.
+
 ### MikroTik Ops (Admin ▸ MikroTik)
 - Multi-device CRUD (`mikrotik_devices` collection) — each device has
   host, port, username, password, use_tls, site.
