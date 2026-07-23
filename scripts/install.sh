@@ -342,9 +342,16 @@ fi
 install -d -m 0755 "$(dirname "$APP_DIR")"
 
 if [[ -d "$APP_DIR/.git" ]]; then
-  log "Existing repo at $APP_DIR — pulling latest"
+  log "Existing repo at $APP_DIR — resetting to origin/$REPO_BRANCH"
   chown -R intercloud:intercloud "$APP_DIR"
-  sudo -u intercloud -H bash -c "cd '$APP_DIR' && git fetch --all && git checkout '$REPO_BRANCH' && git pull --ff-only"
+  # Force clean state: any local edits (config tweaks, sed patches from an
+  # earlier failed run) are discarded so 'git pull' can always fast-forward.
+  # If operators want to preserve local edits they should use a separate branch.
+  sudo -u intercloud -H bash -c "cd '$APP_DIR' && \
+      git fetch --all --prune && \
+      git checkout '$REPO_BRANCH' && \
+      git reset --hard 'origin/$REPO_BRANCH' && \
+      git clean -fdx -e backend/.env -e frontend/.env -e frontend/node_modules -e frontend/build -e backend/.venv"
 else
   log "Cloning $REPO_URL → $APP_DIR"
   rm -rf "$APP_DIR"
