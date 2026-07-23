@@ -75,29 +75,63 @@ apt-get install -y --no-install-recommends \
   jq
 
 # ------------------------------------------------------------------
-# 2. MongoDB 7.0 (official APT repo, matches Ubuntu 24.04 support)
+# 2. MongoDB (official APT repo). On Ubuntu 24.04 Noble we install
+#    MongoDB 8.0 (first release with official Noble support). On older
+#    Ubuntu we fall back to 7.0 from the jammy repo.
 # ------------------------------------------------------------------
 if ! command -v mongod >/dev/null 2>&1; then
-  log "Installing MongoDB 7.0"
-  curl -fsSL https://pgp.mongodb.com/server-7.0.asc | \
-    gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor --yes
-  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" \
-    > /etc/apt/sources.list.d/mongodb-org-7.0.list
+  case "${VERSION_CODENAME:-}" in
+    noble)  MONGO_SERIES="8.0"; MONGO_REPO_CODENAME="noble" ;;
+    jammy)  MONGO_SERIES="7.0"; MONGO_REPO_CODENAME="jammy" ;;
+    *)      MONGO_SERIES="7.0"; MONGO_REPO_CODENAME="jammy" ;;
+  esac
+  log "Installing MongoDB ${MONGO_SERIES} (repo codename: ${MONGO_REPO_CODENAME})"
+  curl -fsSL "https://pgp.mongodb.com/server-${MONGO_SERIES}.asc" | \
+    gpg -o "/usr/share/keyrings/mongodb-server-${MONGO_SERIES}.gpg" --dearmor --yes
+  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-${MONGO_SERIES}.gpg ] https://repo.mongodb.org/apt/ubuntu ${MONGO_REPO_CODENAME}/mongodb-org/${MONGO_SERIES} multiverse" \
+    > "/etc/apt/sources.list.d/mongodb-org-${MONGO_SERIES}.list"
   apt-get update -y
   apt-get install -y mongodb-org mongodb-database-tools
+  # Ensure the mongodb data dir has correct ownership before first start;
+  # a leftover chown from a previous failed install is the #1 cause of
+  # "mongod refuses to start" on fresh Ubuntu 24.04 hosts.
+  install -d -o mongodb -g mongodb -m 0755 /var/lib/mongodb /var/log/mongodb
+  systemctl daemon-reload
   systemctl enable --now mongod
 else
   log "MongoDB already present — skipping install"
+  systemctl start mongod || true
 fi
 
-# Wait for mongod to accept connections (up to 30s) so subsequent auth
-# commands don't race the daemon startup.
-for i in {1..30}; do
-  if mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then
+# Wait for mongod to accept connections. If it never comes up we surface
+# the systemd status + tail of the journal so the operator sees WHY it
+# failed instead of the confusing downstream ECONNREFUSED.
+log "Waiting for mongod to accept connections on 127.0.0.1:27017"
+MONGO_UP=""
+for i in {1..60}; do
+  if mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then
+    MONGO_UP=1
     break
+  fi
+  # Every 10s, nudge systemd in case an earlier failed start left it down.
+  if (( i % 10 == 0 )); then
+    if ! systemctl is-active --quiet mongod; then
+      warn "mongod not active after ${i}s — trying 'systemctl start mongod'"
+      systemctl start mongod || true
+    fi
   fi
   sleep 1
 done
+if [[ -z "$MONGO_UP" ]]; then
+  echo
+  warn "MongoDB did not come up within 60 seconds. Details:"
+  systemctl status mongod --no-pager -l | sed -n '1,20p' || true
+  echo "--- last 40 lines of journalctl -u mongod ---"
+  journalctl -u mongod -n 40 --no-pager || true
+  echo "--- /var/log/mongodb/mongod.log (last 40 lines) ---"
+  tail -n 40 /var/log/mongodb/mongod.log 2>/dev/null || echo "(log file not created — mongod likely crashed before writing)"
+  die "mongod is not running — cannot continue. Fix the errors above and re-run this installer."
+fi
 
 # ------------------------------------------------------------------
 # 2b. MongoDB auth — create an app-scoped user and enable auth. Idempotent.
