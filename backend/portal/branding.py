@@ -10,20 +10,45 @@ Values live in the `settings` collection under key=`branding` with shape:
 
 Missing keys fall through to the hardcoded DEFAULTS. This lets ops upload
 new artwork in Admin ▸ Branding without redeploying.
+
+We ship *inline SVG data URIs* as defaults so the portal renders correctly
+on any host without any external asset dependency — no dead-link 404s, no
+CORS, no CDN outages. Operators are expected to upload their real brand
+assets via Admin ▸ Branding on first boot.
 """
 from __future__ import annotations
+import base64
 
-# Hardcoded defaults (asset-CDN URLs). Kept in one place so PDF and email
-# render pipelines share the same fallback.
-_DEFAULT_LOGO_DARK = (
-    "https://customer-assets-lxgj4vgw.emergentagent.net/"
-    "job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png"
+
+def _svg_datauri(svg: str) -> str:
+    """Wrap raw SVG markup as a base64 data URI usable in <img src=...>."""
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+
+# Wordmark logo — white "INTERCLOUD" for use over the dark navy hero.
+_DEFAULT_LOGO_LIGHT = _svg_datauri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 60">'
+    '<text x="0" y="45" font-family="Inter,Arial,sans-serif" font-size="40" '
+    'font-weight="800" letter-spacing="-1" fill="#FFFFFF">INTERCLOUD</text></svg>'
 )
-_DEFAULT_LOGO_LIGHT = (
-    "https://intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png"
+
+# Wordmark logo — navy "INTERCLOUD" for invoice PDFs, email headers, and
+# any white-background surface.
+_DEFAULT_LOGO_DARK = _svg_datauri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 60">'
+    '<text x="0" y="45" font-family="Inter,Arial,sans-serif" font-size="40" '
+    'font-weight="800" letter-spacing="-1" fill="#0a2350">INTERCLOUD</text></svg>'
 )
-_DEFAULT_FAVICON      = _DEFAULT_LOGO_DARK  # blue-on-white variant scales well
-_DEFAULT_EMAIL_BANNER = ""                  # opt-in
+
+# Favicon — 64×64 rounded navy tile with a gold "I" glyph.
+_DEFAULT_FAVICON = _svg_datauri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="12" fill="#0a2350"/>'
+    '<text x="32" y="46" text-anchor="middle" font-family="Inter,Arial,sans-serif" '
+    'font-size="42" font-weight="900" fill="#f5b120">I</text></svg>'
+)
+
+_DEFAULT_EMAIL_BANNER = ""  # opt-in
 
 DEFAULTS = {
     "logo_light":   _DEFAULT_LOGO_LIGHT,

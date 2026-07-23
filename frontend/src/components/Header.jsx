@@ -1,26 +1,37 @@
 import React, { useState } from "react";
 import { Menu, X, Phone, LogIn } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN } from "../mock/data";
 import { useLang } from "../i18n/LanguageContext";
 import LanguageToggle from "./LanguageToggle";
+import useBranding from "../hooks/useBranding";
 
-const Logo = () => (
-  <Link to="/" className="flex items-center gap-3" data-testid="site-logo-link">
-    <img
-      src="https://intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png"
-      alt="Intercloud Digital Inovasi"
-      className="h-11 md:h-12 w-auto object-contain"
-      loading="eager"
-      data-testid="site-logo-img"
-    />
-  </Link>
-);
+const Logo = () => {
+  const branding = useBranding();
+  return (
+    <Link to="/" className="flex items-center gap-3" data-testid="site-logo-link">
+      {branding.logo_light ? (
+        <img
+          src={branding.logo_light}
+          alt="Intercloud Digital Inovasi"
+          className="h-11 md:h-12 w-auto object-contain"
+          loading="eager"
+          data-testid="site-logo-img"
+        />
+      ) : (
+        <span className="text-white font-extrabold text-lg tracking-tight" data-testid="site-logo-fallback">INTERCLOUD</span>
+      )}
+    </Link>
+  );
+};
 
 const Header = () => {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const { lang, t } = useLang();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const onLanding = pathname === "/";
 
   React.useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
@@ -29,13 +40,30 @@ const Header = () => {
   }, []);
 
   const NAV_LINKS = [
-    { key: "nav.home", href: "#home" },
-    { key: "nav.why", href: "#why" },
-    { key: "nav.services", href: "#services" },
-    { key: "nav.pricing", href: "#pricing" },
-    { key: "nav.faq", href: "#faq" },
-    { key: "nav.contact", href: "#contact" },
+    { key: "nav.home",     hash: "home" },
+    { key: "nav.why",      hash: "why" },
+    { key: "nav.services", hash: "services" },
+    { key: "nav.pricing",  hash: "pricing" },
+    { key: "nav.faq",      hash: "faq" },
+    { key: "nav.contact",  hash: "contact" },
   ];
+
+  // Anchor click handler: if we're already on the landing page, prevent the
+  // full navigation and just scrollIntoView (smooth). Otherwise let the
+  // router navigate to /#hash — ScrollToTop will handle the scroll on mount.
+  const goToSection = (hash, e) => {
+    if (onLanding) {
+      e.preventDefault();
+      const el = document.getElementById(hash);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      setOpen(false);
+      return;
+    }
+    // Cross-page nav: use router so we don't do a full page reload.
+    e.preventDefault();
+    setOpen(false);
+    navigate({ pathname: "/", hash: `#${hash}` });
+  };
 
   const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
 
@@ -50,9 +78,11 @@ const Header = () => {
         <nav className="hidden lg:flex items-center gap-7">
           {NAV_LINKS.map((l) => (
             <a
-              key={l.href}
-              href={l.href}
+              key={l.hash}
+              href={`/#${l.hash}`}
+              onClick={(e) => goToSection(l.hash, e)}
               className="text-white/80 hover:text-[#f5b120] text-sm font-medium transition-colors"
+              data-testid={`nav-${l.hash}`}
             >
               {t(l.key)}
             </a>
@@ -103,10 +133,11 @@ const Header = () => {
           <div className="px-5 py-4 flex flex-col gap-4">
             {NAV_LINKS.map((l) => (
               <a
-                key={l.href}
-                href={l.href}
-                onClick={() => setOpen(false)}
+                key={l.hash}
+                href={`/#${l.hash}`}
+                onClick={(e) => goToSection(l.hash, e)}
                 className="text-white/90 hover:text-[#f5b120] text-sm font-medium"
+                data-testid={`mobile-nav-${l.hash}`}
               >
                 {t(l.key)}
               </a>

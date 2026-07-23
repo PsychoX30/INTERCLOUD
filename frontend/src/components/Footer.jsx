@@ -1,26 +1,56 @@
 import React from "react";
 import { Instagram, Mail, MessageCircle, MapPin } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN, EMAIL, ADDRESS } from "../mock/data";
 import { useLang, pick } from "../i18n/LanguageContext";
+import useBranding from "../hooks/useBranding";
+
+// Section anchor — behaves like Header's nav links: scroll on landing,
+// route+scroll on other pages. Kept local since Footer is the only other
+// consumer.
+const SectionLink = ({ hash, children, className, testid }) => {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const onLanding = pathname === "/";
+  const onClick = (e) => {
+    if (onLanding) {
+      e.preventDefault();
+      const el = document.getElementById(hash);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    e.preventDefault();
+    navigate({ pathname: "/", hash: `#${hash}` });
+  };
+  return (
+    <a href={`/#${hash}`} onClick={onClick} className={className} data-testid={testid}>
+      {children}
+    </a>
+  );
+};
 
 const Footer = () => {
   const { lang, t } = useLang();
   const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
+  const branding = useBranding();
 
   return (
     <footer className="bg-[#061b3a] text-white pt-16 pb-8">
       <div className="max-w-7xl mx-auto px-5 lg:px-8 grid md:grid-cols-4 gap-10">
         <div className="md:col-span-2">
-          <a href="#home" className="inline-flex items-center gap-3" data-testid="footer-logo-link">
-            <img
-              src="https://intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png"
-              alt="PT. Intercloud Digital Inovasi"
-              className="h-12 w-auto object-contain"
-              loading="lazy"
-              data-testid="footer-logo-img"
-            />
-          </a>
+          <SectionLink hash="home" className="inline-flex items-center gap-3" testid="footer-logo-link">
+            {branding.logo_light ? (
+              <img
+                src={branding.logo_light}
+                alt="PT. Intercloud Digital Inovasi"
+                className="h-12 w-auto object-contain"
+                loading="lazy"
+                data-testid="footer-logo-img"
+              />
+            ) : (
+              <span className="text-white font-extrabold tracking-tight" data-testid="footer-logo-fallback">INTERCLOUD</span>
+            )}
+          </SectionLink>
           <p className="mt-5 text-white/70 text-sm leading-relaxed max-w-md">
             {t("footer.tagline")}
           </p>
@@ -45,24 +75,24 @@ const Footer = () => {
         <div>
           <h4 className="text-white font-bold mb-4">{t("footer.pages")}</h4>
           <ul className="space-y-2 text-sm text-white/70">
-            <li><a href="#home" className="hover:text-[#f5b120]">{t("nav.home")}</a></li>
-            <li><a href="#services" className="hover:text-[#f5b120]">{t("nav.services")}</a></li>
-            <li><a href="#pop" className="hover:text-[#f5b120]">PoP</a></li>
-            <li><a href="#pricing" className="hover:text-[#f5b120]">{t("nav.pricing")}</a></li>
-            <li><a href="#faq" className="hover:text-[#f5b120]">{t("nav.faq")}</a></li>
-            <li><a href="#contact" className="hover:text-[#f5b120]">{t("nav.contact")}</a></li>
+            <li><SectionLink hash="home" className="hover:text-[#f5b120]">{t("nav.home")}</SectionLink></li>
+            <li><SectionLink hash="services" className="hover:text-[#f5b120]">{t("nav.services")}</SectionLink></li>
+            <li><SectionLink hash="pop" className="hover:text-[#f5b120]">PoP</SectionLink></li>
+            <li><SectionLink hash="pricing" className="hover:text-[#f5b120]">{t("nav.pricing")}</SectionLink></li>
+            <li><SectionLink hash="faq" className="hover:text-[#f5b120]">{t("nav.faq")}</SectionLink></li>
+            <li><SectionLink hash="contact" className="hover:text-[#f5b120]">{t("nav.contact")}</SectionLink></li>
             <li><Link to="/portal/login" className="hover:text-[#f5b120] font-semibold">{lang === "en" ? "Client Portal" : "Portal Klien"}</Link></li>
           </ul>
         </div>
         <div>
           <h4 className="text-white font-bold mb-4">{t("footer.services")}</h4>
           <ul className="space-y-2 text-sm text-white/70">
-            <li><a href="#services" className="hover:text-[#f5b120]">Cloud Service</a></li>
-            <li><a href="#services" className="hover:text-[#f5b120]">VPS &amp; Hosting</a></li>
-            <li><a href="#services" className="hover:text-[#f5b120]">Dedicated Server</a></li>
-            <li><a href="#services" className="hover:text-[#f5b120]">Colocation</a></li>
-            <li><a href="#services" className="hover:text-[#f5b120]">DC Interconnect</a></li>
-            <li><a href="#services" className="hover:text-[#f5b120]">Firewall Solution</a></li>
+            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Cloud Service</SectionLink></li>
+            <li><SectionLink hash="services" className="hover:text-[#f5b120]">VPS &amp; Hosting</SectionLink></li>
+            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Dedicated Server</SectionLink></li>
+            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Colocation</SectionLink></li>
+            <li><SectionLink hash="services" className="hover:text-[#f5b120]">DC Interconnect</SectionLink></li>
+            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Firewall Solution</SectionLink></li>
           </ul>
           <h4 className="text-white font-bold mt-6 mb-3">Legal</h4>
           <ul className="space-y-2 text-sm text-white/70">
