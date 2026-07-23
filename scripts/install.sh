@@ -156,30 +156,40 @@ fi
 # Wait for mongod to accept connections. If it never comes up we surface
 # the systemd status + tail of the journal so the operator sees WHY it
 # failed instead of the confusing downstream ECONNREFUSED.
-log "Waiting for mongod to accept connections on 127.0.0.1:27017"
-MONGO_UP=""
-for i in {1..60}; do
-  if mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then
-    MONGO_UP=1
-    break
-  fi
-  # Every 10s, nudge systemd in case an earlier failed start left it down.
-  if (( i % 10 == 0 )); then
-    if ! systemctl is-active --quiet mongod; then
-      warn "mongod not active after ${i}s — trying 'systemctl start mongod'"
-      systemctl start mongod || true
+wait_for_mongod() {
+  local timeout="${1:-60}"
+  for _ in $(seq 1 "$timeout"); do
+    if mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then
+      return 0
     fi
-  fi
-  sleep 1
-done
-if [[ -z "$MONGO_UP" ]]; then
-  echo
-  warn "MongoDB did not come up within 60 seconds. Details:"
-  systemctl status mongod --no-pager -l | sed -n '1,20p' || true
-  echo "--- last 40 lines of journalctl -u mongod ---"
+    sleep 1
+  done
+  return 1
+}
+
+dump_mongod_diagnostics() {
+  echo "--- systemctl status mongod ---"
+  systemctl status mongod --no-pager -l | sed -n '1,25p' || true
+  echo "--- journalctl -u mongod -n 40 ---"
   journalctl -u mongod -n 40 --no-pager || true
   echo "--- /var/log/mongodb/mongod.log (last 40 lines) ---"
-  tail -n 40 /var/log/mongodb/mongod.log 2>/dev/null || echo "(log file not created — mongod likely crashed before writing)"
+  tail -n 40 /var/log/mongodb/mongod.log 2>/dev/null || echo "(no log file)"
+  echo "--- /etc/mongod.conf ---"
+  sed -n '1,60p' /etc/mongod.conf 2>/dev/null || true
+}
+
+log "Waiting for mongod to accept connections on 127.0.0.1:27017"
+if ! wait_for_mongod 60; then
+  if ! systemctl is-active --quiet mongod; then
+    warn "mongod is not active — trying 'systemctl start mongod'"
+    systemctl start mongod || true
+    wait_for_mongod 30 || true
+  fi
+fi
+if ! wait_for_mongod 5; then
+  echo
+  warn "MongoDB did not come up within 60 seconds. Details:"
+  dump_mongod_diagnostics
   die "mongod is not running — cannot continue. Fix the errors above and re-run this installer."
 fi
 
@@ -238,19 +248,39 @@ EOF
     else
       # Auth is enabled but we never persisted the password (usually because
       # a prior installer run crashed BEFORE writing this file). Recover by
-      # temporarily disabling auth, resetting the user, and re-enabling.
+      # rewriting /etc/mongod.conf from scratch (auth off), resetting the
+      # user, and re-enabling auth.
       warn "MongoDB auth is on but /etc/intercloud/mongo.env is missing — auto-recovering by resetting the app user"
       MONGO_APP_PASSWORD="$(openssl rand -base64 32 | tr -d '=+/')"
-      sed -i 's/^\s*authorization:\s*enabled/# authorization: enabled (temp off for recovery)/' /etc/mongod.conf
+
+      # Rewrite mongod.conf with a known-good minimal config (auth OFF).
+      # A previous run may have left the file mangled by stacked seds.
+      log "Rewriting /etc/mongod.conf (auth temporarily OFF for recovery)"
+      cp -a /etc/mongod.conf "/etc/mongod.conf.bak.$(date +%s)" 2>/dev/null || true
+      cat > /etc/mongod.conf <<'MCFG'
+storage:
+  dbPath: /var/lib/mongodb
+systemLog:
+  destination: file
+  path: /var/log/mongodb/mongod.log
+  logAppend: true
+net:
+  port: 27017
+  bindIp: 127.0.0.1
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+MCFG
       systemctl restart mongod
-      # Wait for mongod to come back up without auth.
-      for i in {1..30}; do
-        if mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then break; fi
-        sleep 1
-      done
+      if ! wait_for_mongod 45; then
+        warn "mongod failed to start after config rewrite. Diagnostics:"
+        dump_mongod_diagnostics
+        die "Recovery failed — mongod won't start. Simplest fix: purge & reinstall MongoDB (see docs)."
+      fi
+
+      log "Resetting MongoDB app user '${MONGO_APP_USER}'"
       mongosh --quiet <<MONGO
 use admin
-try { db.dropUser("${MONGO_APP_USER}") } catch(e) {}
+try { db.dropUser("${MONGO_APP_USER}") } catch(e) { print("dropUser: " + e.message) }
 db.createUser({
   user: "${MONGO_APP_USER}",
   pwd:  "${MONGO_APP_PASSWORD}",
@@ -262,10 +292,16 @@ db.createUser({
   ]
 })
 MONGO
-      # Re-enable auth
-      sed -i 's/^# authorization: enabled (temp off for recovery)/  authorization: enabled/' /etc/mongod.conf
+
+      # Re-enable auth by appending the security block (config was rewritten fresh above).
+      printf "\nsecurity:\n  authorization: enabled\n" >> /etc/mongod.conf
       systemctl restart mongod
-      sleep 3
+      if ! wait_for_mongod 45; then
+        warn "mongod failed to start after re-enabling auth. Diagnostics:"
+        dump_mongod_diagnostics
+        die "Recovery failed at auth re-enable step. Purge & reinstall MongoDB."
+      fi
+
       install -o root -g root -m 600 /dev/stdin /etc/intercloud/mongo.env <<EOF
 MONGO_APP_USER=${MONGO_APP_USER}
 MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
