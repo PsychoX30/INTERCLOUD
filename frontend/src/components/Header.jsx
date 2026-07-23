@@ -15,7 +15,7 @@ const Logo = () => {
         <img
           src={branding.logo_light}
           alt="Intercloud Digital Inovasi"
-          className="h-14 md:h-16 w-auto object-contain"
+          className="h-16 md:h-20 w-auto object-contain"
           style={invert ? { filter: "brightness(0) invert(1)" } : undefined}
           loading="eager"
           data-testid="site-logo-img"
@@ -75,7 +75,7 @@ const Header = () => {
         scrolled ? "bg-[#061b3a]/95 backdrop-blur border-b border-white/10" : "bg-transparent"
       }`}
     >
-      <div className="max-w-7xl mx-auto px-5 lg:px-8 flex items-center justify-between h-[74px]">
+      <div className="max-w-7xl mx-auto px-5 lg:px-8 flex items-center justify-between h-[96px]">
         <Logo />
         <nav className="hidden lg:flex items-center gap-7">
           {NAV_LINKS.map((l) => (
