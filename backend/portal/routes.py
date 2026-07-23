@@ -906,11 +906,28 @@ async def client_reply_ticket(tid: str, payload: m.TicketReplyIn, user=Depends(g
 async def admin_dashboard(staff=Depends(get_current_staff)):
     db = await _get_db()
     await _mark_overdue(db)
-    total_users = await db.users.count_documents({"role": "client"})
-    active_services = await db.services.count_documents({"status": "active"})
-    open_tickets = await db.tickets.count_documents(
-        {"status": {"$in": ["open", "awaiting_staff"]}}
-    )
+
+    # ---- Scope filter: sales sees ONLY their assigned clients ----
+    # Everyone else (admin/finance/support) sees the global tenant view.
+    scope_user_ids = None
+    if staff["role"] == "sales":
+        scope_user_ids = [ObjectId(cid) for cid in (staff.get("assigned_client_ids") or [])]
+        # Unassigned sales → all counts are zero (no doc matches _id:None).
+        if not scope_user_ids:
+            scope_user_ids = [ObjectId("000000000000000000000000")]
+
+    if scope_user_ids is None:
+        client_q = {"role": "client"}
+        svc_q = {"status": "active"}
+        tkt_q = {"status": {"$in": ["open", "awaiting_staff"]}}
+    else:
+        client_q = {"role": "client", "_id": {"$in": scope_user_ids}}
+        svc_q = {"status": "active", "user_id": {"$in": scope_user_ids}}
+        tkt_q = {"status": {"$in": ["open", "awaiting_staff"]}, "user_id": {"$in": scope_user_ids}}
+
+    total_users = await db.users.count_documents(client_q)
+    active_services = await db.services.count_documents(svc_q)
+    open_tickets = await db.tickets.count_documents(tkt_q)
 
     stats = {
         "total_clients": total_users,
@@ -918,20 +935,22 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
         "open_tickets": open_tickets,
     }
 
-    if staff["role"] in FINANCE_ROLES:
-        unpaid = await db.invoices.count_documents({"status": "unpaid"})
-        overdue = await db.invoices.count_documents({"status": "overdue"})
-        pending_orders = await db.orders.count_documents({"status": "pending"})
+    # Financial stats — visible to finance/admin OR sales (scoped to their book).
+    if staff["role"] in FINANCE_ROLES or staff["role"] == "sales":
+        inv_q_base = {} if scope_user_ids is None else {"user_id": {"$in": scope_user_ids}}
+        unpaid = await db.invoices.count_documents({**inv_q_base, "status": "unpaid"})
+        overdue = await db.invoices.count_documents({**inv_q_base, "status": "overdue"})
+        pending_orders = await db.orders.count_documents({**inv_q_base, "status": "pending"})
 
         now = datetime.now(timezone.utc)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
         paid_docs = await db.invoices.find(
-            {"status": "paid", "paid_at": {"$gte": month_start}}
+            {**inv_q_base, "status": "paid", "paid_at": {"$gte": month_start}}
         ).to_list(1000)
         revenue_month = sum(d.get("total", 0) for d in paid_docs)
-        all_paid = await db.invoices.find({"status": "paid"}).to_list(5000)
+        all_paid = await db.invoices.find({**inv_q_base, "status": "paid"}).to_list(5000)
         revenue_total = sum(d.get("total", 0) for d in all_paid)
-        overdue_docs = await db.invoices.find({"status": "overdue"}).to_list(1000)
+        overdue_docs = await db.invoices.find({**inv_q_base, "status": "overdue"}).to_list(1000)
         overdue_total = sum(d.get("total", 0) for d in overdue_docs)
         stats.update({
             "unpaid_invoices": unpaid,
@@ -943,6 +962,98 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
         })
 
     return {"stats": stats, "role": staff["role"]}
+
+
+# ============================================================
+# Per-admin email settings (F1) — every staff member configures their
+# own IMAP/SMTP so Admin ▸ Mail shows their personal inbox instead of
+# a single shared mailbox. Stored on the user document under
+# `email_settings` with the same shape the shared iv2 integration uses.
+# ============================================================
+def _mask_email_settings(es: dict) -> dict:
+    """Return a copy with the password redacted for GET responses."""
+    if not es:
+        return {}
+    creds = dict(es.get("credentials") or {})
+    if creds.get("password"):
+        creds["password"] = "•" * 8
+    return {
+        "smtp": {"credentials": dict((es.get("smtp") or {}).get("credentials") or {}),
+                  "options": dict((es.get("smtp") or {}).get("options") or {})},
+        "imap": {"credentials": creds, "options": dict(es.get("options") or {})},
+        "from_name": es.get("from_name") or "",
+        "from_email": es.get("from_email") or (creds.get("username") or ""),
+        "configured": bool(creds.get("host") and creds.get("username")),
+    }
+
+
+@router.get("/settings/email")
+async def get_my_email_settings(user=Depends(get_current_user)):
+    """Return the calling staff member's IMAP/SMTP config (password masked)."""
+    db = await _get_db()
+    doc = await db.users.find_one({"_id": ObjectId(user["id"])})
+    return _mask_email_settings((doc or {}).get("email_settings") or {})
+
+
+@router.post("/settings/email")
+async def save_my_email_settings(payload: dict, user=Depends(get_current_user)):
+    """Save this staff member's personal cPanel IMAP/SMTP credentials.
+
+    Expected shape:
+      {
+        "from_name": "Anang Support",
+        "from_email": "anang@intercloud-digital.com",
+        "imap": {"host":"...", "port":993, "username":"...", "password":"...", "use_ssl":true},
+        "smtp": {"host":"...", "port":465, "username":"...", "password":"...", "use_ssl":true},
+      }
+    Passwords equal to "•••••••" are treated as "unchanged" so operators
+    can edit host/port without re-entering their password.
+    """
+    db = await _get_db()
+    doc = await db.users.find_one({"_id": ObjectId(user["id"])})
+    existing = (doc or {}).get("email_settings") or {}
+
+    def _merge(kind: str) -> dict:
+        old_creds = ((existing.get(kind) or {}).get("credentials") or
+                     (existing.get("credentials") if kind == "imap" else {})) or {}
+        new = payload.get(kind) or {}
+        pwd = new.get("password") or ""
+        if not pwd or set(pwd) == {"•"}:
+            pwd = old_creds.get("password") or ""
+        return {
+            "credentials": {
+                "host":     (new.get("host") or old_creds.get("host") or "").strip(),
+                "port":     int(new.get("port") or old_creds.get("port") or (993 if kind == "imap" else 465)),
+                "username": (new.get("username") or old_creds.get("username") or "").strip(),
+                "password": pwd,
+            },
+            "options": {"use_ssl": bool(new.get("use_ssl", True))},
+        }
+
+    stored = {
+        "from_name":  (payload.get("from_name") or "").strip(),
+        "from_email": (payload.get("from_email") or "").strip(),
+        "imap": _merge("imap"),
+        "smtp": _merge("smtp"),
+        # Legacy top-level fields kept for backward compat with IMAPClient
+        "credentials": _merge("imap")["credentials"],
+        "options":     _merge("imap")["options"],
+    }
+    await db.users.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": {"email_settings": stored}},
+    )
+    return _mask_email_settings(stored)
+
+
+@router.delete("/settings/email")
+async def clear_my_email_settings(user=Depends(get_current_user)):
+    db = await _get_db()
+    await db.users.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$unset": {"email_settings": ""}},
+    )
+    return {"ok": True}
 
 
 # Menu catalog (used by the Admin User Access modal to render per-menu checkboxes).
@@ -1887,91 +1998,46 @@ async def update_bank_accounts(payload: list, admin=Depends(get_current_admin)):
 @router.get("/admin/mail/inbox")
 async def admin_mail_inbox(staff=Depends(get_current_staff)):
     db = await _get_db()
-    # Prefer live IMAP if configured & enabled — fall back to mocked seed otherwise.
-    imap_settings = await iv2.get_settings(db, "imap")
-    if imap_settings and imap_settings.get("enabled"):
+    # ---- F1: Per-admin inbox — use the caller's OWN email_settings ----
+    user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
+    my_settings = (user_doc or {}).get("email_settings") or {}
+    my_imap = my_settings.get("imap") or {}
+    if my_imap.get("credentials", {}).get("host") and my_imap.get("credentials", {}).get("username"):
         try:
-            live = iv2.IMAPClient(imap_settings).fetch_recent()
-            if live:
-                return [{
-                    "id": f"imap-{msg['id']}",
-                    "from_name": msg["from"].split("<")[0].strip(" \""),
-                    "from_email": (msg["from"].split("<")[-1].rstrip(">") if "<" in msg["from"] else msg["from"]),
-                    "subject": msg["subject"],
-                    "preview": msg["preview"],
-                    "received_at": msg["date"],
-                    "unread": False,
-                    "starred": False,
-                    "_live": True,
-                } for msg in live]
+            live = iv2.IMAPClient(my_imap).fetch_recent()
+            return [{
+                "id": f"imap-{msg['id']}",
+                "from_name": msg["from"].split("<")[0].strip(" \""),
+                "from_email": (msg["from"].split("<")[-1].rstrip(">") if "<" in msg["from"] else msg["from"]),
+                "subject": msg["subject"],
+                "preview": msg["preview"],
+                "received_at": msg["date"],
+                "unread": False,
+                "starred": False,
+                "_live": True,
+            } for msg in live]
         except Exception:
-            pass
-    # Seed a handful of demo messages once for realism
-    if await db.mail_inbox.count_documents({}) == 0:
-        now = datetime.now(timezone.utc)
-        demo = [
-            {
-                "from_name": "PT Contoh Digital", "from_email": "billing@contoh-digital.co.id",
-                "subject": "Konfirmasi transfer INV-2026-00003",
-                "preview": "Halo, kami sudah transfer via BCA sebesar Rp 1.665.000...",
-                "body": "Halo tim Intercloud,\n\nKami sudah transfer via BCA sebesar Rp 1.665.000 untuk invoice INV-2026-00003. Mohon konfirmasi.\n\nTerima kasih,\nBudi",
-                "received_at": (now - timedelta(hours=2)).isoformat(),
-                "unread": True, "starred": False,
-            },
-            {
-                "from_name": "Rameza NOC", "from_email": "noc@rameza.id",
-                "subject": "Maintenance jadwal ulang - Cyber 1 Metta",
-                "preview": "Sesuai koordinasi, kami mengusulkan reschedule maintenance...",
-                "body": "Selamat sore,\n\nUntuk maintenance link ke Cyber 1 Metta, kami mengusulkan reschedule ke Sabtu jam 02:00-04:00 WIB. Mohon konfirmasi.\n\nSalam,\nNOC Rameza",
-                "received_at": (now - timedelta(hours=5)).isoformat(),
-                "unread": True, "starred": True,
-            },
-            {
-                "from_name": "APJII IX Team", "from_email": "peering@apjii.or.id",
-                "subject": "BGP session update — AS ICD",
-                "preview": "Kami memperbarui prefix filter di route server APJII...",
-                "body": "Halo,\n\nKami memperbarui prefix filter di route server APJII IIX. Silakan re-announce prefix Anda melalui neighbor 218.100.36.1.\n\nRegards,\nPeering Team",
-                "received_at": (now - timedelta(days=1)).isoformat(),
-                "unread": False, "starred": False,
-            },
-            {
-                "from_name": "Duitku Support", "from_email": "no-reply@duitku.com",
-                "subject": "Settlement Report — Weekly",
-                "preview": "Berikut laporan settlement periode 08-14 Juli 2026...",
-                "body": "Halo Merchant,\n\nBerikut laporan settlement mingguan Anda. Total 27 transaksi berhasil, senilai Rp 12.850.000.\n\nDuitku",
-                "received_at": (now - timedelta(days=2)).isoformat(),
-                "unread": False, "starred": False,
-            },
-        ]
-        for d in demo:
-            await db.mail_inbox.insert_one(d)
-    docs = await db.mail_inbox.find({}).sort("received_at", -1).to_list(200)
-    return [{
-        "id": str(d["_id"]),
-        "from_name": d.get("from_name", ""),
-        "from_email": d.get("from_email", ""),
-        "subject": d.get("subject", ""),
-        "preview": d.get("preview", ""),
-        "received_at": d.get("received_at"),
-        "unread": bool(d.get("unread", False)),
-        "starred": bool(d.get("starred", False)),
-    } for d in docs]
+            # Fall through to setup-hint if the personal IMAP fails to connect.
+            return {"not_setup": True, "reason": "connection_failed",
+                    "message": "IMAP kredensial Anda tidak bisa terhubung — periksa host / port / password."}
+
+    # No personal creds → surface an actionable "click to setup" hint.
+    # Frontend AdminMail.jsx renders a big card with a Configure button.
+    return {"not_setup": True, "reason": "no_credentials",
+            "message": "Email pribadi Anda belum di-setup. Klik untuk konfigurasi IMAP + SMTP cPanel Anda."}
 
 
 @router.get("/admin/mail/messages/{mid}")
 async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
-    # ---- IMAP live message (id prefixed with "imap-") ----
-    # The inbox endpoint returns items with id="imap-<uid>" when live IMAP is
-    # active. Re-fetch the whole recent-list from IMAP and find the matching
-    # entry. This preserves the "click to read full body" UX without needing
-    # a separate IMAP UID-lookup helper.
+    # ---- IMAP live message (id prefixed with "imap-") — uses caller's own creds ----
     if mid.startswith("imap-"):
         uid = mid[len("imap-"):]
-        imap_settings = await iv2.get_settings(db, "imap")
-        if imap_settings and imap_settings.get("enabled"):
+        user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
+        my_imap = ((user_doc or {}).get("email_settings") or {}).get("imap") or {}
+        if my_imap.get("credentials", {}).get("host"):
             try:
-                for msg in iv2.IMAPClient(imap_settings).fetch_recent():
+                for msg in iv2.IMAPClient(my_imap).fetch_recent():
                     if str(msg.get("id")) == uid:
                         return {
                             "id": mid,
@@ -1986,7 +2052,7 @@ async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
                 pass
         raise HTTPException(status_code=404, detail="IMAP message no longer available (mailbox may have been re-synced)")
 
-    # ---- Mongo-backed message (demo seed + local send history) ----
+    # ---- Mongo-backed message (legacy seeded demo — no per-user creds path) ----
     try:
         oid = _oid(mid)
     except Exception:

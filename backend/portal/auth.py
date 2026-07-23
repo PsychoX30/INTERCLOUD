@@ -19,7 +19,7 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL_MINUTES = 60 * 24 * 7  # 1 week for portal use
 
 STAFF_ROLES = {"admin", "sales", "finance", "support", "ticket_only"}
-FINANCE_ROLES = {"admin"}  # only admin sees revenue/finance
+FINANCE_ROLES = {"admin", "finance"}  # sees revenue/finance widgets
 BILLING_ROLES = {"admin", "sales"}  # invoices/quotations
 CATALOG_ROLES = {"admin", "support"}  # product mgmt
 OPS_ROLES = {"admin", "support"}  # provisioning/mikrotik/dcim/diagnostics

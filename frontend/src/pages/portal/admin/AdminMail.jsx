@@ -1,57 +1,23 @@
 import React, { useEffect, useState } from "react";
-import { api, fullDateTime } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Inbox, Send, Star, Mail, Loader2, AlertTriangle, Reply, CheckCircle2 } from "lucide-react";
+import { api } from "../../../portal/api";
+import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
+import { Mail, MailPlus, Send, Star, StarOff, RefreshCw, Loader2, AlertTriangle, Settings, Save, X as XIcon } from "lucide-react";
 
 const AdminMail = () => {
-  const [tab, setTab] = useState("inbox"); // inbox | sent | compose
-  return (
-    <div>
-      <PageHeader
-        title="Webmail"
-        subtitle="Send invoices, order confirmations, and campaigns from your team inbox. Uses the SMTP + IMAP integration you configure under Integrations."
-      />
-      <div className="flex items-center gap-2 mb-4 border-b border-slate-200">
-        <TabBtn active={tab === "inbox"} onClick={() => setTab("inbox")} icon={Inbox}>Inbox</TabBtn>
-        <TabBtn active={tab === "sent"} onClick={() => setTab("sent")} icon={CheckCircle2}>Sent</TabBtn>
-        <TabBtn active={tab === "compose"} onClick={() => setTab("compose")} icon={Send}>Compose</TabBtn>
-      </div>
-      {tab === "inbox" && <Inbox_ />}
-      {tab === "sent" && <Sent />}
-      {tab === "compose" && <Compose onSent={() => setTab("sent")} />}
-    </div>
-  );
-};
-
-const TabBtn = ({ active, onClick, icon: Icon, children }) => (
-  <button
-    onClick={onClick}
-    className={`px-4 h-11 -mb-px border-b-2 text-sm font-bold inline-flex items-center gap-2 transition-colors ${
-      active ? "border-[#f5b120] text-[#0a2350]" : "border-transparent text-slate-500 hover:text-[#0a2350]"
-    }`}
-  >
-    <Icon className="h-4 w-4" /> {children}
-  </button>
-);
-
-const Inbox_ = () => {
-  const [rows, setRows] = useState(null);
+  const [rows, setRows] = useState(null);         // list OR { not_setup: true, message }
   const [selected, setSelected] = useState(null);
-  const [smtpMissing, setSmtpMissing] = useState(false);
+  const [showCompose, setShowCompose] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
 
-  const load = () => api.get("/admin/mail/inbox").then((r) => setRows(r.data));
-  useEffect(() => {
-    load();
-    // Check both legacy /admin/integrations and new /admin/integrations-v2
-    Promise.all([
-      api.get("/admin/integrations").catch(() => ({ data: [] })),
-      api.get("/admin/integrations-v2").catch(() => ({ data: {} })),
-    ]).then(([legacy, v2]) => {
-      const hasLegacy = (legacy.data || []).some((x) => x.module === "smtp" && x.status === "enabled");
-      const hasV2 = ((v2.data || {}).smtp || {}).enabled || ((v2.data || {}).imap || {}).enabled;
-      setSmtpMissing(!(hasLegacy || hasV2));
-    }).catch(() => {});
-  }, []);
+  const load = async () => {
+    try {
+      const { data } = await api.get("/admin/mail/inbox");
+      setRows(data);
+    } catch (e) {
+      setRows({ not_setup: true, reason: "error", message: e?.response?.data?.detail || e.message });
+    }
+  };
+  useEffect(() => { load(); }, []);
 
   const open = async (m) => {
     try {
@@ -59,145 +25,187 @@ const Inbox_ = () => {
       setSelected(data);
       load();
     } catch (e) {
-      // Fallback: show whatever we have from the list so the UI still
-      // responds to the click even if the server can't fetch the full body.
       setSelected({ ...m, body: m.preview || "(Failed to load message body — check IMAP integration or refresh)" });
     }
   };
 
-  const star = async (m, e) => {
-    e.stopPropagation();
-    await api.post(`/admin/mail/messages/${m.id}/toggle-star`);
-    load();
-  };
-
-  if (!rows) return <Loading />;
+  const notSetup = rows && !Array.isArray(rows) && rows.not_setup;
+  const list = Array.isArray(rows) ? rows : [];
 
   return (
     <div>
-      {smtpMissing && (
-        <div className="mb-3 flex items-center gap-2 text-sm rounded-xl border border-amber-200 bg-amber-50 text-amber-800 px-3 py-2">
-          <AlertTriangle className="h-4 w-4" /> SMTP + IMAP not configured. Inbox is showing sample messages; add <b>SMTP</b> (send) and <b>IMAP</b> (receive) under <b>Integrations</b> to enable live sync.
+      <PageHeader
+        title="Webmail"
+        subtitle="Inbox pribadi Anda — setiap staff punya credential cPanel IMAP/SMTP sendiri."
+        actions={
+          <div className="flex gap-2">
+            <button className={btnSecondary} onClick={() => setShowSetup(true)} data-testid="mail-setup-btn">
+              <Settings className="h-4 w-4" /> Setup Email
+            </button>
+            <button className={btnPrimary} onClick={() => setShowCompose(true)} data-testid="mail-compose-btn">
+              <MailPlus className="h-4 w-4" /> Compose
+            </button>
+          </div>
+        }
+      />
+
+      {rows === null && (
+        <div className="text-center text-slate-500 py-16 flex items-center justify-center gap-2">
+          <Loader2 className="h-5 w-5 animate-spin" /> Loading inbox…
         </div>
       )}
-      <div className="grid lg:grid-cols-5 gap-4">
-        <Card className="lg:col-span-2 p-0 divide-y divide-slate-100 max-h-[70vh] overflow-y-auto">
-          {rows.length === 0 && <div className="p-6"><EmptyState title="Inbox empty" /></div>}
-          {rows.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => open(m)}
-              className={`text-left w-full px-4 py-3 hover:bg-slate-50 flex items-start gap-3 ${selected?.id === m.id ? "bg-[#f5b120]/10" : ""}`}
-              data-testid={`mail-${m.id}`}
-            >
-              <button onClick={(e) => star(m, e)} className={m.starred ? "text-[#f5b120]" : "text-slate-300 hover:text-[#f5b120]"}>
-                <Star className="h-4 w-4 mt-0.5" strokeWidth={m.starred ? 2.4 : 1.7} fill={m.starred ? "currentColor" : "none"} />
-              </button>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <div className={`truncate font-semibold ${m.unread ? "text-[#0a2350]" : "text-slate-600"}`}>{m.from_name || m.from_email}</div>
-                  <div className="ml-auto text-[10px] text-slate-400 whitespace-nowrap">{fullDateTime(m.received_at)}</div>
+
+      {notSetup && (
+        <div className="rounded-2xl border-2 border-amber-300 bg-amber-50/50 p-8 text-center" data-testid="mail-not-setup-card">
+          <div className="mx-auto h-14 w-14 rounded-2xl bg-amber-500/20 flex items-center justify-center mb-4">
+            <AlertTriangle className="h-7 w-7 text-amber-700" />
+          </div>
+          <div className="text-xl font-bold text-amber-900 mb-2">Belum di-setup</div>
+          <div className="text-sm text-amber-800 max-w-md mx-auto mb-5">{rows.message}</div>
+          <button className={btnPrimary} onClick={() => setShowSetup(true)} data-testid="mail-configure-btn">
+            <Settings className="h-4 w-4" /> Klik untuk atur
+          </button>
+        </div>
+      )}
+
+      {Array.isArray(rows) && list.length === 0 && (
+        <div className="text-center text-slate-500 py-16">Inbox kosong.</div>
+      )}
+
+      {list.length > 0 && (
+        <div className="grid grid-cols-12 gap-4">
+          <div className="col-span-12 md:col-span-5 rounded-2xl bg-white border border-slate-200 max-h-[70vh] overflow-y-auto" data-testid="mail-list">
+            {list.map((m) => (
+              <button key={m.id}
+                onClick={() => open(m)}
+                data-testid={`mail-${m.id}`}
+                className={`w-full text-left px-4 py-3 border-b border-slate-100 hover:bg-slate-50 ${
+                  selected?.id === m.id ? "bg-slate-100" : ""
+                }`}>
+                <div className="flex justify-between items-baseline">
+                  <div className={`text-sm truncate ${m.unread ? "font-bold text-[#0a2350]" : "text-slate-700"}`}>{m.from_name || m.from_email}</div>
+                  <div className="text-[10px] text-slate-400 whitespace-nowrap ml-2">{new Date(m.received_at).toLocaleDateString()}</div>
                 </div>
-                <div className={`text-sm truncate ${m.unread ? "font-bold text-[#0a2350]" : "text-slate-600"}`}>{m.subject}</div>
+                <div className={`text-sm truncate ${m.unread ? "font-semibold" : ""}`}>{m.subject}</div>
                 <div className="text-xs text-slate-500 truncate">{m.preview}</div>
-              </div>
-              {m.unread && <span className="mt-1 h-2 w-2 rounded-full bg-[#f5b120] flex-shrink-0" />}
-            </button>
-          ))}
-        </Card>
-        <Card className="lg:col-span-3 p-6 min-h-[400px]">
-          {!selected && <div className="text-center text-slate-500 pt-16 text-sm">Select a message to read</div>}
-          {selected && (
-            <div>
-              <div className="border-b border-slate-100 pb-3 mb-4">
-                <div className="text-xl font-extrabold text-[#0a2350]">{selected.subject}</div>
-                <div className="mt-1 text-xs text-slate-500">From {selected.from_name} &lt;{selected.from_email}&gt; · {fullDateTime(selected.received_at)}</div>
-              </div>
-              <div className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{selected.body}</div>
-            </div>
-          )}
-        </Card>
-      </div>
+              </button>
+            ))}
+          </div>
+          <div className="col-span-12 md:col-span-7 rounded-2xl bg-white border border-slate-200 p-5 min-h-[70vh]" data-testid="mail-detail">
+            {selected ? (
+              <>
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div>
+                    <div className="text-xs text-slate-500">From: <span className="font-mono">{selected.from_email}</span></div>
+                    <div className="text-lg font-bold text-[#0a2350]">{selected.subject}</div>
+                    <div className="text-[11px] text-slate-400">{selected.received_at && new Date(selected.received_at).toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className="whitespace-pre-wrap text-sm text-slate-700 leading-relaxed">{selected.body || "(no body)"}</div>
+              </>
+            ) : (
+              <div className="text-slate-400 text-sm text-center py-20">Pilih pesan untuk melihat isi</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showSetup && <SetupEmailModal onClose={() => setShowSetup(false)} onDone={() => { setShowSetup(false); load(); }} />}
+      {showCompose && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowCompose(false)}>
+          <div className="w-full max-w-lg bg-white rounded-3xl p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="text-lg font-bold text-[#0a2350] mb-2">Compose</div>
+            <div className="text-sm text-slate-500">Compose fitur akan dihubungkan ke SMTP Anda setelah setup email. Untuk sementara gunakan client email eksternal (Outlook/Roundcube).</div>
+            <div className="text-right mt-4"><button className={btnSecondary} onClick={() => setShowCompose(false)}>Tutup</button></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-const Sent = () => {
-  const [rows, setRows] = useState(null);
-  useEffect(() => { api.get("/admin/mail/sent").then((r) => setRows(r.data)); }, []);
-  if (!rows) return <Loading />;
-  if (rows.length === 0) return <EmptyState title="No sent messages" />;
-  return (
-    <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-      <table className="w-full min-w-[720px] text-sm">
-        <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-          <tr>
-            <th className="px-4 py-3 text-left">To</th>
-            <th className="px-4 py-3 text-left">Subject</th>
-            <th className="px-4 py-3 text-left">Sent</th>
-            <th className="px-4 py-3 text-left">Delivery</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} className="border-t border-slate-100">
-              <td className="px-4 py-3 font-mono text-xs">{r.to}</td>
-              <td className="px-4 py-3 font-semibold text-[#0a2350]">{r.subject}</td>
-              <td className="px-4 py-3 text-slate-500 text-xs">{fullDateTime(r.sent_at)}</td>
-              <td className="px-4 py-3 text-xs">
-                <span className={`px-2 py-0.5 rounded-full font-bold uppercase tracking-wide text-[10px] ${r.delivered ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>{r.delivered_via}</span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
-const Compose = ({ onSent }) => {
-  const [to, setTo] = useState("");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+const SetupEmailModal = ({ onClose, onDone }) => {
+  const [form, setForm] = useState({
+    from_name: "", from_email: "",
+    imap: { host: "", port: 993, username: "", password: "", use_ssl: true },
+    smtp: { host: "", port: 465, username: "", password: "", use_ssl: true },
+  });
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [loaded, setLoaded] = useState(false);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    setBusy(true); setMsg("");
+  useEffect(() => {
+    api.get("/settings/email").then((r) => {
+      const d = r.data || {};
+      if (d.configured) {
+        setForm((prev) => ({
+          from_name: d.from_name || "",
+          from_email: d.from_email || "",
+          imap: { host: d.imap?.credentials?.host || "", port: d.imap?.credentials?.port || 993, username: d.imap?.credentials?.username || "", password: "••••••••", use_ssl: d.imap?.options?.use_ssl !== false },
+          smtp: { host: d.smtp?.credentials?.host || "", port: d.smtp?.credentials?.port || 465, username: d.smtp?.credentials?.username || "", password: "••••••••", use_ssl: d.smtp?.options?.use_ssl !== false },
+        }));
+      }
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, []);
+
+  const save = async () => {
+    setBusy(true); setErr("");
     try {
-      const { data } = await api.post("/admin/mail/send", { to, subject, body });
-      setMsg(`${data.delivered ? "✓ Sent" : "⏳ Queued"} via ${data.delivered_via}`);
-      setTo(""); setSubject(""); setBody("");
-      setTimeout(() => onSent && onSent(), 1200);
-    } catch (er) {
-      setMsg(er?.response?.data?.detail || "Failed to send");
+      await api.post("/settings/email", form);
+      onDone();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message);
     } finally { setBusy(false); }
   };
 
+  const setField = (kind, key, value) => setForm({ ...form, [kind]: { ...form[kind], [key]: value } });
+
   return (
-    <Card className="p-6">
-      {msg && <div className="mb-3 text-sm rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
-      <form onSubmit={submit} className="space-y-4" data-testid="compose-form">
-        <label>
-          <div className={labelClass}>To</div>
-          <input value={to} onChange={(e) => setTo(e.target.value)} className={inputClass} placeholder="client@example.com" required data-testid="compose-to" />
-        </label>
-        <label>
-          <div className={labelClass}>Subject</div>
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} className={inputClass} required data-testid="compose-subject" />
-        </label>
-        <label>
-          <div className={labelClass}>Body</div>
-          <textarea rows={10} value={body} onChange={(e) => setBody(e.target.value)} className={`${inputClass} h-auto py-2`} data-testid="compose-body" />
-        </label>
-        <div className="flex justify-end">
-          <button type="submit" disabled={busy} className={btnPrimary} data-testid="compose-send">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Send
-          </button>
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="w-full max-w-2xl bg-white rounded-3xl p-6 max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} data-testid="mail-setup-modal">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <div className="text-xl font-extrabold text-[#0a2350]">Setup Email Pribadi (cPanel)</div>
+            <div className="text-sm text-slate-500">Kredensial ini hanya untuk akun Anda — admin lain tidak bisa melihatnya.</div>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-800"><XIcon className="h-5 w-5" /></button>
         </div>
-      </form>
-    </Card>
+        {err && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
+        {!loaded ? <div className="text-slate-500">Loading…</div> : (
+          <>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <label><div className={labelClass}>Display Name</div><input className={inputClass} value={form.from_name} onChange={(e) => setForm({ ...form, from_name: e.target.value })} placeholder="e.g. Anang Support" data-testid="mail-setup-from-name" /></label>
+              <label><div className={labelClass}>From Address</div><input className={inputClass} value={form.from_email} onChange={(e) => setForm({ ...form, from_email: e.target.value })} placeholder="anang@intercloud-digital.com" data-testid="mail-setup-from-email" /></label>
+            </div>
+            <div className="border-t border-slate-100 pt-3 mb-3">
+              <div className="text-sm font-bold text-[#0a2350] mb-2">IMAP (incoming)</div>
+              <div className="grid grid-cols-3 gap-3">
+                <label className="col-span-2"><div className={labelClass}>Host</div><input className={inputClass} value={form.imap.host} onChange={(e) => setField("imap", "host", e.target.value)} placeholder="mail.intercloud-digital.com" data-testid="mail-setup-imap-host" /></label>
+                <label><div className={labelClass}>Port</div><input type="number" className={inputClass} value={form.imap.port} onChange={(e) => setField("imap", "port", e.target.value)} /></label>
+                <label className="col-span-2"><div className={labelClass}>Username</div><input className={inputClass} value={form.imap.username} onChange={(e) => setField("imap", "username", e.target.value)} placeholder="anang@intercloud-digital.com" data-testid="mail-setup-imap-user" /></label>
+                <label><div className={labelClass}>Password</div><input type="password" className={inputClass} value={form.imap.password} onChange={(e) => setField("imap", "password", e.target.value)} data-testid="mail-setup-imap-pass" /></label>
+              </div>
+            </div>
+            <div className="border-t border-slate-100 pt-3 mb-4">
+              <div className="text-sm font-bold text-[#0a2350] mb-2">SMTP (outgoing)</div>
+              <div className="grid grid-cols-3 gap-3">
+                <label className="col-span-2"><div className={labelClass}>Host</div><input className={inputClass} value={form.smtp.host} onChange={(e) => setField("smtp", "host", e.target.value)} placeholder="mail.intercloud-digital.com" data-testid="mail-setup-smtp-host" /></label>
+                <label><div className={labelClass}>Port</div><input type="number" className={inputClass} value={form.smtp.port} onChange={(e) => setField("smtp", "port", e.target.value)} /></label>
+                <label className="col-span-2"><div className={labelClass}>Username</div><input className={inputClass} value={form.smtp.username} onChange={(e) => setField("smtp", "username", e.target.value)} data-testid="mail-setup-smtp-user" /></label>
+                <label><div className={labelClass}>Password</div><input type="password" className={inputClass} value={form.smtp.password} onChange={(e) => setField("smtp", "password", e.target.value)} data-testid="mail-setup-smtp-pass" /></label>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className={btnSecondary} onClick={onClose}>Batal</button>
+              <button className={btnPrimary} onClick={save} disabled={busy} data-testid="mail-setup-save">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Simpan
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 };
 

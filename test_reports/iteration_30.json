@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 30 — Batch-3 verification (F1 per-admin email + F3 sales scoping). 14/15 backend pytest cases pass. F3 is 100% green: sales dashboard total_clients=1 (matches assigned_client_ids, NOT the global count of 2 clients), sales sees scoped unpaid/overdue/revenue fields, admin dashboard still returns global stats, temp finance user (created + cleaned up via admin API) gets full financial fields including revenue_month/revenue_total. F1 is 90% green with ONE clear security bug: GET /api/portal/settings/email returns the SMTP password in PLAINTEXT while masking only the IMAP password. The _mask_email_settings helper in routes.py L973-987 masks only the top-level legacy 'credentials' (used for imap) — the nested smtp.credentials dict is copied verbatim, leaking secrets on every GET. All other F1 behaviors work: DELETE clears settings, GET-empty returns {}, POST persists + echoes configured:true, POST with password='••••••••' preserves the previously stored password (verified against raw mongo doc — original 'SuperSecret123!' remained after masked-post), inbox returns {not_setup:true, reason:'no_credentials'} when unconfigured. Frontend: /portal/admin/mail correctly shows the amber 'Belum di-setup' card (data-testid='mail-not-setup-card') with 'Klik untuk atur' button; clicking opens the 8-input setup modal (data-testid='mail-setup-modal') containing all 8 required testids; Save posts to /settings/email, closes modal and reloads inbox. Regression: batch-2 fixes (sales orders/quotations 200, imap-fakeid 404, overdue_invoices int) all still pass.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/portal/settings/email",
+        "issue": "SMTP password returned in PLAINTEXT (security leak). Only IMAP password is masked. Root cause: _mask_email_settings() in portal/routes.py L973-987 does `dict((es.get('smtp') or {}).get('credentials') or {})` without redacting the password field. Fix: apply the same '•'*8 substitution to smtp creds. Verified via UI: GET returns imap.credentials.password='••••••••' but smtp.credentials.password='BogusUiPw' (plaintext).",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/portal/admin/mail/inbox (with bogus creds saved)",
+        "issue": "iv2.IMAPClient.fetch_recent() in integrations_v2.py L1085 swallows ALL exceptions and returns []. Consequence: admin_mail_inbox never reaches its except-branch, returns empty list [] instead of {not_setup:true, reason:'connection_failed'}. UI then shows 'Inbox kosong.' rather than the amber 'connection_failed' hint. Review wording accepts either variant of the not-setup card OR the connection_failed hint — currently NEITHER shows. Not crashing (per review), but is misleading UX (user sees empty inbox instead of 'kredensial salah'). Suggest either (a) surface a distinct exception from fetch_recent for connect/auth failures, or (b) additionally check imaplib login success before treating [] as empty inbox."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "AdminMail after saving bogus IMAP creds",
+        "issue": "Empty-inbox state 'Inbox kosong.' shown instead of connection-failed hint. Root cause is backend (see minor issue above), not the frontend. Frontend logic itself is correct — it renders the amber card whenever backend returns {not_setup:true}. Since backend returns [] with fake creds due to fetch_recent's silent try/except, the frontend has nothing to display.",
+        "affected_selectors": ["mail-not-setup-card", "mail-list"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter30_batch3_email_scoping.py",
+    "/app/test_reports/pytest/iter30_batch3.xml"
+  ],
+  "action_items": [
+    "HIGH: Fix _mask_email_settings() in /app/backend/portal/routes.py L973-987 to mask the SMTP password too — currently GET /settings/email leaks smtp.credentials.password in plaintext.",
+    "Minor: consider distinguishing IMAP connect failures from empty-inbox in integrations_v2.py IMAPClient.fetch_recent so admin_mail_inbox can surface connection_failed as intended by the F1 spec."
+  ],
+  "critical_code_review_comments": [
+    "_mask_email_settings (routes.py L973) — only masks the LEGACY top-level 'credentials' key used for backward-compat imap access; the modern nested smtp.credentials.password is passed through verbatim. This is both a security bug AND an API inconsistency. Fix must apply the same redaction to smtp creds; recommend factoring the redaction into a small helper (`_redact = lambda c: {**c, 'password': '•'*8 if c.get('password') else ''}`).",
+    "The masked-password preservation logic (routes.py L1016-1022) correctly detects '••••••••' input and preserves old password — verified against raw mongo doc. Good.",
+    "admin_dashboard scoping (routes.py L906) uses `_id:{'$in':[ObjectId('000000000000000000000000')]}` sentinel for unassigned sales — clean way to force zero counts without $in:[]. Same pattern as batch-2 orders/quotations fix.",
+    "iv2.IMAPClient.fetch_recent (integrations_v2.py L1085) swallows all exceptions and returns [] with a comment 'errors surface as an empty list; higher-level callers fall back to mocked data'. But admin_mail_inbox is TRYING to use exceptions to detect connection_failed. These two contracts conflict. Either the client must expose a `test_connection()` method that raises, or admin_mail_inbox should attempt a live IMAP.IMAPClient(...)._connect() before deciding.",
+    "Frontend AdminMail.jsx modal fills / testids all present and working — 8 inputs verified via DOM inspection: mail-setup-{from-name,from-email,imap-host,imap-user,imap-pass,smtp-host,smtp-user,smtp-pass}. Save button POSTs correctly and modal closes on success."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter30_batch3_email_scoping.py (new, 15 pytest cases)"
+  ],
+  "success_rate": {"backend": "93.3% (14/15 — SMTP-mask assertion is a real bug)", "frontend": "100% functional (amber card, modal, all 8 inputs, save flow all work)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md). sales.test@intercloud-digital.com / SalesTest2026! (reset via admin fixture — password NOT in credentials file). Temp finance user TEST_finance_iter30@example.com / FinanceIter30! created + deleted within the test suite.",
+  "seed_data_creation": "TestF3DashboardScoping creates a temp finance user (email TEST_finance_iter30@example.com) via /admin/users POST to verify the finance-role branch of admin_dashboard. Fixture cleans up on teardown via DELETE. Sales password is reset to a known value (SalesTest2026!) each run.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Only ONE real bug found: SMTP password leak in GET /settings/email. Fix is a 2-line change in _mask_email_settings (routes.py L981-982). After the fix, re-run `python -m pytest /app/backend/tests/test_iter30_batch3_email_scoping.py -v` and the SMTP assertion in test_04_get_after_save_returns_masked_password should pass. All F3 dashboard-scoping assertions are 100% green — sales sees only 1 assigned client (contoso@example.com), admin sees the full 2, finance user gets full financial fields. Frontend AdminMail flow verified end-to-end via playwright: amber not-setup card, setup modal with all 8 data-testid inputs, save persists and reloads. Minor secondary bug: fetch_recent swallowing exceptions prevents the connection_failed hint from ever surfacing — after fixing this, tests can also assert the amber card appears after saving bogus creds.",
+  "rca of the issue": "SMTP password leak — _mask_email_settings(routes.py:973) was refactored to redact the top-level legacy 'credentials' (which the modern code path uses ONLY for IMAP, since smtp/imap are now nested), but the nested smtp branch was missed. Every GET after save returns smtp.credentials.password in plaintext. Reproduction: (1) POST /settings/email with any smtp.password value X, (2) GET /settings/email, (3) response.smtp.credentials.password === X. Verified against preview env: response contained 'BogusUiPw' verbatim. Fix: change L981 from `'smtp': {'credentials': dict((es.get('smtp') or {}).get('credentials') or {}), ...` to redact the password field in the copied dict."
+}
