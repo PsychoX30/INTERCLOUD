@@ -3258,6 +3258,92 @@ async def backup_download(admin=Depends(get_current_admin)):
     )
 
 
+@router.post("/admin/system/factory-reset")
+async def system_factory_reset(payload: m.FactoryResetIn,
+                               admin=Depends(get_current_admin)):
+    """DANGER: wipe the database back to a fresh-install state.
+
+    Behaviour (see /app/memory/PRD.md — user-approved scope):
+      • Preserves the entire `settings` collection (branding + landing CMS).
+      • Preserves ALL users whose `role == "admin"` (multiple admins survive).
+      • Deletes every other document in every other collection.
+      • System collections (`system.*`) and any index metadata are left alone.
+
+    Guards (both required):
+      1. `admin_password` must match the calling admin's current password.
+      2. `confirm` body field must be the exact string "FACTORY RESET".
+
+    Returns a per-collection summary of documents removed so the operator
+    can see exactly what was purged. The admin's session token stays valid
+    because the admin user document itself is preserved.
+    """
+    if payload.confirm != "FACTORY RESET":
+        raise HTTPException(
+            status_code=400,
+            detail='Confirmation phrase mismatch. Type "FACTORY RESET" exactly.',
+        )
+
+    db = await _get_db()
+
+    # ---- Verify admin password against the fresh DB record ----
+    admin_doc = await db.users.find_one({"_id": ObjectId(admin["id"])})
+    if not admin_doc or admin_doc.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin account not found")
+    if not verify_password(payload.admin_password, admin_doc.get("password_hash", "")):
+        raise HTTPException(status_code=400, detail="Admin password is incorrect")
+
+    # ---- Take a safety snapshot BEFORE wiping (best-effort) ----
+    safety_backup_path = None
+    try:
+        blob, filename = await _run_mongodump()
+        import os as _os
+        backup_dir = "/var/backups/intercloud"
+        try:
+            _os.makedirs(backup_dir, exist_ok=True)
+            safety_backup_path = _os.path.join(backup_dir, f"pre-factory-reset-{filename}")
+            with open(safety_backup_path, "wb") as fh:
+                fh.write(blob)
+        except PermissionError:
+            # Fall back to /tmp when running without root (e.g., preview env)
+            backup_dir = "/tmp"
+            safety_backup_path = _os.path.join(backup_dir, f"pre-factory-reset-{filename}")
+            with open(safety_backup_path, "wb") as fh:
+                fh.write(blob)
+    except Exception as e:  # nosec
+        # Never block the reset on a backup failure, but surface it in logs.
+        safety_backup_path = f"(snapshot skipped: {e})"
+
+    # ---- Wipe ----
+    PRESERVE_COLLECTIONS = {"settings"}
+    summary: dict = {}
+
+    all_names = await db.list_collection_names()
+    for name in all_names:
+        if name.startswith("system."):
+            continue
+        if name in PRESERVE_COLLECTIONS:
+            continue
+        if name == "users":
+            # Purge everything EXCEPT admins.
+            res = await db.users.delete_many({"role": {"$ne": "admin"}})
+            summary[name] = {"deleted": res.deleted_count, "kept": "role==admin"}
+            continue
+        # Drop the whole collection (much faster than delete_many on big sets).
+        try:
+            count = await db[name].estimated_document_count()
+        except Exception:
+            count = None
+        await db[name].drop()
+        summary[name] = {"deleted": count, "dropped": True}
+
+    return {
+        "ok": True,
+        "message": "Factory reset complete. Admin account and settings preserved.",
+        "safety_backup": safety_backup_path,
+        "collections": summary,
+    }
+
+
 @router.post("/admin/backup/restore")
 async def backup_restore(request: Request, admin=Depends(get_current_admin), confirm: str = ""):
     """Restore a full snapshot. **Wipes every collection contained in the

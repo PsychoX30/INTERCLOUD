@@ -42,6 +42,18 @@ class AdminResetPasswordIn(BaseModel):
     notify_user: bool = False
 
 
+class FactoryResetIn(BaseModel):
+    """Payload for POST /admin/system/factory-reset.
+
+    - `admin_password`: current admin's password, re-entered for confirmation.
+    - `confirm`: must equal the literal string "FACTORY RESET" — a second
+      seatbelt on top of the password check so a leaked token alone can't
+      wipe an install.
+    """
+    admin_password: str
+    confirm: str
+
+
 class ForgotPasswordIn(BaseModel):
     email: EmailStr
     recaptcha_token: Optional[str] = None

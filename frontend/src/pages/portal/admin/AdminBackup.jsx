@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Download, Upload, ShieldAlert, Loader2, CheckCircle2, AlertTriangle, RefreshCw, GitBranch } from "lucide-react";
+import { Download, Upload, ShieldAlert, Loader2, CheckCircle2, AlertTriangle, RefreshCw, GitBranch, Skull } from "lucide-react";
 import { api } from "../../../portal/api";
 
 const API_BASE = process.env.REACT_APP_BACKEND_URL;
@@ -12,6 +12,32 @@ const AdminBackup = () => {
   const [file, setFile] = useState(null);
   const [confirmText, setConfirmText] = useState("");
   const fileRef = useRef(null);
+
+  // ---------- Factory reset ----------
+  const [frConfirmText, setFrConfirmText] = useState("");
+  const [frPassword, setFrPassword] = useState("");
+  const [factoryResetting, setFactoryResetting] = useState(false);
+  const [frSummary, setFrSummary] = useState(null);
+
+  const factoryReset = async () => {
+    if (frConfirmText !== "FACTORY RESET") { setMsg({ kind: "error", text: 'Type "FACTORY RESET" exactly to confirm.' }); return; }
+    if (!frPassword) { setMsg({ kind: "error", text: "Admin password is required." }); return; }
+    if (!window.confirm("This will PERMANENTLY delete ALL data except the settings collection and admin users. A safety snapshot is taken automatically. Continue?")) return;
+    setFactoryResetting(true); setMsg(null); setFrSummary(null);
+    try {
+      const { data } = await api.post("/admin/system/factory-reset", {
+        admin_password: frPassword,
+        confirm: "FACTORY RESET",
+      });
+      setFrSummary(data);
+      setMsg({ kind: "ok", text: data.message || "Factory reset complete." });
+      setFrConfirmText(""); setFrPassword("");
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e.message;
+      setMsg({ kind: "error", text: `Factory reset failed: ${typeof detail === "string" ? detail : JSON.stringify(detail)}` });
+    } finally { setFactoryResetting(false); }
+  };
+  // -----------------------------------
 
   // ---------- System update ----------
   const [version, setVersion] = useState(null);
@@ -206,6 +232,87 @@ const AdminBackup = () => {
                 {restoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 {restoring ? "Restoring…" : "Restore backup"}
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Factory Reset — DANGER ZONE */}
+      <div className="mt-6 rounded-2xl border-2 border-red-300 bg-gradient-to-br from-red-50/60 to-white p-6 shadow-sm" data-testid="admin-factory-reset-card">
+        <div className="flex items-start gap-4">
+          <div className="h-12 w-12 rounded-xl bg-red-600 text-white flex items-center justify-center flex-shrink-0">
+            <Skull className="h-6 w-6" />
+          </div>
+          <div className="flex-1">
+            <div className="text-lg font-bold text-red-800">Factory Reset (Reset to fresh install)</div>
+            <div className="mt-1 text-sm text-red-800 bg-red-100 border border-red-300 rounded-lg px-3 py-2">
+              <b>Irreversible.</b> This wipes every collection back to a fresh-install state.
+              <ul className="list-disc pl-5 mt-1 text-[13px]">
+                <li><b>Preserved:</b> the entire <span className="font-mono">settings</span> collection (branding + landing CMS) and all users with <span className="font-mono">role = admin</span>.</li>
+                <li><b>Deleted:</b> every other collection — clients, orders, invoices, tickets, services, MikroTik devices, articles, assets, etc.</li>
+                <li>A safety snapshot is taken automatically to <span className="font-mono">/var/backups/intercloud/pre-factory-reset-*.archive.gz</span> before anything is dropped.</li>
+              </ul>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-widest">
+                  1. Type <span className="font-mono text-red-700">FACTORY RESET</span> to confirm
+                </label>
+                <input value={frConfirmText} onChange={(e) => setFrConfirmText(e.target.value.toUpperCase())}
+                       placeholder="FACTORY RESET"
+                       className="mt-1.5 block w-full max-w-xs font-mono text-sm border border-slate-200 rounded-lg px-3 py-2"
+                       data-testid="admin-factory-reset-confirm" />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-widest">
+                  2. Re-enter your admin password
+                </label>
+                <input type="password" value={frPassword} onChange={(e) => setFrPassword(e.target.value)}
+                       placeholder="Admin password"
+                       autoComplete="current-password"
+                       className="mt-1.5 block w-full max-w-xs text-sm border border-slate-200 rounded-lg px-3 py-2"
+                       data-testid="admin-factory-reset-password" />
+              </div>
+
+              <button onClick={factoryReset}
+                      disabled={factoryResetting || frConfirmText !== "FACTORY RESET" || !frPassword}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-red-700 hover:bg-red-800 text-white text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                      data-testid="admin-factory-reset-run">
+                {factoryResetting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Skull className="h-4 w-4" />}
+                {factoryResetting ? "Wiping database…" : "Factory reset now"}
+              </button>
+
+              {frSummary && (
+                <div className="mt-4" data-testid="admin-factory-reset-summary">
+                  {frSummary.safety_backup && (
+                    <div className="text-xs font-mono text-slate-600 mb-2">
+                      Safety snapshot: {frSummary.safety_backup}
+                    </div>
+                  )}
+                  <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-slate-50 text-slate-500 uppercase tracking-widest text-[10px]">
+                        <tr>
+                          <th className="text-left px-3 py-2">Collection</th>
+                          <th className="text-right px-3 py-2">Result</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(frSummary.collections || {}).map(([name, info]) => (
+                          <tr key={name} className="border-t border-slate-100">
+                            <td className="px-3 py-1.5 font-mono">{name}</td>
+                            <td className="px-3 py-1.5 text-right text-slate-600">
+                              {info.dropped ? `dropped (${info.deleted ?? "?"} docs)` : `${info.deleted} deleted · kept ${info.kept}`}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

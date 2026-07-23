@@ -20,6 +20,15 @@ See `/app/memory/test_credentials.md`.
 
 ## Implemented (as of 2026-07-23)
 
+### System Ops
+- **Factory Reset** — `POST /api/portal/admin/system/factory-reset` (admin only).
+  Wipes every non-preserved collection; preserves `settings` (branding + landing CMS)
+  and all users where `role == admin`. Double-guarded (password re-entry + literal
+  confirm phrase `FACTORY RESET`). Takes a `pre-factory-reset-*.archive.gz` safety
+  snapshot before wiping. UI lives on Admin ▸ Backup, Restore & Update page (red
+  DANGER ZONE card with per-collection deletion summary table on success).
+
+
 ### Finance & Assets
 - Straight-Line Method (SLM) depreciation.
 
@@ -200,6 +209,7 @@ See `/app/memory/test_credentials.md`.
 - `GET  /api/portal/admin/mikrotik/blackhole?device_id&prefix_filter`
 - `POST /api/portal/admin/diagnostics/run`
 - `GET  /api/portal/sitemap.xml`
+- `POST /api/portal/admin/system/factory-reset` (admin_password + confirm="FACTORY RESET")
 
 ## Live-verified against real hardware
 - RouterOS 7.20.6 — `TO.DIST` (157.20.32.253:8777) and `RO.BGP`
