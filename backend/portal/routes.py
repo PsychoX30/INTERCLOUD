@@ -3586,7 +3586,7 @@ def _pdf_template(
   /* Header — logo sized generously so a wordmark reads cleanly on print */
   .head {{ display:flex; justify-content:space-between; align-items:center; gap:24px; }}
   .head .logo {{ flex:0 0 auto; max-width:55%; }}
-  .head .logo img {{ height:96px; max-height:96px; width:auto; max-width:100%; object-fit:contain; display:block; }}
+  .head .logo img {{ height:130px; max-height:130px; width:auto; max-width:100%; object-fit:contain; display:block; }}
   .company-block {{ text-align:right; font-size:11.5px; color:#334155; line-height:1.55; }}
 
   /* Invoice title strip */

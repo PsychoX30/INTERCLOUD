@@ -43,7 +43,7 @@ const Footer = () => {
               <img
                 src={branding.logo_light}
                 alt="PT. Intercloud Digital Inovasi"
-                className="h-12 w-auto object-contain"
+                className="h-14 md:h-16 w-auto object-contain"
                 style={branding.logo_light_source === "inverted" ? { filter: "brightness(0) invert(1)" } : undefined}
                 loading="lazy"
                 data-testid="footer-logo-img"

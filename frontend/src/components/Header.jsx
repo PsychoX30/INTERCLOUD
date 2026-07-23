@@ -15,7 +15,7 @@ const Logo = () => {
         <img
           src={branding.logo_light}
           alt="Intercloud Digital Inovasi"
-          className="h-11 md:h-12 w-auto object-contain"
+          className="h-14 md:h-16 w-auto object-contain"
           style={invert ? { filter: "brightness(0) invert(1)" } : undefined}
           loading="eager"
           data-testid="site-logo-img"
