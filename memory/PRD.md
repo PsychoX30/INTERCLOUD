@@ -148,33 +148,32 @@ See `/app/memory/test_credentials.md`.
     `bindIp` locked to 127.0.0.1
   - System user `intercloud`, `git clone` into `/opt/intercloud-portal`
   - Python venv + backend deps
-  - `backend/.env` written with the freshly provisioned Mongo URL, a random
-    48-byte `JWT_SECRET`, CORS whitelist derived from `PORTAL_DOMAIN`, and
-    the seeder's expected `ADMIN_EMAIL` / `ADMIN_PASSWORD` /
-    `CLIENT_EMAIL` / `CLIENT_PASSWORD` variables
+  - `backend/.env` with fresh Mongo URL, random 48-byte `JWT_SECRET`,
+    CORS whitelist, and the seeder's expected env vars
+    (`ADMIN_EMAIL` / `ADMIN_PASSWORD` / `CLIENT_EMAIL` / `CLIENT_PASSWORD`)
   - `frontend/.env` with `REACT_APP_BACKEND_URL`
-  - `yarn install --frozen-lockfile && yarn build` → static bundle served
-    by nginx from `frontend/build/`
-  - nginx reverse proxy: `/api` → `127.0.0.1:8001`, everything else → SPA
-    fallback; body size 100 MB, read timeout 600 s, gzip on
+  - `yarn install --frozen-lockfile && yarn build` → SPA served by nginx
+  - nginx reverse proxy: `/api` → `127.0.0.1:8001`, SPA fallback,
+    body 100 MB, read timeout 600 s, gzip on
   - supervisor program `intercloud-backend` (uvicorn, 2 workers)
-  - **fail2ban** jails — SSH default + custom `nginx-portal-auth` that
-    watches for repeated `401`/`429` on `/api/portal/auth/*` (20 hits in
-    10 min → 30-min ban)
+  - **Daily backup cron** — `/etc/cron.d/intercloud-backup` triggers
+    `scripts/daily-backup.sh` at 03:15 UTC into
+    `/var/backups/intercloud/daily-YYYYMMDD.archive.gz`, atomic
+    `.tmp→final` swap, 14-day rolling retention, log at
+    `/var/log/intercloud-backup.log`
+  - **fail2ban** jails — SSH default + custom `nginx-portal-auth`
   - **UFW firewall** (22 / 80 / 443)
-  - **Let's Encrypt HTTPS via certbot** — auto-issues + configures nginx
-    to redirect 80 → 443 when both `PORTAL_DOMAIN` and `LETSENCRYPT_EMAIL`
-    are set; enables `certbot.timer` for auto-renewal
-  - **Admin seed verification** — polls backend `/api/`, then round-trips
-    a real login before exiting so the operator sees "Admin login OK"
-  - Idempotent — safe to re-run; both `.env` files and MongoDB auth are
-    preserved on second execution
-- `scripts/update.sh` — auto-snapshots DB (atomic `.tmp` swap) to
-  `/var/backups/intercloud/pre-update-*.archive.gz` (30-day retention),
-  refuses on dirty tree (exit 3), refuses if no git remote (exit 4),
-  `git pull --ff-only`, reinstalls Python + Node deps, rebuilds the
-  frontend, restarts backend via supervisor. Distinct exit codes surface
-  as distinct HTTP statuses in the admin UI (409 dirty, 422 no-remote).
+  - **Let's Encrypt HTTPS via certbot** — triggered by `PORTAL_DOMAIN`
+    + `LETSENCRYPT_EMAIL`; `certbot.timer` enabled for auto-renewal
+  - **Admin seed verification** — round-trips a real login before exit
+  - Idempotent — safe to re-run
+- `scripts/update.sh` — auto-snapshots DB (atomic `.tmp` swap) into the
+  same `/var/backups/intercloud/` directory as `pre-update-*.archive.gz`
+  (30-day retention), refuses on dirty tree, refuses if no git remote,
+  `git pull --ff-only`, reinstalls deps, rebuilds frontend, restarts
+  backend.
+- `scripts/daily-backup.sh` — standalone script also usable ad-hoc:
+  `sudo APP_DIR=/opt/intercloud-portal bash scripts/daily-backup.sh`
 - `POST /api/portal/admin/system/update?confirm=UPDATE` — file-locked via
   `flock(/tmp/intercloud-update.lock)` so concurrent clicks return 409.
 - Full deployment guide at `/app/docs/production.md`.

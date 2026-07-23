@@ -43,7 +43,12 @@ The installer runs end-to-end without prompts and configures:
     watches nginx access logs for repeated `401`/`429` responses on
     `/api/portal/auth/*` and bans offenders for 30 min after 20 hits in
     10 min.
-12. **Let's Encrypt HTTPS via certbot** — if both `PORTAL_DOMAIN` and
+12. **Daily backup cron** — `/etc/cron.d/intercloud-backup` runs
+    `scripts/daily-backup.sh` at 03:15 UTC every day. Output:
+    `/var/backups/intercloud/daily-YYYYMMDD.archive.gz` (gzipped BSON,
+    atomic `.tmp`→final swap). Rolling **14-day retention**. Logs to
+    `/var/log/intercloud-backup.log`.
+13. **Let's Encrypt HTTPS via certbot** — if both `PORTAL_DOMAIN` and
     `LETSENCRYPT_EMAIL` are set and DNS points at the server, the script
     issues a cert non-interactively, rewrites the nginx config to
     redirect 80 → 443, and enables `certbot.timer` for auto-renewal.

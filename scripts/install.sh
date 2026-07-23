@@ -313,6 +313,28 @@ supervisorctl update
 supervisorctl restart intercloud-backend || true
 
 # ------------------------------------------------------------------
+# 8a. Daily backup cron — one archive per day, 14-day rolling window
+# ------------------------------------------------------------------
+log "Installing daily backup cron"
+chmod +x "$APP_DIR/scripts/daily-backup.sh" 2>/dev/null || true
+mkdir -p /var/backups/intercloud
+chown -R intercloud:intercloud /var/backups/intercloud
+
+# /etc/cron.d entry runs at 03:15 UTC (~10:15 WIB) daily, logs to syslog.
+cat > /etc/cron.d/intercloud-backup <<CRON
+# Managed by scripts/install.sh — regenerated on every install run.
+# Daily gzipped BSON snapshot of the portal DB. Retention: 14 days.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+15 3 * * * root APP_DIR=$APP_DIR BACKUP_DIR=/var/backups/intercloud RETENTION_DAYS=14 bash $APP_DIR/scripts/daily-backup.sh >> /var/log/intercloud-backup.log 2>&1
+CRON
+chmod 644 /etc/cron.d/intercloud-backup
+touch /var/log/intercloud-backup.log
+chown root:adm /var/log/intercloud-backup.log
+chmod 640 /var/log/intercloud-backup.log
+
+# ------------------------------------------------------------------
 # 8b. fail2ban — protect SSH and nginx auth/login endpoints
 # ------------------------------------------------------------------
 if command -v fail2ban-server >/dev/null 2>&1; then
@@ -440,6 +462,7 @@ Automated in this run:
   ✓ Node 20 + Yarn, Python 3.12 venv
   ✓ nginx reverse proxy (${PROTO})
   ✓ supervisor-managed uvicorn (2 workers)
+  ✓ Daily backup cron (03:15 UTC, 14-day retention → /var/backups/intercloud)
   ✓ fail2ban jails (SSH + portal auth brute-force)
   ✓ UFW firewall (22 / 80 / 443)
 $(if [[ "$PROTO" == "https" ]]; then echo "  ✓ Let's Encrypt HTTPS + auto-renewal via certbot.timer"; fi)
