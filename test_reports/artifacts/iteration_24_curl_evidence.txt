@@ -1,0 +1,60 @@
+=== ITERATION 24 CURL EVIDENCE (RETEST) ===
+
+=== BUG-1 RESOLVED — login returns 200 with token+user ===
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTYwZDA3MTM2ZmVmNzgwNDUxMTRhZjQiLCJlbWFpbCI6ImFkbWluQGludGVyY2xvdWQtZGlnaXRhbC5jb20iLCJyb2xlIjoiYWRtaW4iLCJleHAiOjE3ODUzODM2OTQsInR5cGUiOiJhY2Nlc3MifQ.9LEQ5SL8Kghf1VO2FcyFXO4ze4qBFllVXPOsa5ebCPw","user":{"id":"6a60d07136fef78045114af4","email":"admin@intercloud-digital.com","name":"Intercloud Admin","role":"admin","company":"PT Intercloud 
+
+=== BUG-2 RESOLVED — small body (25B) NOT gzipped ===
+HTTP/1.1 200 OK
+date: Thu, 23 Jul 2026 03:54:53 GMT
+server: uvicorn
+content-length: 25
+content-type: application/json
+strict-transport-security: max-age=31536000; includeSubDomains; preload
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: strict-origin-when-cross-origin
+permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), accelerometer=(), autoplay=(self), fullscreen=(self)
+content-security-policy-report-only: default-src 'self'; script-src  'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com             https://www.googletagmanager.com https://images.pexels.com; style-src   'self' 'unsafe-inline' https://fonts.googleapis.com; font-src    'self' https://fonts.gstatic.com data:; img-src     'self' https: data: blob:; connect-src 'self' https: wss:; frame-src   'self' https://www.google.com; object-src  'none'; base-uri    'self'; form-action 'self'; frame-ancestors 'none'; report-uri  /api/csp-report
+x-xss-protection: 0
+
+body size = 25
+
+=== BUG-2 RESOLVED — large body IS gzipped ===
+HTTP/1.1 200 OK
+date: Thu, 23 Jul 2026 03:54:53 GMT
+server: uvicorn
+content-length: 1136
+content-type: application/json
+content-encoding: gzip
+vary: Accept-Encoding
+strict-transport-security: max-age=31536000; includeSubDomains; preload
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: strict-origin-when-cross-origin
+permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), accelerometer=(), autoplay=(self), fullscreen=(self)
+content-security-policy-report-only: default-src 'self'; script-src  'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com             https://www.googletagmanager.com https://images.pexels.com; style-src   'self' 'unsafe-inline' https://fonts.googleapis.com; font-src    'self' https://fonts.gstatic.com data:; img-src     'self' https: data: blob:; connect-src 'self' https: wss:; frame-src   'self' https://www.google.com; object-src  'none'; base-uri    'self'; form-action 'self'; frame-ancestors 'none'; report-uri  /api/csp-report
+x-xss-protection: 0
+
+compressed size = 1136
+
+=== BUG-3 RESOLVED — canonical in static index.html ===
+8:    <link rel="canonical" href="https://intercloud-digital.com/" />
+
+=== BUG-3 RESOLVED — served frontend contains canonical ===
+    <link rel="canonical" href="https://intercloud-digital.com/" />
+
+=== REGRESSION — CORS allowed origin ===
+HTTP/1.1 200 OK
+access-control-allow-credentials: true
+access-control-allow-origin: https://intercloud-digital.com
+
+=== REGRESSION — CORS evil origin ===
+HTTP/1.1 400 Bad Request
+
+=== REGRESSION — Security headers present ===
+strict-transport-security: max-age=31536000; includeSubDomains; preload
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: strict-origin-when-cross-origin
+permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), accelerometer=(), autoplay=(self), fullscreen=(self)
+content-security-policy-report-only: default-src 'self'; script-src  'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com             https://www.googletagmanager.com https://images.pexels.com; style-src   'self' 'unsafe-inline' https://fonts.googleapis.com; font-src    'self' https://fonts.gstatic.com data:; img-src     'self' https: data: blob:; connect-src 'self' https: wss:; frame-src   'self' https://www.google.com; object-src  'none'; base-uri    'self'; form-action 'self'; frame-ancestors 'none'; report-uri  /api/csp-report

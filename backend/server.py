@@ -91,14 +91,17 @@ from portal.routes import router as portal_router  # noqa: E402
 app.include_router(portal_router)
 
 
+# GZip large JSON payloads — added FIRST (innermost) so it sees the raw response
+# from the app before any BaseHTTPMiddleware (SlowAPI, SecurityHeaders) wraps
+# it in a streaming form. Otherwise GZipResponder never respects minimum_size.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 # Slowapi rate-limit middleware (checks decorated routes)
 app.add_middleware(SlowAPIMiddleware)
 
-# Security headers (HSTS, X-Frame-Options, CSP report-only, …)
+# Security headers (HSTS, X-Frame-Options, CSP report-only, …) — sits outside
+# GZip so its BaseHTTPMiddleware body-wrapping happens after compression.
 app.add_middleware(SecurityHeadersMiddleware)
-
-# GZip large JSON payloads (dashboard rollups, invoice lists, article bodies…)
-app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # CORS — read whitelist from env; blanks fall through to a single-line "*"
 _cors_raw = os.environ.get('CORS_ORIGINS', '*').strip()

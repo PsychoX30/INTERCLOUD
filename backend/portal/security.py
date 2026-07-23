@@ -27,7 +27,7 @@ from starlette.responses import Response
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=[],   # no global cap; opt-in via decorators only
-    headers_enabled=True,
+    headers_enabled=False,   # BaseHTTPMiddleware-wrapped responses break the injector; keep off
     storage_uri="memory://",
 )
 

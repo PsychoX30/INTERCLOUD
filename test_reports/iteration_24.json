@@ -1,0 +1,53 @@
+{
+  "summary": "RETEST of iteration_23 after the three fixes were applied (Limiter headers_enabled=False, GZipMiddleware moved to FIRST add_middleware, static canonical <link> added to public/index.html). All three P0/P1 bugs are RESOLVED and every regression check passes. Final pytest score: 27/27 PASS (26 in the first run + 1 that hit 429 due to shared rate-limit window and was re-run after a 60s gap → PASS). Raw curl evidence in /app/test_reports/artifacts/iteration_24_curl_evidence.txt. Teardown deleted 5 orphan @example.com users left behind by the register rate-limit test.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/portal/sitemap.xml",
+        "issue": "HEAD still returns 405 (only GET supported). Not blocking; Google uses GET. Same finding as iteration_23; not a regression."
+      },
+      {
+        "endpoint": "CORS preflight for disallowed origin",
+        "issue": "OPTIONS with disallowed origin returns HTTP 400 (rather than 200/204 with the Access-Control-Allow-Origin header omitted). Both outcomes satisfy the security requirement — the disallowed origin cannot invoke the API — but returning 400 is slightly non-standard. Suggest returning 200/204 with the header absent to match typical starlette CORSMiddleware behaviour. Non-blocking."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_optimization.py",
+    "/app/test_reports/pytest/phase_optimization_iter24.xml",
+    "/app/test_reports/artifacts/iteration_24_curl_evidence.txt"
+  ],
+  "action_items": [
+    "None blocking. Optional polish: (a) add a HEAD alias for /api/portal/sitemap.xml, (b) return 200/204 with omitted ACAO header on disallowed CORS preflight instead of 400.",
+    "Ops note: the register endpoint (correctly, per 5/hour policy) allows a handful of @example.com signups during rate-limit testing. Teardown clears them via `db.users.deleteMany({email:/@example\\.com$/})` — 5 orphans were cleaned in this run. Consider adding a scheduled cleanup or a test-only fixture that scopes emails with a TEST_ prefix so production filtering is trivial."
+  ],
+  "critical_code_review_comments": [
+    "RESOLVED — portal/security.py L30 now uses `headers_enabled=False`, eliminating the slowapi header-injector crash on successful (200) rate-limited endpoints. Login/register/forgot/reset all return 200 with proper JSON bodies again. Verified via both curl and pytest.",
+    "RESOLVED — server.py L97 (`app.add_middleware(GZipMiddleware, minimum_size=1024)`) is now the FIRST add_middleware call, meaning starlette wraps it as the OUTERMOST middleware. GZipMiddleware itself is pure ASGI and correctly honours minimum_size=1024 on outgoing responses. Verified: 25-byte /api/ body → content-length: 25, no content-encoding; 3.5KB /api/portal/public/articles → content-encoding: gzip.",
+    "RESOLVED — /app/frontend/public/index.html L8 has `<link rel=\"canonical\" href=\"https://intercloud-digital.com/\" />`. Verified in both the source file and the served HTML at https://portal-straight-line.preview.emergentagent.com/ (after supervisor reload of the frontend service to pick up the change).",
+    "GOOD — Security headers still present on all endpoints (HSTS, X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Referrer-Policy: strict-origin-when-cross-origin, Permissions-Policy, CSP report-only with report-uri /api/csp-report). Confirmed on /, /api/portal/public/articles from both ORIGIN and EXT.",
+    "GOOD — Rate-limit still fires: 12 fast POSTs to /api/portal/auth/login include multiple 429s with Retry-After: 60. Register limit (5/hour) also fires with 429.",
+    "GOOD — CORS whitelist works: Origin=https://intercloud-digital.com preflight echoes back with credentials=true; Origin=https://evil.example.com returns 400 with no ACAO header (safe outcome).",
+    "GOOD — Sitemap.xml valid XML with all 5 static routes + article slugs; robots.txt disallows /portal and points to /api/portal/sitemap.xml.",
+    "GOOD — Log sanitizer masks plaintext passwords: injected a unique password marker in a bad-cred login attempt; marker did NOT appear in backend.err.log or backend.out.log.",
+    "GOOD — MikroTik regression suite passes: blackhole with prefix_filter fast (<5s), Looking Glass ping with src_address returns ok+rows+src_address echo, diagnostics traceroute returns hops.",
+    "MINOR — CSP string in portal/security.py L47 still has double-spaces after directive names (`script-src  'self'`). Browsers tolerate; stylistically odd. Non-blocking."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "27/27 (100%) — 26/27 on the first full-suite run, the 1 initial fail was TestCriticalLoginRegression::test_admin_login_returns_200 which hit 429 because the preceding TestPhase2RateLimit::test_login_rate_limit_returns_429 test consumed the 10/min budget on the same IP. Waited 62s and re-ran isolated → PASS. Not a real bug, just a test-ordering artifact (documented in context_for_next_testing_agent).",
+    "frontend": "not tested (backend-only per review request)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! — verified working, returns 200 with {token, user{id,email,name,role,company,...}}.",
+  "seed_data_creation": "Register rate-limit test created 5 users with @example.com emails. All 5 cleaned at teardown via mongosh deleteMany. Final DB state: 0 @example.com users remaining.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "1) All three bug fixes from iteration_23 are VERIFIED WORKING in production preview URL and localhost:8001. Login/register/forgot/reset no longer 500 on successful responses. GZip honours minimum_size=1024. Canonical link is in the static index.html AND is served in the HTML response. 2) TEST ORDERING GOTCHA: When running the FULL suite in one go, TestCriticalLoginRegression::test_admin_login_returns_200 runs immediately after TestPhase2RateLimit::test_login_rate_limit_returns_429 which by design fires 12 rapid POSTs and lands 2+ 429s. Both tests share the same IP → the sixth+ POST from the regression test also lands in the 429 window. Two fixes: (a) run TestCriticalLoginRegression BEFORE the rate-limit test, or (b) add a 60s sleep at the start of TestCriticalLoginRegression, or (c) use a different endpoint / different IP header. Currently the suite handles it by re-running the failing test after a 60s sleep — this run demonstrates that pattern works (final tally: 27/27 pass). 3) The rate-limit test file at /app/backend/tests/test_phase_optimization.py should NOT be run twice within a 60-second window. 4) Frontend HAD to be supervisor-restarted once to pick up the new canonical link in public/index.html (CRA dev server cache) — future frontend HTML changes may need the same treatment. 5) CORS OPTIONS with a disallowed origin returns 400 rather than 200 with omitted ACAO header; both are safe but the 400 is slightly unusual — mention this in future iterations if the main agent decides to normalise. 6) 5 @example.com orphan users were cleaned; production DB has 0 remaining.",
+  "rca of the issue": "N/A — all three bugs from iteration_23 are RESOLVED. Post-fix verification:\n\nBUG-1 (login 500): FIXED. `portal/security.py L30` now has `headers_enabled=False`. The slowapi `_inject_headers` code path that raised `Exception: 'parameter `response` must be an instance of starlette.responses.Response'` when SecurityHeadersMiddleware (BaseHTTPMiddleware) wrapped the response into an anyio stream is no longer invoked. Login returns 200 with `{token, user}` payload as expected. Curl repro confirms:\n  curl -X POST -H 'content-type:application/json' -d '{\"email\":\"admin@intercloud-digital.com\",\"password\":\"AdminIntercloud2026!\"}' http://localhost:8001/api/portal/auth/login → HTTP 200 body {token: eyJ..., user: {...}}.\n\nBUG-2 (GZip forced on small responses): FIXED. `server.py L97` now adds GZipMiddleware FIRST, which means starlette registers it as the OUTERMOST middleware wrapper around the ASGI app. Because GZipMiddleware itself is pure ASGI, it receives the raw http.response.start with Content-Length intact and the first http.response.body chunk with more_body=False (for the 25-byte /api/ response). The `if len(body) < minimum_size AND NOT more_body` skip branch in `starlette.middleware.gzip.GZipResponder.send_with_gzip` now correctly fires, and the small response goes out uncompressed. Large responses (>1024 bytes, e.g. /api/portal/public/articles at ~3.5KB) still get gzipped. Curl repro confirms both cases.\n\nBUG-3 (missing canonical): FIXED. Line 8 of `/app/frontend/public/index.html` now contains `<link rel=\"canonical\" href=\"https://intercloud-digital.com/\" />`. Verified in the served HTML at the external preview URL after a frontend supervisor restart to bust the CRA dev-server cache. Non-JS crawlers now see the canonical hint before any react-helmet client-side rendering."
+}
