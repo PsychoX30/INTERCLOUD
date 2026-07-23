@@ -479,3 +479,52 @@ Extended the auto-block system with customizable rules, whitelist, admin UI, and
 3. Portal ▸ Integrations ▸ **Telegram Bot** → paste keys + Enable + Test
 4. Portal ▸ Security ▸ Block Rules → centang "Send Telegram alerts" + Save
 5. Kirim test alert dari UI untuk verifikasi
+
+
+## MikroTik Ops — Multi-Device + Real Operations (2026-07-22) ✅
+
+Replaced all mock RouterOS screens with real librouteros calls, and made every operation multi-device aware — admin can register N MikroTik routers and switch between them from the page header.
+
+### Backend
+- **Multi-device collection** `mikrotik_devices` (`name, host, port, username, password, use_tls, site, notes`) with proper CRUD:
+  - `GET/POST /admin/mikrotik/devices` + `PUT/DELETE /admin/mikrotik/devices/{id}` + `POST /admin/mikrotik/devices/{id}/test`
+  - `_get_mikrotik_device(db, device_id)` — resolves by id, falls back to legacy `integration_settings.mikrotik` when no id is passed
+  - `PUT` with empty password does **not** overwrite the stored password
+  - `_serialize_device()` never leaks the password field
+- **`MikrotikClient` new methods** (all wrap librouteros in try/except → return `{ok:false, error}` or `[]` on failure, **never 500**):
+  - `list_bgp_peers()` — tries `/routing/bgp/session` (v7) then `/routing/bgp/peer` (v6)
+  - `looking_glass(tool, target)` — ping/traceroute/bgp_route from the router itself
+  - `blackhole_list/add/remove`
+  - `backup_list/create/delete`
+  - `reboot()`
+  - `system_resource()`
+- **New endpoints** under `/admin/mikrotik/`:
+  - `interfaces`, `bgp`, `traffic?interface=`, `system` — all accept `?device_id=` (or fall back to legacy)
+  - `POST /looking-glass` — validates `tool ∈ {ping, traceroute, bgp_route}` and `target`
+  - `GET/POST /blackhole` + `DELETE /blackhole/{route_id}`
+  - `GET/POST /backups` + `DELETE /backups/{filename}`
+  - `POST /reboot` — requires `{confirm: "REBOOT"}` guard
+
+### Frontend
+- **AdminMikrotik.jsx fully rewritten** with 7 tabs:
+  - **Devices** — CRUD table + "Test" button per device with live status
+  - **BGP Peers** — live table (name, remote, ASN, state, prefixes, uptime)
+  - **Looking Glass** — tool selector + target + terminal output
+  - **Blackhole** — active routes table + add-prefix form
+  - **Backup** — router-local backup files + "New backup" button
+  - **Restart** — safety-gated reboot (must type REBOOT to confirm)
+  - **Traffic** — live line chart, samples `/interface/monitor-traffic` every 3s (30-sample rolling window)
+- Device picker in the page header propagates `device_id` to all tabs
+
+### Test coverage
+- `/app/backend/tests/test_mikrotik_devices.py` — **35/35 pass**: CRUD, PUT-empty-password non-overwrite (DB-verified), test-connection graceful failure, 11-endpoint no-500 invariant, RBAC (401/403), Looking Glass validation + graceful degradation, blackhole/backup/reboot flows, backward-compat legacy fallback
+- Regression: whitelist/telegram (19/19), legacy integrations (33/33) stable
+
+### Environment note
+- Diagnostic tool binaries (`dig`, `whois`, `traceroute`, `iputils-ping`) need to be present in the container. Ran `apt-get install -y iputils-ping traceroute whois dnsutils` (idempotent).
+
+### Cara pakai
+1. Portal ▸ MikroTik Ops ▸ **Devices** tab → **Add device** → isi name/host/port/username/password → Save
+2. Klik **Test** untuk verifikasi konektivitas
+3. Pilih device di header dropdown
+4. Explore semua tab — semua panggilan real ke RouterOS via API 8728 (atau 8729 TLS)
