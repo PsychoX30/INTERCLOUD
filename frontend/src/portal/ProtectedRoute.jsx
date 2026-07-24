@@ -14,7 +14,7 @@ export const RequireAuth = ({ children, role }) => {
   if (user === undefined) return <CenterLoader />;
   if (!user) return <Navigate to="/portal/login" replace />;
   if (role) {
-    const isStaff = ["admin", "sales", "support", "ticket_only"].includes(user.role);
+    const isStaff = ["admin", "owner", "sales", "finance", "support", "ticket_only"].includes(user.role);
     const allowed =
       role === "staff" ? isStaff :
       Array.isArray(role) ? role.includes(user.role) :

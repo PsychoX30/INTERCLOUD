@@ -1207,6 +1207,7 @@ ADMIN_MENU_CATALOG = [
     {"key": "audit_log",       "label": "Audit Log",        "group": "System",         "default_roles": ["admin"]},
     {"key": "noc",             "label": "NOC Monitor",      "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "credit_notes",    "label": "Credit Notes",     "group": "Sales & Billing", "default_roles": ["admin", "finance"]},
+    {"key": "owner_dashboard", "label": "Executive Overview","group": "Overview",       "default_roles": ["admin", "owner"]},
     {"key": "branding",        "label": "Branding",         "group": "System",         "default_roles": ["admin"]},
     {"key": "site_content",    "label": "Landing CMS",      "group": "System",         "default_roles": ["admin"]},
     {"key": "backup",          "label": "Backup & Restore", "group": "System",         "default_roles": ["admin"]},
@@ -6885,3 +6886,243 @@ async def _invoice_outstanding(db, invoice: dict) -> float:
     total = float(invoice.get("total") or 0)
     applied = await _sum_applied_credit(db, invoice["_id"])
     return max(0.0, total - applied)
+
+
+
+# ============================================================
+# EXECUTIVE OVERVIEW — read-only for owner/admin
+# ============================================================
+async def _get_current_owner(user=Depends(get_current_user)):
+    """Access gate: owner or admin only. Owner is READ-ONLY globally."""
+    if user.get("role") not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Executive access only")
+    return user
+
+
+def _relative_months(n: int):
+    """Return a timedelta-like approximation of N months (30d each)."""
+    return timedelta(days=30 * n)
+
+
+@router.get("/admin/owner/overview")
+async def owner_overview(owner=Depends(_get_current_owner)):
+    """Aggregate MRR/ARPU/churn/uptime/SLA into a single dashboard payload."""
+    db = await _get_db()
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # ---- MRR: sum of active-service monthly prices ----
+    services = await db.services.find({"status": "active"}).to_list(5000)
+    mrr = sum(float(s.get("price_monthly") or 0) for s in services)
+    active_services_count = len(services)
+    total_clients = await db.users.count_documents({"role": "client"})
+    clients_with_active = len({str(s["user_id"]) for s in services if s.get("user_id")})
+    arpu = round(mrr / clients_with_active, 2) if clients_with_active else 0.0
+
+    # ---- Churn: services terminated in last 30 days ----
+    thirty_ago = (now - timedelta(days=30)).isoformat()
+    churned = await db.services.count_documents({
+        "status": "terminated", "terminated_at": {"$gte": thirty_ago},
+    })
+    churn_pct = round((churned / (churned + active_services_count)) * 100, 2) \
+                if (churned + active_services_count) else 0.0
+
+    # ---- Revenue: MTD + last 12 months trend ----
+    paid_month = await db.invoices.find({"status": "paid",
+                                         "paid_at": {"$gte": month_start.isoformat()}}).to_list(5000)
+    revenue_month = sum(float(d.get("total") or 0) for d in paid_month)
+    trend = []
+    for i in range(11, -1, -1):
+        start = month_start - _relative_months(i)
+        end = start + _relative_months(1)
+        docs = await db.invoices.find({
+            "status": "paid",
+            "paid_at": {"$gte": start.isoformat(), "$lt": end.isoformat()},
+        }).to_list(5000)
+        trend.append({"period": start.strftime("%Y-%m"),
+                      "revenue": sum(float(d.get("total") or 0) for d in docs),
+                      "invoices": len(docs)})
+
+    # ---- Outstanding & overdue ----
+    overdue_docs = await db.invoices.find({"status": "overdue"}).to_list(2000)
+    unpaid_count = await db.invoices.count_documents({"status": {"$in": ["unpaid", "overdue"]}})
+    overdue_total = sum(float(d.get("total") or 0) for d in overdue_docs)
+
+    # ---- NOC uptime: fleet-wide 24h / 7d ----
+    since_24h = (now - timedelta(hours=24)).isoformat()
+    total_samples = await db.noc_probes.count_documents({"at": {"$gte": since_24h}})
+    up_samples = await db.noc_probes.count_documents({"at": {"$gte": since_24h}, "ok": True})
+    uptime_24h_pct = round((up_samples / total_samples) * 100, 2) if total_samples else None
+    since_7d = (now - timedelta(days=7)).isoformat()
+    samples_7d = await db.noc_probes.count_documents({"at": {"$gte": since_7d}})
+    up_7d = await db.noc_probes.count_documents({"at": {"$gte": since_7d}, "ok": True})
+    uptime_7d_pct = round((up_7d / samples_7d) * 100, 2) if samples_7d else None
+    devices_down = await db.noc_device_state.count_documents({"status": "down"})
+    devices_total = await db.mikrotik_devices.count_documents({})
+    # SLA: rough outage minutes = down samples * 5-min cadence
+    down_samples_30d = await db.noc_probes.count_documents({
+        "at": {"$gte": (now - timedelta(days=30)).isoformat()}, "ok": False,
+    })
+    outage_minutes_30d = down_samples_30d * 5
+
+    # ---- Ticket load ----
+    open_tickets = await db.tickets.count_documents({"status": {"$in": ["open", "awaiting_staff"]}})
+    critical_tickets = await db.tickets.count_documents({"status": {"$nin": ["resolved", "closed"]},
+                                                          "priority": "critical"})
+
+    # ---- Top clients by lifetime revenue ----
+    paid_all = await db.invoices.find({"status": "paid"}).to_list(20000)
+    per_client: dict = {}
+    for d in paid_all:
+        uid = str(d.get("user_id"))
+        if not uid or uid == "None":
+            continue
+        per_client[uid] = per_client.get(uid, 0.0) + float(d.get("total") or 0)
+    top_pairs = sorted(per_client.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_uids = []
+    for uid, _rev in top_pairs:
+        try: top_uids.append(ObjectId(uid))
+        except Exception: pass
+    top_users = {str(u["_id"]): u for u in await db.users.find(
+        {"_id": {"$in": top_uids}}).to_list(20)} if top_uids else {}
+    top_clients = [{
+        "user_id": uid,
+        "name": (top_users.get(uid) or {}).get("name", ""),
+        "email": (top_users.get(uid) or {}).get("email", ""),
+        "lifetime_revenue": rev,
+    } for uid, rev in top_pairs]
+
+    return {
+        "generated_at": _now(),
+        "mrr": mrr,
+        "arr": mrr * 12,
+        "arpu": arpu,
+        "churn_pct_30d": churn_pct,
+        "clients_total": total_clients,
+        "clients_with_active_service": clients_with_active,
+        "active_services": active_services_count,
+        "revenue_month_to_date": revenue_month,
+        "revenue_trend_12m": trend,
+        "unpaid_invoices": unpaid_count,
+        "overdue_total": overdue_total,
+        "noc": {
+            "uptime_24h_pct": uptime_24h_pct,
+            "uptime_7d_pct": uptime_7d_pct,
+            "devices_total": devices_total,
+            "devices_down": devices_down,
+            "outage_minutes_30d": outage_minutes_30d,
+            "samples_24h": total_samples,
+        },
+        "support": {
+            "open_tickets": open_tickets,
+            "critical_open": critical_tickets,
+        },
+        "top_clients": top_clients,
+    }
+
+
+# ============================================================
+# PUBLIC STATUS PAGE
+# ============================================================
+_DEFAULT_STATUS_GROUPS = [
+    {"key": "core_network",  "label": "Core Network"},
+    {"key": "customer_edge", "label": "Customer Edge"},
+    {"key": "peering",       "label": "Peering & Transit"},
+]
+
+
+@router.get("/public/status")
+async def public_status_page():
+    """Customer-friendly uptime snapshot with NO device names/IPs leaked.
+
+    Devices are bucketed by their `status_group` field (default:
+    customer_edge). Which groups are visible + their display labels come
+    from `settings.status_page.groups`; falls back to defaults."""
+    db = await _get_db()
+    doc = await db.settings.find_one({"key": "status_page"}) or {}
+    cfg = doc.get("value") or {}
+    groups = cfg.get("groups") or _DEFAULT_STATUS_GROUPS
+    company = cfg.get("company") or "Intercloud Digital Inovasi"
+    incident_note = cfg.get("incident_note") or ""
+
+    devices = await db.mikrotik_devices.find({}, {"status_group": 1}).to_list(1000)
+    dev_group: dict = {d["_id"]: (d.get("status_group") or "customer_edge") for d in devices}
+
+    now = datetime.now(timezone.utc)
+    since_24h = (now - timedelta(hours=24)).isoformat()
+    since_30d = (now - timedelta(days=30)).isoformat()
+
+    out_groups = []
+    any_degraded = False
+    any_operational = False
+    for grp in groups:
+        gkey = grp["key"]
+        dev_ids = [did for did, gk in dev_group.items() if gk == gkey]
+        base = {"device_id": {"$in": dev_ids}} if dev_ids else {"device_id": None}
+        total = await db.noc_probes.count_documents({**base, "at": {"$gte": since_24h}})
+        up = await db.noc_probes.count_documents({**base, "at": {"$gte": since_24h}, "ok": True})
+        uptime_24h = round((up / total) * 100, 2) if total else None
+        total_30 = await db.noc_probes.count_documents({**base, "at": {"$gte": since_30d}})
+        up_30 = await db.noc_probes.count_documents({**base, "at": {"$gte": since_30d}, "ok": True})
+        uptime_30d = round((up_30 / total_30) * 100, 2) if total_30 else None
+        down_now = await db.noc_device_state.count_documents({
+            "device_id": {"$in": dev_ids}, "status": "down",
+        }) if dev_ids else 0
+        if uptime_24h is None:
+            status = "unknown"
+        elif down_now > 0:
+            status = "degraded"; any_degraded = True
+        elif uptime_24h >= 99.0:
+            status = "operational"; any_operational = True
+        else:
+            status = "degraded"; any_degraded = True
+        out_groups.append({
+            "key": gkey, "label": grp["label"],
+            "status": status,
+            "uptime_24h_pct": uptime_24h,
+            "uptime_30d_pct": uptime_30d,
+            "devices_count": len(dev_ids),
+        })
+    # Overall: degraded takes precedence; otherwise operational only if at
+    # least one group is genuinely operational; else unknown.
+    if any_degraded:
+        overall_status = "degraded"
+    elif any_operational:
+        overall_status = "operational"
+    else:
+        overall_status = "unknown"
+    return {
+        "company": company,
+        "generated_at": now.isoformat(),
+        "overall_status": overall_status,
+        "groups": out_groups,
+        "incident_note": incident_note,
+    }
+
+
+@router.get("/admin/status-page/config")
+async def status_page_config_get(admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = await db.settings.find_one({"key": "status_page"}) or {}
+    return doc.get("value") or {"groups": _DEFAULT_STATUS_GROUPS,
+                                 "company": "Intercloud Digital Inovasi",
+                                 "incident_note": ""}
+
+
+@router.put("/admin/status-page/config")
+async def status_page_config_put(payload: dict, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    before_doc = await db.settings.find_one({"key": "status_page"}) or {}
+    value = {
+        "groups": payload.get("groups") or _DEFAULT_STATUS_GROUPS,
+        "company": (payload.get("company") or "Intercloud Digital Inovasi").strip(),
+        "incident_note": (payload.get("incident_note") or "").strip(),
+    }
+    await db.settings.update_one({"key": "status_page"},
+                                 {"$set": {"key": "status_page", "value": value,
+                                           "updated_at": _now()}}, upsert=True)
+    await log_audit(db, actor=admin, action="status_page.config_update", category="system",
+                    target_type="settings", target_label="Status Page",
+                    before=before_doc.get("value"), after=value,
+                    severity="info", request=request)
+    return value

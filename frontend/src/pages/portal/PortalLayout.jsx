@@ -6,7 +6,7 @@ import {
   Send, Puzzle, Cloud, Menu, X, ChevronDown, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
-  History, MonitorCheck, ReceiptText,
+  History, MonitorCheck, ReceiptText, LineChart, Globe,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 
@@ -22,7 +22,10 @@ const CLIENT_NAV = [
 const ADMIN_NAV_GROUPS = [
   {
     label: "Overview",
-    items: [{ key: "dashboard", to: "/portal/admin/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard", roles: ["admin", "sales", "finance", "support", "ticket_only"] }],
+    items: [
+      { key: "dashboard", to: "/portal/admin/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard", roles: ["admin", "sales", "finance", "support", "ticket_only"] },
+      { key: "owner_dashboard", to: "/portal/admin/owner", label: "Executive Overview", icon: LineChart, testid: "nav-owner-dashboard", roles: ["admin", "owner"] },
+    ],
   },
   {
     label: "Sales & Billing",
@@ -83,6 +86,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "branding",      to: "/portal/admin/branding",      label: "Branding",       icon: ImageIcon,      testid: "nav-branding",      roles: ["admin"] },
       { key: "site-content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },
+      { key: "status_page",   to: "/portal/admin/status-page",   label: "Public Status Page", icon: Globe,        testid: "nav-status-page",   roles: ["admin"] },
     ],
   },
 ];

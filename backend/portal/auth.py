@@ -2,6 +2,7 @@
 
 Roles:
 - admin       : full access (superuser)
+- owner       : read-only globally (executive visibility — MRR/ARPU/churn/uptime)
 - sales       : limited to their assigned clients; can create quotes/orders for them
 - support     : product + tech tools + all tickets; CANNOT see finance/revenue
 - ticket_only : only tickets (read + reply)
@@ -18,13 +19,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL_MINUTES = 60 * 24 * 7  # 1 week for portal use
 
-STAFF_ROLES = {"admin", "sales", "finance", "support", "ticket_only"}
-FINANCE_ROLES = {"admin", "finance"}  # sees revenue/finance widgets
+STAFF_ROLES = {"admin", "owner", "sales", "finance", "support", "ticket_only"}
+FINANCE_ROLES = {"admin", "owner", "finance"}  # sees revenue/finance widgets (owner read-only)
 BILLING_ROLES = {"admin", "sales"}  # invoices/quotations
 CATALOG_ROLES = {"admin", "support"}  # product mgmt
 OPS_ROLES = {"admin", "support"}  # provisioning/mikrotik/dcim/diagnostics
 USER_MGMT_ROLES = {"admin"}
 TICKET_ROLES = {"admin", "sales", "support", "ticket_only"}
+# Executive read-only visibility — cannot write, only see aggregated dashboards.
+OWNER_ROLES = {"admin", "owner"}
 
 
 def _secret() -> str:

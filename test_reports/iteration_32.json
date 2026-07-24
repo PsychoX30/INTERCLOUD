@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 32 — Full retest after iter 31 findings. Focus: (1) AdminMail Reply-button bug FIX verification, (2) NEW Executive Overview dashboard (owner + admin), (3) NEW Public Status Page at /status, (4) status-page admin config panel, (5) Owner role access control (read-only), (6) regression on Batch 7 pages + AdminCreditNotes hydration warning. RESULT: ALL review items pass. The AdminMail bug is FIXED — clicking a mail item now fires GET /admin/mail/messages/imap-19 immediately, mail-detail pane renders instantly, mail-reply-btn appears, compose modal opens with pre-filled 'Re: pytest webmail compose regression' subject and quoted body. Executive Overview owner dashboard renders every KPI tile (owner-mrr, owner-arpu, owner-churn, owner-revenue-mtd, owner-uptime-24h, owner-uptime-7d, owner-outage-30d, owner-tickets), 2 recharts SVGs (revenue line + invoice bar), top-client Beta Client (Rp 311 rb), owner-generated-at + owner-refresh. Public /status renders anonymised — 3 group cards, no device names/IPs/hostnames in the JSON body (verified via curl + grep). Incident-note flow works: admin PUT saves note, public page instantly displays amber banner, audit_logs picks up action='status_page.config_update' category='system' (3 rows recorded during this run). Owner login redirects to /portal/admin/dashboard, sidebar is correctly restricted to ONLY 'Executive Overview' (nav-users count=0 for owner), owner PUT /admin/billing/settings returns 403. AdminCreditNotes hydration warning is GONE (0 span-in-option warnings caught this run).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AdminOwnerDashboard (Executive Overview)", "issues": ["Recharts logs 4x console warning 'The width(-1) and height(-1) of chart should be greater than 0' on first mount because ResponsiveContainer measures before the flexbox parent has settled. Charts still render correctly after settlement. Cosmetic only — consider adding min-height: 320px to the chart wrapper or aspect ratio to silence the warnings."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/test_reports/artifacts/iter32_public_status.png",
+    "/app/test_reports/artifacts/iter32_owner_dashboard.png",
+    "/app/test_reports/artifacts/iter32_mail_reply.png",
+    "/app/test_reports/artifacts/iter32_statuspage_cfg.png",
+    "/app/test_reports/artifacts/iter32_owner_login.png"
+  ],
+  "action_items": [
+    "OPTIONAL (cosmetic): Silence recharts width(-1)/height(-1) warnings on AdminOwnerDashboard.jsx by giving the recharts ResponsiveContainer parent an explicit min-height (e.g. h-80) or an aspect ratio. Charts still render — no functional impact."
+  ],
+  "critical_code_review_comments": [
+    "AdminMail.jsx open() fix VERIFIED: clicking mail-imap-19 fires GET /api/portal/admin/mail/messages/imap-19 exactly once (verified via network listener), mail-detail renders in <500ms, reply button appears immediately. The removal of load() from open() eliminates the 10s IMAP race that was blocking the click flow in iter 31.",
+    "Public status endpoint GET /api/portal/public/status is CLEAN: verified via grep on the response body — no IPv4 addresses, no 'hostname'/'mac '/'router' strings, only the harmless field name 'devices_count' (a number). Only abstract labels ('Core Network' / 'Customer Edge' / 'Peering & Transit') are surfaced.",
+    "Owner role: backend correctly returns 403 on PUT /admin/billing/settings ('Admin only'), while GET /admin/owner/overview returns full JSON (mrr/arr/arpu/churn_pct_30d/revenue_month_to_date/revenue_trend_12m[12 pts]/noc/top_clients[1]). Frontend sidebar for role=owner shows ONLY the Executive Overview entry — nav-users, nav-invoices, etc. are correctly hidden.",
+    "audit_logs picks up status_page.config_update with category='system' on every PUT — verified 3 rows created during this session.",
+    "Field name mismatch note (informational only): backend returns 'churn_pct_30d' and 'revenue_month_to_date' but review-request called them 'churn_30d' and 'revenue_mtd'. Frontend AdminOwnerDashboard.jsx uses the correct backend names (the KPI tiles all populate). Just flagging for main-agent awareness.",
+    "AdminCreditNotes.jsx hydration warning (<span> in <option>) is resolved this run — 0 console warnings captured while opening the New Credit Note modal and expanding the invoice dropdown.",
+    "Public /status page footer text: 'Data aggregated from anonymised probe samples. No internal device names, IP addresses, or topology are ever exposed on this page.' — matches the PRD anonymisation requirement.",
+    "PublicStatusPage 60s auto-refresh: not tested end-to-end in this run (would take >60s wall time) but the initial fetch + render loop is verified working."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (public/status + owner/overview + status-page/config GET+PUT + admin/billing/settings 403 for owner + audit log capture all verified)",
+    "frontend": "100% (all 8 review items green: AdminMail Reply fix + Public /status render + owner dashboard render + owner role sidebar + admin status-page config CRUD + audit log entry + CreditNotes hydration warning gone + Batch-7 pages still render)"
+  },
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! and owner@intercloud-digital.com / OwnerIntercloud2026! — both from /app/memory/test_credentials.md, both functional this run.",
+  "seed_data_creation": "Set status-page incident_note to 'Testing incident banner — do not remove' via admin PUT, verified public /status shows it, then reset config back to defaults (empty note + 3 default groups). One 'group_1784919030826/New Group' row was temporarily added via UI Add Group button but was NOT saved — the final PUT restored the 3 default groups. Also generated 3 audit_logs rows with action='status_page.config_update'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All Batch-8 items (Executive Overview + Public Status Page + owner role) are production-ready. The iter-31 AdminMail bug is fixed. Only remaining nit is a cosmetic recharts width warning on first mount of AdminOwnerDashboard — safe to defer. If retesting later: (1) Public /status is polled every 60s so long-running probe smoke tests can confirm auto-refresh. (2) When MikroTik devices are registered and the 5-min probe cycle runs, the group cards should transition from 'unknown/No data' to 'operational' with real 24h/30d uptime %. (3) The owner user's read-only status is enforced at backend level (403 on any write endpoint) — do NOT expect frontend to 404 admin/users; the frontend just hides the sidebar entry, which is the intended UX per review request.",
+  "rca of the issue": "AdminMail Reply-button bug root cause CONFIRMED and FIXED. Iter-31 RCA was correct: open() was calling load() at the end which triggered a fresh 10s IMAP fetch on every mail-item click, and the closure/state race caused the setSelected from open() to be effectively overwritten (or the UI stayed on 'Pilih pesan…' because the message list re-mounted before the detail pane could render). Fix: replaced the load() call inside open() with an in-place patch of the message row's unread flag + optimistic setSelected. Verification this run: network listener captured exactly ONE request to /admin/mail/messages/imap-19 immediately after click (no re-fetch of the whole inbox), mail-detail pane visible within 500ms, mail-reply-btn clickable, compose modal opens with 'Re: <original subject>' + quoted body."
+}

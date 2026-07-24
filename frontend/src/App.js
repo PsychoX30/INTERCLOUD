@@ -62,6 +62,9 @@ const AdminCategories   = lazy(() => import("./pages/portal/admin/AdminCategorie
 const AdminAuditLog     = lazy(() => import("./pages/portal/admin/AdminAuditLog"));
 const AdminNOC          = lazy(() => import("./pages/portal/admin/AdminNOC"));
 const AdminCreditNotes  = lazy(() => import("./pages/portal/admin/AdminCreditNotes"));
+const AdminOwnerDashboard = lazy(() => import("./pages/portal/admin/AdminOwnerDashboard"));
+const AdminStatusPage   = lazy(() => import("./pages/portal/admin/AdminStatusPage"));
+const PublicStatusPage  = lazy(() => import("./pages/PublicStatusPage"));
 
 // Admin (mocked/business chunk)
 const AdminSubscriptions = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminSubscriptions })));
@@ -99,6 +102,7 @@ function App() {
                 <Route path="/legal/terms" element={<TermsOfService />} />
                 <Route path="/legal/aup" element={<AcceptableUsePolicy />} />
                 <Route path="/legal/sla" element={<ServiceLevelAgreement />} />
+                <Route path="/status" element={<PublicStatusPage />} />
 
                 {/* Portal */}
                 <Route path="/portal/login" element={<PortalLogin />} />
@@ -154,6 +158,8 @@ function App() {
                   <Route path="audit-log" element={<AdminAuditLog />} />
                   <Route path="noc" element={<AdminNOC />} />
                   <Route path="credit-notes" element={<AdminCreditNotes />} />
+                  <Route path="owner" element={<AdminOwnerDashboard />} />
+                  <Route path="status-page" element={<AdminStatusPage />} />
                   <Route path="branding" element={<AdminBranding />} />
                   <Route path="site-content" element={<AdminSiteContent />} />
                   <Route path="backup" element={<AdminBackup />} />
