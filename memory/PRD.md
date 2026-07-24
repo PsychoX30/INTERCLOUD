@@ -126,3 +126,34 @@ webroot pre-created, `server_tokens off`.
 - Regression suite: `backend/tests/test_mail_test_connection.py` (6 tests, all pass,
   uses live mailbox damien@intercloud-digital.com — see memory/test_credentials.md).
 - Verified end-to-end: compose → delivered_via=smtp → message visible in IMAP inbox.
+
+### Batch 6 — Duitku round-trip + Renewal automation + Reply + Installer hardening (2026-07-24)
+- **DuitkuGateway per POP docs terkini** (`integrations_v2.py`): create signature
+  HMAC_SHA256(merchantCode+timestamp, apiKey); callback verify HMAC_SHA256 primary +
+  legacy MD5 fallback + merchantCode match; createInvoice mengirim returnUrl (wajib) +
+  expiryPeriod, raise saat statusCode != 00. LIVE-verified di PRODUCTION (merchant D15021,
+  env terdeteksi production — sandbox menolak "Merchant Not Found"). Kredensial di
+  collection `integrations` (module duitku, enabled), TIDAK pernah hardcoded.
+- **Webhook /webhooks/duitku idempotent**: transisi paid sekali saja (filter status!=paid);
+  fire email `payment_received` (template baru + on_invoice_paid); auto-provision order;
+  reaktivasi service suspended karena non-payment invoice tsb (set reactivated_at/reason).
+  Duplicate callback → {duplicate:true} tanpa efek ganda; signature invalid → 400.
+- **Duitku-only policy**: flag settings `enable_extra_payment_gateways` (default false)
+  menyembunyikan midtrans/xendit dari /admin/integrations/modules, /admin/integrations,
+  iv2 schema+list, dan memblokir pay-online/iv2-upsert. Class gateway TIDAK dihapus.
+- **Renewal automation** (`emails.py`): run_renewal_invoice_sweep di scheduler yang sama
+  (hourly :20 + startup). Guard duplikat: invoice.service_id+renewal_period; next_renewal
+  maju satu siklus HANYA setelah insert sukses; nomor invoice max-based + retry duplikat.
+  Settings: default_tax_percent, renewal_lead_days (GET/PUT /admin/billing/settings,
+  manual trigger POST /admin/billing/run-renewal-sweep). PPN 11% hardcoded DIHAPUS dari
+  order auto-invoice + preview (kini prefill dari settings, tetap manual per dokumen).
+- **must_change_password chain**: install.sh generate password acak (openssl rand) bila
+  ADMIN_PASSWORD tidak diberikan + tulis ADMIN_MUST_CHANGE_PASSWORD + REACT_APP_BACKEND_URL
+  ke backend/.env; seed set flag; login/auth-me expose; change-password unset;
+  PortalLogin redirect paksa ke settings/password.
+- **Frontend**: AdminMail Reply button (prefill Re: + quoted body); ClientInvoices Pay with
+  Duitku CTA nyata (pay-online → buka payment_url); AdminFinance tab "Billing Defaults".
+- **Tests**: test_duitku_payment_flow.py (6), test_renewal_billing.py (6) — all pass;
+  testing agent 39 sub-test green. Catatan: suite lama test_portal.py dkk gagal karena
+  mengharapkan user staff demo yang tidak lagi di-seed (pre-existing, bukan regresi).
+- Kredensial Duitku: merchant D15021 (production), API key tersimpan di DB integrations.
