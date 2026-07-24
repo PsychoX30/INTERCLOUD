@@ -185,12 +185,11 @@ metadata:
   created_by: "main_agent"
   version: "1.0"
   test_sequence: 2
-  run_ui: false
+  run_ui: true
 
 test_plan:
   current_focus:
-    - "POST /api/portal/settings/email/test — IMAP+SMTP connection tester"
-    - "POST /api/portal/admin/mail/send — compose via personal SMTP"
+    - "AdminMail.jsx — real Compose modal + Test Connection button"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -220,3 +219,14 @@ agent_communication:
       Test file: /app/backend_test.py (comprehensive 21-test suite with real mailbox credentials).
       
       READY FOR MAIN AGENT: Please summarize and finish. Frontend testing NOT performed per instructions.
+
+  - agent: "main"
+    message: >
+      Backend fully verified (21 agent tests + 6 pytest all pass). User approved
+      automated FRONTEND testing for the webmail UI. Test AdminMail.jsx: inbox list
+      renders live IMAP messages, Setup Email modal Test Connection button shows
+      green IMAP+SMTP results (settings already saved on admin user with the damien
+      mailbox), Compose modal sends real email (success state). When testing wrong
+      credentials use Test Connection only — do NOT save wrong credentials (use
+      Batal to close). Duitku API key received from user, merchant code still
+      pending — Duitku work starts after webmail frontend verification.
