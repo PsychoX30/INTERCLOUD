@@ -1031,6 +1031,40 @@ async def get_my_email_settings(user=Depends(get_current_user)):
     return _mask_email_settings((doc or {}).get("email_settings") or {})
 
 
+def _merge_email_payload(existing: dict, payload: dict) -> dict:
+    """Merge an incoming (possibly password-masked) email-settings payload with
+    what's already stored on the user document. Shared by the save endpoint and
+    the test-connection endpoint so both resolve masked "••••••••" passwords
+    back to the stored value."""
+    def _merge(kind: str) -> dict:
+        old_creds = ((existing.get(kind) or {}).get("credentials") or
+                     (existing.get("credentials") if kind == "imap" else {})) or {}
+        new = (payload or {}).get(kind) or {}
+        pwd = new.get("password") or ""
+        if not pwd or set(pwd) == {"•"}:
+            pwd = old_creds.get("password") or ""
+        return {
+            "credentials": {
+                "host":     (new.get("host") or old_creds.get("host") or "").strip(),
+                "port":     int(new.get("port") or old_creds.get("port") or (993 if kind == "imap" else 465)),
+                "username": (new.get("username") or old_creds.get("username") or "").strip(),
+                "password": pwd,
+            },
+            "options": {"use_ssl": bool(new.get("use_ssl", True))},
+        }
+
+    imap = _merge("imap")
+    return {
+        "from_name":  ((payload or {}).get("from_name") or "").strip(),
+        "from_email": ((payload or {}).get("from_email") or "").strip(),
+        "imap": imap,
+        "smtp": _merge("smtp"),
+        # Legacy top-level fields kept for backward compat with IMAPClient
+        "credentials": imap["credentials"],
+        "options":     imap["options"],
+    }
+
+
 @router.post("/settings/email")
 async def save_my_email_settings(payload: dict, user=Depends(get_current_user)):
     """Save this staff member's personal cPanel IMAP/SMTP credentials.
@@ -1048,38 +1082,46 @@ async def save_my_email_settings(payload: dict, user=Depends(get_current_user)):
     db = await _get_db()
     doc = await db.users.find_one({"_id": ObjectId(user["id"])})
     existing = (doc or {}).get("email_settings") or {}
-
-    def _merge(kind: str) -> dict:
-        old_creds = ((existing.get(kind) or {}).get("credentials") or
-                     (existing.get("credentials") if kind == "imap" else {})) or {}
-        new = payload.get(kind) or {}
-        pwd = new.get("password") or ""
-        if not pwd or set(pwd) == {"•"}:
-            pwd = old_creds.get("password") or ""
-        return {
-            "credentials": {
-                "host":     (new.get("host") or old_creds.get("host") or "").strip(),
-                "port":     int(new.get("port") or old_creds.get("port") or (993 if kind == "imap" else 465)),
-                "username": (new.get("username") or old_creds.get("username") or "").strip(),
-                "password": pwd,
-            },
-            "options": {"use_ssl": bool(new.get("use_ssl", True))},
-        }
-
-    stored = {
-        "from_name":  (payload.get("from_name") or "").strip(),
-        "from_email": (payload.get("from_email") or "").strip(),
-        "imap": _merge("imap"),
-        "smtp": _merge("smtp"),
-        # Legacy top-level fields kept for backward compat with IMAPClient
-        "credentials": _merge("imap")["credentials"],
-        "options":     _merge("imap")["options"],
-    }
+    stored = _merge_email_payload(existing, payload)
     await db.users.update_one(
         {"_id": ObjectId(user["id"])},
         {"$set": {"email_settings": stored}},
     )
     return _mask_email_settings(stored)
+
+
+@router.post("/settings/email/test")
+async def test_my_email_settings(payload: dict = None, user=Depends(get_current_user)):
+    """Test IMAP **and** SMTP connectivity for this staff member's webmail.
+
+    Accepts the same payload shape as POST /settings/email (so the setup modal
+    can test what's currently typed before saving). Masked passwords fall back
+    to the stored value; an empty/missing payload tests the saved settings.
+    Returns per-protocol results:
+      { "ok": bool, "imap": {"ok":…, "message":…}, "smtp": {"ok":…, "message":…} }
+    """
+    db = await _get_db()
+    doc = await db.users.find_one({"_id": ObjectId(user["id"])})
+    existing = (doc or {}).get("email_settings") or {}
+    merged = _merge_email_payload(existing, payload or {})
+
+    def _test(kind: str) -> dict:
+        cfg = merged[kind]
+        c = cfg["credentials"]
+        if not (c.get("host") and c.get("username") and c.get("password")):
+            return {"ok": False,
+                    "message": f"{kind.upper()} belum dikonfigurasi (host/username/password wajib diisi)."}
+        try:
+            if kind == "imap":
+                return iv2.IMAPClient(cfg).test_connection()
+            return iv2.SMTPMailer(cfg).test_connection()
+        except Exception as e:  # pragma: no cover — test_connection already catches
+            return {"ok": False, "message": f"{type(e).__name__}: {e}"}
+
+    imap_res = _test("imap")
+    smtp_res = _test("smtp")
+    return {"ok": bool(imap_res.get("ok") and smtp_res.get("ok")),
+            "imap": imap_res, "smtp": smtp_res}
 
 
 @router.delete("/settings/email")

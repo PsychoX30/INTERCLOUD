@@ -101,3 +101,122 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+user_problem_statement: >
+  Continuation — imported latest GitHub main (PsychoX30/INTERCLOUD, commit 408b170).
+  Bug fix: Webmail — IMAP worked but Compose showed "SMTP belum di setup" placeholder.
+  Root cause: frontend Compose modal was a static stub, never wired to the working
+  POST /api/portal/admin/mail/send endpoint. Also add a Test Connection button that
+  verifies both SMTP and IMAP connectivity from the Setup Email modal.
+  Test mailbox: mail.intercloud-digital.com / damien@intercloud-digital.com / @Mail!234
+
+backend:
+  - task: "POST /api/portal/settings/email/test — IMAP+SMTP connection tester"
+    implemented: true
+    working: true
+    file: "backend/portal/routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: >
+          New endpoint. Accepts same payload shape as POST /settings/email; masked
+          "••••••••" passwords fall back to stored value via shared helper
+          _merge_email_payload (refactored out of save endpoint — save behavior
+          unchanged). Returns {ok, imap:{ok,message}, smtp:{ok,message}}.
+          Smoke-tested with real credentials: both ok=true. Missing creds return
+          ok=false with actionable message (not an HTTP error).
+      - working: true
+        agent: "testing"
+        comment: >
+          ✅ COMPREHENSIVE TESTING PASSED (21/21 tests). Verified all scenarios:
+          (1a) Save email settings - passwords correctly masked in response, configured flag set.
+          (1b) Test connection with masked passwords - successfully falls back to stored credentials, both IMAP and SMTP OK.
+          (1c) Test connection with real passwords - both protocols connect successfully.
+          (1d) Test connection with wrong passwords - returns 200 with ok:false (NOT 5xx), both protocols fail gracefully with error messages.
+          (1e) Unauthenticated access - correctly returns 401.
+          Edge case: Test with no stored settings and empty payload - returns ok:false with "belum dikonfigurasi" messages.
+          Regression: Partial update (change from_name only with masked passwords) - update succeeds, configured flag remains true, connection still works.
+          Real mailbox credentials tested: mail.intercloud-digital.com / damien@intercloud-digital.com.
+  - task: "POST /api/portal/admin/mail/send — compose via personal SMTP"
+    implemented: true
+    working: true
+    file: "backend/portal/routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: >
+          Pre-existing endpoint, unchanged. Smoke-tested: send to self returned
+          delivered_via=smtp and message appeared in IMAP inbox afterwards.
+      - working: true
+        agent: "testing"
+        comment: >
+          ✅ VERIFIED WORKING. Tested with saved SMTP settings - email delivered successfully via smtp.
+          Verified delivered:true, delivered_via:"smtp" in response.
+          Validation working: missing 'to' returns 400, missing 'subject' returns 400.
+          Edge case: Attempting to send without SMTP settings correctly returns 400 with "Silakan setup SMTP dulu di Settings ▸ Email sebelum mengirim."
+          GET /admin/mail/inbox successfully retrieves messages including the test email sent (12 messages found, test message confirmed in inbox).
+
+frontend:
+  - task: "AdminMail.jsx — real Compose modal + Test Connection button"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/portal/admin/AdminMail.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: >
+          Replaced placeholder Compose modal with real ComposeModal (to/subject/body →
+          POST /admin/mail/send; 400 'Silakan setup SMTP' shows link to open Setup modal;
+          success state shown). SetupEmailModal now has Test Connection button →
+          POST /settings/email/test, renders green/red per-protocol result rows.
+          data-testids: mail-compose-modal, mail-compose-to/subject/body/send,
+          mail-compose-sent, mail-compose-error, mail-setup-test, mail-test-results,
+          mail-test-imap, mail-test-smtp.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 2
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "POST /api/portal/settings/email/test — IMAP+SMTP connection tester"
+    - "POST /api/portal/admin/mail/send — compose via personal SMTP"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: >
+      Webmail fix implemented. Please test backend only: login as
+      admin@intercloud-digital.com / AdminIntercloud2026! (see /app/memory/test_credentials.md).
+      Real mailbox creds for testing: host mail.intercloud-digital.com, user
+      damien@intercloud-digital.com, pass @Mail!234 (IMAP 993 SSL, SMTP 465 SSL).
+      Flows: save settings, test endpoint (real creds → both ok; masked pwd fallback;
+      wrong pwd → ok=false; empty → configured-missing message), mail/send happy path,
+      mail/send without SMTP config → 400. Do NOT test frontend yet.
+  - agent: "testing"
+    message: >
+      ✅ BACKEND TESTING COMPLETE - ALL TESTS PASSED (21/21).
+      Both backend tasks verified working with comprehensive test coverage:
+      
+      POST /settings/email/test: All scenarios pass including masked password fallback,
+      wrong credentials gracefully handled (200 with ok:false), unauthenticated access blocked,
+      empty settings handled correctly.
+      
+      POST /admin/mail/send: Email delivery working via SMTP, validation working (400 for missing fields),
+      edge case handled (400 when no SMTP settings), inbox retrieval confirmed (test email received).
+      
+      Test file: /app/backend_test.py (comprehensive 21-test suite with real mailbox credentials).
+      
+      READY FOR MAIN AGENT: Please summarize and finish. Frontend testing NOT performed per instructions.

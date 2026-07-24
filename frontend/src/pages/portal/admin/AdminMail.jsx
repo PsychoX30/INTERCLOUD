@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Mail, MailPlus, Send, Star, StarOff, RefreshCw, Loader2, AlertTriangle, Settings, Save, X as XIcon } from "lucide-react";
+import { Mail, MailPlus, Send, Star, StarOff, RefreshCw, Loader2, AlertTriangle, Settings, Save, X as XIcon, CheckCircle2, XCircle, PlugZap } from "lucide-react";
 
 const AdminMail = () => {
   const [rows, setRows] = useState(null);         // list OR { not_setup: true, message }
@@ -112,14 +112,80 @@ const AdminMail = () => {
 
       {showSetup && <SetupEmailModal onClose={() => setShowSetup(false)} onDone={() => { setShowSetup(false); load(); }} />}
       {showCompose && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowCompose(false)}>
-          <div className="w-full max-w-lg bg-white rounded-3xl p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="text-lg font-bold text-[#0a2350] mb-2">Compose</div>
-            <div className="text-sm text-slate-500">Compose fitur akan dihubungkan ke SMTP Anda setelah setup email. Untuk sementara gunakan client email eksternal (Outlook/Roundcube).</div>
-            <div className="text-right mt-4"><button className={btnSecondary} onClick={() => setShowCompose(false)}>Tutup</button></div>
-          </div>
-        </div>
+        <ComposeModal
+          onClose={() => setShowCompose(false)}
+          onNeedSetup={() => { setShowCompose(false); setShowSetup(true); }}
+        />
       )}
+    </div>
+  );
+};
+
+const ComposeModal = ({ onClose, onNeedSetup }) => {
+  const [form, setForm] = useState({ to: "", subject: "", body: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [needSetup, setNeedSetup] = useState(false);
+  const [sent, setSent] = useState(null);
+
+  const send = async () => {
+    setBusy(true); setErr(""); setNeedSetup(false);
+    try {
+      const { data } = await api.post("/admin/mail/send", form);
+      setSent(data);
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e.message;
+      setErr(detail);
+      if (e?.response?.status === 400 && /setup smtp/i.test(detail)) setNeedSetup(true);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="w-full max-w-lg bg-white rounded-3xl p-6" onClick={(e) => e.stopPropagation()} data-testid="mail-compose-modal">
+        <div className="flex justify-between items-start mb-3">
+          <div className="text-lg font-bold text-[#0a2350]">Compose</div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-800"><XIcon className="h-5 w-5" /></button>
+        </div>
+
+        {sent ? (
+          <div className="text-center py-6" data-testid="mail-compose-sent">
+            <div className="mx-auto h-12 w-12 rounded-2xl bg-emerald-500/15 flex items-center justify-center mb-3">
+              <Send className="h-6 w-6 text-emerald-600" />
+            </div>
+            <div className="text-lg font-bold text-emerald-700 mb-1">Email terkirim!</div>
+            <div className="text-sm text-slate-500">Terkirim ke <span className="font-mono">{form.to}</span> via SMTP Anda.</div>
+            <div className="mt-4"><button className={btnPrimary} onClick={onClose}>Tutup</button></div>
+          </div>
+        ) : (
+          <>
+            {err && (
+              <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2" data-testid="mail-compose-error">
+                {err}
+                {needSetup && (
+                  <button className="block mt-2 underline font-semibold" onClick={onNeedSetup} data-testid="mail-compose-goto-setup">
+                    Buka Setup Email →
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="space-y-3">
+              <label className="block"><div className={labelClass}>To</div>
+                <input className={inputClass} value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} placeholder="tujuan@contoh.com" data-testid="mail-compose-to" /></label>
+              <label className="block"><div className={labelClass}>Subject</div>
+                <input className={inputClass} value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="Subjek email" data-testid="mail-compose-subject" /></label>
+              <label className="block"><div className={labelClass}>Message</div>
+                <textarea className={`${inputClass} min-h-[140px]`} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} placeholder="Tulis pesan Anda…" data-testid="mail-compose-body" /></label>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button className={btnSecondary} onClick={onClose}>Batal</button>
+              <button className={btnPrimary} onClick={send} disabled={busy || !form.to || !form.subject} data-testid="mail-compose-send">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Kirim
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 };
@@ -133,6 +199,8 @@ const SetupEmailModal = ({ onClose, onDone }) => {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null); // { ok, imap:{ok,message}, smtp:{ok,message} }
 
   useEffect(() => {
     api.get("/settings/email").then((r) => {
@@ -157,6 +225,16 @@ const SetupEmailModal = ({ onClose, onDone }) => {
     } catch (e) {
       setErr(e?.response?.data?.detail || e.message);
     } finally { setBusy(false); }
+  };
+
+  const testConnection = async () => {
+    setTesting(true); setErr(""); setTestResult(null);
+    try {
+      const { data } = await api.post("/settings/email/test", form);
+      setTestResult(data);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally { setTesting(false); }
   };
 
   const setField = (kind, key, value) => setForm({ ...form, [kind]: { ...form[kind], [key]: value } });
@@ -196,11 +274,36 @@ const SetupEmailModal = ({ onClose, onDone }) => {
                 <label><div className={labelClass}>Password</div><input type="password" className={inputClass} value={form.smtp.password} onChange={(e) => setField("smtp", "password", e.target.value)} data-testid="mail-setup-smtp-pass" /></label>
               </div>
             </div>
-            <div className="flex justify-end gap-2">
-              <button className={btnSecondary} onClick={onClose}>Batal</button>
-              <button className={btnPrimary} onClick={save} disabled={busy} data-testid="mail-setup-save">
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Simpan
+            {testResult && (
+              <div className="mb-4 rounded-xl border border-slate-200 divide-y divide-slate-100" data-testid="mail-test-results">
+                {["imap", "smtp"].map((kind) => {
+                  const r = testResult[kind] || {};
+                  return (
+                    <div key={kind} className="flex items-start gap-3 px-4 py-3" data-testid={`mail-test-${kind}`}>
+                      <div className={`mt-0.5 h-6 w-6 rounded-full flex items-center justify-center flex-shrink-0 ${r.ok ? "bg-emerald-500/15" : "bg-red-500/15"}`}>
+                        {r.ok ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className="h-4 w-4 text-red-600" />}
+                      </div>
+                      <div className="min-w-0">
+                        <div className={`text-sm font-bold ${r.ok ? "text-emerald-700" : "text-red-700"}`}>
+                          {kind.toUpperCase()} {r.ok ? "— koneksi berhasil" : "— gagal"}
+                        </div>
+                        <div className="text-xs text-slate-500 break-words">{r.message}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div className="flex justify-between gap-2">
+              <button className={btnSecondary} onClick={testConnection} disabled={testing || busy} data-testid="mail-setup-test">
+                {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />} Test Connection
               </button>
+              <div className="flex gap-2">
+                <button className={btnSecondary} onClick={onClose}>Batal</button>
+                <button className={btnPrimary} onClick={save} disabled={busy || testing} data-testid="mail-setup-save">
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Simpan
+                </button>
+              </div>
             </div>
           </>
         )}
