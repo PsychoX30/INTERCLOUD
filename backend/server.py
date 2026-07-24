@@ -169,6 +169,38 @@ async def startup_seed():
         await db.assets.create_index([("category", 1), ("status", 1)])
         # Email queue / templates
         await db.email_queue.create_index([("status", 1), ("scheduled_at", 1)])
+        # Audit logs: list newest-first + filter by actor
+        await db.audit_logs.create_index([("created_at", -1)])
+        await db.audit_logs.create_index([("actor_id", 1), ("created_at", -1)])
+        # Credit notes: unique numbering + per-invoice lookup
+        await db.credit_notes.create_index("number", unique=True)
+        await db.credit_notes.create_index([("invoice_id", 1)])
+        # NOC: probe samples, transition events, current device state
+        await db.noc_probes.create_index([("device_id", 1), ("created_at", -1)])
+        await db.noc_probes.create_index([("device_id", 1), ("at", -1)])
+        await db.noc_events.create_index([("created_at", -1)])
+        await db.noc_events.create_index([("device_id", 1), ("created_at", -1)])
+        await db.noc_device_state.create_index("device_id", unique=True)
+        # NOC daily uptime rollups (retention job)
+        await db.noc_daily_uptime.create_index([("device_id", 1), ("date", 1)], unique=True)
+        # Media library
+        await db.media_assets.create_index([("tags", 1)])
+        # Content calendar
+        await db.content_calendar.create_index([("scheduled_at", 1)])
+        # Seed atomic number counters from existing data so concurrent
+        # first-writes can never collide with legacy numbers.
+        for coll, prefix in (("invoices", "INV"), ("tickets", "TCK"),
+                              ("quotations", "QTN"), ("credit_notes", "CN")):
+            last = await db[coll].find_one({"number": {"$regex": f"^{prefix}-"}},
+                                           sort=[("number", -1)])
+            if last:
+                try:
+                    legacy = int(str(last.get("number", "")).rsplit("-", 1)[-1])
+                except (TypeError, ValueError):
+                    legacy = await db[coll].count_documents({})
+                await db.counters.update_one(
+                    {"_id": f"number:{coll}"},
+                    {"$max": {"seq": legacy}}, upsert=True)
     except Exception as e:
         logger.warning(f"Index create issue: {e}")
     try:

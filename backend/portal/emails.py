@@ -25,6 +25,7 @@ crashes and the admin can see why nothing arrived.
 """
 
 from __future__ import annotations
+import asyncio
 import logging
 import os
 import re
@@ -46,7 +47,7 @@ log = logging.getLogger("portal.emails")
 # transactional mail share consistent branding.
 BRAND_HEADER = "#0a2350"
 BRAND_ACCENT = "#f5b120"
-LOGO_URL = "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png"
+LOGO_URL = "https://intercloud-digital.com/og-logo.png"
 
 _WRAPPER_TEMPLATE = """<!doctype html>
 <html><body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;color:#0a2350">
@@ -672,12 +673,22 @@ async def _sent_today(db, invoice_id: str, event_key: str) -> bool:
     return hit is not None
 
 
+_reminder_sweep_lock = asyncio.Lock()
+
+
 async def run_invoice_reminder_sweep(db, *, now: Optional[datetime] = None) -> dict:
     """Scan invoices, fire any due reminder emails, suspend on D+8.
 
     Returns a summary dict for observability.
-    Idempotent per (invoice, event, day) via `_sent_today` guard.
+    Idempotent per (invoice, event, day) via `_sent_today` guard; the module
+    lock keeps a manual run-now from racing the scheduled tick (the guard is
+    check-then-insert, so two concurrent sweeps could double-send).
     """
+    async with _reminder_sweep_lock:
+        return await _run_invoice_reminder_sweep_inner(db, now=now)
+
+
+async def _run_invoice_reminder_sweep_inner(db, *, now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     today = now.date()
     fired = {k: 0 for k in _SCHEDULED_EVENTS}
@@ -977,6 +988,55 @@ async def _dispatch_noc_alert(db, device: dict, event: dict) -> bool:
     return ok
 
 
+async def run_noc_probe_retention(db) -> dict:
+    """Daily housekeeping for the high-frequency `noc_probes` collection.
+
+    (a) Rolls up per-device daily uptime % into `noc_daily_uptime`
+        (device_id, date, uptime_pct, sample_count) for every full past day.
+    (b) Deletes raw probe samples older than `settings.noc_probe_retention_days`
+        (default 30). NEVER touches `audit_logs` or `noc_events` — those are
+        permanent history."""
+    doc = await db.settings.find_one({"key": "noc_probe_retention_days"}) or {}
+    try:
+        retention_days = int(doc.get("value") or 30)
+    except (TypeError, ValueError):
+        retention_days = 30
+    retention_days = max(1, retention_days)
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+
+    rolled = 0
+    pipeline = [
+        {"$project": {"device_id": 1, "ok": 1, "day": {"$substr": ["$at", 0, 10]}}},
+        {"$match": {"day": {"$lt": today}}},
+        {"$group": {"_id": {"device_id": "$device_id", "day": "$day"},
+                     "total": {"$sum": 1},
+                     "up": {"$sum": {"$cond": ["$ok", 1, 0]}}}},
+    ]
+    async for row in db.noc_probes.aggregate(pipeline):
+        did = row["_id"]["device_id"]
+        day = row["_id"]["day"]
+        total = int(row.get("total") or 0)
+        if not total:
+            continue
+        await db.noc_daily_uptime.update_one(
+            {"device_id": did, "date": day},
+            {"$set": {"uptime_pct": round(int(row.get("up") or 0) / total * 100, 2),
+                      "sample_count": total,
+                      "computed_at": now.isoformat()}},
+            upsert=True,
+        )
+        rolled += 1
+
+    cutoff = (now - timedelta(days=retention_days)).isoformat()
+    res = await db.noc_probes.delete_many({"at": {"$lt": cutoff}})
+    summary = {"at": now.isoformat(), "rolled_days": rolled,
+               "deleted_probes": res.deleted_count,
+               "retention_days": retention_days}
+    log.info(f"[noc-retention] {summary}")
+    return summary
+
+
 # Scheduler singleton
 _scheduler = None
 
@@ -1030,6 +1090,16 @@ def start_scheduler(db):
     # NOC probe sweep — every 5 minutes, on the SAME scheduler (PRD constraint).
     sched.add_job(_noc_tick, CronTrigger(minute="*/5"))
     sched.add_job(_noc_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=30))
+
+    async def _noc_retention_tick():
+        try:
+            summary = await run_noc_probe_retention(db)
+            log.info(f"[noc-retention-scheduler] result: {summary}")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[noc-retention-scheduler] tick failed: {e}")
+
+    # NOC probe retention/rollup — daily at 03:40 (same scheduler, alongside backup cron slot).
+    sched.add_job(_noc_retention_tick, CronTrigger(hour=3, minute=40))
     sched.start()
     _scheduler = sched
     log.info("[email-scheduler] started (hourly reminder + renewal sweeps + NOC 5-min probes)")

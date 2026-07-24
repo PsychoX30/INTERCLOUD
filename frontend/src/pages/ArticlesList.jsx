@@ -1,23 +1,23 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
+import { Helmet } from "react-helmet-async";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import { Search, Tag, Calendar, Eye, ArrowRight, X } from "lucide-react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api/portal`;
 
-const usePageMeta = ({ title, description }) => {
-  useEffect(() => {
-    if (title) document.title = title;
-    if (description) {
-      let el = document.querySelector('meta[name="description"]');
-      if (!el) { el = document.createElement("meta"); el.name = "description"; document.head.appendChild(el); }
-      el.content = description;
-    }
-    return () => { document.title = "Intercloud Digital Inovasi"; };
-  }, [title, description]);
-};
+const PageMeta = ({ title, description }) => (
+  <Helmet>
+    {title ? <title>{title}</title> : null}
+    {description ? <meta name="description" content={description} /> : null}
+    <link rel="canonical" href="https://intercloud-digital.com/articles" />
+    <meta property="og:title" content={title || "Articles & Insights — Intercloud"} />
+    <meta property="og:description" content={description || ""} />
+    <meta property="og:url" content="https://intercloud-digital.com/articles" />
+  </Helmet>
+);
 
 const formatDate = (iso) => {
   if (!iso) return "";
@@ -35,12 +35,10 @@ const ArticlesList = () => {
   const [tags, setTags] = useState([]);
   const [input, setInput] = useState(q);
 
-  usePageMeta({
-    title: q ? `Search: “${q}” — Intercloud Articles`
-             : tag ? `#${tag} — Intercloud Articles`
-             : "Articles & Insights — PT Intercloud Digital Inovasi",
-    description: "Product updates, industry insights, and announcements from PT Intercloud Digital Inovasi — Indonesia’s trusted cloud, colocation, and connectivity provider.",
-  });
+  const pageTitle = q ? `Search: “${q}” — Intercloud Articles`
+    : tag ? `#${tag} — Intercloud Articles`
+    : "Articles & Insights — PT Intercloud Digital Inovasi";
+  const pageDesc = "Product updates, industry insights, and announcements from PT Intercloud Digital Inovasi — Indonesia’s trusted cloud, colocation, and connectivity provider.";
 
   useEffect(() => {
     const p = new URLSearchParams();
@@ -68,6 +66,7 @@ const ArticlesList = () => {
 
   return (
     <div className="min-h-screen bg-white">
+      <PageMeta title={pageTitle} description={pageDesc} />
       <Header />
       <main className="pt-24 pb-16">
         <section className="bg-[#0a2350] text-white">

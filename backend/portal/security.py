@@ -3,8 +3,9 @@
 - `limiter` is a slowapi Limiter, imported from routes.py to decorate the
   4 auth endpoints (login/register/forgot/reset). One IP → N req/min.
 - `SecurityHeadersMiddleware` adds HSTS, X-Content-Type-Options,
-  X-Frame-Options, Referrer-Policy, Permissions-Policy, and a CSP in
-  `Content-Security-Policy-Report-Only` mode (user chose report-only).
+  X-Frame-Options, Referrer-Policy, Permissions-Policy, and an ENFORCED
+  `Content-Security-Policy` (report-only kept alongside for one release
+  cycle as a safety net).
 - `SensitiveLogFilter` masks accidental password/token/JWT/email leaks
   in log lines.
 """
@@ -16,6 +17,19 @@ from typing import Callable
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+
+def _client_ip(request):
+    """Rate-limit key: prefer the LAST X-Forwarded-For hop (appended by our
+    trusted nginx / ingress proxy), falling back to the socket peer address.
+    Without this, every production user behind the reverse proxy shares one
+    127.0.0.1 bucket and legitimate users rate-limit each other out."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        ip = xff.split(",")[-1].strip()
+        if ip:
+            return ip
+    return get_remote_address(request)
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -25,7 +39,7 @@ from starlette.responses import Response
 # Rate limiter — one instance shared across the app
 # ============================================================
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=_client_ip,
     default_limits=[],   # no global cap; opt-in via decorators only
     headers_enabled=False,   # BaseHTTPMiddleware-wrapped responses break the injector; keep off
     storage_uri="memory://",
@@ -36,12 +50,14 @@ AUTH_LOGIN_LIMIT           = "10/minute"   # login attempts
 AUTH_REGISTER_LIMIT        = "5/hour"      # registration
 AUTH_FORGOT_LIMIT          = "5/hour"      # forgot-password (avoid enumeration/spam)
 AUTH_RESET_LIMIT           = "10/hour"     # reset submissions
+PUBLIC_STATUS_LIMIT        = "60/minute"   # unauthenticated /public/status + sitemap
 
 
 # ============================================================
-# Security headers (report-only CSP as requested)
+# Security headers — CSP is ENFORCED (report-only kept alongside
+# for one release cycle as a safety net; same policy string).
 # ============================================================
-CSP_REPORT_ONLY = (
+CSP_POLICY = (
     "default-src 'self'; "
     "script-src  'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com "
     "            https://www.googletagmanager.com https://images.pexels.com; "
@@ -76,8 +92,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         h.setdefault("X-Frame-Options", "DENY")
         h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         h.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
-        # Report-only per user preference — never blocks, only reports.
-        h.setdefault("Content-Security-Policy-Report-Only", CSP_REPORT_ONLY)
+        # ENFORCED CSP — violations are blocked by the browser.
+        h.setdefault("Content-Security-Policy", CSP_POLICY)
+        # Report-only kept for one release cycle (safety net + telemetry).
+        h.setdefault("Content-Security-Policy-Report-Only", CSP_POLICY)
         # Kill legacy XSS heuristics in old browsers; modern browsers ignore.
         h.setdefault("X-XSS-Protection", "0")
         return response

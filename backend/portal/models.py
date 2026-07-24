@@ -66,7 +66,7 @@ class UserOut(BaseModel):
     id: str
     email: EmailStr
     name: str
-    role: Literal["client", "admin", "owner", "sales", "finance", "support", "ticket_only"]
+    role: Literal["client", "admin", "owner", "sales", "finance", "support", "ticket_only", "creative"]
     company: Optional[str] = None
     phone: Optional[str] = None
     created_at: str
@@ -98,7 +98,7 @@ class UserCreateIn(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: Literal["client", "admin", "owner", "sales", "finance", "support", "ticket_only"] = "client"
+    role: Literal["client", "admin", "owner", "sales", "finance", "support", "ticket_only", "creative"] = "client"
     company: Optional[str] = None
     phone: Optional[str] = None
     assigned_client_ids: List[str] = []
@@ -118,7 +118,7 @@ class UserCreateIn(BaseModel):
 
 class UserUpdateIn(BaseModel):
     name: Optional[str] = None
-    role: Optional[Literal["client", "admin", "owner", "sales", "finance", "support", "ticket_only"]] = None
+    role: Optional[Literal["client", "admin", "owner", "sales", "finance", "support", "ticket_only", "creative"]] = None
     company: Optional[str] = None
     phone: Optional[str] = None
     assigned_client_ids: Optional[List[str]] = None
@@ -487,6 +487,7 @@ class TicketIn(BaseModel):
     department: Literal["technical", "billing", "general", "sales"] = "technical"
     priority: Literal["low", "medium", "high", "critical"] = "medium"
     message: str
+    related_device_id: Optional[str] = None   # optional link to a mikrotik_devices row
 
 
 class TicketOut(BaseModel):
@@ -500,5 +501,7 @@ class TicketOut(BaseModel):
     priority: str
     status: Literal["open", "awaiting_client", "awaiting_staff", "resolved", "closed"]
     replies: List[TicketReply]
+    related_device_id: Optional[str] = None
+    related_device_name: Optional[str] = None
     created_at: str
     updated_at: str

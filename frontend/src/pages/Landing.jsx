@@ -14,6 +14,7 @@ import Footer from "../components/Footer";
 import { MessageCircle } from "lucide-react";
 import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN } from "../mock/data";
 import { useLang } from "../i18n/LanguageContext";
+import DefaultSeo from "../components/DefaultSeo";
 
 const CANONICAL = "https://intercloud-digital.com/";
 const BREADCRUMB_ID = "landing-breadcrumb-jsonld";
@@ -88,6 +89,7 @@ const Landing = () => {
   useLandingSEO();
   return (
     <div className="bg-white text-[#0a2350]">
+      <DefaultSeo />
       <Header />
       <main>
         <Hero />

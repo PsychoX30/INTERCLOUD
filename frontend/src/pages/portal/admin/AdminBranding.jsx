@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { UploadCloud, RotateCcw, Check, ImageOff, Loader2 } from "lucide-react";
+import { UploadCloud, RotateCcw, Check, ImageOff, Loader2, Images } from "lucide-react";
 import { api } from "../../../portal/api";
+import { MediaPickerModal } from "./AdminMediaLibrary";
 
 const FIELDS = [
   {
@@ -50,6 +51,7 @@ const readableBytes = (n) => {
 const AdminBranding = () => {
   const [branding, setBranding] = useState(null);
   const [busyKey, setBusyKey] = useState("");
+  const [pickerKey, setPickerKey] = useState("");
   const [msg, setMsg] = useState(null);
 
   const load = useCallback(async () => {
@@ -89,6 +91,18 @@ const AdminBranding = () => {
       const { data } = await api.delete(`/admin/branding/${key}`);
       setBranding(data);
       setMsg({ kind: "ok", text: `${key} reset to default` });
+    } catch (e) {
+      setMsg({ kind: "error", text: e?.response?.data?.detail || e.message });
+    } finally { setBusyKey(""); }
+  };
+
+  const pickFromLibrary = async (url) => {
+    const key = pickerKey;
+    setPickerKey(""); setBusyKey(key); setMsg(null);
+    try {
+      const { data } = await api.post("/admin/branding", { [key]: url });
+      setBranding(data);
+      setMsg({ kind: "ok", text: `Updated ${key} from Media Library` });
     } catch (e) {
       setMsg({ kind: "error", text: e?.response?.data?.detail || e.message });
     } finally { setBusyKey(""); }
@@ -158,6 +172,12 @@ const AdminBranding = () => {
                   <input type="file" accept="image/*" hidden disabled={isBusy}
                          onChange={(e) => onFile(f.key, e.target.files?.[0])} />
                 </label>
+                <button type="button" onClick={() => setPickerKey(f.key)} disabled={isBusy}
+                        className="inline-flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-lg border border-slate-300 text-[#0a2350] hover:border-[#f5b120] transition-colors disabled:opacity-50"
+                        data-testid={`admin-branding-library-${f.key}`}>
+                  <Images className="h-4 w-4" />
+                  Library
+                </button>
                 <button type="button" onClick={() => reset(f.key)} disabled={isBusy}
                         className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-red-600 transition-colors disabled:opacity-50"
                         data-testid={`admin-branding-reset-${f.key}`}>
@@ -184,6 +204,9 @@ const AdminBranding = () => {
           <li><b>email_banner</b> — Optional wide banner rendered inside the email body wrapper. Empty means no banner.</li>
         </ul>
       </div>
+      {pickerKey && (
+        <MediaPickerModal onClose={() => setPickerKey("")} onPick={(url) => pickFromLibrary(url)} />
+      )}
     </div>
   );
 };

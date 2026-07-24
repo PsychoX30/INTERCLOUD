@@ -1,5 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { Helmet } from "react-helmet-async";
 import { Home, ArrowLeft } from "lucide-react";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
@@ -39,10 +40,9 @@ const NotFound = () => {
   const t = COPY[lang] || COPY.id;
 
   React.useEffect(() => {
-    // Tell crawlers NOT to index random 404 URLs — restores SEO hygiene.
     // Landing/other pages set a default <meta name="robots" content="index,
-    // follow"> that we must OVERRIDE here (not just append), otherwise the
-    // first meta wins.
+    // follow"> in the static index.html that we must OVERRIDE here (not just
+    // append via Helmet), otherwise the first meta wins for some crawlers.
     const existing = document.head.querySelector('meta[name="robots"]');
     const prev = existing?.getAttribute("content") || null;
     let ownMeta = existing;
@@ -52,9 +52,6 @@ const NotFound = () => {
       document.head.appendChild(ownMeta);
     }
     ownMeta.setAttribute("content", "noindex, nofollow");
-
-    const prevTitle = document.title;
-    document.title = `${t.tag} — Intercloud`;
     return () => {
       // Restore whatever robots directive was there before we mounted.
       if (prev === null) {
@@ -62,12 +59,15 @@ const NotFound = () => {
       } else {
         ownMeta.setAttribute("content", prev);
       }
-      document.title = prevTitle;
     };
   }, [t.tag]);
 
   return (
     <div className="bg-white text-[#0a2350] min-h-screen flex flex-col">
+      <Helmet>
+        <title>{`${t.tag} — Intercloud`}</title>
+        <meta name="robots" content="noindex, nofollow" />
+      </Helmet>
       <Header />
       <main className="flex-1 flex items-center justify-center px-5 py-20" data-testid="not-found-page">
         <div className="max-w-2xl w-full text-center">

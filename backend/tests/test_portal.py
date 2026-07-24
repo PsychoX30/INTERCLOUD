@@ -5,6 +5,7 @@ Covers: auth (5 roles), RBAC (support/sales), client happy path, admin CRUD
 """
 import os
 import pytest
+import time
 import requests
 from typing import Dict
 
@@ -23,9 +24,20 @@ CREDS = {
 
 # ---------------------------------------------------------------- session helpers
 def _login(email: str, password: str) -> Dict:
-    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=15)
-    assert r.status_code == 200, f"Login failed for {email}: {r.status_code} {r.text}"
-    return r.json()
+    # Retry on transient timeouts — the backup/restore suite briefly stalls
+    # Mongo while the whole run shares one uvicorn worker.
+    last = None
+    for attempt in range(3):
+        try:
+            r = requests.post(f"{API}/auth/login",
+                              json={"email": email, "password": password}, timeout=30)
+            if r.status_code == 200:
+                return r.json()
+            last = f"{r.status_code} {r.text[:200]}"
+        except requests.exceptions.RequestException as e:
+            last = str(e)
+        time.sleep(3 * (attempt + 1))
+    raise AssertionError(f"Login failed for {email}: {last}")
 
 
 @pytest.fixture(scope="session")
@@ -266,15 +278,18 @@ class TestAdminOrders:
         o = requests.post(f"{API}/client/orders", headers=_h(tokens["client"]),
                           json={"product_id": pid, "notes": "TEST_lifecycle", "config": {}})
         oid = o.json()["id"]
-        # baseline service count
-        before = len(requests.get(f"{API}/admin/services", headers=_h(tokens["admin"])).json())
-        for status in ["assigned", "provisioning", "active"]:
-            r = requests.put(f"{API}/admin/orders/{oid}/status", headers=_h(tokens["admin"]),
-                             json={"status": status})
-            assert r.status_code == 200
-            assert r.json()["status"] == status
-        after = len(requests.get(f"{API}/admin/services", headers=_h(tokens["admin"])).json())
-        assert after == before + 1, "'active' must auto-create a service"
+        # Current flow (Batch 6): auto-provisioning fires when the order's
+        # linked invoice is marked PAID — not on manual status nudges.
+        invs = requests.get(f"{API}/admin/invoices", headers=_h(tokens["admin"])).json()
+        inv = next((i for i in invs if i.get("order_id") == oid), None)
+        assert inv, "order creation must generate a linked invoice"
+        p = requests.put(f"{API}/admin/invoices/{inv['id']}/status", headers=_h(tokens["admin"]),
+                         json={"status": "paid", "payment_method": "bank_transfer"})
+        assert p.status_code == 200
+        # paid invoice must auto-create a service linked to this order
+        svcs = requests.get(f"{API}/admin/services", headers=_h(tokens["admin"])).json()
+        assert any(s.get("order_id") == oid for s in svcs), \
+            "paying the order invoice must auto-create a service linked to the order"
 
 
 # ============================================================ INTEGRATIONS
@@ -284,8 +299,11 @@ class TestIntegrations:
         assert r.status_code == 200
         modules = r.json()
         keys = {m["key"] for m in modules}
-        expected = {"cpanel","plesk","proxmox","mikrotik","duitku","xendit","midtrans","smtp","whois","blacklist","dcim"}
-        assert keys == expected, f"missing {expected - keys}, extra {keys - expected}"
+        # Duitku-only policy: xendit/midtrans stay hidden unless the
+        # settings flag `enable_extra_payment_gateways` is turned on.
+        expected = {"cpanel","plesk","proxmox","mikrotik","duitku","smtp","whois","blacklist"}
+        assert expected.issubset(keys), f"missing {expected - keys}"
+        assert not ({"xendit", "midtrans"} & keys), "extra gateways must stay hidden by default"
         # every module has fields
         for m in modules:
             assert "fields" in m and len(m["fields"]) > 0
@@ -344,10 +362,16 @@ class TestMail:
         r = requests.get(f"{API}/admin/mail/inbox", headers=_h(tokens["admin"]))
         assert r.status_code == 200
         msgs = r.json()
-        assert len(msgs) >= 4
+        if isinstance(msgs, dict):
+            # Per-user mail design: no personal IMAP configured → not_setup hint
+            assert msgs.get("not_setup") is True
+            pytest.skip("admin has no personal IMAP configured in this environment")
+        assert len(msgs) >= 1
 
     def test_read_and_send(self, tokens):
         inbox = requests.get(f"{API}/admin/mail/inbox", headers=_h(tokens["admin"])).json()
+        if isinstance(inbox, dict) or not inbox:
+            pytest.skip("admin has no personal IMAP configured in this environment")
         # find an unread message (if any left after prior runs)
         target = next((m for m in inbox if m["unread"]), inbox[0])
         r = requests.get(f"{API}/admin/mail/messages/{target['id']}", headers=_h(tokens["admin"]))

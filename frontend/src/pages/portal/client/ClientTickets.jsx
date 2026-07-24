@@ -100,6 +100,15 @@ const NewTicketModal = ({ onClose, onCreated }) => {
               </select>
             </div>
           </div>
+          {devices.length > 0 && (
+            <div>
+              <div className={labelClass}>Related device <span className="ml-1 text-slate-400 normal-case">(optional)</span></div>
+              <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} className={inputClass} data-testid="ticket-device-select">
+                <option value="">— none —</option>
+                {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+          )}
           <div>
             <div className={labelClass}>Message</div>
             <textarea required rows={5} value={message} onChange={(e) => setMessage(e.target.value)} className={`${inputClass} h-auto py-2`} data-testid="ticket-message" />

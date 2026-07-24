@@ -19,7 +19,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL_MINUTES = 60 * 24 * 7  # 1 week for portal use
 
-STAFF_ROLES = {"admin", "owner", "sales", "finance", "support", "ticket_only"}
+STAFF_ROLES = {"admin", "owner", "sales", "finance", "support", "ticket_only", "creative"}
 FINANCE_ROLES = {"admin", "owner", "finance"}  # sees revenue/finance widgets (owner read-only)
 BILLING_ROLES = {"admin", "sales"}  # invoices/quotations
 CATALOG_ROLES = {"admin", "support"}  # product mgmt
@@ -28,6 +28,9 @@ USER_MGMT_ROLES = {"admin"}
 TICKET_ROLES = {"admin", "sales", "support", "ticket_only"}
 # Executive read-only visibility — cannot write, only see aggregated dashboards.
 OWNER_ROLES = {"admin", "owner"}
+# Digital Creative team — read/write scoped to content tooling ONLY
+# (articles, media library, content calendar). No billing/CRM/NOC/finance.
+CONTENT_ROLES = {"admin", "creative"}
 
 
 def _secret() -> str:
@@ -119,6 +122,13 @@ async def get_current_staff(user=Depends(get_current_user)):
 async def get_current_admin(user=Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
+    return user
+
+
+async def get_current_content(user=Depends(get_current_user)):
+    """Content tooling (articles/media/calendar): admin + creative."""
+    if user.get("role") not in CONTENT_ROLES:
+        raise HTTPException(status_code=403, detail="Content team only")
     return user
 
 

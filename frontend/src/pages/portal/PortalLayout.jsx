@@ -6,7 +6,7 @@ import {
   Send, Puzzle, Cloud, Menu, X, ChevronDown, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
-  History, MonitorCheck, ReceiptText, LineChart, Globe,
+  History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 
@@ -23,7 +23,7 @@ const ADMIN_NAV_GROUPS = [
   {
     label: "Overview",
     items: [
-      { key: "dashboard", to: "/portal/admin/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard", roles: ["admin", "sales", "finance", "support", "ticket_only"] },
+      { key: "dashboard", to: "/portal/admin/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard", roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
       { key: "owner_dashboard", to: "/portal/admin/owner", label: "Executive Overview", icon: LineChart, testid: "nav-owner-dashboard", roles: ["admin", "owner"] },
     ],
   },
@@ -54,7 +54,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "tickets",  to: "/portal/admin/tickets",  label: "Tickets",         icon: LifeBuoy, testid: "nav-tickets",  roles: ["admin", "sales", "finance", "support", "ticket_only"] },
       { key: "mail",     to: "/portal/admin/mail",     label: "Webmail",         icon: Send,    testid: "nav-mail",     roles: ["admin", "sales", "finance", "support"] },
       { key: "email",    to: "/portal/admin/email",    label: "Email Automation", icon: Send,    testid: "nav-email",    roles: ["admin"] },
-      { key: "articles", to: "/portal/admin/articles", label: "Articles",         icon: Newspaper, testid: "nav-articles", roles: ["admin", "sales", "finance", "support"] },
+      { key: "articles", to: "/portal/admin/articles", label: "Articles",         icon: Newspaper, testid: "nav-articles", roles: ["admin", "sales", "finance", "support", "creative"] },
     ],
   },
   {
@@ -72,9 +72,17 @@ const ADMIN_NAV_GROUPS = [
     items: [
       { key: "crm",       to: "/portal/admin/crm",       label: "Customer DB (CRM)", icon: UserSquare,    testid: "nav-crm",       roles: ["admin", "sales", "finance", "support"] },
       { key: "projects",  to: "/portal/admin/projects",  label: "Project Tracker",   icon: ClipboardList, testid: "nav-projects",  roles: ["admin", "sales", "support"] },
-      { key: "content",   to: "/portal/admin/content",   label: "Content Planner",   icon: CalendarDays,  testid: "nav-content",   roles: ["admin", "sales", "finance", "support"] },
+      { key: "content",   to: "/portal/admin/content",   label: "Content Planner",   icon: CalendarDays,  testid: "nav-content",   roles: ["admin", "sales", "finance", "support", "creative"] },
       { key: "followups", to: "/portal/admin/followups", label: "Follow-ups",        icon: CheckSquare,   testid: "nav-followups", roles: ["admin", "sales", "finance", "support"] },
       { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "sales", "finance", "support"] },
+    ],
+  },
+  {
+    label: "Creative",
+    items: [
+      { key: "media_library",    to: "/portal/admin/media-library",    label: "Media Library",    icon: Images,       testid: "nav-media-library",    roles: ["admin", "creative"] },
+      { key: "content_calendar", to: "/portal/admin/content-calendar", label: "Content Calendar", icon: CalendarDays, testid: "nav-content-calendar", roles: ["admin", "creative"] },
+      { key: "utm_builder",      to: "/portal/admin/utm-builder",      label: "UTM Builder",      icon: Link2,        testid: "nav-utm-builder",      roles: ["admin", "creative", "sales"] },
     ],
   },
   {

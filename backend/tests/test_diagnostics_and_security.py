@@ -35,9 +35,11 @@ CLIENT_EMAIL = "demo@client.com"
 CLIENT_PASSWORD = "ClientDemo2026!"
 
 
-def _login(email, password):
+def _login(email, password, ip=None):
+    headers = {"X-Forwarded-For": ip} if ip else None
     return requests.post(f"{LOCAL_API}/auth/login",
                          json={"email": email, "password": password},
+                         headers=headers,
                          timeout=20)
 
 
@@ -366,15 +368,17 @@ class TestSecurityAutoBlock:
                            "window_minutes": 15, "ban_minutes": 30}, timeout=15)
 
     def test_20_auto_block_after_12_fails(self, admin_headers):
-        # Guard: clear existing block for 127.0.0.1
-        requests.delete(f"{LOCAL_API}/admin/security/blocked-ips/127.0.0.1",
+        # Dedicated attacker IP for this test — auto-block + limiter both key
+        # by the X-Forwarded-For-aware client IP now.
+        atk_ip = f"172.30.{uuid.uuid4().int % 200 + 1}.{uuid.uuid4().int % 250 + 1}"
+        requests.delete(f"{LOCAL_API}/admin/security/blocked-ips/{atk_ip}",
                         headers=admin_headers, timeout=15)
 
         bad_email = f"newbad_{uuid.uuid4().hex[:8]}@example.com"
         got_429 = False
         codes = []
         for i in range(12):
-            r = _login(bad_email, "wrong-pass")
+            r = _login(bad_email, "wrong-pass", ip=atk_ip)
             codes.append(r.status_code)
             if r.status_code == 429:
                 got_429 = True
@@ -383,13 +387,13 @@ class TestSecurityAutoBlock:
         # At least attempts >= 11 should be 429 (the 11th onwards)
         assert codes.count(429) >= 1, codes
 
-        # blocked-ips list shows 127.0.0.1 active
+        # blocked-ips list shows the attacker IP active
         r = requests.get(f"{LOCAL_API}/admin/security/blocked-ips",
                          headers=admin_headers, params={"active_only": True},
                          timeout=15)
         assert r.status_code == 200, r.text
         ips = [d["ip"] for d in r.json() if d.get("active")]
-        assert "127.0.0.1" in ips, f"127.0.0.1 not active in blocked_ips: {r.json()}"
+        assert atk_ip in ips, f"{atk_ip} not active in blocked_ips: {r.json()}"
 
         # Notification of type ip_auto_blocked exists
         rn = requests.get(f"{LOCAL_API}/admin/security/notifications",
@@ -400,7 +404,7 @@ class TestSecurityAutoBlock:
         assert "ip_auto_blocked" in kinds, f"kinds={kinds}"
 
         # DELETE (manual unblock)
-        ru = requests.delete(f"{LOCAL_API}/admin/security/blocked-ips/127.0.0.1",
+        ru = requests.delete(f"{LOCAL_API}/admin/security/blocked-ips/{atk_ip}",
                              headers=admin_headers, timeout=15)
         assert ru.status_code == 200, ru.text
         assert ru.json().get("ok") is True
@@ -412,10 +416,10 @@ class TestSecurityAutoBlock:
         r_after = _login(ADMIN_EMAIL, ADMIN_PASSWORD)
         assert r_after.status_code == 200, r_after.text
 
-        # blocked-ips list with active_only should NOT include 127.0.0.1 anymore
+        # blocked-ips list with active_only should NOT include the attacker IP
         r = requests.get(f"{LOCAL_API}/admin/security/blocked-ips",
                          headers=admin_headers, params={"active_only": True},
                          timeout=15)
         assert r.status_code == 200
         active_ips = [d["ip"] for d in r.json() if d.get("active")]
-        assert "127.0.0.1" not in active_ips, active_ips
+        assert atk_ip not in active_ips, active_ips

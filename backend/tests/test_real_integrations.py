@@ -19,15 +19,31 @@ def admin_token():
     return r.json()["token"]
 
 
+def _set_extra_gateways(admin_token, on: bool):
+    r = requests.put(f"{API}/admin/billing/settings", headers=_h(admin_token),
+                     json={"enable_extra_payment_gateways": on})
+    assert r.status_code == 200, r.text
+
+
 class TestIntegrationsScaffold:
     def test_schema_returns_5_providers(self, admin_token):
         r = requests.get(f"{API}/admin/integrations-v2/schema", headers=_h(admin_token))
         assert r.status_code == 200
         body = r.json()
-        assert set(body.keys()) >= {"proxmox", "mikrotik", "midtrans", "xendit", "duitku", "smtp"}
-        # every provider has credentials + label
+        # Duitku-only policy: midtrans/xendit are hidden unless the
+        # enable_extra_payment_gateways flag is on (default off).
+        assert set(body.keys()) >= {"proxmox", "mikrotik", "duitku", "smtp"}
+        assert not ({"midtrans", "xendit"} & set(body.keys()))
         for k, spec in body.items():
             assert "label" in spec and "credentials" in spec
+        # With the flag on, the extra gateways become visible again.
+        _set_extra_gateways(admin_token, True)
+        try:
+            body2 = requests.get(f"{API}/admin/integrations-v2/schema",
+                                 headers=_h(admin_token)).json()
+            assert {"midtrans", "xendit"} <= set(body2.keys())
+        finally:
+            _set_extra_gateways(admin_token, False)
 
     def test_client_cannot_access_schema(self):
         r = requests.post(f"{API}/auth/login", json={
@@ -38,27 +54,35 @@ class TestIntegrationsScaffold:
         assert r2.status_code == 403
 
     def test_list_and_upsert_and_masking(self, admin_token):
-        # Start clean
-        empty = requests.get(f"{API}/admin/integrations-v2", headers=_h(admin_token)).json()
-        assert "proxmox" in empty and "mikrotik" in empty and "midtrans" in empty
+        # Midtrans is the masking guinea pig (holds no live credentials) —
+        # needs the extra-gateways flag on while we exercise it.
+        _set_extra_gateways(admin_token, True)
+        try:
+            empty = requests.get(f"{API}/admin/integrations-v2", headers=_h(admin_token)).json()
+            assert "proxmox" in empty and "mikrotik" in empty and "midtrans" in empty
 
-        # Save Midtrans with a fake key
-        payload = {"enabled": True, "sandbox": True,
-                   "credentials": {"server_key": "SB-Mid-server-abcdef", "client_key": "SB-Mid-client-xyz"}}
-        r = requests.put(f"{API}/admin/integrations-v2/midtrans", headers=_h(admin_token), json=payload)
-        assert r.status_code == 200
-        body = r.json()
-        # Secrets are redacted in the response
-        assert body["credentials"]["server_key"] == ""
-        assert body["credentials"].get("server_key_masked", "").startswith("SB-M")
+            # Save Midtrans with a fake key
+            payload = {"enabled": True, "sandbox": True,
+                       "credentials": {"server_key": "SB-Mid-server-abcdef", "client_key": "SB-Mid-client-xyz"}}
+            r = requests.put(f"{API}/admin/integrations-v2/midtrans", headers=_h(admin_token), json=payload)
+            assert r.status_code == 200
+            body = r.json()
+            # Secrets are redacted in the response
+            assert body["credentials"]["server_key"] == ""
+            assert body["credentials"].get("server_key_masked", "").startswith("SB-M")
 
-        # Re-save with EMPTY credentials → must NOT wipe the existing secret
-        r2 = requests.put(f"{API}/admin/integrations-v2/midtrans", headers=_h(admin_token),
-                          json={"enabled": True, "sandbox": True, "credentials": {"client_key": "SB-Mid-client-ZZZ"}})
-        assert r2.status_code == 200
-        # Test-connection should still succeed since server_key was preserved
-        t = requests.post(f"{API}/admin/integrations-v2/midtrans/test", headers=_h(admin_token)).json()
-        assert t.get("ok") is True
+            # Re-save with EMPTY credentials → must NOT wipe the existing secret
+            r2 = requests.put(f"{API}/admin/integrations-v2/midtrans", headers=_h(admin_token),
+                              json={"enabled": True, "sandbox": True, "credentials": {"client_key": "SB-Mid-client-ZZZ"}})
+            assert r2.status_code == 200
+            # Test-connection should still succeed since server_key was preserved
+            t = requests.post(f"{API}/admin/integrations-v2/midtrans/test", headers=_h(admin_token)).json()
+            assert t.get("ok") is True
+        finally:
+            # Leave midtrans disabled + flag off (Duitku-only policy)
+            requests.put(f"{API}/admin/integrations-v2/midtrans", headers=_h(admin_token),
+                         json={"enabled": False})
+            _set_extra_gateways(admin_token, False)
 
     def test_test_endpoint_on_unconfigured_returns_ok_message(self, admin_token):
         # Clear proxmox and verify friendly message

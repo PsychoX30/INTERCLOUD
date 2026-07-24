@@ -2,6 +2,11 @@
 
 React + FastAPI + MongoDB ISP/Cloud Provider admin portal with live MikroTik integration.
 
+## Conventions
+- **Never** write real merchant IDs, account numbers, or environment identifiers
+  into tracked markdown files — those belong in `memory/test_credentials.md`
+  (gitignored) or the DB (`integrations` collection).
+
 ## Original problem statement
 Enterprise-ready admin portal for ISP/DC operator "Intercloud Digital Inovasi"
 with role-based access, per-admin email, PDF invoices, MikroTik live ops,
@@ -195,7 +200,7 @@ webroot pre-created, `server_tokens off`.
 - **DuitkuGateway per POP docs terkini** (`integrations_v2.py`): create signature
   HMAC_SHA256(merchantCode+timestamp, apiKey); callback verify HMAC_SHA256 primary +
   legacy MD5 fallback + merchantCode match; createInvoice mengirim returnUrl (wajib) +
-  expiryPeriod, raise saat statusCode != 00. LIVE-verified di PRODUCTION (merchant D15021,
+  expiryPeriod, raise saat statusCode != 00. LIVE-verified di PRODUCTION (merchant <merchant-code-redacted, see integrations collection>,
   env terdeteksi production — sandbox menolak "Merchant Not Found"). Kredensial di
   collection `integrations` (module duitku, enabled), TIDAK pernah hardcoded.
 - **Webhook /webhooks/duitku idempotent**: transisi paid sekali saja (filter status!=paid);
@@ -220,4 +225,4 @@ webroot pre-created, `server_tokens off`.
 - **Tests**: test_duitku_payment_flow.py (6), test_renewal_billing.py (6) — all pass;
   testing agent 39 sub-test green. Catatan: suite lama test_portal.py dkk gagal karena
   mengharapkan user staff demo yang tidak lagi di-seed (pre-existing, bukan regresi).
-- Kredensial Duitku: merchant D15021 (production), API key tersimpan di DB integrations.
+- Kredensial Duitku: merchant <merchant-code-redacted, see integrations collection> (production), API key tersimpan di DB integrations.

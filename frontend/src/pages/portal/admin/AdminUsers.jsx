@@ -35,6 +35,7 @@ const AdminUsers = () => {
           : v === "client" ? "bg-emerald-100 text-emerald-700"
           : v === "finance" ? "bg-purple-100 text-purple-700"
           : v === "sales"   ? "bg-amber-100 text-amber-700"
+          : v === "creative" ? "bg-rose-100 text-rose-700"
           : "bg-sky-100 text-sky-700"
         }`}>{v}</span>
       ) },
@@ -337,6 +338,7 @@ const NewUserModal = ({ onClose, onDone }) => {
               <option value="sales">Sales</option>
               <option value="finance">Finance</option>
               <option value="support">Support</option>
+              <option value="creative">Creative</option>
               <option value="ticket_only">Ticket only</option>
             </select>
           </div>

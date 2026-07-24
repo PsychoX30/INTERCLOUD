@@ -172,12 +172,14 @@ class TestSystemUpdate:
             assert body["status"].startswith("STATUS=ok") or body["status"].startswith("STATUS=noop"), body["status"]
             assert "log_tail" in body and isinstance(body["log_tail"], str) and len(body["log_tail"]) > 0
         else:
-            assert r.status_code == 500, r.status_code
+            # 409 = an update/lock is already in progress (valid non-crash
+            # behavior); 500 = git fetch failed (preview /app has no remote).
+            assert r.status_code in (409, 500), r.status_code
             detail = r.json().get("detail", "")
             print(f"UPDATE_HARD_FAIL (captured for main agent): {detail}")
-            # Tolerate — preview /app has no `origin` remote so git fetch fails.
-            # A backup was still produced.
-            assert new_backups, "hard-fail with no backup would be a real problem"
+            if r.status_code == 500:
+                # A backup was still produced before the hard fail.
+                assert new_backups, "hard-fail with no backup would be a real problem"
 
 
 # ------------------------------------------------------------

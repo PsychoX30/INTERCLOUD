@@ -188,12 +188,14 @@ class TestBackupRestore:
         assert body.get("bytes_received") == len(archive)
         assert "log_tail" in body
 
-        # Users should still be intact
+        # Users should still be intact. (Between snapshot and restore another
+        # parallel worker may have added users that the restore rolls back —
+        # the invariant is that no PRE-EXISTING user is lost.)
         r_after = s.get(f"{API}/admin/users", headers=admin_headers, timeout=30)
         assert r_after.status_code == 200
         users_after = r_after.json()
         n_after = len(users_after) if isinstance(users_after, list) else len(users_after.get("items", []))
-        assert n_after == n_before, f"users lost: before={n_before} after={n_after}"
+        assert n_after >= n_before, f"users lost: before={n_before} after={n_after}"
 
 
 # ---------- Regression: Mikrotik page still reachable ----------

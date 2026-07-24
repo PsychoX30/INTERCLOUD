@@ -9,6 +9,7 @@ import {
   Loader2, X, Sparkles, ImagePlus, Video, ExternalLink, Star,
   Bold, Italic, List, Link as LinkIcon, Heading1, Heading2, Quote,
 } from "lucide-react";
+import { MediaPickerModal } from "./AdminMediaLibrary";
 
 const STATUS_TONE = {
   draft: "bg-slate-100 text-slate-600",
@@ -142,6 +143,7 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
   const [form, setForm] = useState({ ...article });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
   const [tab, setTab] = useState("write"); // write | media | seo
   const isNew = !article.id;
 
@@ -284,7 +286,14 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
               <>
                 <label className="block">
                   <div className={labelClass}>Cover image URL</div>
-                  <input value={form.cover_image_url} onChange={(e) => set("cover_image_url", e.target.value)} className={inputClass} placeholder="https://…" data-testid="editor-cover" />
+                  <div className="flex gap-2">
+                    <input value={form.cover_image_url} onChange={(e) => set("cover_image_url", e.target.value)} className={`${inputClass} flex-1`} placeholder="https://…" data-testid="editor-cover" />
+                    <button type="button" onClick={() => setShowMediaPicker(true)}
+                            className="px-3 h-11 rounded-lg border border-slate-300 text-xs font-bold text-[#0a2350] hover:border-[#f5b120] whitespace-nowrap"
+                            data-testid="editor-cover-library-btn">
+                      Media Library
+                    </button>
+                  </div>
                 </label>
                 <label className="block">
                   <div className={labelClass}>Cover image alt text <span className="ml-1 text-slate-400 normal-case">(describe the image for SEO + screen readers)</span></div>
@@ -388,6 +397,16 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
           </button>
         </div>
       </div>
+      {showMediaPicker && (
+        <MediaPickerModal
+          onClose={() => setShowMediaPicker(false)}
+          onPick={(url, m) => {
+            set("cover_image_url", url);
+            if (!form.cover_image_alt && m?.alt_text) set("cover_image_alt", m.alt_text);
+            setShowMediaPicker(false);
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -1,23 +1,26 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary } from "../ui";
-import { RefreshCw, PlayCircle, Loader2, CheckCircle2, XCircle, Wifi, WifiOff, Activity, AlertTriangle, ExternalLink } from "lucide-react";
+import { RefreshCw, PlayCircle, Loader2, CheckCircle2, XCircle, Wifi, WifiOff, Activity, AlertTriangle, ExternalLink, Ticket as TicketIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 
 const AdminNOC = () => {
   const [devices, setDevices] = useState([]);
   const [events, setEvents] = useState([]);
+  const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [d, e] = await Promise.all([
+      const [d, e, t] = await Promise.all([
         api.get("/admin/noc/devices"),
         api.get("/admin/noc/events?limit=100"),
+        api.get("/admin/tickets").catch(() => ({ data: [] })),
       ]);
       setDevices(d.data || []);
       setEvents(e.data || []);
+      setTickets((t.data || []).filter((tk) => tk.related_device_id));
     } finally { setLoading(false); }
   }, []);
 
@@ -84,7 +87,10 @@ const AdminNOC = () => {
       {devices.length > 0 && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
-            {devices.map((d) => <DeviceCard key={d.id} d={d} />)}
+            {devices.map((d) => (
+              <DeviceCard key={d.id} d={d}
+                          tickets={tickets.filter((t) => t.related_device_id === d.id)} />
+            ))}
           </div>
 
           <Card className="overflow-hidden">
@@ -170,13 +176,15 @@ const KPI = ({ label, value, total, tone = "default", testid, Icon }) => {
   );
 };
 
-const DeviceCard = ({ d }) => {
+const DeviceCard = ({ d, tickets = [] }) => {
   const status = d.status || "unknown";
   const styles = {
     up:      { dot: "bg-emerald-500", ring: "border-emerald-200", chip: "bg-emerald-100 text-emerald-700" },
-    down:    { dot: "bg-red-500 animate-pulse", ring: "border-red-300", chip: "bg-red-100 text-red-700" },
+    // motion-safe: users with prefers-reduced-motion get a static dot
+    down:    { dot: "bg-red-500 motion-safe:animate-pulse", ring: "border-red-300", chip: "bg-red-100 text-red-700" },
     unknown: { dot: "bg-slate-400", ring: "border-slate-200", chip: "bg-slate-100 text-slate-600" },
   }[status];
+  const openTickets = tickets.filter((t) => !["resolved", "closed"].includes(t.status));
   return (
     <div className={`rounded-2xl bg-white border-2 p-4 ${styles.ring}`} data-testid={`noc-device-${d.id}`}>
       <div className="flex items-start justify-between mb-2">
@@ -189,16 +197,37 @@ const DeviceCard = ({ d }) => {
         </span>
       </div>
       {d.site && <div className="text-xs text-slate-500 mb-2">📍 {d.site}</div>}
-      <div className="grid grid-cols-2 gap-2 text-xs">
+      <div className="grid grid-cols-3 gap-2 text-xs">
         <div>
           <div className="text-[10px] uppercase tracking-widest text-slate-400">24h uptime</div>
           <div className="font-bold text-slate-800">{d.uptime_24h_pct == null ? "—" : `${d.uptime_24h_pct}%`}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-slate-400">30d uptime</div>
+          <div className="font-bold text-slate-800" data-testid={`noc-device-30d-${d.id}`}>{d.uptime_30d_pct == null ? "—" : `${d.uptime_30d_pct}%`}</div>
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-widest text-slate-400">Samples</div>
           <div className="font-bold text-slate-800">{d.samples_24h || 0}</div>
         </div>
       </div>
+      {tickets.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-100" data-testid={`noc-device-tickets-${d.id}`}>
+          <div className="text-[10px] uppercase tracking-widest text-slate-400 mb-1">
+            Related tickets ({openTickets.length} open / {tickets.length} total)
+          </div>
+          <div className="space-y-0.5">
+            {tickets.slice(0, 3).map((t) => (
+              <Link key={t.id} to="/portal/admin/tickets"
+                    className="block text-[11px] text-[#0a2350] hover:text-[#f5b120] truncate focus-visible:ring-2 focus-visible:ring-[#f5b120] rounded"
+                    title={t.subject}>
+                <TicketIcon className="h-3 w-3 inline mr-1 text-slate-400" />
+                {t.number ? `${t.number} — ` : ""}{t.subject}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
       {d.last_probe_at && (
         <div className="mt-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500 font-mono truncate" title={d.last_message}>
           Last probe: {d.last_probe_at.slice(11, 19)} UTC

@@ -22,9 +22,13 @@ class TestUnifiedSchema:
         r = requests.get(f"{API}/admin/integrations-v2/schema", headers=_h(admin_token))
         assert r.status_code == 200
         keys = set(r.json().keys())
+        # Duitku-only policy: midtrans/xendit hidden unless the
+        # enable_extra_payment_gateways flag is on (default off).
         expected = {"proxmox", "mikrotik", "cpanel", "plesk",
-                    "midtrans", "xendit", "duitku", "smtp", "imap"}
+                    "duitku", "smtp", "imap"}
         assert expected.issubset(keys), f"missing providers: {expected - keys}"
+        assert not ({"midtrans", "xendit"} & keys), \
+            "extra gateways must stay hidden by default"
 
     def test_schema_has_categories(self, admin_token):
         r = requests.get(f"{API}/admin/integrations-v2/schema", headers=_h(admin_token))
@@ -33,7 +37,7 @@ class TestUnifiedSchema:
         assert schema["mikrotik"]["category"] == "network"
         assert schema["cpanel"]["category"] == "provisioning"
         assert schema["plesk"]["category"] == "provisioning"
-        assert schema["midtrans"]["category"] == "payment"
+        assert schema["duitku"]["category"] == "payment"
         assert schema["smtp"]["category"] == "mail"
         assert schema["imap"]["category"] == "mail"
 
@@ -164,16 +168,28 @@ class TestMenuCatalog:
 
 class TestMailInboxHonorsIMAP:
     def test_inbox_falls_back_to_mock_when_imap_disabled(self, admin_token):
-        # Ensure IMAP disabled
-        requests.put(f"{API}/admin/integrations-v2/imap",
-                     headers=_h(admin_token),
-                     json={"enabled": False, "credentials": {}, "options": {}})
-        r = requests.get(f"{API}/admin/mail/inbox", headers=_h(admin_token))
+        # Mail is PER-USER now: a staff account with no personal IMAP creds
+        # must receive an actionable not_setup hint — never a 500, never
+        # another user's live mailbox.
+        email, pw = "inboxbare-unified@intercloud-digital.com", "InboxBare2026!"
+        users = requests.get(f"{API}/admin/users", headers=_h(admin_token)).json()
+        hit = next((u for u in users if u.get("email") == email), None)
+        if hit:
+            requests.put(f"{API}/admin/users/{hit['id']}", headers=_h(admin_token),
+                         json={"password": pw, "role": "support"})
+        else:
+            requests.post(f"{API}/admin/users", headers=_h(admin_token), json={
+                "email": email, "password": pw, "name": "Inbox Bare", "role": "support"})
+        tok = requests.post(f"{API}/auth/login",
+                            json={"email": email, "password": pw}).json()["token"]
+        r = requests.get(f"{API}/admin/mail/inbox", headers=_h(tok))
         assert r.status_code == 200
-        rows = r.json()
-        assert isinstance(rows, list)
-        # mocked messages have no _live flag
-        assert all(not m.get("_live") for m in rows)
+        body = r.json()
+        if isinstance(body, dict):
+            assert body.get("not_setup") is True
+        else:
+            # If a list is returned it must not leak live messages
+            assert all(not m.get("_live") for m in body)
 
 
 class TestDeleteEndpoint:

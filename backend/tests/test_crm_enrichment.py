@@ -49,8 +49,11 @@ class TestCrmEnrichment:
 
     def test_unlinked_prospect_has_empty_enrichment(self):
         rows = requests.get(f"{API}/admin/crm", headers=_h(_admin_token())).json()
-        # Prospects without a user_id (or without any orders) should have zeros
-        no_orders = [r for r in rows if not r.get("latest_order")]
+        # UNLINKED prospects (no portal user) with no orders must have zeros.
+        # (A linked client can legitimately have paid invoices — e.g. settled
+        # via credit note — without any order, so only unlinked rows qualify.)
+        no_orders = [r for r in rows
+                     if not r.get("latest_order") and not r.get("user_id")]
         for r in no_orders:
             assert r["active_orders_count"] == 0
             assert r["in_progress_count"] == 0

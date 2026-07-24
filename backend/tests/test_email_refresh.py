@@ -4,7 +4,7 @@ import requests
 import pytest
 
 API = os.environ.get("PORTAL_API_BASE") or "http://localhost:8001/api/portal"
-LOGO_URL_FRAGMENT = "intercloud-digital.com/wp-content/uploads/2024/07/Mask-group.png"
+LOGO_URL_FRAGMENT = "intercloud-digital.com/og-logo.png"
 
 
 def _h(tok):

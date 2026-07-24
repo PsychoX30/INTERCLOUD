@@ -18,6 +18,11 @@ const AdminTickets = () => {
         <>
           <div className="font-extrabold text-[#0a2350]">{t.subject}</div>
           <div className="text-xs text-slate-500">{t.user_name} · {t.user_email}</div>
+          {t.related_device_name && (
+            <div className="text-[10px] mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-mono" data-testid={`ticket-device-${t.id}`}>
+              ⛁ {t.related_device_name}
+            </div>
+          )}
         </>
       ) },
     { key: "department", label: "Dept.", sortable: true,

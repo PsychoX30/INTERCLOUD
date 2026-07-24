@@ -12,7 +12,7 @@ import time
 import pytest
 import requests
 
-from backend.portal import integrations_v2 as iv2
+from portal import integrations_v2 as iv2
 
 
 API = os.environ.get("REACT_APP_BACKEND_URL") or (

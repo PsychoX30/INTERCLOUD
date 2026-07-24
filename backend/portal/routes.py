@@ -8,10 +8,10 @@ from typing import List, Optional
 from . import models as m
 from .auth import (
     verify_password, hash_password, create_access_token,
-    get_current_user, get_current_admin, get_current_staff,
+    get_current_user, get_current_admin, get_current_staff, get_current_content,
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
-    OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES,
+    OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
 from .audit import log_audit, serialize as _serialize_audit
 
@@ -109,9 +109,59 @@ async def _sales_visible_crm_ids(db, staff: dict) -> list | None:
 
 
 async def _next_number(db, coll: str, prefix: str) -> str:
+    """Race-safe sequential document numbering via an atomic counter doc.
+    The old count_documents()+1 approach produced duplicate numbers (and 500s
+    on the unique index) under concurrent creation."""
+    from pymongo import ReturnDocument
     year = datetime.now(timezone.utc).year
-    count = await db[coll].count_documents({}) + 1
-    return f"{prefix}-{year}-{count:05d}"
+    key = f"number:{coll}"
+    doc = await db.counters.find_one_and_update(
+        {"_id": key}, {"$inc": {"seq": 1}},
+        upsert=True, return_document=ReturnDocument.AFTER,
+    )
+    seq = int(doc["seq"])
+    if seq == 1:
+        # First use on an existing dataset: fast-forward past legacy numbers.
+        last = await db[coll].find_one({"number": {"$regex": f"^{prefix}-"}},
+                                       sort=[("number", -1)])
+        if last:
+            try:
+                legacy = int(str(last.get("number", "")).rsplit("-", 1)[-1])
+            except (TypeError, ValueError):
+                legacy = await db[coll].count_documents({})
+            if legacy >= seq:
+                doc = await db.counters.find_one_and_update(
+                    {"_id": key}, {"$max": {"seq": legacy + 1}},
+                    return_document=ReturnDocument.AFTER,
+                )
+                seq = int(doc["seq"])
+    return f"{prefix}-{year}-{seq:05d}"
+
+
+async def _insert_numbered(db, coll: str, prefix: str, doc: dict):
+    """Insert a document carrying a unique sequential `number`.
+    Retries with a fresh number on the (rare) DuplicateKeyError — e.g. when a
+    DB restore rolls the counter back underneath concurrent writers."""
+    from pymongo.errors import DuplicateKeyError
+    for _ in range(5):
+        doc["number"] = await _next_number(db, coll, prefix)
+        try:
+            r = await db[coll].insert_one(doc)
+            doc["_id"] = r.inserted_id
+            return doc
+        except DuplicateKeyError:
+            # Fast-forward the counter past the current max and retry
+            last = await db[coll].find_one({"number": {"$regex": f"^{prefix}-"}},
+                                           sort=[("number", -1)])
+            if last:
+                try:
+                    legacy = int(str(last.get("number", "")).rsplit("-", 1)[-1])
+                    await db.counters.update_one({"_id": f"number:{coll}"},
+                                                 {"$max": {"seq": legacy}}, upsert=True)
+                except (TypeError, ValueError):
+                    pass
+            doc.pop("_id", None)
+    raise HTTPException(status_code=500, detail=f"Could not allocate a unique {prefix} number")
 
 
 async def _mark_overdue(db):
@@ -403,7 +453,7 @@ async def _is_ip_blocked(db, ip: str) -> bool:
 from portal.security import (
     limiter as _rl_limiter,
     AUTH_LOGIN_LIMIT, AUTH_REGISTER_LIMIT,
-    AUTH_FORGOT_LIMIT, AUTH_RESET_LIMIT,
+    AUTH_FORGOT_LIMIT, AUTH_RESET_LIMIT, PUBLIC_STATUS_LIMIT,
 )
 
 
@@ -412,7 +462,8 @@ from portal.security import (
 async def login(payload: m.LoginIn, request: Request):
     db = await _get_db()
     from portal import integrations_v2 as _iv2
-    ip = request.client.host if request.client else "unknown"
+    from portal.security import _client_ip as _rl_client_ip
+    ip = _rl_client_ip(request)
     ua = request.headers.get("user-agent", "")
     email = payload.email.lower().strip()
 
@@ -648,6 +699,7 @@ async def _serialize_invoice(db, d: dict) -> dict:
         "payment_link": d.get("payment_link"),
         "payment_ref": d.get("payment_ref"),
         "service_id": d.get("service_id"),
+        "order_id": d.get("order_id"),
         "renewal_period": d.get("renewal_period"),
         "created_at": _iso(d.get("created_at", "")),
         "notes": d.get("notes", ""),
@@ -898,8 +950,21 @@ async def client_orders(user=Depends(get_current_user)):
 
 
 # Client tickets
+def _deny_creative(user: dict) -> None:
+    """Creative role is content-scoped: block billing/CRM/sales surfaces."""
+    if user.get("role") == "creative":
+        raise HTTPException(status_code=403, detail="Content team only — no billing/CRM access")
+
+
 async def _serialize_ticket(db, d: dict) -> dict:
     u = await db.users.find_one({"_id": d["user_id"]}) or {}
+    dev_name = None
+    if d.get("related_device_id"):
+        try:
+            dev = await db.mikrotik_devices.find_one({"_id": ObjectId(d["related_device_id"])})
+            dev_name = (dev or {}).get("name")
+        except Exception:
+            dev_name = None
     return {
         "id": str(d["_id"]),
         "number": d.get("number", ""),
@@ -911,6 +976,8 @@ async def _serialize_ticket(db, d: dict) -> dict:
         "priority": d.get("priority", "medium"),
         "status": d.get("status", "open"),
         "replies": d.get("replies", []),
+        "related_device_id": d.get("related_device_id"),
+        "related_device_name": dev_name,
         "created_at": _iso(d.get("created_at", "")),
         "updated_at": _iso(d.get("updated_at", "")),
     }
@@ -935,6 +1002,7 @@ async def client_create_ticket(payload: m.TicketIn, user=Depends(get_current_use
         "department": payload.department,
         "priority": payload.priority,
         "status": "open",
+        "related_device_id": payload.related_device_id or None,
         "replies": [{
             "author_id": user["id"],
             "author_name": user["name"],
@@ -1178,7 +1246,7 @@ async def clear_my_email_settings(user=Depends(get_current_user)):
 # Menu catalog (used by the Admin User Access modal to render per-menu checkboxes).
 # The frontend PortalLayout.jsx must import ADMIN_MENU_CATALOG matching these keys.
 ADMIN_MENU_CATALOG = [
-    {"key": "dashboard",       "label": "Dashboard",        "group": "Overview",       "default_roles": ["admin", "sales", "finance", "support", "ticket_only"]},
+    {"key": "dashboard",       "label": "Dashboard",        "group": "Overview",       "default_roles": ["admin", "sales", "finance", "support", "ticket_only", "creative"]},
     {"key": "orders",          "label": "Orders",           "group": "Sales & Billing", "default_roles": ["admin", "sales", "finance"]},
     {"key": "invoices",        "label": "Invoices",         "group": "Sales & Billing", "default_roles": ["admin", "finance"]},
     {"key": "quotations",      "label": "Quotations",       "group": "Sales & Billing", "default_roles": ["admin", "sales", "finance"]},
@@ -1192,14 +1260,14 @@ ADMIN_MENU_CATALOG = [
     {"key": "tickets",         "label": "Tickets",          "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support", "ticket_only"]},
     {"key": "mail",            "label": "Webmail",          "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "email",           "label": "Email Automation", "group": "Support & CRM",  "default_roles": ["admin"]},
-    {"key": "articles",        "label": "Articles",         "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support"]},
+    {"key": "articles",        "label": "Articles",         "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support", "creative"]},
     {"key": "provisioning",    "label": "Provisioning",     "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "mikrotik",        "label": "MikroTik Ops",     "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "dcim",            "label": "DCIM & IPAM",      "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "diagnostics",     "label": "Diagnostics",      "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "crm",             "label": "Customer DB (CRM)","group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "projects",        "label": "Project Tracker",  "group": "Business",       "default_roles": ["admin", "sales", "support"]},
-    {"key": "content",         "label": "Content Planner",  "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
+    {"key": "content",         "label": "Content Planner",  "group": "Business",       "default_roles": ["admin", "sales", "finance", "support", "creative"]},
     {"key": "followups",       "label": "Follow-ups",       "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "documents",       "label": "Documents",        "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "integrations",    "label": "Integrations",     "group": "System",         "default_roles": ["admin"]},
@@ -1208,6 +1276,9 @@ ADMIN_MENU_CATALOG = [
     {"key": "noc",             "label": "NOC Monitor",      "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "credit_notes",    "label": "Credit Notes",     "group": "Sales & Billing", "default_roles": ["admin", "finance"]},
     {"key": "owner_dashboard", "label": "Executive Overview","group": "Overview",       "default_roles": ["admin", "owner"]},
+    {"key": "media_library",   "label": "Media Library",    "group": "Creative",       "default_roles": ["admin", "creative"]},
+    {"key": "content_calendar","label": "Content Calendar", "group": "Creative",       "default_roles": ["admin", "creative"]},
+    {"key": "utm_builder",     "label": "UTM Builder",      "group": "Creative",       "default_roles": ["admin", "creative", "sales"]},
     {"key": "branding",        "label": "Branding",         "group": "System",         "default_roles": ["admin"]},
     {"key": "site_content",    "label": "Landing CMS",      "group": "System",         "default_roles": ["admin"]},
     {"key": "backup",          "label": "Backup & Restore", "group": "System",         "default_roles": ["admin"]},
@@ -1688,6 +1759,7 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
 # Orders
 @router.get("/admin/orders")
 async def admin_list_orders(staff=Depends(get_current_staff)):
+    _deny_creative(staff)
     db = await _get_db()
     q = {}
     if staff["role"] == "sales":
@@ -1739,6 +1811,7 @@ async def client_confirm_transfer(oid: str, payload: dict, user=Depends(get_curr
 # Invoices (staff — Sales sees only invoices of their assigned clients)
 @router.get("/admin/invoices")
 async def admin_list_invoices(staff=Depends(get_current_staff)):
+    _deny_creative(staff)
     db = await _get_db()
     await _mark_overdue(db)
     q = _sales_scope_filter(staff, key="user_id")
@@ -1826,6 +1899,7 @@ async def _serialize_quotation(db, d: dict) -> dict:
 
 @router.get("/admin/quotations")
 async def admin_list_quotations(staff=Depends(get_current_staff)):
+    _deny_creative(staff)
     db = await _get_db()
     q = {}
     if staff["role"] == "sales":
@@ -1875,9 +1949,13 @@ async def admin_update_quotation_status(
 
 # Tickets (staff — any staff role can view/reply)
 @router.get("/admin/tickets")
-async def admin_list_tickets(staff=Depends(get_current_staff)):
+async def admin_list_tickets(staff=Depends(get_current_staff),
+                             device_id: Optional[str] = None):
     db = await _get_db()
-    docs = await db.tickets.find({}).sort("updated_at", -1).to_list(2000)
+    query: dict = {}
+    if device_id:
+        query["related_device_id"] = device_id
+    docs = await db.tickets.find(query).sort("updated_at", -1).to_list(2000)
     return [await _serialize_ticket(db, d) for d in docs]
 
 
@@ -1944,6 +2022,7 @@ def _serialize_service(d: dict) -> dict:
         "next_renewal": d.get("next_renewal", ""),
         "price_monthly": d.get("price_monthly", 0),
         "config": d.get("config", {}),
+        "order_id": d.get("order_id"),
     }
 
 
@@ -2477,6 +2556,7 @@ async def _crm_enrichment_by_uid(db, user_ids: list) -> dict:
 
 @router.get("/admin/crm")
 async def crm_list(staff=Depends(get_current_staff)):
+    _deny_creative(staff)
     db = await _get_db()
     q = _sales_scope_filter(staff, key="user_id")
     docs = await db.crm_customers.find(q).sort("updated_at", -1).to_list(2000)
@@ -2731,6 +2811,7 @@ async def _assert_sales_can_touch_followup(db, staff: dict, fid: str) -> dict:
 
 @router.get("/admin/followups")
 async def followups_list(staff=Depends(get_current_staff)):
+    _deny_creative(staff)
     db = await _get_db()
     q = await _sales_followup_filter(db, staff)
     if q is None:
@@ -6149,7 +6230,7 @@ async def admin_article_get(aid: str, staff=Depends(get_current_staff)):
 
 
 @router.post("/admin/articles")
-async def admin_article_create(payload: m.ArticleIn, admin=Depends(get_current_admin)):
+async def admin_article_create(payload: m.ArticleIn, admin=Depends(get_current_content)):
     db = await _get_db()
     await _ensure_article_indexes(db)
     now = _now()
@@ -6169,12 +6250,13 @@ async def admin_article_create(payload: m.ArticleIn, admin=Depends(get_current_a
         doc["published_at"] = now
     r = await db.articles.insert_one(doc)
     doc["_id"] = r.inserted_id
+    await _sync_article_calendar(db, doc, admin)
     return _serialize_article(doc)
 
 
 @router.put("/admin/articles/{aid}")
 async def admin_article_update(aid: str, payload: m.ArticleIn,
-                               admin=Depends(get_current_admin)):
+                               admin=Depends(get_current_content)):
     db = await _get_db()
     existing = await db.articles.find_one({"_id": _oid(aid)})
     if not existing:
@@ -6194,11 +6276,12 @@ async def admin_article_update(aid: str, payload: m.ArticleIn,
         upd["published_at"] = _now()
     await db.articles.update_one({"_id": _oid(aid)}, {"$set": upd})
     d2 = await db.articles.find_one({"_id": _oid(aid)})
+    await _sync_article_calendar(db, d2, admin)
     return _serialize_article(d2)
 
 
 @router.delete("/admin/articles/{aid}")
-async def admin_article_delete(aid: str, admin=Depends(get_current_admin)):
+async def admin_article_delete(aid: str, admin=Depends(get_current_content)):
     db = await _get_db()
     r = await db.articles.delete_one({"_id": _oid(aid)})
     return {"deleted": r.deleted_count}
@@ -6283,6 +6366,7 @@ async def public_article_detail(slug: str):
 _SITEMAP_STATIC_ROUTES = [
     ("", "1.0", "daily"),                # /
     ("articles", "0.9", "daily"),         # /articles
+    ("status", "0.5", "hourly"),          # /status — public uptime page
     ("legal/terms", "0.3", "yearly"),
     ("legal/aup", "0.3", "yearly"),
     ("legal/sla", "0.3", "yearly"),
@@ -6292,7 +6376,8 @@ _SITEMAP_ORIGINS = ("https://intercloud-digital.com",)
 
 
 @router.get("/sitemap.xml", include_in_schema=False)
-async def sitemap_xml():
+@_rl_limiter.limit(PUBLIC_STATUS_LIMIT)
+async def sitemap_xml(request: Request):
     """Serve a Google-friendly sitemap covering static routes + all
     published articles. Cache-friendly (5-min public cache)."""
     from fastapi.responses import Response as _R
@@ -6345,6 +6430,69 @@ async def sitemap_xml():
     return _R(content=body, media_type="application/xml",
               headers={"Cache-Control": "public, max-age=300"})
 
+
+
+# ============================================================
+# SEO — dynamic rendering for crawlers / link-preview bots
+# ============================================================
+# Non-JS crawlers (WhatsApp/Telegram/Facebook/Twitter/Slack/Discord link
+# unfurlers and some search bots) never execute the SPA, so per-article
+# meta tags set client-side are invisible to them. nginx rewrites bot
+# requests for /articles/<slug> to this endpoint (see install.sh).
+@router.get("/seo/render/articles/{slug}", include_in_schema=False)
+@_rl_limiter.limit(PUBLIC_STATUS_LIMIT)
+async def seo_render_article(slug: str, request: Request):
+    import html as _html
+    import json as _json
+    db = await _get_db()
+    a = await db.articles.find_one({"slug": slug, "status": "published"})
+    if not a:
+        raise HTTPException(status_code=404, detail="Article not found")
+    origin = _SITEMAP_ORIGINS[0]
+    title = (a.get("meta_title") or a.get("title") or "").strip()
+    desc = (a.get("meta_description") or a.get("excerpt") or "").strip()[:300]
+    image = a.get("og_image_url") or a.get("cover_image_url") or f"{origin}/og-image.png"
+    canonical = f"{origin}/articles/{slug}"
+    ld = _json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": a.get("title") or title,
+        "description": desc,
+        "image": [image],
+        "datePublished": a.get("published_at") or "",
+        "dateModified": a.get("updated_at") or "",
+        "author": {"@type": "Organization",
+                    "name": a.get("author_name") or "PT Intercloud Digital Inovasi"},
+        "publisher": {"@type": "Organization",
+                       "name": "PT Intercloud Digital Inovasi",
+                       "logo": {"@type": "ImageObject", "url": f"{origin}/og-logo.png"}},
+        "mainEntityOfPage": canonical,
+    }, ensure_ascii=False)
+    e = _html.escape
+    body_html = f"""<!doctype html>
+<html lang="id"><head>
+<meta charset="utf-8">
+<title>{e(title)} — Intercloud</title>
+<meta name="description" content="{e(desc)}">
+<link rel="canonical" href="{e(canonical)}">
+<meta property="og:type" content="article">
+<meta property="og:title" content="{e(title)}">
+<meta property="og:description" content="{e(desc)}">
+<meta property="og:image" content="{e(image)}">
+<meta property="og:url" content="{e(canonical)}">
+<meta property="og:site_name" content="PT. Intercloud Digital Inovasi">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{e(title)}">
+<meta name="twitter:description" content="{e(desc)}">
+<meta name="twitter:image" content="{e(image)}">
+<script type="application/ld+json">{ld}</script>
+</head><body>
+<h1>{e(a.get('title') or title)}</h1>
+<p>{e(desc)}</p>
+<a href="{e(canonical)}">Baca artikel lengkap di intercloud-digital.com</a>
+</body></html>"""
+    return HTMLResponse(content=body_html,
+                        headers={"Cache-Control": "public, max-age=300"})
 
 
 # ============================================================
@@ -6423,6 +6571,33 @@ async def admin_audit_logs_facets(admin=Depends(get_current_admin)):
 # ============================================================
 # NOC — proactive MikroTik reachability polling
 # ============================================================
+async def _noc_uptime_window(db, dev_ids, days: int):
+    """Uptime % over the last `days` days, combining `noc_daily_uptime`
+    rollups (full past days) with raw `noc_probes` for days not yet rolled
+    up (today + any recent gap). Survives raw-probe retention deletion."""
+    now = datetime.now(timezone.utc)
+    day_from = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+    today = now.strftime("%Y-%m-%d")
+    base: dict = {}
+    if dev_ids is not None:
+        base["device_id"] = {"$in": dev_ids}
+    total = 0
+    up = 0.0
+    rolled: set = set()
+    async for r in db.noc_daily_uptime.find({**base, "date": {"$gte": day_from, "$lt": today}}):
+        sc = int(r.get("sample_count") or 0)
+        total += sc
+        up += sc * float(r.get("uptime_pct") or 0) / 100.0
+        rolled.add((r.get("device_id"), r.get("date")))
+    async for p in db.noc_probes.find({**base, "at": {"$gte": day_from}},
+                                      {"device_id": 1, "at": 1, "ok": 1}):
+        if (p.get("device_id"), (p.get("at") or "")[:10]) in rolled:
+            continue
+        total += 1
+        up += 1 if p.get("ok") else 0
+    return round(up / total * 100, 2) if total else None
+
+
 @router.get("/admin/noc/devices")
 async def noc_devices_list(admin=Depends(get_current_admin)):
     """Current uptime state for every MikroTik device.
@@ -6443,6 +6618,7 @@ async def noc_devices_list(admin=Depends(get_current_admin)):
             "device_id": d["_id"], "at": {"$gte": since}, "ok": True,
         })
         uptime_pct = round((up_samples / samples) * 100, 2) if samples else None
+        uptime_30d = await _noc_uptime_window(db, [d["_id"]], 30)
         out.append({
             "id": str(d["_id"]),
             "name": d.get("name") or "unnamed",
@@ -6453,6 +6629,7 @@ async def noc_devices_list(admin=Depends(get_current_admin)):
             "last_change_at": state.get("last_change_at"),
             "last_message": state.get("last_message") or "",
             "uptime_24h_pct": uptime_pct,
+            "uptime_30d_pct": uptime_30d,
             "samples_24h": samples,
         })
     return out
@@ -6494,6 +6671,14 @@ async def noc_run_poll_now(admin=Depends(get_current_admin)):
     db = await _get_db()
     from portal import emails as _em
     return await _em.run_noc_probe_sweep(db)
+
+
+@router.post("/admin/noc/run-retention")
+async def noc_run_retention_now(admin=Depends(get_current_admin)):
+    """Manually trigger the daily probe rollup + retention job."""
+    db = await _get_db()
+    from portal import emails as _em
+    return await _em.run_noc_probe_retention(db)
 
 
 # ============================================================
@@ -7032,7 +7217,8 @@ _DEFAULT_STATUS_GROUPS = [
 
 
 @router.get("/public/status")
-async def public_status_page():
+@_rl_limiter.limit(PUBLIC_STATUS_LIMIT)
+async def public_status_page(request: Request):
     """Customer-friendly uptime snapshot with NO device names/IPs leaked.
 
     Devices are bucketed by their `status_group` field (default:
@@ -7050,7 +7236,6 @@ async def public_status_page():
 
     now = datetime.now(timezone.utc)
     since_24h = (now - timedelta(hours=24)).isoformat()
-    since_30d = (now - timedelta(days=30)).isoformat()
 
     out_groups = []
     any_degraded = False
@@ -7062,9 +7247,8 @@ async def public_status_page():
         total = await db.noc_probes.count_documents({**base, "at": {"$gte": since_24h}})
         up = await db.noc_probes.count_documents({**base, "at": {"$gte": since_24h}, "ok": True})
         uptime_24h = round((up / total) * 100, 2) if total else None
-        total_30 = await db.noc_probes.count_documents({**base, "at": {"$gte": since_30d}})
-        up_30 = await db.noc_probes.count_documents({**base, "at": {"$gte": since_30d}, "ok": True})
-        uptime_30d = round((up_30 / total_30) * 100, 2) if total_30 else None
+        # 30d window uses daily rollups + recent raw samples (retention-safe)
+        uptime_30d = await _noc_uptime_window(db, dev_ids if dev_ids else [None], 30)
         down_now = await db.noc_device_state.count_documents({
             "device_id": {"$in": dev_ids}, "status": "down",
         }) if dev_ids else 0
@@ -7126,3 +7310,291 @@ async def status_page_config_put(payload: dict, request: Request, admin=Depends(
                     before=before_doc.get("value"), after=value,
                     severity="info", request=request)
     return value
+
+
+# ============================================================
+# MEDIA LIBRARY — shared assets for the Digital Creative team
+# ============================================================
+from fastapi import UploadFile, File, Form  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+import uuid as _uuid  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+MEDIA_DIR = _Path(__file__).resolve().parent.parent / "uploads" / "media"
+_MEDIA_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"}
+_MEDIA_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+
+
+async def _media_usage(db, media_id: str) -> list:
+    """Where is this asset referenced? Scans articles (cover/OG/body) and
+    branding/landing settings. Computed live so it never goes stale."""
+    needle = f"/media/file/{media_id}"
+    used = []
+    cur = db.articles.find({"$or": [
+        {"cover_image_url": {"$regex": needle}},
+        {"og_image_url": {"$regex": needle}},
+        {"body_html": {"$regex": needle}},
+    ]}, {"title": 1, "slug": 1})
+    async for a in cur:
+        used.append({"type": "article", "id": str(a["_id"]),
+                     "label": a.get("title") or a.get("slug") or "article"})
+    async for s in db.settings.find({"key": {"$in": ["branding", "landing_content"]}}):
+        if needle in str(s.get("value", "")):
+            used.append({"type": "settings", "id": s.get("key"),
+                         "label": f"Settings: {s.get('key')}"})
+    return used
+
+
+def _serialize_media(d: dict, used_in=None) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "filename": d.get("filename", ""),
+        "url": d.get("url", ""),
+        "content_type": d.get("content_type", ""),
+        "size_bytes": int(d.get("size_bytes") or 0),
+        "alt_text": d.get("alt_text", ""),
+        "tags": d.get("tags", []),
+        "uploaded_by": d.get("uploaded_by", ""),
+        "created_at": d.get("created_at", ""),
+        "used_in": used_in if used_in is not None else d.get("used_in", []),
+    }
+
+
+@router.get("/admin/media")
+async def media_list(staff=Depends(get_current_staff),
+                     tag: Optional[str] = None, q: Optional[str] = None):
+    db = await _get_db()
+    query: dict = {}
+    if tag:
+        query["tags"] = tag.strip().lower()
+    if q:
+        query["$or"] = [
+            {"filename": {"$regex": q.strip(), "$options": "i"}},
+            {"alt_text": {"$regex": q.strip(), "$options": "i"}},
+        ]
+    docs = await db.media_assets.find(query).sort("created_at", -1).to_list(500)
+    out = []
+    for d in docs:
+        used = await _media_usage(db, str(d["_id"]))
+        if used != d.get("used_in"):
+            await db.media_assets.update_one({"_id": d["_id"]}, {"$set": {"used_in": used}})
+        out.append(_serialize_media(d, used))
+    return out
+
+
+@router.post("/admin/media")
+async def media_upload(file: UploadFile = File(...),
+                       alt_text: str = Form(""),
+                       tags: str = Form(""),
+                       staff=Depends(get_current_content)):
+    db = await _get_db()
+    if file.content_type not in _MEDIA_ALLOWED_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"Unsupported type {file.content_type}. Allowed: PNG, JPEG, WebP, GIF, SVG.")
+    raw = await file.read()
+    if len(raw) > _MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File exceeds 8 MB limit")
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    ext = _Path(file.filename or "upload.bin").suffix.lower() or ".bin"
+    mid = ObjectId()
+    stored_name = f"{mid}{ext}"
+    (MEDIA_DIR / stored_name).write_bytes(raw)
+    doc = {
+        "_id": mid,
+        "filename": file.filename or stored_name,
+        "stored_name": stored_name,
+        "url": f"/api/portal/media/file/{mid}",
+        "content_type": file.content_type,
+        "size_bytes": len(raw),
+        "alt_text": (alt_text or "").strip(),
+        "tags": sorted({t.strip().lower() for t in (tags or "").split(",") if t.strip()}),
+        "uploaded_by": staff["email"],
+        "used_in": [],
+        "created_at": _now(),
+    }
+    await db.media_assets.insert_one(doc)
+    return _serialize_media(doc)
+
+
+@router.put("/admin/media/{mid}")
+async def media_update(mid: str, payload: dict, staff=Depends(get_current_content)):
+    db = await _get_db()
+    d = await db.media_assets.find_one({"_id": _oid(mid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Media not found")
+    upd: dict = {}
+    if "alt_text" in payload:
+        upd["alt_text"] = (payload.get("alt_text") or "").strip()
+    if "tags" in payload:
+        raw_tags = payload.get("tags") or []
+        if isinstance(raw_tags, str):
+            raw_tags = raw_tags.split(",")
+        upd["tags"] = sorted({str(t).strip().lower() for t in raw_tags if str(t).strip()})
+    if upd:
+        await db.media_assets.update_one({"_id": d["_id"]}, {"$set": upd})
+    d = await db.media_assets.find_one({"_id": d["_id"]})
+    return _serialize_media(d)
+
+
+@router.delete("/admin/media/{mid}")
+async def media_delete(mid: str, staff=Depends(get_current_content)):
+    db = await _get_db()
+    d = await db.media_assets.find_one({"_id": _oid(mid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Media not found")
+    used = await _media_usage(db, mid)
+    if used:
+        raise HTTPException(status_code=409, detail={
+            "message": "Asset is still in use — detach it first.",
+            "used_in": used,
+        })
+    try:
+        (MEDIA_DIR / d.get("stored_name", "")).unlink(missing_ok=True)
+    except Exception:
+        pass
+    await db.media_assets.delete_one({"_id": d["_id"]})
+    return {"deleted": 1}
+
+
+@router.get("/media/file/{mid}", include_in_schema=False)
+async def media_file(mid: str):
+    """Public file serve — media is referenced from public articles."""
+    db = await _get_db()
+    d = await db.media_assets.find_one({"_id": _oid(mid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Media not found")
+    fp = MEDIA_DIR / d.get("stored_name", "")
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ============================================================
+# CONTENT CALENDAR — plan articles / campaigns / social posts
+# ============================================================
+def _serialize_calendar(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "title": d.get("title", ""),
+        "type": d.get("type", "article"),
+        "scheduled_at": d.get("scheduled_at", ""),
+        "status": d.get("status", "draft"),
+        "linked_article_id": d.get("linked_article_id"),
+        "owner_id": d.get("owner_id"),
+        "notes": d.get("notes", ""),
+        "created_at": d.get("created_at", ""),
+    }
+
+
+_CAL_TYPES = {"article", "campaign", "social_post"}
+_CAL_STATUSES = {"draft", "scheduled", "published"}
+
+
+@router.get("/admin/content-calendar")
+async def calendar_list(staff=Depends(get_current_staff),
+                        date_from: Optional[str] = None,
+                        date_to: Optional[str] = None):
+    db = await _get_db()
+    query: dict = {}
+    if date_from or date_to:
+        rng: dict = {}
+        if date_from: rng["$gte"] = date_from
+        if date_to:   rng["$lte"] = date_to + "T23:59:59"
+        query["scheduled_at"] = rng
+    docs = await db.content_calendar.find(query).sort("scheduled_at", 1).to_list(1000)
+    return [_serialize_calendar(d) for d in docs]
+
+
+@router.post("/admin/content-calendar")
+async def calendar_create(payload: dict, staff=Depends(get_current_content)):
+    db = await _get_db()
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+    ctype = payload.get("type") or "article"
+    if ctype not in _CAL_TYPES:
+        raise HTTPException(status_code=400, detail=f"type must be one of {sorted(_CAL_TYPES)}")
+    status = payload.get("status") or "draft"
+    if status not in _CAL_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(_CAL_STATUSES)}")
+    doc = {
+        "title": title,
+        "type": ctype,
+        "scheduled_at": payload.get("scheduled_at") or _now(),
+        "status": status,
+        "linked_article_id": payload.get("linked_article_id"),
+        "owner_id": staff["id"],
+        "notes": payload.get("notes") or "",
+        "created_at": _now(),
+    }
+    r = await db.content_calendar.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_calendar(doc)
+
+
+@router.put("/admin/content-calendar/{cid}")
+async def calendar_update(cid: str, payload: dict, staff=Depends(get_current_content)):
+    db = await _get_db()
+    d = await db.content_calendar.find_one({"_id": _oid(cid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Calendar entry not found")
+    upd: dict = {}
+    for k in ("title", "scheduled_at", "linked_article_id", "notes"):
+        if k in payload:
+            upd[k] = payload[k]
+    if "type" in payload:
+        if payload["type"] not in _CAL_TYPES:
+            raise HTTPException(status_code=400, detail=f"type must be one of {sorted(_CAL_TYPES)}")
+        upd["type"] = payload["type"]
+    if "status" in payload:
+        if payload["status"] not in _CAL_STATUSES:
+            raise HTTPException(status_code=400, detail=f"status must be one of {sorted(_CAL_STATUSES)}")
+        upd["status"] = payload["status"]
+    if upd:
+        await db.content_calendar.update_one({"_id": d["_id"]}, {"$set": upd})
+    d = await db.content_calendar.find_one({"_id": d["_id"]})
+    return _serialize_calendar(d)
+
+
+@router.delete("/admin/content-calendar/{cid}")
+async def calendar_delete(cid: str, staff=Depends(get_current_content)):
+    db = await _get_db()
+    r = await db.content_calendar.delete_one({"_id": _oid(cid)})
+    if not r.deleted_count:
+        raise HTTPException(status_code=404, detail="Calendar entry not found")
+    return {"deleted": 1}
+
+
+async def _sync_article_calendar(db, article: dict, staff) -> None:
+    """When an article is published, upsert its calendar entry to published.
+    Fire-and-forget: never blocks the article save."""
+    try:
+        if not article or article.get("status") != "published":
+            return
+        aid = str(article["_id"])
+        await db.content_calendar.update_one(
+            {"linked_article_id": aid},
+            {"$set": {"title": article.get("title", ""),
+                      "type": "article",
+                      "status": "published",
+                      "scheduled_at": article.get("published_at") or _now(),
+                      "linked_article_id": aid},
+             "$setOnInsert": {"owner_id": staff.get("id"), "notes": "",
+                               "created_at": _now()}},
+            upsert=True,
+        )
+    except Exception:
+        import logging
+        logging.getLogger("portal.calendar").exception("calendar sync failed")
+
+
+# ============================================================
+# TICKET ↔ DEVICE linking — minimal device options for dropdowns
+# ============================================================
+@router.get("/tickets/device-options")
+async def ticket_device_options(user=Depends(get_current_user)):
+    """Names only (no hosts/IPs) so clients can point a ticket at a device."""
+    db = await _get_db()
+    docs = await db.mikrotik_devices.find({}, {"name": 1}).sort("name", 1).to_list(500)
+    return [{"id": str(d["_id"]), "name": d.get("name") or "unnamed"} for d in docs]

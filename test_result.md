@@ -294,7 +294,7 @@ backend:
           HMAC_SHA256(mc+ts, apiKey); callback verify HMAC_SHA256(mc+amount+orderId,
           apiKey) with legacy MD5 fallback + merchantCode match check; createInvoice
           sends required returnUrl + expiryPeriod, raises on statusCode != 00.
-          LIVE-verified against PRODUCTION Duitku (merchant D15021): real paymentUrl
+          LIVE-verified against PRODUCTION Duitku (merchant <merchant-code-redacted, see integrations collection>): real paymentUrl
           returned. Webhook now idempotent (status!=paid filter), fires
           payment_received email once, auto-provisions linked order, reactivates
           services suspended for non-payment of that invoice. Credentials stored in
@@ -317,7 +317,7 @@ backend:
           (3g) Duplicate callback → 200 {duplicate:true}; email count unchanged (idempotent).
           (3h) Invalid signature → 400; invoice remains unpaid.
           (3i) resultCode=02 with valid signature → 200 {status:failed}; invoice stays unpaid.
-          All cleanup completed. Duitku credentials: merchant D15021 (PRODUCTION - no actual payments made).
+          All cleanup completed. Duitku credentials: merchant <merchant-code-redacted, see integrations collection> (PRODUCTION - no actual payments made).
   - task: "Renewal auto-invoice sweep + billing defaults settings"
     implemented: true
     working: true
@@ -444,7 +444,7 @@ agent_communication:
       and bank_accounts array. Order preview skipped (no active products in DB).
       
       IMPORTANT NOTES:
-      - Duitku credentials: merchant D15021, PRODUCTION environment - NO actual payments made,
+      - Duitku credentials: merchant <merchant-code-redacted, see integrations collection>, PRODUCTION environment - NO actual payments made,
         only simulated callbacks with valid signatures.
       - Email test shows imap.ok=false, smtp.ok=false - this is expected behavior with the test
         mailbox configuration (damien@intercloud-digital.com). The endpoint itself is working.
@@ -467,3 +467,175 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+## ==================== ROUND 2 (Install/Infra, Security, SEO, Creative Tooling) ====================
+
+user_problem_statement: >
+  Round 2: (A) install script & infra fixes — WeasyPrint native libs + post-deploy PDF smoke test,
+  missing Mongo indexes, noc_probes retention/rollup job (noc_daily_uptime), scrub committed merchant
+  code, fix legacy failing test suites. (B) Security — enforced CSP, rate-limit public endpoints,
+  audit-log immutability. (C) SEO — react-helmet-async wiring, bot dynamic rendering endpoint + nginx
+  map, branded OG image, sitemap completeness. (D) creative role, Media Library, Content Calendar,
+  UTM Builder, DCIM rack elevation + prefix utilization, ticket↔device linking. (E) UI consistency.
+
+backend:
+  - task: "A: noc_probes retention + noc_daily_uptime rollup (run_noc_probe_retention, daily 03:40 on the SAME scheduler)"
+    implemented: true
+    working: true
+    file: "backend/portal/emails.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "pytest tests/test_round2_features.py::TestNocRetention 2/2 pass — rollup pct correct, old probes deleted, noc_events untouched"
+  - task: "A: Mongo indexes (audit_logs, credit_notes, noc_*, noc_daily_uptime, media_assets, content_calendar) + atomic number counters"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "startup_seed extended; _next_number rewritten to atomic counters (fixes real DuplicateKeyError race on invoice numbers under concurrency)"
+  - task: "B: enforced Content-Security-Policy + rate-limited /public/status & /sitemap.xml + audit immutability"
+    implemented: true
+    working: true
+    file: "backend/portal/security.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "CSP now enforced (report-only kept 1 cycle); limiter key is X-Forwarded-For aware (fixes prod bug where all users shared the 127.0.0.1 bucket behind nginx); login analytics/auto-block use same client IP"
+  - task: "C: SEO bot render endpoint GET /api/portal/seo/render/articles/{slug} + sitemap /status route"
+    implemented: true
+    working: true
+    file: "backend/portal/routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Returns minimal HTML w/ per-article title/meta/OG/JSON-LD; tested with Googlebot UA; nginx bot rewrite added to install.sh"
+  - task: "D: creative role (STAFF_ROLES + CONTENT_ROLES/get_current_content; articles write opened to creative; finance/CRM denied)"
+    implemented: true
+    working: true
+    file: "backend/portal/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "TestCreativeRole 3/3 pass — creative writes articles, 403 on invoices/orders/quotations/crm/followups/noc/credit-notes/audit-logs"
+  - task: "D: Media Library (media_assets CRUD, multipart upload to backend/uploads/media, 409-on-delete-while-used, public file serve)"
+    implemented: true
+    working: true
+    file: "backend/portal/routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "TestMediaLibrary 3/3 pass incl. tag normalisation, 409 with used_in list, non-image rejection"
+  - task: "D: Content Calendar CRUD + article-publish auto-sync (_sync_article_calendar)"
+    implemented: true
+    working: true
+    file: "backend/portal/routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "TestContentCalendar 3/3 pass — CRUD, invalid type 400, publish upserts calendar entry"
+  - task: "D: ticket↔device linking (related_device_id, /tickets/device-options names-only, admin tickets ?device_id filter)"
+    implemented: true
+    working: true
+    file: "backend/portal/routes.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "TestTicketDeviceLink passes — options never leak hosts/IPs"
+
+frontend:
+  - task: "C: react-helmet-async wiring (HelmetProvider, ArticleSEO in ArticleDetail, PageMeta in ArticlesList, NotFound noindex, DefaultSeo on Landing, static tag strip via data-static-seo)"
+    implemented: true
+    working: true
+    file: "frontend/src/index.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Verified via playwright: per-article title/OG/canonical/JSON-LD present, no duplicate static tags. og-image.png + og-logo.png generated & referenced from index.html"
+  - task: "D: AdminMediaLibrary.jsx (grid/upload/tags/copy URL/delete-guard) + MediaPickerModal wired into AdminArticles cover & AdminBranding logos"
+    implemented: true
+    working: true
+    file: "frontend/src/pages/portal/admin/AdminMediaLibrary.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Screenshot verified (empty state + CTA); yarn build clean"
+  - task: "D: AdminContentCalendar.jsx (month grid via date-fns) + AdminUTMBuilder.jsx (client-side) + routes/nav (Creative group)"
+    implemented: true
+    working: true
+    file: "frontend/src/pages/portal/admin/AdminContentCalendar.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Screenshot verified — published articles auto-appear in the calendar"
+  - task: "D/E: NOC 30d uptime + related tickets on device cards, motion-safe pulse; DCIM rack elevation strip + prefix utilization %; ClientTickets device dropdown; AdminTickets device chip; credit-note toasts"
+    implemented: true
+    working: true
+    file: "frontend/src/pages/portal/admin/AdminNOC.jsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Implemented; NOC card shows 24h/30d/samples; needs frontend e2e sweep by testing agent"
+
+metadata:
+  created_by: "main_agent"
+  version: "3.0"
+  test_sequence: 33
+
+test_plan:
+  current_focus:
+    - "Round 2 full-suite regression + frontend e2e for new Creative pages"
+  stuck_tasks: []
+  test_all: true
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: >
+        Round 2 shipped. Test infra overhaul: conftest.py now (1) provisions demo users/products/
+        services/invoices/articles idempotently via admin API (seed.py stays lean), (2) rewrites
+        public-URL API calls to 127.0.0.1:8001 and injects a unique per-test X-Forwarded-For IP so
+        the 10/min login limiter never cross-contaminates suites, (3) serializes modules that mutate
+        global state (mail/IMAP/SMTP, security toggles, backup/restore) via a cross-process file lock.
+        Real production bugs fixed along the way: invoice-number DuplicateKeyError race (atomic
+        counters), rate limiter/auto-block keyed to 127.0.0.1 for ALL users behind nginx (now XFF-
+        aware), stale WordPress logo URL in emails/JSON-LD (now /og-logo.png), reminder-sweep
+        check-then-insert double-send race (asyncio lock). NOTE: never write real merchant codes in
+        tracked files — redacted placeholders only.

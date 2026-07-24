@@ -79,6 +79,8 @@ apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release \
   git build-essential pkg-config \
   python3.12 python3.12-venv python3-pip \
+  libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 \
+  libffi-dev shared-mime-info fonts-dejavu-core fonts-liberation \
   nginx supervisor \
   traceroute dnsutils whois iproute2 \
   ufw fail2ban \
@@ -549,6 +551,15 @@ server {
         return 200 "User-agent: *\nAllow: /\nDisallow: /portal/admin\nDisallow: /api/portal/admin\n\nSitemap: \$scheme://\$host/sitemap.xml\n";
     }
 
+    # Dynamic rendering for crawlers / link-preview bots (non-JS): serve
+    # per-article meta from the backend instead of the generic SPA shell.
+    location ~ ^/articles/[^/]+\$ {
+        if (\$http_user_agent ~* "(Googlebot|bingbot|facebookexternalhit|Twitterbot|LinkedInBot|Slackbot|TelegramBot|WhatsApp|Discordbot|Applebot)") {
+            rewrite ^/articles/(.*)\$ /api/portal/seo/render/articles/\$1 last;
+        }
+        try_files \$uri /index.html;
+    }
+
     # SPA fallback — every unmatched path serves the React app.
     # The React <Route path="*"> component renders a real 404 UI.
     location / {
@@ -747,6 +758,20 @@ else
   warn "if this is a re-install with a pre-existing DB, use the password that was set originally."
 fi
 rm -f /tmp/ic_login.json
+
+# ------------------------------------------------------------------
+# 10b. PDF rendering smoke test — WeasyPrint needs native Pango/Cairo
+# ----- libraries; a missing lib silently breaks invoice/credit-note
+# ----- PDFs while everything else looks healthy. Fail LOUD here.
+# ------------------------------------------------------------------
+log "Verifying WeasyPrint PDF rendering"
+if sudo -u intercloud -H bash -c "cd '$APP_DIR/backend' && . .venv/bin/activate && python3 -c \"from weasyprint import HTML; HTML(string='<h1>ok</h1>').write_pdf('/tmp/ic_pdf_check.pdf')\"" >/dev/null 2>&1; then
+  log "WeasyPrint PDF check OK"
+  rm -f /tmp/ic_pdf_check.pdf
+else
+  rm -f /tmp/ic_pdf_check.pdf
+  die "WeasyPrint cannot render PDFs — missing system libraries (libpango/libcairo/libgdk-pixbuf). Re-run: apt-get install -y libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 shared-mime-info"
+fi
 
 # ------------------------------------------------------------------
 # 11. Done

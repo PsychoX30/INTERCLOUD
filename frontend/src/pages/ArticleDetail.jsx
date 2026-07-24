@@ -1,106 +1,72 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { Helmet } from "react-helmet-async";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import { Calendar, Eye, Tag, ArrowLeft, ArrowRight, User, Share2 } from "lucide-react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api/portal`;
 
-const upsertMeta = (attr, key, content) => {
-  if (!content) return;
-  let el = document.head.querySelector(`meta[${attr}="${key}"]`);
-  if (!el) {
-    el = document.createElement("meta");
-    el.setAttribute(attr, key);
-    document.head.appendChild(el);
-  }
-  el.setAttribute("content", content);
-};
+const SITE_ORIGIN = "https://intercloud-digital.com";
+const DEFAULT_OG_IMAGE = `${SITE_ORIGIN}/og-image.png`;
 
-const upsertLink = (rel, href) => {
-  if (!href) return;
-  let el = document.head.querySelector(`link[rel="${rel}"]`);
-  if (!el) {
-    el = document.createElement("link");
-    el.setAttribute("rel", rel);
-    document.head.appendChild(el);
-  }
-  el.setAttribute("href", href);
-};
-
-const useArticleSEO = (a) => {
-  useEffect(() => {
-    if (!a) return;
-    const title = a.meta_title || a.title;
-    document.title = `${title} — Intercloud`;
-    const desc = a.meta_description || a.excerpt || "";
-    upsertMeta("name", "description", desc);
-    upsertMeta("name", "keywords", (a.meta_keywords || a.tags || []).join(", "));
-    // Open Graph
-    upsertMeta("property", "og:title", title);
-    upsertMeta("property", "og:description", desc);
-    upsertMeta("property", "og:type", "article");
-    upsertMeta("property", "og:image", a.og_image_url || a.cover_image_url || "");
-    upsertMeta("property", "og:url", window.location.href);
-    upsertMeta("property", "article:published_time", a.published_at || "");
-    (a.tags || []).forEach((t) => upsertMeta("property", "article:tag", t));
-    // Twitter
-    upsertMeta("name", "twitter:card", a.cover_image_url ? "summary_large_image" : "summary");
-    upsertMeta("name", "twitter:title", title);
-    upsertMeta("name", "twitter:description", desc);
-    upsertMeta("name", "twitter:image", a.og_image_url || a.cover_image_url || "");
-    // Canonical
-    upsertLink("canonical", window.location.origin + `/articles/${a.slug}`);
-    // JSON-LD BlogPosting
-    const existing = document.getElementById("article-jsonld");
-    if (existing) existing.remove();
-    const s = document.createElement("script");
-    s.id = "article-jsonld";
-    s.type = "application/ld+json";
-    s.text = JSON.stringify({
-      "@context": "https://schema.org",
-      "@type": "BlogPosting",
-      "headline": a.title,
-      "description": desc,
-      "image": [a.cover_image_url].filter(Boolean),
-      "datePublished": a.published_at,
-      "dateModified": a.updated_at,
-      "author": { "@type": "Organization", "name": a.author_name || "PT Intercloud Digital Inovasi" },
-      "publisher": {
-        "@type": "Organization",
-        "name": "PT Intercloud Digital Inovasi",
-        "logo": { "@type": "ImageObject", "url": "https://customer-assets-lxgj4vgw.emergentagent.net/job_portal-straight-line/artifacts/40f397oz_logo_anang-02-1-1536x1536-1.png" },
-      },
-      "keywords": (a.meta_keywords || a.tags || []).join(", "),
-      "mainEntityOfPage": window.location.href,
-    });
-    document.head.appendChild(s);
-
-    // BreadcrumbList JSON-LD — helps Google surface breadcrumb rich results.
-    const existingBc = document.getElementById("article-breadcrumb-jsonld");
-    if (existingBc) existingBc.remove();
-    const bc = document.createElement("script");
-    bc.id = "article-breadcrumb-jsonld";
-    bc.type = "application/ld+json";
-    bc.text = JSON.stringify({
-      "@context": "https://schema.org",
-      "@type": "BreadcrumbList",
-      "itemListElement": [
-        { "@type": "ListItem", "position": 1, "name": "Home",     "item": window.location.origin + "/" },
-        { "@type": "ListItem", "position": 2, "name": "Articles", "item": window.location.origin + "/articles" },
-        { "@type": "ListItem", "position": 3, "name": a.title,     "item": window.location.origin + `/articles/${a.slug}` },
-      ],
-    });
-    document.head.appendChild(bc);
-    return () => {
-      document.title = "Intercloud Digital Inovasi";
-      const j = document.getElementById("article-jsonld");
-      if (j) j.remove();
-      const b = document.getElementById("article-breadcrumb-jsonld");
-      if (b) b.remove();
-    };
-  }, [a]);
+// Per-page SEO via react-helmet-async — replaces the old direct DOM
+// mutation approach so every meta/OG/JSON-LD tag is declaratively managed.
+const ArticleSEO = ({ a }) => {
+  if (!a) return null;
+  const title = a.meta_title || a.title;
+  const desc = a.meta_description || a.excerpt || "";
+  const canonical = `${SITE_ORIGIN}/articles/${a.slug}`;
+  const image = a.og_image_url || a.cover_image_url || DEFAULT_OG_IMAGE;
+  const keywords = (a.meta_keywords || a.tags || []).join(", ");
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: a.title,
+    description: desc,
+    image: [a.cover_image_url || DEFAULT_OG_IMAGE],
+    datePublished: a.published_at,
+    dateModified: a.updated_at,
+    author: { "@type": "Organization", name: a.author_name || "PT Intercloud Digital Inovasi" },
+    publisher: {
+      "@type": "Organization",
+      name: "PT Intercloud Digital Inovasi",
+      logo: { "@type": "ImageObject", url: `${SITE_ORIGIN}/og-logo.png` },
+    },
+    keywords,
+    mainEntityOfPage: canonical,
+  };
+  const breadcrumb = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Home", item: `${SITE_ORIGIN}/` },
+      { "@type": "ListItem", position: 2, name: "Articles", item: `${SITE_ORIGIN}/articles` },
+      { "@type": "ListItem", position: 3, name: a.title, item: canonical },
+    ],
+  };
+  return (
+    <Helmet>
+      <title>{`${title} — Intercloud`}</title>
+      <meta name="description" content={desc} />
+      {keywords ? <meta name="keywords" content={keywords} /> : null}
+      <link rel="canonical" href={canonical} />
+      <meta property="og:title" content={title} />
+      <meta property="og:description" content={desc} />
+      <meta property="og:type" content="article" />
+      <meta property="og:image" content={image} />
+      <meta property="og:url" content={canonical} />
+      {a.published_at ? <meta property="article:published_time" content={a.published_at} /> : null}
+      {(a.tags || []).map((t) => <meta key={t} property="article:tag" content={t} />)}
+      <meta name="twitter:card" content={a.cover_image_url ? "summary_large_image" : "summary"} />
+      <meta name="twitter:title" content={title} />
+      <meta name="twitter:description" content={desc} />
+      <meta name="twitter:image" content={image} />
+      <script type="application/ld+json">{JSON.stringify(jsonLd)}</script>
+      <script type="application/ld+json">{JSON.stringify(breadcrumb)}</script>
+    </Helmet>
+  );
 };
 
 const formatDate = (iso) => {
@@ -134,8 +100,6 @@ const ArticleDetail = () => {
       .then((r) => { setArticle(r.data.article); setRelated(r.data.related || []); })
       .catch((e) => { if (e?.response?.status === 404) setNotFound(true); });
   }, [slug]);
-
-  useArticleSEO(article);
 
   useEffect(() => { window.scrollTo(0, 0); }, [slug]);
 
@@ -173,6 +137,7 @@ const ArticleDetail = () => {
 
   return (
     <div className="min-h-screen bg-white">
+      <ArticleSEO a={article} />
       <Header />
       <main className="pt-24 pb-24">
         {/* Hero */}

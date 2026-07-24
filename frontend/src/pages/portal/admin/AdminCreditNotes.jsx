@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { api, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, btnDanger, inputClass, labelClass } from "../ui";
 import { Plus, ReceiptText, Loader2, CheckCircle2, XCircle, FileText, Download, Search, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
 const BASE = process.env.REACT_APP_BACKEND_URL;
@@ -189,6 +190,7 @@ const CreateModal = ({ invoices, onClose, onSaved }) => {
         notes,
         auto_apply: autoApply,
       });
+      toast.success(autoApply ? "Credit note created and applied to the invoice" : "Credit note created");
       onSaved();
     } catch (e) {
       setError(e.response?.data?.detail || "Failed to save credit note");

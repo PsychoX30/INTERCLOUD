@@ -38,9 +38,13 @@ ADMIN_EMAIL = "admin@intercloud-digital.com"
 ADMIN_PASSWORD = "AdminIntercloud2026!"
 
 
-def _login(email, password):
+def _login(email, password, ip=None):
+    # Optional explicit XFF for tests that assert per-IP security behavior;
+    # by default the conftest per-test IP isolation applies.
+    headers = {"X-Forwarded-For": ip} if ip else None
     return requests.post(f"{LOCAL_API}/auth/login",
                          json={"email": email, "password": password},
+                         headers=headers,
                          timeout=20)
 
 
@@ -272,6 +276,8 @@ class TestSecurityV2:
     # ---- 4) Whitelist prevents auto-block ----
     def test_05_whitelist_prevents_auto_block(self, admin_headers):
         _direct_db_wipe(clear_blocks=True, clear_attempts=True)
+        # Dedicated whitelisted source IP for this test
+        wl_ip = f"172.28.{uuid.uuid4().int % 200 + 1}.{uuid.uuid4().int % 250 + 1}"
         # Enable auto-block with a low threshold; whitelist 127.0.0.1
         r = requests.put(f"{LOCAL_API}/admin/security/settings",
                          headers=admin_headers,
@@ -279,7 +285,7 @@ class TestSecurityV2:
                                "fail_threshold": 3,
                                "window_minutes": 15,
                                "ban_minutes": 30,
-                               "whitelist_ips": ["127.0.0.1"]},
+                               "whitelist_ips": ["127.0.0.1", wl_ip]},
                          timeout=15)
         assert r.status_code == 200, r.text
 
@@ -288,12 +294,12 @@ class TestSecurityV2:
                           headers=admin_headers, timeout=15)
         baseline = {n.get("id") for n in rn.json()
                     if n.get("kind") == "ip_auto_blocked"
-                    and n.get("ip") == "127.0.0.1"}
+                    and n.get("ip") == wl_ip}
 
         bad_email = f"wl_{uuid.uuid4().hex[:8]}@example.com"
         codes = []
         for _ in range(6):
-            r = _login(bad_email, "wrong-pass")
+            r = _login(bad_email, "wrong-pass", ip=wl_ip)
             codes.append(r.status_code)
         assert 429 not in codes, f"got 429 despite whitelist: {codes}"
 
@@ -303,14 +309,14 @@ class TestSecurityV2:
                          params={"active_only": True}, timeout=15)
         assert r.status_code == 200
         active_ips = [d["ip"] for d in r.json() if d.get("active")]
-        assert "127.0.0.1" not in active_ips, r.json()
+        assert wl_ip not in active_ips, r.json()
 
         # No new ip_auto_blocked notif for 127.0.0.1
         rn2 = requests.get(f"{LOCAL_API}/admin/security/notifications",
                            headers=admin_headers, timeout=15)
         new_127 = [n for n in rn2.json()
                    if n.get("kind") == "ip_auto_blocked"
-                   and n.get("ip") == "127.0.0.1"
+                   and n.get("ip") == wl_ip
                    and n.get("id") not in baseline]
         assert new_127 == [], f"unexpected new notifs: {new_127}"
 
@@ -334,7 +340,7 @@ class TestSecurityV2:
         assert rb.status_code == 200, rb.text
 
         # Login must SUCCEED because whitelist short-circuits _is_ip_blocked
-        r_login = _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+        r_login = _login(ADMIN_EMAIL, ADMIN_PASSWORD, ip="127.0.0.1")
         assert r_login.status_code == 200, (
             f"admin login blocked though 127.0.0.1 is whitelisted; "
             f"code={r_login.status_code} body={r_login.text}")

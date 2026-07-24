@@ -393,6 +393,33 @@ const RacksTab = () => {
                 <div className={`h-full ${pct > 80 ? "bg-red-500" : "bg-emerald-500"}`} style={{ width: `${Math.min(100, pct)}%` }} />
               </div>
               <div className="mt-1 text-[11px] text-slate-500">{r.power_draw_w}/{r.power_cap_w} W · {pct.toFixed(0)}%</div>
+              {/* Rack elevation — one segment per U, coloured by occupancy */}
+              <div className="mt-3">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-slate-400 mb-1">
+                  <span>Elevation (U{r.u_size} → U1)</span>
+                  <span data-testid={`rack-elevation-pct-${r.id}`}>
+                    {(() => {
+                      const occ = Array.from({ length: r.u_size }, (_, i) => i + 1)
+                        .filter((u) => r.occupancy?.some((o) => u >= o.u_bot && u <= o.u_top)).length;
+                      return `${occ}/${r.u_size} U used`;
+                    })()}
+                  </span>
+                </div>
+                <div className="flex gap-px rounded overflow-hidden border border-slate-200" data-testid={`rack-elevation-${r.id}`}>
+                  {Array.from({ length: r.u_size }, (_, i) => r.u_size - i).map((u) => {
+                    const hit = r.occupancy?.find((o) => u >= o.u_bot && u <= o.u_top);
+                    const cls = hit
+                      ? (hit.customer && hit.customer !== "internal" ? "bg-[#f5b120]" : "bg-slate-500")
+                      : "bg-slate-100";
+                    return <span key={u} className={`h-4 flex-1 ${cls}`} title={`U${u}: ${hit ? hit.label : "free"}`} />;
+                  })}
+                </div>
+                <div className="mt-1 flex items-center gap-3 text-[9px] text-slate-400">
+                  <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-[#f5b120]" /> customer</span>
+                  <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-slate-500" /> internal</span>
+                  <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-slate-100 border border-slate-200" /> free</span>
+                </div>
+              </div>
               <div className="mt-3 rounded-xl border border-slate-200 divide-y divide-slate-100 max-h-60 overflow-y-auto">
                 {Array.from({ length: r.u_size }, (_, i) => r.u_size - i).map((u) => {
                   const hit = r.occupancy?.find((o) => u >= o.u_bot && u <= o.u_top);
@@ -503,10 +530,18 @@ const PrefixesTab = () => {
               <td className="px-4 py-3 font-mono">{p.prefix}</td>
               <td className="px-4 py-3 text-xs">IPv{p.family}</td>
               <td className="px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <div className="h-1.5 w-24 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-[#0a2350]" style={{ width: `${Math.min(100, (p.usage / p.capacity) * 100)}%` }} /></div>
-                  <span className="text-xs">{p.usage} / {p.capacity}</span>
-                </div>
+                {(() => {
+                  const upct = p.capacity ? Math.min(100, (p.usage / p.capacity) * 100) : 0;
+                  return (
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-24 bg-slate-100 rounded overflow-hidden">
+                        <div className={`h-full ${upct > 85 ? "bg-red-500" : upct > 60 ? "bg-amber-500" : "bg-[#0a2350]"}`} style={{ width: `${upct}%` }} />
+                      </div>
+                      <span className="text-xs">{p.usage} / {p.capacity}</span>
+                      <span className={`text-[10px] font-bold ${upct > 85 ? "text-red-600" : "text-slate-400"}`} data-testid={`prefix-util-${p.id}`}>{upct.toFixed(0)}%</span>
+                    </div>
+                  );
+                })()}
               </td>
               <td className="px-4 py-3 font-mono text-xs text-slate-500">{p.vlan}</td>
               <td className="px-4 py-3">{p.site}</td>
