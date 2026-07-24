@@ -50,8 +50,8 @@ const AdminOwnerDashboard = () => {
         <Card className="p-5 lg:col-span-2">
           <div className="text-sm font-bold text-[#0a2350] mb-1">Revenue trend — last 12 months</div>
           <div className="text-xs text-slate-500 mb-3">Paid invoices summed by month.</div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-72" style={{ minWidth: 0 }}>
+            <ResponsiveContainer width="100%" height="100%" minHeight={288}>
               <LineChart data={d.revenue_trend_12m}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="period" tick={{ fontSize: 10, fill: "#64748b" }} />
@@ -88,8 +88,8 @@ const AdminOwnerDashboard = () => {
       <Card className="p-5 mb-6">
         <div className="text-sm font-bold text-[#0a2350] mb-1">Invoices generated per month</div>
         <div className="text-xs text-slate-500 mb-3">Volume of paid invoices — signals sales/renewal cadence.</div>
-        <div className="h-56">
-          <ResponsiveContainer width="100%" height="100%">
+        <div className="h-56" style={{ minWidth: 0 }}>
+          <ResponsiveContainer width="100%" height="100%" minHeight={224}>
             <BarChart data={d.revenue_trend_12m}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="period" tick={{ fontSize: 10, fill: "#64748b" }} />

@@ -127,6 +127,34 @@ webroot pre-created, `server_tokens off`.
   uses live mailbox damien@intercloud-digital.com — see memory/test_credentials.md).
 - Verified end-to-end: compose → delivered_via=smtp → message visible in IMAP inbox.
 
+### Batch 8 — Phase 4 Executive Visibility + Public Status Page (2026-07-24)
+- **`owner` role**: added to STAFF_ROLES + FINANCE_ROLES + Literal role validators.
+  Owner is READ-ONLY globally — can view Executive Overview dashboard but every write
+  endpoint refuses with 403 (owner not in admin/staff-mgmt roles). ProtectedRoute
+  frontend also whitelists 'owner' inside `isStaff` so /portal/admin routes are
+  reachable.
+- **Executive Overview** `GET /admin/owner/overview` (owner+admin only): aggregates
+  MRR (Σ active-service.price_monthly), ARR (MRR×12), ARPU (MRR / clients-with-active),
+  Churn% (terminated last 30d / total), revenue MTD, 12-month revenue trend series,
+  outstanding & overdue totals, NOC uptime 24h/7d (from `noc_probes`), outage minutes
+  30d, ticket load, and top-5 clients by lifetime revenue. Frontend
+  `AdminOwnerDashboard.jsx` renders 8 KPI tiles + recharts LineChart (revenue trend)
+  + BarChart (invoice volume) + awarded top-clients list. Sidebar entry under
+  Overview group (roles: admin, owner).
+- **Public Status Page** at `/status` (no auth): `GET /public/status` aggregates
+  `noc_probes` by abstract `status_group` bucket ("Core Network" / "Customer Edge" /
+  "Peering & Transit" by default — configurable). NEVER leaks device names, IPs,
+  or topology. Overall status: degraded ⚫ operational ⚫ unknown (uses "unknown" if
+  no groups have data). Auto-refresh every 60s. Admin config UI at
+  `/portal/admin/status-page` with company name, incident banner, and group editor
+  (add/remove/rename). All changes recorded to audit_logs
+  (`status_page.config_update`).
+- **Testing iter 32**: PASSES ALL — AdminMail Reply bug retest confirmed FIXED,
+  Executive Overview KPIs + charts + top-clients all render, /status returns
+  anonymised group data (verified against raw JSON — no device leakage), owner
+  role gets 403 on all write endpoints, incident banner appears when configured.
+  Only OPTIONAL cosmetic recharts warning also fixed via explicit min-height.
+
 ### Batch 7 — Phase 1 Audit Log + Phase 2 Credit Notes + Phase 3 NOC Monitor (2026-07-24)
 - **Audit Log** (`portal/audit.py`): fire-and-forget `log_audit(db, ...)` helper writes
   to `audit_logs` collection with actor/target/before/after/ip/user_agent + auto-redacts
