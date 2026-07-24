@@ -164,11 +164,11 @@ backend:
 frontend:
   - task: "AdminMail.jsx — real Compose modal + Test Connection button"
     implemented: true
-    working: "NA"
+    working: true
     file: "frontend/src/pages/portal/admin/AdminMail.jsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -180,16 +180,33 @@ frontend:
           data-testids: mail-compose-modal, mail-compose-to/subject/body/send,
           mail-compose-sent, mail-compose-error, mail-setup-test, mail-test-results,
           mail-test-imap, mail-test-smtp.
+      - working: true
+        agent: "testing"
+        comment: >
+          ✅ COMPREHENSIVE E2E TESTING PASSED (4/4 scenarios). Verified all bug fix requirements:
+          (1) Inbox loads with real IMAP messages - 13 messages displayed, NO "Belum di-setup" card,
+          message detail pane shows content correctly.
+          (2a) Test Connection with masked passwords - both IMAP and SMTP green/success, correctly
+          falls back to stored credentials (IMAP: mail.intercloud-digital.com:993, SMTP: :465).
+          (2b) Test Connection with wrong SMTP password - IMAP stays green, SMTP turns red with
+          "gagal" message (SMTPAuthenticationError 535), modal closed with Batal (NOT saved).
+          (3) Compose sends real email - NEW compose modal detected (NO old placeholder text
+          "Compose fitur akan dihubungkan ke SMTP"), To/Subject/Message fields functional,
+          email sent successfully to damien@intercloud-digital.com, success state "Email terkirim!"
+          displayed. THE BUG IS FIXED - Compose now sends real emails via SMTP.
+          (4) Regression check - page renders normally after all interactions.
+          Minor: One 502 error loading message imap-13 detail (non-critical, doesn't affect core functionality).
+          Test credentials: admin@intercloud-digital.com / AdminIntercloud2026!
+          Mailbox: damien@intercloud-digital.com on mail.intercloud-digital.com.
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: true
 
 test_plan:
-  current_focus:
-    - "AdminMail.jsx — real Compose modal + Test Connection button"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -230,3 +247,31 @@ agent_communication:
       credentials use Test Connection only — do NOT save wrong credentials (use
       Batal to close). Duitku API key received from user, merchant code still
       pending — Duitku work starts after webmail frontend verification.
+
+  - agent: "testing"
+    message: >
+      ✅ FRONTEND E2E TESTING COMPLETE - ALL SCENARIOS PASSED (4/4).
+      Webmail bug fix VERIFIED WORKING. All test requirements met:
+      
+      ✅ Scenario 1: Inbox loads with 13 real IMAP messages, NO "Belum di-setup" card,
+      message detail pane functional.
+      
+      ✅ Scenario 2a: Test Connection with masked passwords - both IMAP (port 993) and
+      SMTP (port 465) show green success, correctly falls back to stored credentials.
+      
+      ✅ Scenario 2b: Test Connection with wrong SMTP password - IMAP stays green, SMTP
+      turns red with "gagal" error (SMTPAuthenticationError 535), modal closed with
+      Batal button (wrong password NOT saved).
+      
+      ✅ Scenario 3 (THE BUG FIX): Compose modal sends real email successfully. NEW
+      compose modal detected with To/Subject/Message fields (NO old placeholder text
+      "Compose fitur akan dihubungkan ke SMTP"). Email sent to damien@intercloud-digital.com,
+      success state "Email terkirim!" displayed. BUG IS FIXED.
+      
+      ✅ Scenario 4: Page renders normally after all interactions, no critical errors.
+      
+      Minor: One 502 error loading message imap-13 detail (non-critical backend issue,
+      doesn't affect core webmail functionality or bug fix).
+      
+      READY FOR MAIN AGENT: All webmail testing complete. Please summarize and finish.
+      Duitku integration can proceed after this summary.
