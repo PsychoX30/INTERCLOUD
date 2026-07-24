@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Mail, MailPlus, Send, Star, StarOff, RefreshCw, Loader2, AlertTriangle, Settings, Save, X as XIcon, CheckCircle2, XCircle, PlugZap } from "lucide-react";
+import { Mail, MailPlus, Send, Star, StarOff, RefreshCw, Loader2, AlertTriangle, Settings, Save, X as XIcon, CheckCircle2, XCircle, PlugZap, Reply } from "lucide-react";
 
 const AdminMail = () => {
   const [rows, setRows] = useState(null);         // list OR { not_setup: true, message }
@@ -31,6 +31,16 @@ const AdminMail = () => {
 
   const notSetup = rows && !Array.isArray(rows) && rows.not_setup;
   const list = Array.isArray(rows) ? rows : [];
+
+  const replyTo = (msg) => {
+    const subj = msg.subject || "";
+    const quoted = (msg.body || "").split("\n").map((l) => `> ${l}`).join("\n");
+    setShowCompose({
+      to: msg.from_email || "",
+      subject: /^re:/i.test(subj) ? subj : `Re: ${subj}`,
+      body: `\n\n--- Pesan asli dari ${msg.from_email || ""} (${msg.received_at ? new Date(msg.received_at).toLocaleString() : ""}) ---\n${quoted}`,
+    });
+  };
 
   return (
     <div>
@@ -100,6 +110,9 @@ const AdminMail = () => {
                     <div className="text-lg font-bold text-[#0a2350]">{selected.subject}</div>
                     <div className="text-[11px] text-slate-400">{selected.received_at && new Date(selected.received_at).toLocaleString()}</div>
                   </div>
+                  <button className={btnSecondary} onClick={() => replyTo(selected)} data-testid="mail-reply-btn">
+                    <Reply className="h-4 w-4" /> Reply
+                  </button>
                 </div>
                 <div className="whitespace-pre-wrap text-sm text-slate-700 leading-relaxed">{selected.body || "(no body)"}</div>
               </>
@@ -113,6 +126,7 @@ const AdminMail = () => {
       {showSetup && <SetupEmailModal onClose={() => setShowSetup(false)} onDone={() => { setShowSetup(false); load(); }} />}
       {showCompose && (
         <ComposeModal
+          initial={typeof showCompose === "object" ? showCompose : null}
           onClose={() => setShowCompose(false)}
           onNeedSetup={() => { setShowCompose(false); setShowSetup(true); }}
         />
@@ -121,8 +135,12 @@ const AdminMail = () => {
   );
 };
 
-const ComposeModal = ({ onClose, onNeedSetup }) => {
-  const [form, setForm] = useState({ to: "", subject: "", body: "" });
+const ComposeModal = ({ onClose, onNeedSetup, initial }) => {
+  const [form, setForm] = useState({
+    to: initial?.to || "",
+    subject: initial?.subject || "",
+    body: initial?.body || "",
+  });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [needSetup, setNeedSetup] = useState(false);

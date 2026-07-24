@@ -152,6 +152,12 @@ async def startup_seed():
         await db.orders.create_index([("user_id", 1), ("created_at", -1)])
         await db.invoices.create_index([("user_id", 1), ("status", 1)])
         await db.invoices.create_index([("status", 1), ("due_date", 1)])
+        # Renewal automation: duplicate-generation guard lookup + service scoping
+        await db.invoices.create_index([("service_id", 1), ("renewal_period", 1)])
+        # Global settings: key-value store (billing defaults, feature flags)
+        await db.settings.create_index("key", unique=True)
+        # Renewal sweep scan: active services approaching next_renewal
+        await db.services.create_index([("status", 1), ("next_renewal", 1)])
         await db.tickets.create_index([("user_id", 1), ("status", 1)])
         await db.tickets.create_index([("status", 1), ("updated_at", -1)])
         # MikroTik devices: ordered listing + fast name lookup

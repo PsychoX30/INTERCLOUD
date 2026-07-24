@@ -316,6 +316,30 @@ DEFAULT_TEMPLATES: list[dict] = [
         "is_system": True,
     },
     {
+        "event_key": "payment_received",
+        "name": "Payment received — invoice paid",
+        "subject": "Payment received — invoice {{invoice.number}}",
+        "body_html": (
+            "<p>Dear <b>{{user.name}}</b>,</p>"
+            "<p>We are pleased to confirm that your payment for invoice <b>{{invoice.number}}</b> "
+            "(<b>{{invoice.total_fmt}}</b>) has been <b>received and verified</b>. Thank you.</p>"
+            "<p>Any services that were suspended due to this invoice have been "
+            "<b>reactivated automatically</b>. No further action is required on your part.</p>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{portal.invoice_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>View receipt in portal &rarr;</a>"
+            "</p>"
+            "<p>Should you require an official receipt or have any billing questions, our finance team "
+            "is available at <a href='mailto:finance@intercloud-digital.com'>finance@intercloud-digital.com</a> "
+            "or WhatsApp +62 878-1239-7187.</p>"
+            "<p>We appreciate your business and continued trust in our services.</p>"
+            "<p style='margin-top:24px'>Respectfully,<br><b>Intercloud Finance Team</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
         "event_key": "maintenance",
         "name": "Scheduled maintenance notification",
         "subject": "Scheduled maintenance notice — {{maintenance.title}}",
@@ -605,6 +629,24 @@ async def on_password_reset(db, user_doc: dict, reset_url: str) -> None:
                             user_id=str(user_doc.get("_id") or ""))
 
 
+async def on_invoice_paid(db, invoice_doc: dict, user_doc: dict) -> None:
+    """Payment-received confirmation — fired by the payment webhook (and any
+    other flow that marks an invoice paid and wants the client notified)."""
+    ctx = build_context(user=user_doc, invoice=invoice_doc)
+    await send_via_template(db, event_key="payment_received",
+                            to_email=user_doc["email"], ctx=ctx,
+                            invoice_id=str(invoice_doc.get("_id") or ""),
+                            user_id=str(user_doc.get("_id") or ""))
+
+
+# ============================================================
+# Global settings helper (settings collection: {key, value})
+# ============================================================
+async def get_setting(db, key: str, default=None):
+    doc = await db.settings.find_one({"key": key})
+    return doc.get("value") if doc and "value" in doc else default
+
+
 # ============================================================
 # Scheduler — invoice reminders + suspension
 # ============================================================
@@ -677,6 +719,143 @@ async def run_invoice_reminder_sweep(db, *, now: Optional[datetime] = None) -> d
     return {"date": today.isoformat(), "fired": fired, "services_suspended": suspended}
 
 
+# ============================================================
+# Renewal automation — auto-generate renewal invoices
+# ============================================================
+_CYCLE_MONTHS = {"monthly": 1, "quarterly": 3, "semiannual": 6, "annual": 12}
+
+
+def _add_months(date_str: str, months: int) -> str:
+    """Advance an ISO date by N calendar months, clamping the day
+    (e.g. 2026-01-31 +1m → 2026-02-28)."""
+    import calendar
+    from datetime import date as _date
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    y = d.year + (d.month - 1 + months) // 12
+    mo = (d.month - 1 + months) % 12 + 1
+    day = min(d.day, calendar.monthrange(y, mo)[1])
+    return _date(y, mo, day).isoformat()
+
+
+async def _next_invoice_number(db, offset: int = 0) -> str:
+    """Same numbering scheme as routes._next_number (kept local to avoid a
+    circular import): INV-{year}-{seq:05d}. Derives seq from the highest
+    existing number for the year (count-based numbering collides after
+    deletions or under concurrent writers)."""
+    year = datetime.now(timezone.utc).year
+    prefix = f"INV-{year}-"
+    last = await (db.invoices.find({"number": {"$regex": f"^{prefix}"}})
+                  .sort("number", -1).limit(1).to_list(1))
+    if last:
+        try:
+            seq = int(last[0]["number"][len(prefix):]) + 1
+        except Exception:
+            seq = await db.invoices.count_documents({}) + 1
+    else:
+        seq = await db.invoices.count_documents({}) + 1
+    return f"{prefix}{seq + offset:05d}"
+
+
+async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> dict:
+    """Generate renewal invoices for active services whose `next_renewal`
+    falls within `settings.renewal_lead_days` (default 7) days.
+
+    Duplicate-generation guard (documented contract):
+      * every renewal invoice stores `service_id` + `renewal_period`
+        (= the `next_renewal` date it covers);
+      * a sweep run skips any (service, period) pair that already has an
+        invoice, so re-running the sweep is idempotent;
+      * `services.next_renewal` is advanced by one billing-cycle interval and
+        `services.last_renewal_invoice_id` is set only AFTER the invoice
+        insert succeeds.
+
+    `tax_percent` is pre-filled from `settings.default_tax_percent` (manual,
+    admin-editable per invoice afterwards — never recalculated).
+    """
+    now = now or datetime.now(timezone.utc)
+    today = now.date()
+    lead_days = int(await get_setting(db, "renewal_lead_days", 7) or 7)
+    tax_percent = float(await get_setting(db, "default_tax_percent", 11.0))
+    horizon = (today + timedelta(days=lead_days)).isoformat()
+    generated, skipped_existing, errors = 0, 0, 0
+
+    cursor = db.services.find({"status": "active",
+                               "next_renewal": {"$gt": "", "$lte": horizon}})
+    async for svc in cursor:
+        period = svc.get("next_renewal") or ""
+        try:
+            datetime.strptime(period, "%Y-%m-%d")
+        except Exception:
+            continue
+        sid = str(svc["_id"])
+        if await db.invoices.find_one({"service_id": sid, "renewal_period": period}):
+            skipped_existing += 1
+            continue
+        user = await db.users.find_one({"_id": svc["user_id"]})
+        if not user:
+            continue
+        cycle = (svc.get("billing_cycle") or "monthly").lower()
+        months = _CYCLE_MONTHS.get(cycle, 1)
+        amount = round(float(svc.get("price_monthly") or 0) * months, 2)
+        if amount <= 0:
+            continue
+        new_renewal = _add_months(period, months)
+        svc_label = svc.get("name") or svc.get("product_name") or "Service"
+        item = {"description": f"Renewal — {svc_label} ({cycle}) · {period} → {new_renewal}",
+                "qty": 1, "unit_price": amount, "total": amount}
+        tax_amount = round(amount * tax_percent / 100, 2)
+        inv = {
+            "number": "",  # assigned in the retry loop below
+            "user_id": svc["user_id"],
+            "items": [item],
+            "subtotal": amount,
+            "tax_percent": tax_percent,
+            "tax_amount": tax_amount,
+            "total": round(amount + tax_amount, 2),
+            "due_date": period,
+            "status": "unpaid",
+            "payment_method": None,
+            "paid_at": None,
+            "notes": f"Auto-generated renewal invoice for {svc_label} — period starting {period}.",
+            "service_id": sid,
+            "renewal_period": period,
+            "created_at": now.isoformat(),
+        }
+        # Unique-number retry: concurrent writers (admin API, parallel sweeps)
+        # can race on the same sequence; regenerate with an offset and retry.
+        r = None
+        for attempt in range(5):
+            inv["number"] = await _next_invoice_number(db, offset=attempt)
+            try:
+                r = await db.invoices.insert_one(inv)
+                break
+            except Exception as e:
+                if "duplicate key" in str(e).lower() and attempt < 4:
+                    continue
+                log.exception(f"[renewal] invoice insert failed for service {sid}")
+                r = None
+                break
+        if r is None:
+            errors += 1
+            continue
+        inv["_id"] = r.inserted_id
+        # Advance the renewal date ONLY after the invoice exists.
+        await db.services.update_one(
+            {"_id": svc["_id"]},
+            {"$set": {"next_renewal": new_renewal,
+                      "last_renewal_invoice_id": str(r.inserted_id)}},
+        )
+        try:
+            await on_invoice_generated(db, inv, user)
+        except Exception:
+            log.exception(f"[renewal] invoice email failed for {inv['number']}")
+        generated += 1
+
+    return {"date": today.isoformat(), "horizon": horizon,
+            "generated": generated, "skipped_existing": skipped_existing,
+            "errors": errors}
+
+
 # Scheduler singleton
 _scheduler = None
 
@@ -705,14 +884,24 @@ def start_scheduler(db):
         except Exception as e:  # noqa: BLE001
             log.exception(f"[email-scheduler] tick failed: {e}")
 
+    async def _renewal_tick():
+        try:
+            summary = await run_renewal_invoice_sweep(db)
+            log.info(f"[renewal-scheduler] sweep result: {summary}")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[renewal-scheduler] tick failed: {e}")
+
     # Run at :05 every hour (a small delay after the top of the hour so servers
     # coming back up don't collide with other jobs).
     sched.add_job(_tick, CronTrigger(minute=5))
     # Also run once at startup so the effect is immediate on deploy.
     sched.add_job(_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=10))
+    # Renewal invoice sweep — same scheduler instance, its own hourly slot.
+    sched.add_job(_renewal_tick, CronTrigger(minute=20))
+    sched.add_job(_renewal_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=20))
     sched.start()
     _scheduler = sched
-    log.info("[email-scheduler] started (hourly sweep)")
+    log.info("[email-scheduler] started (hourly reminder + renewal sweeps)")
     return sched
 
 

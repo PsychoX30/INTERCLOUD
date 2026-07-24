@@ -14,7 +14,9 @@
 #   PORTAL_DOMAIN         Public FQDN         (default: intercloud-digital.com)
 #   LETSENCRYPT_EMAIL     Email for certbot   (default: support@intercloud-digital.com)
 #   ADMIN_EMAIL           Seed admin email    (default: support@intercloud-digital.com)
-#   ADMIN_PASSWORD        Seed admin pw       (default: AdminIntercloud2026!)
+#   ADMIN_PASSWORD        Seed admin pw       (default: auto-generated random —
+#                         printed ONCE in the final summary; first login forces
+#                         a password change)
 #   EMERGENT_LLM_KEY      Optional: paste to enable AI features
 #
 set -euo pipefail
@@ -28,7 +30,16 @@ ENABLE_MONGO_AUTH="${ENABLE_MONGO_AUTH:-yes}"      # yes/no
 MONGO_APP_USER="${MONGO_APP_USER:-intercloud_app}"
 MONGO_APP_PASSWORD="${MONGO_APP_PASSWORD:-}"       # auto-generated if blank
 ADMIN_EMAIL="${ADMIN_EMAIL:-support@intercloud-digital.com}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-AdminIntercloud2026!}"
+# Security: never bake a fixed default admin password. If the operator did not
+# explicitly provide ADMIN_PASSWORD, generate a strong random one, print it
+# ONCE in the final summary, and flag the seeded admin so the portal forces a
+# password change on first login.
+if [[ -n "${ADMIN_PASSWORD:-}" ]]; then
+  ADMIN_MUST_CHANGE_PASSWORD="false"
+else
+  ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '=+/')"
+  ADMIN_MUST_CHANGE_PASSWORD="true"
+fi
 EMERGENT_LLM_KEY="${EMERGENT_LLM_KEY:-}"
 
 BOLD=$(tput bold 2>/dev/null || echo "")
@@ -397,6 +408,7 @@ CORS_ORIGINS="$CORS"
 EMERGENT_LLM_KEY="${EMERGENT_LLM_KEY}"
 ADMIN_EMAIL="${ADMIN_EMAIL}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+ADMIN_MUST_CHANGE_PASSWORD="${ADMIN_MUST_CHANGE_PASSWORD}"
 EOF
 else
   log "Backend .env exists — preserving as-is"
@@ -434,6 +446,15 @@ REACT_APP_TURNSTILE_SITE_KEY=
 REACT_APP_TURNSTILE_ENABLED=false
 EOF
 log "Frontend will call backend at $BACKEND_ORIGIN"
+
+# The backend also needs its own public origin (payment-gateway callback URLs,
+# links inside notification emails). Idempotent upsert into backend/.env so
+# both fresh installs and re-runs stay correct.
+if grep -q '^REACT_APP_BACKEND_URL=' "$BACKEND_ENV" 2>/dev/null; then
+  sed -i "s|^REACT_APP_BACKEND_URL=.*|REACT_APP_BACKEND_URL=\"$BACKEND_ORIGIN\"|" "$BACKEND_ENV"
+else
+  echo "REACT_APP_BACKEND_URL=\"$BACKEND_ORIGIN\"" >> "$BACKEND_ENV"
+fi
 
 sudo -u intercloud -H bash -c "
   set -e
@@ -750,6 +771,10 @@ $(tput setaf 2 2>/dev/null)=====================================================
 
   Admin login   : ${ADMIN_EMAIL}
   Admin passwd  : ${ADMIN_PASSWORD}
+$(if [[ "$ADMIN_MUST_CHANGE_PASSWORD" == "true" ]]; then
+   echo "  $(tput setaf 3 2>/dev/null)⚠ Password di atas dibuat ACAK dan hanya ditampilkan SEKALI di sini."
+   echo "    Simpan sekarang — login pertama akan memaksa penggantian password.$(tput sgr0 2>/dev/null)"
+fi)
 
 Automated in this run:
   ✓ OS dependencies + build tools

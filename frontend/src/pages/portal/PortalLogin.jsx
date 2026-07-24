@@ -22,7 +22,10 @@ const PortalLogin = () => {
 
   useEffect(() => {
     if (user && user.role) {
-      const target = user.role === "client" ? "/portal/client/dashboard" : "/portal/admin/dashboard";
+      const area = user.role === "client" ? "client" : "admin";
+      const target = user.must_change_password
+        ? `/portal/${area}/settings/password`
+        : `/portal/${area}/dashboard`;
       navigate(target, { replace: true });
     }
   }, [user, navigate]);
@@ -33,7 +36,10 @@ const PortalLogin = () => {
     setErr("");
     try {
       const u = await login(email.trim(), password);
-      const target = u.role === "client" ? "/portal/client/dashboard" : "/portal/admin/dashboard";
+      const area = u.role === "client" ? "client" : "admin";
+      const target = u.must_change_password
+        ? `/portal/${area}/settings/password`
+        : `/portal/${area}/dashboard`;
       navigate(target, { replace: true });
     } catch (e2) {
       setErr(e2.message || "Login failed");

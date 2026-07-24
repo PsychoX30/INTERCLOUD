@@ -80,10 +80,28 @@ const InvoiceDetail = ({ invoice, onClose }) => {
   const [pay, setPay] = useState(invoice.status === "paid" ? null : "bank");
   const [banks, setBanks] = useState([]);
   const [duitkuOn, setDuitkuOn] = useState(false);
+  const [payBusy, setPayBusy] = useState(false);
+  const [payErr, setPayErr] = useState("");
+  const [payUrl, setPayUrl] = useState(invoice.payment_link || "");
 
   useEffect(() => {
     api.get("/client/payment-info").then((r) => { setBanks(r.data.bank_accounts || []); setDuitkuOn(!!r.data.duitku_enabled); });
   }, []);
+
+  const payWithDuitku = async () => {
+    setPayBusy(true); setPayErr("");
+    try {
+      const { data } = await api.post(`/client/invoices/${invoice.id}/pay-online?provider=duitku`);
+      if (data.payment_url) {
+        setPayUrl(data.payment_url);
+        window.open(data.payment_url, "_blank", "noopener");
+      } else {
+        setPayErr("Payment link tidak diterima dari gateway. Coba lagi.");
+      }
+    } catch (e) {
+      setPayErr(e?.response?.data?.detail || e.message);
+    } finally { setPayBusy(false); }
+  };
 
   const isOverdue = invoice.status === "overdue";
   const canPay = invoice.status === "unpaid" || invoice.status === "overdue";
@@ -175,7 +193,7 @@ const InvoiceDetail = ({ invoice, onClose }) => {
                     className={btnPrimary}
                     data-testid="wa-confirm-payment"
                   >
-                    I've paid — confirm via WhatsApp
+                    I&apos;ve paid — confirm via WhatsApp
                   </a>
                 </div>
               )}
@@ -183,16 +201,27 @@ const InvoiceDetail = ({ invoice, onClose }) => {
               {pay === "duitku" && (
                 <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 p-4">
                   <p className="text-sm text-slate-600">
-                    You'll be redirected to Duitku's secure payment page to complete this transaction.
+                    You&apos;ll be redirected to Duitku&apos;s secure payment page to complete this transaction.
                   </p>
+                  {payErr && (
+                    <div className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2" data-testid="pay-duitku-error">{payErr}</div>
+                  )}
                   <button
-                    disabled={!duitkuOn}
-                    className={`${btnPrimary} mt-3 ${!duitkuOn ? "opacity-50 cursor-not-allowed" : ""}`}
+                    disabled={!duitkuOn || payBusy}
+                    className={`${btnPrimary} mt-3 ${(!duitkuOn || payBusy) ? "opacity-50 cursor-not-allowed" : ""}`}
                     data-testid="pay-duitku-cta"
-                    onClick={() => alert("Duitku redirect — mocked (integration pending).")}
+                    onClick={payWithDuitku}
                   >
-                    Pay with Duitku {duitkuOn ? "" : "(disabled)"}
+                    {payBusy ? "Creating payment link…" : `Pay with Duitku ${duitkuOn ? "" : "(disabled)"}`}
                   </button>
+                  {payUrl && (
+                    <div className="mt-3 text-xs text-slate-500">
+                      Popup tidak terbuka?{" "}
+                      <a href={payUrl} target="_blank" rel="noopener noreferrer" className="text-[#0a2350] font-bold underline" data-testid="pay-duitku-link">
+                        Buka halaman pembayaran →
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
             </Card>

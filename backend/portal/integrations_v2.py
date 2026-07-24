@@ -719,23 +719,53 @@ class DuitkuGateway:
         self.base = "https://api-sandbox.duitku.com" if self.sandbox else "https://api-prod.duitku.com"
 
     def _sig_create(self, timestamp: str) -> str:
-        s = f"{self.merchant_code}{timestamp}".encode()
-        return hmac.new(self.api_key.encode(), s, hashlib.sha256).hexdigest()
+        # Per current POP docs (changelog Apr 2026 — "Signature enhancement using
+        # HMAC"): signature = HMAC_SHA256(merchantCode + timestamp, apiKey).
+        return hmac.new(self.api_key.encode(),
+                        f"{self.merchant_code}{timestamp}".encode(),
+                        hashlib.sha256).hexdigest()
 
     def _sig_callback(self, merchant_code: str, amount: str, order_id: str) -> str:
-        s = f"{merchant_code}{amount}{order_id}".encode()
-        return hmac.new(self.api_key.encode(), s, hashlib.sha256).hexdigest()
+        # Current docs: HMAC_SHA256(merchantCode + amount + merchantOrderId, apiKey).
+        return hmac.new(self.api_key.encode(),
+                        f"{merchant_code}{amount}{order_id}".encode(),
+                        hashlib.sha256).hexdigest()
+
+    def _sig_callback_md5_legacy(self, merchant_code: str, amount: str, order_id: str) -> str:
+        # Pre-Apr-2026 legacy scheme (marked obsolete in the changelog but may
+        # still be emitted during Duitku's migration window):
+        # MD5(merchantCode + amount + merchantOrderId + apiKey).
+        return hashlib.md5(
+            f"{merchant_code}{amount}{order_id}{self.api_key}".encode()).hexdigest()
 
     async def test_connection(self) -> dict:
         if not (self.merchant_code and self.api_key):
             return {"ok": False, "message": "Missing merchant_code or api_key"}
         return {"ok": True, "message": f"Duitku creds present ({'sandbox' if self.sandbox else 'production'}). Live validation happens on first invoice."}
 
-    async def create_payment(self, *, invoice_id: str, amount_idr: int, customer_email: str, callback_url: str) -> dict:
+    async def create_payment(self, *, invoice_id: str, amount_idr: int, customer_email: str,
+                             callback_url: str, return_url: str = "",
+                             expiry_minutes: int = 1440, customer_name: str = "",
+                             phone_number: str = "") -> dict:
+        """POP API createInvoice — https://docs.duitku.com/pop/en/#create-invoice.
+
+        Required per docs: paymentAmount, merchantOrderId, productDetails, email,
+        callbackUrl, returnUrl. Auth headers: x-duitku-timestamp (ms),
+        x-duitku-merchantcode, x-duitku-signature (HMAC-SHA256)."""
         ts = str(int(time.time() * 1000))
-        payload = {"merchantCode": self.merchant_code, "paymentAmount": int(amount_idr),
-                   "merchantOrderId": invoice_id, "productDetails": f"Invoice {invoice_id}",
-                   "email": customer_email, "callbackUrl": callback_url, "returnUrl": callback_url}
+        payload = {
+            "paymentAmount": int(amount_idr),
+            "merchantOrderId": invoice_id,
+            "productDetails": f"Invoice {invoice_id}",
+            "email": customer_email,
+            "callbackUrl": callback_url,
+            "returnUrl": return_url or callback_url,
+            "expiryPeriod": int(expiry_minutes),
+        }
+        if customer_name:
+            payload["customerVaName"] = customer_name[:20]
+        if phone_number:
+            payload["phoneNumber"] = phone_number[:50]
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(f"{self.base}/api/merchant/createInvoice", json=payload,
                              headers={"Content-Type": "application/json",
@@ -744,22 +774,37 @@ class DuitkuGateway:
                                       "x-duitku-signature": self._sig_create(ts)})
             r.raise_for_status()
             data = r.json()
+        if str(data.get("statusCode")) != "00":
+            raise RuntimeError(
+                f"Duitku createInvoice rejected: {data.get('statusCode')} {data.get('statusMessage')}")
         return {"payment_url": data.get("paymentUrl"),
                 "external_id": data.get("reference", invoice_id),
                 "raw": data}
 
     def verify_webhook(self, raw_body: bytes) -> dict:
-        # Duitku callbacks are form-urlencoded
+        """Verify a Duitku payment callback (x-www-form-urlencoded POST).
+
+        Signature per current docs: HMAC_SHA256(merchantCode+amount+merchantOrderId,
+        apiKey); the obsolete MD5 scheme is still accepted as a fallback for
+        Duitku's migration window. Also enforces that the callback's
+        merchantCode matches ours. resultCode "00" = paid."""
+        from urllib.parse import parse_qsl
         body = raw_body.decode(errors="ignore")
-        data = dict(x.split("=", 1) for x in body.split("&") if "=" in x)
-        sig = data.get("signature", "")
-        calc = self._sig_callback(data.get("merchantCode", ""), data.get("amount", ""),
-                                  data.get("merchantOrderId", ""))
-        if not hmac.compare_digest(sig, calc):
+        data = dict(parse_qsl(body, keep_blank_values=True))
+        sig = (data.get("signature") or "").lower()
+        mc = data.get("merchantCode", "")
+        amount = data.get("amount", "")
+        order_id = data.get("merchantOrderId", "")
+        if self.merchant_code and mc != self.merchant_code:
+            raise ValueError("Duitku callback merchantCode mismatch")
+        calc_hmac = self._sig_callback(mc, amount, order_id).lower()
+        calc_md5 = self._sig_callback_md5_legacy(mc, amount, order_id).lower()
+        if not sig or not (hmac.compare_digest(sig, calc_hmac) or
+                           hmac.compare_digest(sig, calc_md5)):
             raise ValueError("Invalid Duitku signature")
         status = "paid" if data.get("resultCode") == "00" else "failed"
-        return {"invoice_id": data.get("merchantOrderId", ""), "status": status,
-                "external_id": data.get("reference") or data.get("merchantOrderId"), "raw": data}
+        return {"invoice_id": order_id, "status": status,
+                "external_id": data.get("reference") or order_id, "raw": data}
 
 
 # ============================================================

@@ -50,6 +50,7 @@ def _user_public(u: dict) -> dict:
         "menu_keys": u.get("menu_keys"),
         "feature_flags": list(u.get("feature_flags") or []),
         "is_active": u.get("is_active", True),
+        "must_change_password": bool(u.get("must_change_password", False)),
     }
 
 
@@ -119,6 +120,35 @@ async def _mark_overdue(db):
         {"status": "unpaid", "due_date": {"$lt": today}},
         {"$set": {"status": "overdue"}},
     )
+
+
+# ---------- Global settings helpers (settings collection: {key, value}) ----------
+async def _get_setting_value(db, key: str, default=None):
+    doc = await db.settings.find_one({"key": key})
+    return doc.get("value") if doc and "value" in doc else default
+
+
+async def _set_setting_value(db, key: str, value) -> None:
+    await db.settings.update_one(
+        {"key": key},
+        {"$set": {"key": key, "value": value, "updated_at": _now()}},
+        upsert=True,
+    )
+
+
+# Billing defaults — `default_tax_percent` is only ever a SUGGESTED initial
+# value pre-filled into invoice/quotation forms and the renewal auto-invoice
+# generator. It is stored per-document and stays fully manual/overridable
+# (down to 0). Nothing ever recalculates tax_percent after creation.
+BILLING_SETTING_DEFAULTS = {
+    "default_tax_percent": 11.0,
+    "renewal_lead_days": 7,
+    "enable_extra_payment_gateways": False,
+}
+
+# Extra gateways stay implemented (classes untouched in integrations_v2) but
+# hidden from all admin/client surfaces unless the flag above is turned on.
+_EXTRA_PAYMENT_MODULES = {"midtrans", "xendit"}
 
 
 # ============================================================
@@ -606,12 +636,17 @@ async def _serialize_invoice(db, d: dict) -> dict:
         "user_email": u.get("email", ""),
         "items": d.get("items", []),
         "subtotal": d.get("subtotal", 0),
+        "tax_percent": d.get("tax_percent"),
         "tax_amount": d.get("tax_amount", 0),
         "total": d.get("total", 0),
         "due_date": d.get("due_date", ""),
         "status": d.get("status", "unpaid"),
         "payment_method": d.get("payment_method"),
         "paid_at": d.get("paid_at"),
+        "payment_link": d.get("payment_link"),
+        "payment_ref": d.get("payment_ref"),
+        "service_id": d.get("service_id"),
+        "renewal_period": d.get("renewal_period"),
         "created_at": _iso(d.get("created_at", "")),
         "notes": d.get("notes", ""),
     }
@@ -648,6 +683,7 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
         db, product=prod,
         selections=selections_data,
         addon_ids=payload.addon_ids or [],
+        tax_percent=float(await _get_setting_value(db, "default_tax_percent", 11.0)),
     )
 
     # 1. Create the order
@@ -719,7 +755,10 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
         doc["provision_log"].append({"at": _now(), "step": "awaiting_quote", "message": "Custom-priced product; sales will send a quotation."})
     else:
         line_subtotal = sum(i["total"] for i in items)
-        tax = round(line_subtotal * 0.11, 2)
+        # PPN pre-filled from the admin-editable global default — stored on the
+        # invoice and manually overridable afterwards; never recalculated.
+        tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
+        tax = round(line_subtotal * tax_percent / 100, 2)
         total = round(line_subtotal + tax, 2)
         due = (datetime.now(timezone.utc) + timedelta(days=14)).date().isoformat()
         number = await _next_number(db, "invoices", "INV")
@@ -728,7 +767,7 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
             "user_id": ObjectId(user["id"]),
             "items": items,
             "subtotal": line_subtotal,
-            "tax_percent": 11,
+            "tax_percent": tax_percent,
             "tax_amount": tax,
             "total": total,
             "due_date": due,
@@ -1609,6 +1648,7 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
         db, product=prod,
         selections=[s.model_dump() for s in (payload.selections or [])],
         addon_ids=payload.addon_ids or [],
+        tax_percent=float(await _get_setting_value(db, "default_tax_percent", 11.0)),
     )
     return cart
 
@@ -1923,10 +1963,52 @@ async def client_payment_info(user=Depends(get_current_user)):
     ]
     # Any enabled duitku integration?
     duitku = await db.integrations.find_one({"module": "duitku", "status": "enabled"})
+    if not duitku:
+        # iv2-style settings count too (either storage system may hold the creds)
+        iv2_duitku = await iv2.get_settings(db, "duitku")
+        duitku = iv2_duitku if (iv2_duitku or {}).get("enabled") else None
     return {
         "bank_accounts": banks,
         "duitku_enabled": bool(duitku),
     }
+
+
+# ============================================================
+# BILLING DEFAULTS (admin-editable global settings)
+# ============================================================
+@router.get("/admin/billing/settings")
+async def get_billing_settings(staff=Depends(get_current_staff)):
+    """Global billing defaults. `default_tax_percent` is only the *suggested*
+    initial PPN % pre-filled into new invoices/quotations and renewal
+    auto-invoices — always overridable per document, down to 0."""
+    db = await _get_db()
+    return {k: await _get_setting_value(db, k, dv)
+            for k, dv in BILLING_SETTING_DEFAULTS.items()}
+
+
+@router.put("/admin/billing/settings")
+async def put_billing_settings(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    if "default_tax_percent" in payload and payload["default_tax_percent"] is not None:
+        await _set_setting_value(db, "default_tax_percent",
+                                 max(0.0, float(payload["default_tax_percent"])))
+    if "renewal_lead_days" in payload and payload["renewal_lead_days"] is not None:
+        await _set_setting_value(db, "renewal_lead_days",
+                                 max(1, int(payload["renewal_lead_days"])))
+    if "enable_extra_payment_gateways" in payload and payload["enable_extra_payment_gateways"] is not None:
+        await _set_setting_value(db, "enable_extra_payment_gateways",
+                                 bool(payload["enable_extra_payment_gateways"]))
+    return {k: await _get_setting_value(db, k, dv)
+            for k, dv in BILLING_SETTING_DEFAULTS.items()}
+
+
+@router.post("/admin/billing/run-renewal-sweep")
+async def run_renewal_sweep_now(admin=Depends(get_current_admin)):
+    """Manually trigger the renewal auto-invoice sweep (same job the hourly
+    scheduler runs). Idempotent — re-running never duplicates invoices."""
+    db = await _get_db()
+    from portal import emails as _em
+    return await _em.run_renewal_invoice_sweep(db)
 
 
 # ============================================================
@@ -1939,8 +2021,14 @@ from .integrations_registry import (
 
 @router.get("/admin/integrations/modules")
 async def list_integration_modules(admin=Depends(get_current_admin)):
-    """Return the module registry (schemas for the Add Server dialog)."""
-    return module_list()
+    """Return the module registry (schemas for the Add Server dialog).
+
+    Midtrans/Xendit stay hidden unless `enable_extra_payment_gateways` is on —
+    Duitku is the only active payment gateway by policy."""
+    db = await _get_db()
+    allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
+    return [mdl for mdl in module_list()
+            if allow_extra or mdl["key"] not in _EXTRA_PAYMENT_MODULES]
 
 
 def _serialize_integration(d: dict, hide_secrets: bool = True) -> dict:
@@ -1965,6 +2053,9 @@ def _serialize_integration(d: dict, hide_secrets: bool = True) -> dict:
 async def list_integrations(admin=Depends(get_current_admin)):
     db = await _get_db()
     docs = await db.integrations.find({}).sort("created_at", -1).to_list(500)
+    allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
+    if not allow_extra:
+        docs = [d for d in docs if d.get("module") not in _EXTRA_PAYMENT_MODULES]
     return [_serialize_integration(d) for d in docs]
 
 
@@ -4159,7 +4250,8 @@ async def auth_change_password(payload: m.ChangePasswordIn, user=Depends(get_cur
     await db.users.update_one(
         {"_id": u["_id"]},
         {"$set": {"password_hash": hash_password(payload.new_password),
-                  "password_changed_at": _now()}},
+                  "password_changed_at": _now(),
+                  "must_change_password": False}},
     )
     # Invalidate any outstanding reset tokens for this user
     await db.password_resets.update_many({"user_id": u["_id"], "used": False}, {"$set": {"used": True}})
@@ -4292,15 +4384,21 @@ async def _send_password_notice(db, user: dict, *, kind: str, reset_url: str = "
 @router.get("/admin/integrations-v2/schema")
 async def integrations_v2_schema(admin=Depends(get_current_admin)):
     """Returns the field schema the admin UI uses to render each integration's settings form."""
-    return iv2.INTEGRATION_SCHEMA
+    db = await _get_db()
+    allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
+    return {k: v for k, v in iv2.INTEGRATION_SCHEMA.items()
+            if allow_extra or k not in _EXTRA_PAYMENT_MODULES}
 
 
 @router.get("/admin/integrations-v2")
 async def integrations_v2_list(admin=Depends(get_current_admin)):
     """Return all persisted integration settings (secrets masked)."""
     db = await _get_db()
+    allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
     out = {}
     for provider in iv2.INTEGRATION_SCHEMA.keys():
+        if not allow_extra and provider in _EXTRA_PAYMENT_MODULES:
+            continue
         d = await iv2.get_settings(db, provider)
         out[provider] = iv2.redact(d) or {"provider": provider, "enabled": False, "credentials": {}, "options": {}}
     return out
@@ -4311,6 +4409,10 @@ async def integrations_v2_upsert(provider: str, payload: dict, admin=Depends(get
     if provider not in iv2.INTEGRATION_SCHEMA:
         raise HTTPException(status_code=404, detail="Unknown provider")
     db = await _get_db()
+    if provider in _EXTRA_PAYMENT_MODULES and not bool(
+            await _get_setting_value(db, "enable_extra_payment_gateways", False)):
+        raise HTTPException(status_code=400,
+                            detail="Gateway ini dinonaktifkan — Duitku adalah satu-satunya payment gateway aktif.")
     # Merge — never drop existing secrets if the incoming value is empty
     existing = await iv2.get_settings(db, provider) or {}
     creds_in = payload.get("credentials") or {}
@@ -4628,27 +4730,85 @@ async def mikrotik_reboot(payload: dict, admin=Depends(get_current_admin)):
 
 
 # ---------------- Payment gateway — create + webhook ----------------
+async def _payment_settings(db, provider: str) -> Optional[dict]:
+    """Resolve gateway settings from either storage system:
+    1. `integration_settings` (iv2, provider-keyed) — preferred;
+    2. the module-hub `integrations` row (admin UI "Add Server" dialog),
+       mapped into the iv2 shape. Duitku is the only mapped provider.
+    Returns an iv2-shaped dict or None when not configured/enabled."""
+    s = await iv2.get_settings(db, provider)
+    if s and s.get("enabled") and (s.get("credentials") or {}):
+        return s
+    row = await db.integrations.find_one({"module": provider, "status": "enabled"})
+    if row and provider == "duitku":
+        cfg = row.get("config") or {}
+        if cfg.get("merchant_code") and cfg.get("api_key"):
+            return {
+                "provider": "duitku",
+                "enabled": True,
+                "sandbox": (cfg.get("environment") or "sandbox") != "production",
+                "credentials": {"merchant_code": cfg["merchant_code"],
+                                 "api_key": cfg["api_key"]},
+                "options": {"callback_url": cfg.get("callback_url") or "",
+                            "return_url": cfg.get("return_url") or ""},
+            }
+    return None
+
+
 @router.post("/client/invoices/{iid}/pay-online")
-async def client_pay_online(iid: str, provider: str, user=Depends(get_current_user)):
-    """Create a hosted payment link for the given invoice."""
+async def client_pay_online(iid: str, request: Request, provider: str = "duitku",
+                            user=Depends(get_current_user)):
+    """Create a hosted payment link for the given invoice (Duitku-only policy)."""
     db = await _get_db()
+    if provider not in iv2.PAYMENT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown payment provider")
+    if provider in _EXTRA_PAYMENT_MODULES and not bool(
+            await _get_setting_value(db, "enable_extra_payment_gateways", False)):
+        raise HTTPException(status_code=400,
+                            detail="Hanya Duitku yang tersedia sebagai payment gateway.")
     inv = await db.invoices.find_one({"_id": _oid(iid), "user_id": ObjectId(user["id"])})
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
     if inv.get("status") == "paid":
         raise HTTPException(status_code=400, detail="Invoice already paid")
-    s = await iv2.get_settings(db, provider)
-    if not s or not s.get("enabled"):
+    s = await _payment_settings(db, provider)
+    if not s:
         raise HTTPException(status_code=400, detail=f"{provider} not configured")
     gw = iv2.payment_gateway(provider, s)
-    backend = os.environ.get("REACT_APP_BACKEND_URL") or ""
-    callback = f"{backend}/api/portal/webhooks/{provider}"
-    result = await gw.create_payment(
+    # Public base URL resolution: env → request headers (behind ingress).
+    base = (os.environ.get("REACT_APP_BACKEND_URL") or "").strip().rstrip("/")
+    if not base:
+        fwd_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        fwd_proto = request.headers.get("x-forwarded-proto") or "https"
+        base = f"{fwd_proto}://{fwd_host}" if fwd_host else ""
+    opts = s.get("options") or {}
+    # Callback: explicit integration config wins, else derived from base.
+    callback = (opts.get("callback_url") or "").strip()
+    if not callback:
+        if not base:
+            raise HTTPException(status_code=500,
+                                detail="Cannot determine public callback URL — set it in the Duitku integration config.")
+        callback = f"{base}/api/portal/webhooks/{provider}"
+    kwargs = dict(
         invoice_id=inv["number"] or str(inv["_id"]),
         amount_idr=int(inv["total"]),
         customer_email=user["email"],
         callback_url=callback,
     )
+    if provider == "duitku":
+        # returnUrl is REQUIRED by the POP docs — send the client back to their
+        # invoices page after payment (config override supported).
+        return_url = (opts.get("return_url") or "").strip()
+        if not return_url and base:
+            return_url = f"{base}/portal/client/invoices"
+        kwargs.update(return_url=return_url,
+                      customer_name=user.get("name") or "",
+                      expiry_minutes=int(opts.get("expiry_minutes") or 1440))
+    try:
+        result = await gw.create_payment(**kwargs)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"Gagal membuat transaksi {provider}: {type(e).__name__}: {e}")
     await db.invoices.update_one(
         {"_id": inv["_id"]},
         {"$set": {"payment_provider": provider, "payment_external_id": result.get("external_id"),
@@ -4659,9 +4819,13 @@ async def client_pay_online(iid: str, provider: str, user=Depends(get_current_us
 
 @router.post("/webhooks/{provider}")
 async def payment_webhook(provider: str, request: Request):
-    """Public webhook. Verifies signature before marking any invoice as paid."""
+    """Public webhook. Verifies the gateway signature before touching any invoice.
+
+    Idempotent: the paid-transition only happens once (`status != paid` filter),
+    so duplicate callback deliveries never double-fire emails, provisioning or
+    service reactivation."""
     db = await _get_db()
-    s = await iv2.get_settings(db, provider)
+    s = await _payment_settings(db, provider)
     if not s:
         raise HTTPException(status_code=404, detail="Unknown gateway")
     raw = await request.body()
@@ -4674,22 +4838,63 @@ async def payment_webhook(provider: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid webhook: {e}")
 
-    if verified["status"] == "paid":
-        # Mark the invoice paid by external reference number (which we set to invoice.number)
-        upd = {"status": "paid", "paid_at": _now(), "payment_method": provider,
-               "payment_ref": verified.get("external_id")}
-        r = await db.invoices.update_one({"number": verified["invoice_id"]}, {"$set": upd})
-        # Fire the same auto-provision hook as manual admin-mark-paid
-        if r.modified_count:
-            inv = await db.invoices.find_one({"number": verified["invoice_id"]})
-            if inv and inv.get("order_id"):
-                order = await db.orders.find_one({"_id": _oid(inv["order_id"])})
-                if order:
-                    try:
-                        await _auto_provision(db, order)
-                    except Exception:
-                        pass
-    return {"received": True, "status": verified["status"]}
+    if verified["status"] != "paid":
+        return {"received": True, "status": verified["status"]}
+
+    inv_no = verified["invoice_id"]
+    # ---- Idempotent paid transition (survives duplicate callback delivery) ----
+    r = await db.invoices.update_one(
+        {"number": inv_no, "status": {"$ne": "paid"}},
+        {"$set": {"status": "paid", "paid_at": _now(), "payment_method": provider,
+                  "payment_ref": verified.get("external_id")}},
+    )
+    if not r.modified_count:
+        exists = await db.invoices.find_one({"number": inv_no})
+        return {"received": True, "status": "paid",
+                "duplicate": bool(exists),
+                "note": "already processed" if exists else "invoice not found"}
+
+    inv = await db.invoices.find_one({"number": inv_no})
+    user = await db.users.find_one({"_id": inv["user_id"]}) if inv else None
+
+    # 1) Payment-received notification email (best-effort, never blocks the ACK)
+    if inv and user:
+        try:
+            from portal import emails as _em
+            await _em.on_invoice_paid(db, inv, user)
+        except Exception:
+            pass
+
+    # 2) Auto-provision the linked order (same hook as manual admin mark-paid)
+    if inv and inv.get("order_id"):
+        order = await db.orders.find_one({"_id": _oid(inv["order_id"])})
+        if order and not order.get("service_id"):
+            try:
+                await _auto_provision(db, order)
+            except Exception:
+                pass
+
+    # 3) Reactivate services suspended for non-payment of THIS invoice
+    reactivated = 0
+    if inv:
+        import re as _re
+        ors = [{"user_id": inv["user_id"],
+                "suspended_reason": {"$regex": f"invoice {_re.escape(inv_no)} overdue",
+                                      "$options": "i"}}]
+        if inv.get("service_id"):
+            try:
+                ors.append({"_id": _oid(inv["service_id"])})
+            except Exception:
+                pass
+        res = await db.services.update_many(
+            {"status": "suspended", "$or": ors},
+            {"$set": {"status": "active", "reactivated_at": _now(),
+                      "reactivated_reason": f"invoice {inv_no} paid via {provider}"},
+             "$unset": {"suspended_at": "", "suspended_reason": ""}},
+        )
+        reactivated = res.modified_count
+
+    return {"received": True, "status": "paid", "reactivated_services": reactivated}
 
 
 # ============================================================

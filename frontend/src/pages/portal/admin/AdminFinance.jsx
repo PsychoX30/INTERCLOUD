@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Download, Plus, Trash2, Lock, TrendingUp, Wallet, HandCoins, Users, ShoppingCart, ReceiptText } from "lucide-react";
+import { Download, Plus, Trash2, Lock, TrendingUp, Wallet, HandCoins, Users, ShoppingCart, ReceiptText, Percent, Save, Loader2 } from "lucide-react";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
 const BASE = process.env.REACT_APP_BACKEND_URL;
@@ -14,6 +14,7 @@ const TABS = [
   { key: "salaries",  label: "Salaries",    icon: Users },
   { key: "sales_fees",label: "Sales Fees",  icon: ShoppingCart },
   { key: "assets",    label: "Assets",      icon: Lock },
+  { key: "billing",   label: "Billing Defaults", icon: Percent },
   { key: "reports",   label: "Reports",     icon: Download },
 ];
 
@@ -72,8 +73,69 @@ const AdminFinance = () => {
       {tab === "salaries" && <LedgerPane rows={d.salaries_rows} onChange={load} kind="salaries" extras={["employee","category","notes"]} />}
       {tab === "sales_fees" && <LedgerPane rows={d.sales_fees_rows} onChange={load} kind="sales-fees" extras={["sales_person","invoice_number","notes"]} />}
       {tab === "assets" && <AssetsList rows={d.assets_rows} />}
+      {tab === "billing" && <BillingDefaultsPane />}
       {tab === "reports" && <ReportsPane dlUrl={dlUrl} />}
     </div>
+  );
+};
+
+const BillingDefaultsPane = () => {
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.get("/admin/billing/settings").then((r) => setForm(r.data)).catch((e) => setErr(e?.response?.data?.detail || e.message));
+  }, []);
+
+  const save = async () => {
+    setBusy(true); setErr(""); setSaved(false);
+    try {
+      const { data } = await api.put("/admin/billing/settings", {
+        default_tax_percent: Number(form.default_tax_percent),
+        renewal_lead_days: Number(form.renewal_lead_days),
+      });
+      setForm(data); setSaved(true); setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally { setBusy(false); }
+  };
+
+  if (!form) return <Loading />;
+  return (
+    <Card>
+      <div className="max-w-xl">
+        <div className="text-lg font-bold text-[#0a2350] mb-1">Billing Defaults</div>
+        <p className="text-sm text-slate-500 mb-5">
+          Nilai PPN di bawah hanyalah <b>saran awal</b> yang di-prefill saat membuat invoice/quotation
+          baru dan invoice renewal otomatis — selalu bisa diubah manual per dokumen (termasuk 0%).
+          Tidak ada perhitungan ulang otomatis setelah dokumen dibuat.
+        </p>
+        {err && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
+        <div className="grid grid-cols-2 gap-4 mb-5">
+          <label>
+            <div className={labelClass}>Default PPN (%)</div>
+            <input type="number" min="0" step="0.1" className={inputClass}
+              value={form.default_tax_percent}
+              onChange={(e) => setForm({ ...form, default_tax_percent: e.target.value })}
+              data-testid="billing-default-tax" />
+          </label>
+          <label>
+            <div className={labelClass}>Renewal lead days</div>
+            <input type="number" min="1" step="1" className={inputClass}
+              value={form.renewal_lead_days}
+              onChange={(e) => setForm({ ...form, renewal_lead_days: e.target.value })}
+              data-testid="billing-renewal-lead" />
+            <div className="text-[11px] text-slate-400 mt-1">Invoice renewal dibuat otomatis N hari sebelum jatuh tempo layanan.</div>
+          </label>
+        </div>
+        <button className={btnPrimary} onClick={save} disabled={busy} data-testid="billing-save">
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Simpan
+        </button>
+        {saved && <span className="ml-3 text-sm font-bold text-emerald-600">Tersimpan ✓</span>}
+      </div>
+    </Card>
   );
 };
 

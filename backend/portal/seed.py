@@ -44,6 +44,10 @@ async def _seed_admin(db):
             "phone": "",
             "assigned_client_ids": [],
             "billing_emails": [],
+            # Installer sets ADMIN_MUST_CHANGE_PASSWORD=true when it auto-generated
+            # a random password — forces a rotation on first login.
+            "must_change_password": os.environ.get(
+                "ADMIN_MUST_CHANGE_PASSWORD", "").lower() in ("1", "true", "yes"),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
     elif not verify_password(admin_pw, a["password_hash"]):

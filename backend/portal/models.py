@@ -85,6 +85,7 @@ class UserOut(BaseModel):
     menu_keys: Optional[List[str]] = None      # allow-list of admin menu keys; None = use role default
     feature_flags: List[str] = []              # arbitrary per-user feature toggles
     is_active: bool = True
+    must_change_password: bool = False         # forced password rotation (installer-seeded admin)
 
 
 class LoginOut(BaseModel):
@@ -307,12 +308,17 @@ class InvoiceOut(BaseModel):
     user_email: str
     items: List[InvoiceItem]
     subtotal: float
+    tax_percent: Optional[float] = None
     tax_amount: float
     total: float
     due_date: str
     status: Literal["unpaid", "paid", "overdue", "cancelled"]
     payment_method: Optional[str] = None
     paid_at: Optional[str] = None
+    payment_link: Optional[str] = None
+    payment_ref: Optional[str] = None
+    service_id: Optional[str] = None
+    renewal_period: Optional[str] = None
     created_at: str
     notes: str = ""
 
