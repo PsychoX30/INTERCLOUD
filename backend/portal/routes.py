@@ -13,6 +13,7 @@ from .auth import (
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES,
 )
+from .audit import log_audit, serialize as _serialize_audit
 
 router = APIRouter(prefix="/api/portal")
 
@@ -144,6 +145,7 @@ BILLING_SETTING_DEFAULTS = {
     "default_tax_percent": 11.0,
     "renewal_lead_days": 7,
     "enable_extra_payment_gateways": False,
+    "noc_alert_recipients": [],
 }
 
 # Extra gateways stay implemented (classes untouched in integrations_v2) but
@@ -1202,6 +1204,9 @@ ADMIN_MENU_CATALOG = [
     {"key": "documents",       "label": "Documents",        "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "integrations",    "label": "Integrations",     "group": "System",         "default_roles": ["admin"]},
     {"key": "security",        "label": "Security",         "group": "System",         "default_roles": ["admin"]},
+    {"key": "audit_log",       "label": "Audit Log",        "group": "System",         "default_roles": ["admin"]},
+    {"key": "noc",             "label": "NOC Monitor",      "group": "Operations",     "default_roles": ["admin", "support"]},
+    {"key": "credit_notes",    "label": "Credit Notes",     "group": "Sales & Billing", "default_roles": ["admin", "finance"]},
     {"key": "branding",        "label": "Branding",         "group": "System",         "default_roles": ["admin"]},
     {"key": "site_content",    "label": "Landing CMS",      "group": "System",         "default_roles": ["admin"]},
     {"key": "backup",          "label": "Backup & Restore", "group": "System",         "default_roles": ["admin"]},
@@ -1322,8 +1327,9 @@ async def admin_create_user(payload: m.UserCreateIn, admin=Depends(get_current_a
 
 
 @router.put("/admin/users/{uid}", response_model=m.UserOut)
-async def admin_update_user(uid: str, payload: m.UserUpdateIn, admin=Depends(get_current_admin)):
+async def admin_update_user(uid: str, payload: m.UserUpdateIn, request: Request, admin=Depends(get_current_admin)):
     db = await _get_db()
+    existing = await _load_user(db, uid)
     upd = {}
     for k in ("name", "role", "company", "phone", "billing_emails",
               "attention", "address_line1", "address_line2", "city",
@@ -1334,20 +1340,45 @@ async def admin_update_user(uid: str, payload: m.UserUpdateIn, admin=Depends(get
             upd[k] = v
     if payload.assigned_client_ids is not None:
         upd["assigned_client_ids"] = [ObjectId(x) for x in payload.assigned_client_ids]
+    password_changed = False
     if payload.password:
         upd["password_hash"] = hash_password(payload.password)
+        password_changed = True
     if upd:
         await db.users.update_one({"_id": _oid(uid)}, {"$set": upd})
     u = await _load_user(db, uid)
+    # ---- Audit: log role changes and password resets separately for clarity ----
+    if existing.get("role") != u.get("role"):
+        await log_audit(db, actor=admin, action="user.role_change", category="users",
+                        target_type="user", target_id=uid, target_label=u.get("email", ""),
+                        before={"role": existing.get("role")}, after={"role": u.get("role")},
+                        severity="warning", request=request)
+    if password_changed:
+        await log_audit(db, actor=admin, action="user.password_change", category="security",
+                        target_type="user", target_id=uid, target_label=u.get("email", ""),
+                        severity="warning", request=request)
+    if existing.get("is_active") != u.get("is_active"):
+        await log_audit(db, actor=admin, action="user.active_toggle", category="users",
+                        target_type="user", target_id=uid, target_label=u.get("email", ""),
+                        before={"is_active": existing.get("is_active")},
+                        after={"is_active": u.get("is_active")},
+                        severity="warning", request=request)
     return _user_public(u)
 
 
 @router.delete("/admin/users/{uid}")
-async def admin_delete_user(uid: str, admin=Depends(get_current_admin)):
+async def admin_delete_user(uid: str, request: Request, admin=Depends(get_current_admin)):
     db = await _get_db()
     if str(admin["id"]) == uid:
         raise HTTPException(status_code=400, detail="You cannot delete yourself")
+    target = await db.users.find_one({"_id": _oid(uid)})
     r = await db.users.delete_one({"_id": _oid(uid)})
+    if r.deleted_count and target:
+        await log_audit(db, actor=admin, action="user.delete", category="users",
+                        target_type="user", target_id=uid,
+                        target_label=target.get("email", ""),
+                        before={"role": target.get("role"), "email": target.get("email")},
+                        severity="critical", request=request)
     return {"deleted": r.deleted_count}
 
 
@@ -1987,8 +2018,10 @@ async def get_billing_settings(staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/billing/settings")
-async def put_billing_settings(payload: dict, admin=Depends(get_current_admin)):
+async def put_billing_settings(payload: dict, request: Request, admin=Depends(get_current_admin)):
     db = await _get_db()
+    before = {k: await _get_setting_value(db, k, dv)
+              for k, dv in BILLING_SETTING_DEFAULTS.items()}
     if "default_tax_percent" in payload and payload["default_tax_percent"] is not None:
         await _set_setting_value(db, "default_tax_percent",
                                  max(0.0, float(payload["default_tax_percent"])))
@@ -1998,8 +2031,19 @@ async def put_billing_settings(payload: dict, admin=Depends(get_current_admin)):
     if "enable_extra_payment_gateways" in payload and payload["enable_extra_payment_gateways"] is not None:
         await _set_setting_value(db, "enable_extra_payment_gateways",
                                  bool(payload["enable_extra_payment_gateways"]))
-    return {k: await _get_setting_value(db, k, dv)
-            for k, dv in BILLING_SETTING_DEFAULTS.items()}
+    if "noc_alert_recipients" in payload and payload["noc_alert_recipients"] is not None:
+        v = payload["noc_alert_recipients"]
+        if isinstance(v, str):
+            v = [x for x in v.replace(",", "\n").splitlines()]
+        cleaned = [str(x).strip() for x in (v or []) if str(x).strip()]
+        await _set_setting_value(db, "noc_alert_recipients", cleaned)
+    after = {k: await _get_setting_value(db, k, dv)
+             for k, dv in BILLING_SETTING_DEFAULTS.items()}
+    if before != after:
+        await log_audit(db, actor=admin, action="billing.settings_update", category="billing",
+                        target_type="settings", target_label="Billing Defaults",
+                        before=before, after=after, severity="info", request=request)
+    return after
 
 
 @router.post("/admin/billing/run-renewal-sweep")
@@ -3637,6 +3681,7 @@ async def backup_download(admin=Depends(get_current_admin)):
 
 @router.post("/admin/system/factory-reset")
 async def system_factory_reset(payload: m.FactoryResetIn,
+                               request: Request,
                                admin=Depends(get_current_admin)):
     """DANGER: wipe the database back to a fresh-install state.
 
@@ -3713,12 +3758,31 @@ async def system_factory_reset(payload: m.FactoryResetIn,
         await db[name].drop()
         summary[name] = {"deleted": count, "dropped": True}
 
+    # ---- Immutable audit trail: insert a single reset marker into the
+    # freshly-wiped audit_logs collection so the operator can see WHO wiped
+    # the system and WHEN, even after the reset dropped historical logs.
+    await log_audit(db, actor=admin, action="system.factory_reset", category="system",
+                    target_type="system", target_label="Factory Reset",
+                    metadata={"safety_backup": str(safety_backup_path)[:400],
+                              "collections_affected": len(summary)},
+                    severity="critical", request=request)
+
     return {
         "ok": True,
         "message": "Factory reset complete. Admin account and settings preserved.",
         "safety_backup": safety_backup_path,
         "collections": summary,
     }
+
+
+async def _log_factory_reset_after(db, admin, request, summary, backup_path):
+    """Reserved (unused): factory-reset dropped audit_logs; a marker row is
+    inserted inline before returning so the operator sees the trigger."""
+    await log_audit(db, actor=admin, action="system.factory_reset", category="system",
+                    target_type="system", target_label="Factory Reset",
+                    metadata={"safety_backup": str(backup_path)[:400],
+                              "collections_affected": len(summary or {})},
+                    severity="critical", request=request)
 
 
 @router.post("/admin/backup/restore")
@@ -3739,6 +3803,12 @@ async def backup_restore(request: Request, admin=Depends(get_current_admin), con
         log = await _run_mongorestore(blob, drop=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Restore failed: {e}")
+    # Audit — restore also drops audit_logs, so the marker is the first row after.
+    db = await _get_db()
+    await log_audit(db, actor=admin, action="system.backup_restore", category="system",
+                    target_type="system", target_label="Backup Restore",
+                    metadata={"bytes_received": len(blob)},
+                    severity="critical", request=request)
     return {
         "ok": True,
         "bytes_received": len(blob),
@@ -4260,6 +4330,7 @@ async def auth_change_password(payload: m.ChangePasswordIn, user=Depends(get_cur
 
 @router.post("/admin/users/{uid}/reset-password")
 async def admin_reset_user_password(uid: str, payload: m.AdminResetPasswordIn,
+                                    request: Request,
                                     admin=Depends(get_current_admin)):
     """Admin sets a new password for another user. Optionally emails them."""
     db = await _get_db()
@@ -4274,6 +4345,11 @@ async def admin_reset_user_password(uid: str, payload: m.AdminResetPasswordIn,
     )
     await db.password_resets.update_many({"user_id": target["_id"], "used": False},
                                          {"$set": {"used": True}})
+    await log_audit(db, actor=admin, action="user.password_reset", category="security",
+                    target_type="user", target_id=uid,
+                    target_label=target.get("email", ""),
+                    metadata={"notify_user": bool(payload.notify_user)},
+                    severity="warning", request=request)
     # Optional email
     sent = False
     if payload.notify_user:
@@ -4405,7 +4481,7 @@ async def integrations_v2_list(admin=Depends(get_current_admin)):
 
 
 @router.put("/admin/integrations-v2/{provider}")
-async def integrations_v2_upsert(provider: str, payload: dict, admin=Depends(get_current_admin)):
+async def integrations_v2_upsert(provider: str, payload: dict, request: Request, admin=Depends(get_current_admin)):
     if provider not in iv2.INTEGRATION_SCHEMA:
         raise HTTPException(status_code=404, detail="Unknown provider")
     db = await _get_db()
@@ -4428,11 +4504,17 @@ async def integrations_v2_upsert(provider: str, payload: dict, admin=Depends(get
         "options": payload.get("options", existing.get("options") or {}),
     }
     saved = await iv2.upsert_settings(db, provider, doc)
+    # Redact both snapshots before writing audit (credentials → ••••)
+    await log_audit(db, actor=admin, action="integration.update", category="integrations",
+                    target_type="integration", target_id=provider, target_label=provider,
+                    before=iv2.redact(existing) if existing else None,
+                    after=iv2.redact(saved),
+                    severity="warning", request=request)
     return iv2.redact(saved)
 
 
 @router.delete("/admin/integrations-v2/{provider}")
-async def integrations_v2_delete(provider: str, admin=Depends(get_current_admin)):
+async def integrations_v2_delete(provider: str, request: Request, admin=Depends(get_current_admin)):
     """Wipe all persisted settings for a provider (credentials + options + enabled).
 
     Useful for rotating credentials cleanly — the PUT endpoint merges by design,
@@ -4442,6 +4524,10 @@ async def integrations_v2_delete(provider: str, admin=Depends(get_current_admin)
         raise HTTPException(status_code=404, detail="Unknown provider")
     db = await _get_db()
     r = await db.integration_settings.delete_one({"provider": provider})
+    if r.deleted_count:
+        await log_audit(db, actor=admin, action="integration.delete", category="integrations",
+                        target_type="integration", target_id=provider, target_label=provider,
+                        severity="warning", request=request)
     return {"deleted": r.deleted_count}
 
 
@@ -5035,8 +5121,9 @@ async def security_settings_get(admin=Depends(get_current_admin)):
 
 
 @router.put("/admin/security/settings")
-async def security_settings_put(payload: dict, admin=Depends(get_current_admin)):
+async def security_settings_put(payload: dict, request: Request, admin=Depends(get_current_admin)):
     db = await _get_db()
+    before = await _get_security_settings(db)
     allowed = {"auto_block_enabled", "fail_threshold", "window_minutes", "ban_minutes",
                "notify_emails", "whitelist_ips",
                "email_notify_enabled", "telegram_notify_enabled"}
@@ -5058,7 +5145,11 @@ async def security_settings_put(payload: dict, admin=Depends(get_current_admin))
             v = [x for x in v.replace(",", "\n").splitlines()]
         upd["whitelist_ips"] = [str(x).strip() for x in (v or []) if str(x).strip()]
     await db.settings.update_one({"_id": "security"}, {"$set": upd}, upsert=True)
-    return await _get_security_settings(db)
+    after = await _get_security_settings(db)
+    await log_audit(db, actor=admin, action="security.settings_update", category="security",
+                    target_type="settings", target_label="Security Settings",
+                    before=before, after=after, severity="warning", request=request)
+    return after
 
 
 @router.get("/admin/security/blocked-ips")
@@ -6252,3 +6343,545 @@ async def sitemap_xml():
     )
     return _R(content=body, media_type="application/xml",
               headers={"Cache-Control": "public, max-age=300"})
+
+
+
+# ============================================================
+# AUDIT LOGS — read-only history of sensitive admin actions
+# ============================================================
+@router.get("/admin/audit-logs")
+async def admin_audit_logs_list(
+    admin=Depends(get_current_admin),
+    limit: int = 200,
+    skip: int = 0,
+    category: Optional[str] = None,
+    action: Optional[str] = None,
+    actor_id: Optional[str] = None,
+    severity: Optional[str] = None,
+    q: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    """Paginated list of audit rows, newest first.
+
+    Filters (all optional):
+      • `category` — one of security/billing/integrations/users/system/noc
+      • `action`   — exact action key (e.g. "user.role_change")
+      • `actor_id` — filter to a specific admin's actions
+      • `severity` — info/warning/critical
+      • `q`        — case-insensitive substring on actor_email/target_label
+      • `date_from`, `date_to` — ISO date strings (inclusive)
+    """
+    db = await _get_db()
+    limit = max(1, min(int(limit or 200), 500))
+    skip = max(0, int(skip or 0))
+    query: dict = {}
+    if category:  query["category"] = category
+    if action:    query["action"] = action
+    if severity:  query["severity"] = severity
+    if actor_id:
+        try:
+            query["actor_id"] = ObjectId(actor_id)
+        except Exception:
+            query["actor_id"] = None
+    if q:
+        needle = q.strip()
+        if needle:
+            query["$or"] = [
+                {"actor_email": {"$regex": needle, "$options": "i"}},
+                {"target_label": {"$regex": needle, "$options": "i"}},
+                {"action": {"$regex": needle, "$options": "i"}},
+            ]
+    if date_from or date_to:
+        rng: dict = {}
+        if date_from: rng["$gte"] = date_from
+        if date_to:   rng["$lte"] = date_to + "T23:59:59"
+        query["created_at"] = rng
+    total = await db.audit_logs.count_documents(query)
+    cur = db.audit_logs.find(query).sort("created_at", -1).skip(skip).limit(limit)
+    docs = [d async for d in cur]
+    return {
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "items": [_serialize_audit(d) for d in docs],
+    }
+
+
+@router.get("/admin/audit-logs/facets")
+async def admin_audit_logs_facets(admin=Depends(get_current_admin)):
+    """Distinct values available to power the filter dropdowns."""
+    db = await _get_db()
+    return {
+        "categories": await db.audit_logs.distinct("category"),
+        "actions": await db.audit_logs.distinct("action"),
+        "severities": ["info", "warning", "critical"],
+    }
+
+
+# ============================================================
+# NOC — proactive MikroTik reachability polling
+# ============================================================
+@router.get("/admin/noc/devices")
+async def noc_devices_list(admin=Depends(get_current_admin)):
+    """Current uptime state for every MikroTik device.
+
+    Aggregates `noc_device_state` (last known status) so the frontend can
+    render a device grid without paginating through the full event log."""
+    db = await _get_db()
+    devices = await db.mikrotik_devices.find({}).to_list(500)
+    out = []
+    for d in devices:
+        state = await db.noc_device_state.find_one({"device_id": d["_id"]}) or {}
+        # 24h uptime %: count up-samples / total samples in the last 24h
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        samples = await db.noc_probes.count_documents({
+            "device_id": d["_id"], "at": {"$gte": since},
+        })
+        up_samples = await db.noc_probes.count_documents({
+            "device_id": d["_id"], "at": {"$gte": since}, "ok": True,
+        })
+        uptime_pct = round((up_samples / samples) * 100, 2) if samples else None
+        out.append({
+            "id": str(d["_id"]),
+            "name": d.get("name") or "unnamed",
+            "host": d.get("host") or "",
+            "site": d.get("site") or "",
+            "status": state.get("status") or "unknown",   # up / down / unknown
+            "last_probe_at": state.get("last_probe_at"),
+            "last_change_at": state.get("last_change_at"),
+            "last_message": state.get("last_message") or "",
+            "uptime_24h_pct": uptime_pct,
+            "samples_24h": samples,
+        })
+    return out
+
+
+@router.get("/admin/noc/events")
+async def noc_events_list(admin=Depends(get_current_admin),
+                          limit: int = 200,
+                          device_id: Optional[str] = None,
+                          type: Optional[str] = None):
+    """Chronological device_up / device_down events (newest first)."""
+    db = await _get_db()
+    limit = max(1, min(int(limit or 200), 500))
+    query: dict = {}
+    if device_id:
+        try:
+            query["device_id"] = ObjectId(device_id)
+        except Exception:
+            query["device_id"] = None
+    if type:
+        query["type"] = type
+    cur = db.noc_events.find(query).sort("at", -1).limit(limit)
+    docs = [d async for d in cur]
+    return [{
+        "id": str(d["_id"]),
+        "device_id": str(d.get("device_id")) if d.get("device_id") else None,
+        "device_name": d.get("device_name") or "",
+        "device_host": d.get("device_host") or "",
+        "type": d.get("type") or "",
+        "message": d.get("message") or "",
+        "at": d.get("at") or "",
+        "email_notified": bool(d.get("email_notified")),
+    } for d in docs]
+
+
+@router.post("/admin/noc/run-poll")
+async def noc_run_poll_now(admin=Depends(get_current_admin)):
+    """Manually trigger a single NOC probe sweep (same code the scheduler runs)."""
+    db = await _get_db()
+    from portal import emails as _em
+    return await _em.run_noc_probe_sweep(db)
+
+
+# ============================================================
+# CREDIT NOTES — refunds & adjustments applied to invoices
+# ============================================================
+def _credit_note_serialize(d: dict, invoice: dict | None = None, user: dict | None = None) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "number": d.get("number", ""),
+        "invoice_id": str(d["invoice_id"]) if d.get("invoice_id") else None,
+        "invoice_number": (invoice or {}).get("number", d.get("invoice_number", "")),
+        "user_id": str(d["user_id"]) if d.get("user_id") else None,
+        "user_name": (user or {}).get("name", d.get("user_name", "")),
+        "user_email": (user or {}).get("email", d.get("user_email", "")),
+        "amount": float(d.get("amount") or 0),
+        "reason": d.get("reason") or "",
+        "notes": d.get("notes") or "",
+        "status": d.get("status") or "draft",   # draft / applied / cancelled
+        "applied_at": d.get("applied_at"),
+        "applied_by": str(d["applied_by"]) if d.get("applied_by") else None,
+        "created_at": d.get("created_at", ""),
+    }
+
+
+async def _sum_applied_credit(db, invoice_id: ObjectId) -> float:
+    """Sum of `amount` from applied credit notes for a given invoice."""
+    cur = db.credit_notes.find({"invoice_id": invoice_id, "status": "applied"},
+                               {"amount": 1})
+    total = 0.0
+    async for d in cur:
+        total += float(d.get("amount") or 0)
+    return total
+
+
+async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
+    """If the total applied credit meets/exceeds the invoice total, flip the
+    invoice to paid and reactivate suspended services — same effect as a
+    Duitku webhook, but source=credit_note. Returns number of services
+    reactivated. Idempotent: filters status != paid."""
+    total_credit = await _sum_applied_credit(db, invoice["_id"])
+    inv_total = float(invoice.get("total") or 0)
+    if total_credit + 0.001 < inv_total:
+        return 0
+    r = await db.invoices.update_one(
+        {"_id": invoice["_id"], "status": {"$ne": "paid"}},
+        {"$set": {"status": "paid", "paid_at": _now(),
+                  "payment_method": "credit_note",
+                  "payment_ref": f"CN>={inv_total:.0f}"}},
+    )
+    if not r.modified_count:
+        return 0
+    # Reactivate services suspended for THIS invoice, mirroring the webhook logic
+    inv_no = invoice.get("number", "")
+    reactivated = 0
+    import re as _re
+    ors = [{"user_id": invoice["user_id"],
+            "suspended_reason": {"$regex": f"invoice {_re.escape(inv_no)} overdue",
+                                  "$options": "i"}}]
+    if invoice.get("service_id"):
+        try:
+            ors.append({"_id": _oid(invoice["service_id"])})
+        except Exception:
+            pass
+    res = await db.services.update_many(
+        {"status": "suspended", "$or": ors},
+        {"$set": {"status": "active", "reactivated_at": _now(),
+                  "reactivated_reason": f"invoice {inv_no} settled via credit note"},
+         "$unset": {"suspended_at": "", "suspended_reason": ""}},
+    )
+    reactivated = res.modified_count
+    await log_audit(db, actor=admin, action="invoice.settled_by_credit", category="billing",
+                    target_type="invoice", target_id=str(invoice["_id"]),
+                    target_label=inv_no,
+                    metadata={"total_credit": total_credit,
+                              "invoice_total": inv_total,
+                              "reactivated_services": reactivated},
+                    severity="warning", request=request)
+    return reactivated
+
+
+@router.get("/admin/credit-notes")
+async def credit_notes_list(admin=Depends(get_current_admin),
+                            invoice_id: Optional[str] = None,
+                            user_id: Optional[str] = None,
+                            status: Optional[str] = None):
+    db = await _get_db()
+    query: dict = {}
+    if invoice_id:
+        try: query["invoice_id"] = ObjectId(invoice_id)
+        except Exception: query["invoice_id"] = None
+    if user_id:
+        try: query["user_id"] = ObjectId(user_id)
+        except Exception: query["user_id"] = None
+    if status:
+        query["status"] = status
+    docs = await db.credit_notes.find(query).sort("created_at", -1).to_list(500)
+    # bulk-fetch related invoices + users
+    inv_ids = [d["invoice_id"] for d in docs if d.get("invoice_id")]
+    user_ids = [d["user_id"] for d in docs if d.get("user_id")]
+    invs = {i["_id"]: i for i in await db.invoices.find({"_id": {"$in": inv_ids}}).to_list(500)}
+    users = {u["_id"]: u for u in await db.users.find({"_id": {"$in": user_ids}}).to_list(500)}
+    return [_credit_note_serialize(d, invs.get(d.get("invoice_id")), users.get(d.get("user_id")))
+            for d in docs]
+
+
+@router.post("/admin/credit-notes")
+async def credit_notes_create(payload: dict, request: Request, admin=Depends(get_current_admin)):
+    """Issue a credit note against an invoice.
+
+    Body: `{invoice_id, amount, reason, notes?, auto_apply?: bool}`.
+    If `auto_apply` is true, immediately applies (which may settle the invoice)."""
+    db = await _get_db()
+    inv_id_raw = payload.get("invoice_id") or ""
+    try:
+        inv_oid = ObjectId(inv_id_raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid invoice_id")
+    invoice = await db.invoices.find_one({"_id": inv_oid})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    amount = float(payload.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be > 0")
+    reason = (payload.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Reason is required")
+    inv_total = float(invoice.get("total") or 0)
+    already_applied = await _sum_applied_credit(db, inv_oid)
+    if amount + already_applied > inv_total + 0.001:
+        raise HTTPException(status_code=400,
+                            detail=f"Credit ({amount:.0f}) + already applied ({already_applied:.0f}) exceeds invoice total ({inv_total:.0f}).")
+    user = await db.users.find_one({"_id": invoice["user_id"]}) or {}
+    number = await _next_number(db, "credit_notes", "CN")
+    doc = {
+        "number": number,
+        "invoice_id": inv_oid,
+        "invoice_number": invoice.get("number", ""),
+        "user_id": invoice["user_id"],
+        "user_name": user.get("name", ""),
+        "user_email": user.get("email", ""),
+        "amount": amount,
+        "reason": reason,
+        "notes": payload.get("notes") or "",
+        "status": "draft",
+        "created_at": _now(),
+        "created_by": ObjectId(admin["id"]),
+    }
+    r = await db.credit_notes.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="credit_note.create", category="billing",
+                    target_type="credit_note", target_id=str(r.inserted_id),
+                    target_label=number,
+                    after={"invoice_number": invoice.get("number"), "amount": amount,
+                           "reason": reason},
+                    severity="warning", request=request)
+    # Auto-apply if requested (single POST for the "quick refund" workflow)
+    if bool(payload.get("auto_apply")):
+        await _apply_credit_note_inner(db, doc, admin, request)
+        doc = await db.credit_notes.find_one({"_id": r.inserted_id})
+    return _credit_note_serialize(doc, invoice, user)
+
+
+async def _apply_credit_note_inner(db, cn: dict, admin, request):
+    """Mark the credit note applied, then settle the invoice if fully covered."""
+    if cn.get("status") == "applied":
+        return {"already_applied": True}
+    await db.credit_notes.update_one(
+        {"_id": cn["_id"], "status": {"$ne": "applied"}},
+        {"$set": {"status": "applied", "applied_at": _now(),
+                  "applied_by": ObjectId(admin["id"])}},
+    )
+    invoice = await db.invoices.find_one({"_id": cn["invoice_id"]})
+    reactivated = 0
+    if invoice:
+        reactivated = await _settle_invoice_from_credit(db, invoice, request, admin)
+    await log_audit(db, actor=admin, action="credit_note.apply", category="billing",
+                    target_type="credit_note", target_id=str(cn["_id"]),
+                    target_label=cn.get("number", ""),
+                    metadata={"invoice_number": (invoice or {}).get("number"),
+                              "amount": cn.get("amount"),
+                              "reactivated_services": reactivated},
+                    severity="warning", request=request)
+    return {"applied": True, "reactivated_services": reactivated}
+
+
+@router.post("/admin/credit-notes/{cid}/apply")
+async def credit_notes_apply(cid: str, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    cn = await db.credit_notes.find_one({"_id": _oid(cid)})
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    return await _apply_credit_note_inner(db, cn, admin, request)
+
+
+@router.post("/admin/credit-notes/{cid}/cancel")
+async def credit_notes_cancel(cid: str, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    cn = await db.credit_notes.find_one({"_id": _oid(cid)})
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    if cn.get("status") == "applied":
+        raise HTTPException(status_code=400,
+                            detail="Cannot cancel an already-applied credit note (invoice may be paid).")
+    await db.credit_notes.update_one({"_id": cn["_id"]},
+                                     {"$set": {"status": "cancelled",
+                                               "cancelled_at": _now()}})
+    await log_audit(db, actor=admin, action="credit_note.cancel", category="billing",
+                    target_type="credit_note", target_id=cid,
+                    target_label=cn.get("number", ""),
+                    severity="info", request=request)
+    return {"ok": True}
+
+
+@router.get("/admin/credit-notes/{cid}")
+async def credit_notes_detail(cid: str, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    cn = await db.credit_notes.find_one({"_id": _oid(cid)})
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    invoice = await db.invoices.find_one({"_id": cn["invoice_id"]}) if cn.get("invoice_id") else None
+    user = await db.users.find_one({"_id": cn["user_id"]}) if cn.get("user_id") else None
+    return _credit_note_serialize(cn, invoice, user)
+
+
+# ---- Client-visible credit notes (read-only, own only) ----
+@router.get("/client/credit-notes")
+async def client_credit_notes(user=Depends(get_current_user)):
+    db = await _get_db()
+    docs = await db.credit_notes.find({"user_id": ObjectId(user["id"])}).sort("created_at", -1).to_list(200)
+    inv_ids = [d["invoice_id"] for d in docs if d.get("invoice_id")]
+    invs = {i["_id"]: i for i in await db.invoices.find({"_id": {"$in": inv_ids}}).to_list(500)}
+    return [_credit_note_serialize(d, invs.get(d.get("invoice_id"))) for d in docs]
+
+
+# ---- PDF render (HTML or PDF, mirrors invoice endpoint) ----
+@router.get("/documents/credit-note/{cid}")
+async def render_credit_note_pdf(cid: str, format: str = "html", user=Depends(get_current_user)):
+    db = await _get_db()
+    cn = await db.credit_notes.find_one({"_id": _oid(cid)})
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    # Access: owner or staff
+    if user["role"] == "client" and str(cn["user_id"]) != str(user["id"]):
+        raise HTTPException(status_code=403, detail="Not your credit note")
+    invoice = await db.invoices.find_one({"_id": cn["invoice_id"]}) if cn.get("invoice_id") else None
+    u = await db.users.find_one({"_id": cn["user_id"]}) or {}
+    branding = await _get_branding_dict(db)
+    html = _credit_note_html(
+        cn=cn,
+        invoice=invoice,
+        billed_to=u,
+        for_pdf=(format == "pdf"),
+        logo_url=branding["logo_dark"],
+    )
+    if format == "pdf":
+        pdf_bytes = _render_pdf_bytes(html)
+        filename = f"CreditNote-{cn.get('number','credit-note')}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    token = user.get("_token", "")
+    html = html.replace("{TOKEN_PLACEHOLDER}", token)
+    return HTMLResponse(content=html)
+
+
+def _credit_note_html(*, cn: dict, invoice: dict | None, billed_to: dict,
+                       for_pdf: bool, logo_url: str) -> str:
+    number = cn.get("number", "")
+    amount = float(cn.get("amount") or 0)
+    status = (cn.get("status") or "draft").lower()
+    status_colors = {"draft": "#94a3b8", "applied": "#059669", "cancelled": "#dc2626"}
+    status_color = status_colors.get(status, "#64748b")
+    inv_no = (invoice or {}).get("number", cn.get("invoice_number", ""))
+    inv_total = float((invoice or {}).get("total") or 0)
+    generated_on = _long_date(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    actions_bar = "" if for_pdf else (
+        f'<div class="actions">'
+        f'<button onclick="window.print()">Print</button>'
+        f'<a class="dl" href="?format=pdf&token={{TOKEN_PLACEHOLDER}}">Download PDF</a>'
+        f'</div>'
+    )
+    bill_to = _billing_block(billed_to)
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Credit Note #{number}</title>
+<style>
+  @page {{ size: A4; margin: 14mm 14mm 16mm 14mm; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color:#334155; margin:0; padding:0; background:#f1f5f9; font-size:12px; line-height:1.5; }}
+  .paper {{ background:#fff; padding:34px 40px 30px; max-width:800px; margin:20px auto;
+           position:relative; box-shadow:0 6px 30px rgba(2,6,23,.08); }}
+  .header {{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:22px;
+             padding-bottom:18px; border-bottom:1px solid #e2e8f0; }}
+  .logo {{ height:64px; width:auto; }}
+  h1 {{ margin:0; font-size:26px; letter-spacing:.02em; color:#0a2540; }}
+  .sub {{ font-size:11px; color:#64748b; margin-top:4px; }}
+  .status {{ display:inline-block; margin-top:8px; padding:6px 14px; border-radius:999px;
+             color:#fff; font-weight:700; letter-spacing:.08em; font-size:10px;
+             text-transform:uppercase; background:{status_color}; }}
+  .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:22px; }}
+  .card {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; }}
+  .card h3 {{ margin:0 0 8px 0; font-size:11px; color:#475569; letter-spacing:.14em;
+              text-transform:uppercase; font-weight:700; }}
+  .amount-box {{ background:#0a2540; color:#fff; padding:18px 22px; border-radius:12px;
+                 display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; }}
+  .amount-box .lbl {{ font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+                       color:#cbd5e1; margin-bottom:4px; }}
+  .amount-box .val {{ font-size:26px; font-weight:800; color:#f5b120; }}
+  .notes {{ background:#fef3c7; border:1px solid #fbbf24; padding:12px 14px; border-radius:8px;
+            margin-top:16px; color:#78350f; font-size:12px; line-height:1.6; }}
+  .footer {{ margin-top:28px; padding-top:14px; border-top:1px dashed #cbd5e1;
+             font-size:10.5px; color:#64748b; line-height:1.6; }}
+  .actions {{ text-align:center; margin:16px 0; }}
+  .actions button, .actions .dl {{ display:inline-block; margin:0 6px; padding:8px 18px;
+       background:#0a2540; color:#fff; border:0; border-radius:6px; font-size:12px;
+       text-decoration:none; cursor:pointer; }}
+  .actions .dl {{ background:#f5b120; color:#0a2540; }}
+  @media print {{ body{{background:#fff}} .paper{{box-shadow:none;margin:0;max-width:100%}} .actions{{display:none}} }}
+</style></head><body>
+{actions_bar}
+<div class="paper">
+  <div class="header">
+    <div>
+      <img src="{logo_url}" alt="Intercloud" class="logo" onerror="this.style.display='none'"/>
+      <div class="sub">PT Intercloud Digital Inovasi<br>Cyber 1 Building, Kuningan · Jakarta 12950</div>
+    </div>
+    <div style="text-align:right">
+      <h1>Credit Note</h1>
+      <div class="sub"><b>#{number}</b></div>
+      <div class="status">{status}</div>
+      <div class="sub" style="margin-top:6px">Issued {_long_date((cn.get('created_at') or '')[:10])}</div>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <h3>Issued To</h3>
+      {bill_to}
+    </div>
+    <div class="card">
+      <h3>Reference Invoice</h3>
+      <div style="font-weight:700; color:#0a2540; font-size:14px">#{inv_no or '—'}</div>
+      <div class="sub">Invoice total: {_idr(inv_total)}</div>
+      {'<div class="sub">Applied on: ' + _long_date((cn.get('applied_at') or '')[:10]) + '</div>' if cn.get('applied_at') else ''}
+    </div>
+  </div>
+  <div class="amount-box">
+    <div>
+      <div class="lbl">Credit Amount</div>
+      <div class="sub" style="color:#cbd5e1; margin-top:2px">{cn.get('reason', '')}</div>
+    </div>
+    <div class="val">{_idr(amount)}</div>
+  </div>
+  {'<div class="notes"><b>Notes.</b> ' + (cn.get('notes') or '').replace(chr(10), '<br>') + '</div>' if cn.get('notes') else ''}
+  <div class="footer">
+    <b>Reason</b><br>{cn.get('reason', '')}
+    <br><br>
+    Generated on {generated_on}. Credit notes reduce the outstanding amount of the referenced invoice.
+    If the total applied credit meets or exceeds the invoice total, the invoice is automatically
+    marked as paid and any suspended services are reactivated.
+  </div>
+</div>
+</body></html>"""
+
+
+def _billing_block(u: dict) -> str:
+    """Small helper — same shape used by invoice PDF sidebar."""
+    lines = []
+    if u.get("attention"): lines.append(f"<b>{u['attention']}</b>")
+    elif u.get("name"):    lines.append(f"<b>{u['name']}</b>")
+    if u.get("company"):   lines.append(u["company"])
+    if u.get("address_line1"): lines.append(u["address_line1"])
+    if u.get("address_line2"): lines.append(u["address_line2"])
+    city_line = " ".join(x for x in [u.get("city"), u.get("province"), u.get("postal_code")] if x)
+    if city_line: lines.append(city_line)
+    if u.get("country"): lines.append(u["country"])
+    if u.get("email"):   lines.append(f"<span style='color:#64748b'>{u['email']}</span>")
+    if u.get("phone"):   lines.append(f"<span style='color:#64748b'>{u['phone']}</span>")
+    return "<br>".join(lines) if lines else "<i>No billing address on file</i>"
+
+
+# ============================================================
+# Outstanding-amount helper for InvoiceOut serialization
+# ============================================================
+async def _invoice_outstanding(db, invoice: dict) -> float:
+    """Invoice total minus applied credit notes. Never negative."""
+    if invoice.get("status") == "paid":
+        return 0.0
+    total = float(invoice.get("total") or 0)
+    applied = await _sum_applied_credit(db, invoice["_id"])
+    return max(0.0, total - applied)

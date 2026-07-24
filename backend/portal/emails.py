@@ -856,6 +856,127 @@ async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> di
             "errors": errors}
 
 
+# ============================================================
+# NOC — proactive MikroTik reachability polling
+# ============================================================
+# Ran every 5 minutes on the SAME scheduler as email reminders + renewal
+# sweeps (per PRD constraint: reuse the existing AsyncIOScheduler). Each
+# tick pings every device via `MikrotikClient.test_connection()` in a
+# threadpool (librouteros is sync), stores a `noc_probes` sample, updates
+# `noc_device_state`, and — on a transition — writes a `noc_events` row +
+# fires an alert email to `settings.noc_alert_recipients`.
+async def run_noc_probe_sweep(db) -> dict:
+    """Poll every MikroTik device once. Fire alerts on up→down / down→up transitions."""
+    from . import integrations_v2 as _iv2
+    now_iso = datetime.now(timezone.utc).isoformat()
+    devices = await db.mikrotik_devices.find({}).to_list(500)
+    probed = 0
+    transitions = 0
+    for d in devices:
+        # Best-effort probe in threadpool — never crash the sweep
+        try:
+            import asyncio as _a
+            client = _iv2.MikrotikClient(d)
+            result = await _a.get_event_loop().run_in_executor(None, client.test_connection)
+            ok = bool(result.get("ok"))
+            message = result.get("message") or ""
+        except Exception as e:
+            ok, message = False, f"probe exception: {type(e).__name__}: {e}"
+
+        probed += 1
+        # Sample row (used for 24h uptime %)
+        await db.noc_probes.insert_one({
+            "device_id": d["_id"],
+            "at": now_iso,
+            "ok": ok,
+            "message": message[:400],
+        })
+
+        # Compare to last known state (default "unknown" → any status triggers an event)
+        state = await db.noc_device_state.find_one({"device_id": d["_id"]}) or {}
+        prev_status = state.get("status") or "unknown"
+        new_status = "up" if ok else "down"
+        await db.noc_device_state.update_one(
+            {"device_id": d["_id"]},
+            {"$set": {"device_id": d["_id"],
+                      "status": new_status,
+                      "last_probe_at": now_iso,
+                      "last_message": message[:400],
+                      **({"last_change_at": now_iso}
+                         if prev_status != new_status else {})}},
+            upsert=True,
+        )
+
+        # Fire an event ONLY on real transitions (avoid alert-storm on flaps)
+        if prev_status != new_status and prev_status != "unknown":
+            transitions += 1
+            evt_type = "device_up" if ok else "device_down"
+            evt = {
+                "device_id": d["_id"],
+                "device_name": d.get("name") or "unnamed",
+                "device_host": d.get("host") or "",
+                "type": evt_type,
+                "message": message[:400],
+                "at": now_iso,
+                "email_notified": False,
+            }
+            r = await db.noc_events.insert_one(evt)
+            evt["_id"] = r.inserted_id
+            try:
+                sent = await _dispatch_noc_alert(db, d, evt)
+                if sent:
+                    await db.noc_events.update_one({"_id": r.inserted_id},
+                                                   {"$set": {"email_notified": True}})
+            except Exception:
+                log.exception(f"[noc] alert dispatch failed for device {d.get('name')}")
+
+    return {"at": now_iso, "probed": probed, "transitions": transitions}
+
+
+async def _dispatch_noc_alert(db, device: dict, event: dict) -> bool:
+    """Send an email alert for a device state transition.
+
+    Recipients come from `settings.noc_alert_recipients` (list of emails)
+    or fall back to all users with role=admin when the list is empty."""
+    doc = await db.settings.find_one({"key": "noc_alert_recipients"}) or {}
+    recipients = list(doc.get("value") or [])
+    if not recipients:
+        cur = db.users.find({"role": "admin", "is_active": {"$ne": False}}, {"email": 1})
+        recipients = [u["email"] async for u in cur if u.get("email")]
+    if not recipients:
+        return False
+    evt_type = event.get("type") or "device_down"
+    down = evt_type == "device_down"
+    color = "#dc2626" if down else "#059669"
+    verb = "DOWN" if down else "recovered"
+    subject = f"[NOC] {device.get('name','unnamed')} is {verb}"
+    body = f"""
+      <h2 style="color:{color};margin:0 0 8px 0">Device {verb}</h2>
+      <p style="margin:0 0 12px 0">A MikroTik reachability probe transitioned this device to
+      <b style="color:{color}">{evt_type.replace('_', ' ')}</b>.</p>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr><td style="padding:6px 0;color:#64748b;width:130px">Device</td><td><b>{device.get('name','unnamed')}</b></td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Host</td><td>{device.get('host','')}</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Site</td><td>{device.get('site') or '—'}</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Detected at</td><td>{event.get('at','')}</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b;vertical-align:top">Probe result</td>
+            <td style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#334155">{event.get('message','')}</td></tr>
+      </table>
+      <p style="margin-top:16px;font-size:12px;color:#64748b">Alerts fire only on transitions,
+      so you will get exactly one email per state change (no flap-storm).</p>
+    """
+    ok = False
+    for to_email in recipients:
+        try:
+            r = await deliver(db, to_email=to_email, subject=subject,
+                              body_html=wrap_html(body), event_key="noc_alert")
+            if r.get("status") == "sent":
+                ok = True
+        except Exception:
+            log.exception(f"[noc] alert send failed for {to_email}")
+    return ok
+
+
 # Scheduler singleton
 _scheduler = None
 
@@ -891,6 +1012,13 @@ def start_scheduler(db):
         except Exception as e:  # noqa: BLE001
             log.exception(f"[renewal-scheduler] tick failed: {e}")
 
+    async def _noc_tick():
+        try:
+            summary = await run_noc_probe_sweep(db)
+            log.info(f"[noc-scheduler] sweep result: {summary}")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[noc-scheduler] tick failed: {e}")
+
     # Run at :05 every hour (a small delay after the top of the hour so servers
     # coming back up don't collide with other jobs).
     sched.add_job(_tick, CronTrigger(minute=5))
@@ -899,9 +1027,12 @@ def start_scheduler(db):
     # Renewal invoice sweep — same scheduler instance, its own hourly slot.
     sched.add_job(_renewal_tick, CronTrigger(minute=20))
     sched.add_job(_renewal_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=20))
+    # NOC probe sweep — every 5 minutes, on the SAME scheduler (PRD constraint).
+    sched.add_job(_noc_tick, CronTrigger(minute="*/5"))
+    sched.add_job(_noc_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=30))
     sched.start()
     _scheduler = sched
-    log.info("[email-scheduler] started (hourly reminder + renewal sweeps)")
+    log.info("[email-scheduler] started (hourly reminder + renewal sweeps + NOC 5-min probes)")
     return sched
 
 

@@ -1,0 +1,84 @@
+{
+  "summary": "Iteration 31 — Frontend E2E validation for Batch 7 (Audit Log + NOC Monitor + Credit Notes + refund shortcut + Billing Defaults NOC recipients + sidebar navigation) plus a re-verification of the AdminMail Reply button and ClientInvoices Pay-with-Duitku CTA. Result: 7 of 8 review items pass fully; ONE real UI bug found in AdminMail (mail item click does not open the message detail pane, so the Reply button never becomes reachable). All new admin pages render, all documented data-testids are present, filters/modals/actions all behave correctly, PDF endpoint returns application/pdf (804KB, %PDF-1.7), Duitku CTA opens the live Duitku checkout in a popup, Billing Defaults save shows 'Tersimpan ✓', audit log records billing.settings_update in real time, credit-note 'exceeds invoice total' validation works, small 5000 IDR partial refund with auto_apply=true is created + applied and appears in the table, refund shortcut icons on unpaid/overdue invoice rows navigate to /portal/admin/credit-notes?invoice=<id>, and the three new sidebar entries (Audit Log, NOC Monitor, Credit Notes) render for role=admin. One MINOR React hydration warning also surfaces from AdminCreditNotes.jsx L214 (a <span> is being rendered inside the <option> element by a build-time instrumentation wrapper).",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "AdminMail (Webmail)",
+        "issue": "Clicking any mail item in the inbox list does NOT open the message in the detail pane — the right pane keeps showing 'Pilih pesan untuk melihat isi' and the Reply button (data-testid=mail-reply-btn) never becomes reachable. Verified with 3 different click strategies (playwright .click(), .click(force=True), and native el.click() via page.evaluate); the load()/open() onClick handler on the <button data-testid=\"mail-imap-{id}\"> at AdminMail.jsx L89-101 is not firing (no /api/portal/admin/mail/messages/{id} request seen in the response listener). Backend endpoint itself is healthy — direct curl of GET /admin/mail/messages/imap-19 returns 200 with the full body in <300ms. Suspected root cause: the button's onClick is being swallowed by some parent handler or the `list` array is being closed over with stale state after the 10s IMAP fetch resolves. Because the message can never be opened, the Reply button test is effectively blocked.",
+        "selector": "[data-testid^='mail-imap-'], [data-testid='mail-reply-btn']",
+        "priority": "HIGH"
+      },
+      {
+        "component": "AdminCreditNotes create-modal invoice <select>",
+        "issue": "React hydration console warning: 'In HTML, <span> cannot be a child of <option>. This will cause a hydration error.' Origin: AdminCreditNotes.jsx L214 — the <option> children are being wrapped in a <span data-ve-dynamic=\"true\"> by a build-time source-map instrumentation. Not a functional break (dropdown still selects invoices and modal submits correctly) but is a noisy console error and can theoretically cause hydration mismatch under SSR.",
+        "selector": "[data-testid='cn-modal-invoice'] option",
+        "priority": "MINOR"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "AdminMail inbox first load",
+        "issue": "Inbox loading takes ~10s (backend IMAP fetch) and the page shows 'Loading inbox…' the entire time with no progress indicator update. Not a bug per se, but combined with the click bug above the UX is poor — user waits 10s only to find nothing happens on click.",
+        "affected_selectors": ["mail-list", "mail-imap-*"]
+      }
+    ],
+    "design_issues": []
+  },
+
+  "test_report_links": [
+    "/app/test_reports/artifacts/00_after_login.png",
+    "/app/test_reports/artifacts/01_finance_billing.png",
+    "/app/test_reports/artifacts/02_mail_loaded.png",
+    "/app/test_reports/artifacts/02_mail_reply_v3.png",
+    "/app/test_reports/artifacts/03_client_invoices.png",
+    "/app/test_reports/artifacts/03b_pay_options.png",
+    "/app/test_reports/artifacts/04_audit_log.png",
+    "/app/test_reports/artifacts/04b_audit_modal.png",
+    "/app/test_reports/artifacts/05_noc.png",
+    "/app/test_reports/artifacts/06_credit_notes.png",
+    "/app/test_reports/artifacts/06b_cn_modal.png",
+    "/app/test_reports/artifacts/07_invoices.png",
+    "/app/test_reports/artifacts/08_sidebar.png"
+  ],
+
+  "action_items": [
+    "HIGH: Fix AdminMail.jsx L89-101 — clicking a mail item does not invoke open(m) and therefore the Reply button never renders. Suggest verifying no parent element (mail-list container) is stopping propagation or covering the buttons; confirm the button element is actually receiving pointer events (check for any absolute-positioned overlay from a decorator plugin). A quick smoke test is to add a console.log('open',m.id) at the top of open() — if that never fires on click, the handler is being intercepted, not the fetch.",
+    "MINOR: In AdminCreditNotes.jsx L214, either strip the source-map <span data-ve-dynamic> wrapper for <option> children or refactor the option label to not go through the instrumentation (e.g. put the concatenated string into a plain template literal without a JSX expression container). This will silence the React hydration warning.",
+    "OPTIONAL: Consider adding a per-item loading spinner in AdminMail when open() is fetching (right now selected is null → 'Pilih pesan…' → user has no feedback)."
+  ],
+
+  "critical_code_review_comments": [
+    "AdminMail.jsx L14 — `api.get('/admin/mail/inbox')` blocks up to 10s for IMAP, but the component does not disable the message list or show a spinner ON the list items themselves; consider adding a stale/loading state.",
+    "AdminMail.jsx L26 — `load()` is called after every open() to re-mark-read the message; this triggers a fresh 10s IMAP round-trip every time the user opens a mail. Should refactor to only refresh the affected row (or debounce).",
+    "AdminCreditNotes.jsx L208-216 — modal invoice <select> options are correctly populated with only unpaid/overdue invoices (verified 9 options for admin) and the 'exceeds invoice total' server error is surfaced verbatim to the user ('Credit (99999999999) + already applied (5000) exceeds invoice total (30000)'). Good UX; consider also client-side pre-check to avoid the round-trip.",
+    "AdminNOC.jsx — empty state 'No MikroTik devices registered' plus a link to /portal/admin/mikrotik works; 'Run probe now' correctly disables the button while probing and re-enables on completion.",
+    "AdminAuditLog.jsx — filter by Category=billing correctly narrows the list (all 22 remaining rows contain 'billing' badge, 0 non-billing); date-from/date-to inputs are native <input type='date'> (per PRD spec, acceptable).",
+    "AdminInvoices.jsx refund shortcut — 8 inv-refund-{number} icons present on unpaid/overdue rows only; click correctly navigates to /portal/admin/credit-notes?invoice=<invoice_id> (query string mode allows pre-filling the modal). Verified for invoice 6a63acab2c9c594b51e45ec1.",
+    "PortalLayout.jsx — nav-audit-log, nav-noc, nav-credit-notes all present in sidebar for role=admin under the expected groups (System, Operations, Sales & Billing).",
+    "PDF endpoint GET /documents/credit-note/{id}?format=pdf&token=<jwt> returns 200 application/pdf, 804198 bytes, valid %PDF-1.7 header. Note the endpoint requires token as a QUERY-STRING param (not Authorization header) which is fine since PDFs are opened via <a href> in a new tab."
+  ],
+
+  "updated_files": [],
+
+  "success_rate": {
+    "backend": "not tested this iteration (main agent already validated)",
+    "frontend": "87.5% (7/8 review items fully green; AdminMail Reply button flow blocked by the click bug)"
+  },
+
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md). Client user password reset by this test run to enable Pay-with-Duitku test: user1784914441940@example.com / ClientTest2026! (reset via PUT /api/portal/admin/users/6a63a20ab3ba6c3fbb50b131 — role=client, name='Beta Client', company='Beta Co').",
+
+  "seed_data_creation": "Created ONE test credit note during this run: 5000 IDR partial refund against invoice INV-2026-00010 (client user1784914441940@example.com) with reason 'TEST partial 5000' and auto_apply=true. Now visible as CN-2026-00008 in the Credit Notes table with status=applied. Also generated 4 new audit-log entries (billing.settings_update x2 from the PPN 11→12→11 round-trip, credit_note.create + credit_note.apply from the CN test).",
+
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+
+  "context_for_next_testing_agent": "Batch 7 (Audit Logs / NOC Monitor / Credit Notes) is production-ready EXCEPT for the AdminMail mail-item-click bug which blocks the Reply feature. When retesting after the fix, the smoke test is: (1) open /portal/admin/mail (wait ~10s for IMAP fetch), (2) click any [data-testid^='mail-imap-'] button, (3) verify [data-testid='mail-reply-btn'] appears within 3s, (4) click it → mail-compose-modal opens with prefilled 'To' and 'Re:' subject. All other flows are already validated end-to-end; do not need to re-run: Finance Billing Defaults (PPN save + NOC recipients textarea + Tersimpan toast), Client Duitku CTA (opens app-prod.duitku.com/redirect_checkout), Audit Log filters + detail modal, NOC empty state + Run-probe, Credit Notes create/apply/PDF-download, invoice refund shortcut, sidebar nav for role=admin. The one MINOR hydration warning in AdminCreditNotes L214 (span inside option) is cosmetic — safe to defer.",
+
+  "rca of the issue": "AdminMail message-item click no-op: The <button data-testid='mail-imap-{id}' onClick={() => open(m)}> at AdminMail.jsx L89-101 does not fire its onClick handler when clicked. Reproduction: (1) Login as admin, (2) navigate to /portal/admin/mail, (3) wait for inbox to populate (~10s), (4) click any mail row via playwright .click() or .click(force=True) or native el.click() — the right-pane 'mail-detail' continues to show 'Pilih pesan untuk melihat isi'. Verified via network listener that NO request to /api/portal/admin/mail/messages/{id} is made after the click; verified via direct curl that the endpoint itself returns 200 in <300ms. Suspected cause: either (a) a parent onClick or key-capture handler is calling e.stopPropagation before it reaches the button, or (b) some late-mounted overlay from a build-time instrumentation plugin is covering the list buttons (there IS a source-map wrapper injected globally — see the AdminCreditNotes hydration warning as evidence of similar instrumentation). Mitigation for now: none from the testing side; requires main agent to inspect the DOM at runtime for pointer-events overlays or double-check the click bubbling."
+}

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { api, money, shortDate, docUrl } from "../../../portal/api";
 import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Plus, Trash2, CheckCircle2, FileDown, Download } from "lucide-react";
+import { Plus, Trash2, CheckCircle2, FileDown, Download, ReceiptText } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+import { Link } from "react-router-dom";
 
 const AdminInvoices = () => {
   const [rows, setRows] = useState(null);
@@ -44,6 +45,11 @@ const AdminInvoices = () => {
             <button className="ml-3 text-emerald-600 hover:text-emerald-800" onClick={() => markPaid(inv.id)} title="Mark Paid" data-testid={`inv-pay-${inv.number}`}>
               <CheckCircle2 className="h-4 w-4 inline" />
             </button>
+          )}
+          {(inv.status === "unpaid" || inv.status === "overdue") && (
+            <Link to={`/portal/admin/credit-notes?invoice=${inv.id}`} className="ml-3 text-indigo-600 hover:text-indigo-800" title="Issue credit note / refund" data-testid={`inv-refund-${inv.number}`}>
+              <ReceiptText className="h-4 w-4 inline" />
+            </Link>
           )}
           {inv.status !== "cancelled" && (
             <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => cancel(inv.id)} title="Cancel">

@@ -6,6 +6,7 @@ import {
   Send, Puzzle, Cloud, Menu, X, ChevronDown, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
+  History, MonitorCheck, ReceiptText,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 
@@ -31,6 +32,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "quotations", to: "/portal/admin/quotations", label: "Quotations", icon: FileText,     testid: "nav-quotations", roles: ["admin", "sales", "finance"] },
       { key: "finance",    to: "/portal/admin/finance",    label: "Finance",    icon: Wallet,       testid: "nav-finance",    roles: ["admin", "finance"] },
       { key: "assets",     to: "/portal/admin/assets",     label: "Assets",     icon: HardDrive,    testid: "nav-assets",     roles: ["admin", "finance"] },
+      { key: "credit_notes", to: "/portal/admin/credit-notes", label: "Credit Notes", icon: ReceiptText, testid: "nav-credit-notes", roles: ["admin", "finance"] },
     ],
   },
   {
@@ -59,6 +61,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
       { key: "dcim",         to: "/portal/admin/dcim",         label: "DCIM & IPAM",  icon: HardDrive,      testid: "nav-dcim",         roles: ["admin", "support"] },
       { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
+      { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
     ],
   },
   {
@@ -76,6 +79,7 @@ const ADMIN_NAV_GROUPS = [
     items: [
       { key: "integrations",  to: "/portal/admin/integrations",  label: "Integrations",   icon: Plug,           testid: "nav-integrations",  roles: ["admin"] },
       { key: "security",      to: "/portal/admin/security",      label: "Security",       icon: ShieldCheck,    testid: "nav-security",      roles: ["admin"] },
+      { key: "audit_log",     to: "/portal/admin/audit-log",     label: "Audit Log",      icon: History,        testid: "nav-audit-log",     roles: ["admin"] },
       { key: "branding",      to: "/portal/admin/branding",      label: "Branding",       icon: ImageIcon,      testid: "nav-branding",      roles: ["admin"] },
       { key: "site-content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },

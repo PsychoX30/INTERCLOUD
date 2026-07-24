@@ -95,6 +95,7 @@ const BillingDefaultsPane = () => {
       const { data } = await api.put("/admin/billing/settings", {
         default_tax_percent: Number(form.default_tax_percent),
         renewal_lead_days: Number(form.renewal_lead_days),
+        noc_alert_recipients: form.noc_alert_recipients || [],
       });
       setForm(data); setSaved(true); setTimeout(() => setSaved(false), 2500);
     } catch (e) {
@@ -103,9 +104,12 @@ const BillingDefaultsPane = () => {
   };
 
   if (!form) return <Loading />;
+  const recipientsText = Array.isArray(form.noc_alert_recipients)
+    ? form.noc_alert_recipients.join("\n")
+    : (form.noc_alert_recipients || "");
   return (
     <Card>
-      <div className="max-w-xl">
+      <div className="max-w-xl p-5">
         <div className="text-lg font-bold text-[#0a2350] mb-1">Billing Defaults</div>
         <p className="text-sm text-slate-500 mb-5">
           Nilai PPN di bawah hanyalah <b>saran awal</b> yang di-prefill saat membuat invoice/quotation
@@ -130,6 +134,21 @@ const BillingDefaultsPane = () => {
             <div className="text-[11px] text-slate-400 mt-1">Invoice renewal dibuat otomatis N hari sebelum jatuh tempo layanan.</div>
           </label>
         </div>
+        <label className="block mb-5">
+          <div className={labelClass}>NOC alert recipients</div>
+          <textarea
+            rows={3}
+            className={inputClass + " h-auto py-2 font-mono text-xs"}
+            value={recipientsText}
+            onChange={(e) => setForm({ ...form, noc_alert_recipients: e.target.value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean) })}
+            placeholder={"ops@example.com\nnoc-lead@example.com"}
+            data-testid="billing-noc-recipients"
+          />
+          <div className="text-[11px] text-slate-400 mt-1">
+            Satu email per baris. Alert dikirim saat perangkat MikroTik transisi status (UP↔DOWN).
+            Kosongkan untuk fallback ke semua user role=admin.
+          </div>
+        </label>
         <button className={btnPrimary} onClick={save} disabled={busy} data-testid="billing-save">
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Simpan
         </button>

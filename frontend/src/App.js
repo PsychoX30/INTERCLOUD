@@ -59,6 +59,9 @@ const AdminDiagnostics  = lazy(() => import("./pages/portal/admin/AdminDiagnosti
 const AdminEmails       = lazy(() => import("./pages/portal/admin/AdminEmails"));
 const AdminArticles     = lazy(() => import("./pages/portal/admin/AdminArticles"));
 const AdminCategories   = lazy(() => import("./pages/portal/admin/AdminCategories"));
+const AdminAuditLog     = lazy(() => import("./pages/portal/admin/AdminAuditLog"));
+const AdminNOC          = lazy(() => import("./pages/portal/admin/AdminNOC"));
+const AdminCreditNotes  = lazy(() => import("./pages/portal/admin/AdminCreditNotes"));
 
 // Admin (mocked/business chunk)
 const AdminSubscriptions = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminSubscriptions })));
@@ -148,6 +151,9 @@ function App() {
                   <Route path="documents" element={<AdminDocuments />} />
                   <Route path="integrations" element={<AdminIntegrations />} />
                   <Route path="security" element={<AdminSecurity />} />
+                  <Route path="audit-log" element={<AdminAuditLog />} />
+                  <Route path="noc" element={<AdminNOC />} />
+                  <Route path="credit-notes" element={<AdminCreditNotes />} />
                   <Route path="branding" element={<AdminBranding />} />
                   <Route path="site-content" element={<AdminSiteContent />} />
                   <Route path="backup" element={<AdminBackup />} />
