@@ -112,3 +112,17 @@ webroot pre-created, `server_tokens off`.
   already handles the client-side meta but some crawlers don't).
 - **P3** Phase 6 QA & Handover smoke test across all modules.
 - **P3** Full SSR (Next.js migration) for UAT M3 SEO parity.
+
+### Batch 5 — Webmail compose fix + Test Connection (2026-07-24)
+- **Bug fixed**: Compose modal in `AdminMail.jsx` was a static placeholder claiming
+  "SMTP belum di setup" even when SMTP worked. Replaced with a real ComposeModal →
+  `POST /admin/mail/send` (to/subject/body, success state, 400 error links to Setup modal).
+- **New endpoint** `POST /api/portal/settings/email/test` — tests IMAP + SMTP using
+  existing `IMAPClient.test_connection()`/`SMTPMailer.test_connection()`. Same payload
+  shape as save; masked "••••••••" passwords fall back to stored via shared
+  `_merge_email_payload()` helper (refactored out of the save endpoint, save behavior unchanged).
+  Returns `{ok, imap:{ok,message}, smtp:{ok,message}}`; wrong creds → 200 ok:false (never 5xx).
+- **Test Connection button** in SetupEmailModal with green/red per-protocol result rows.
+- Regression suite: `backend/tests/test_mail_test_connection.py` (6 tests, all pass,
+  uses live mailbox damien@intercloud-digital.com — see memory/test_credentials.md).
+- Verified end-to-end: compose → delivered_via=smtp → message visible in IMAP inbox.
