@@ -1,11 +1,11 @@
 # How To Install on Ubuntu 24.04 LTS
-wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh
-sudo bash install.sh 2>&1 | tee -a /tmp/install.log
-
+`wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh`
+`sudo bash install.sh 2>&1 | tee -a /tmp/install.log
+`
 # How To Reinstall
-Create purge.sh
+## Create purge.sh
 
-#!/bin/bash
+`#!/bin/bash
 set -e
 
 echo "==> Stopping services"
@@ -62,6 +62,7 @@ echo ""
 echo "==> Ready for fresh install:"
 echo "   wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/ins>
 echo "   sudo bash install.sh 2>&1 | tee /tmp/install.log"
-
-sudo wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh
-sudo bash install.sh 2>&1 | tee -a /tmp/install.log
+`
+## Begin Re-install after done purging
+`sudo wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh`
+`sudo bash install.sh 2>&1 | tee -a /tmp/install.log`
