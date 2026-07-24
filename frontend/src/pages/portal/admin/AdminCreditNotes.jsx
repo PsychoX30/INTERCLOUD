@@ -210,9 +210,10 @@ const CreateModal = ({ invoices, onClose, onSaved }) => {
             <label className={labelClass}>Invoice (unpaid or overdue)*</label>
             <select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)} className={inputClass} data-testid="cn-modal-invoice">
               <option value="">— Select invoice —</option>
-              {eligible.map((i) => (
-                <option key={i.id} value={i.id}>{i.number} · {i.user_email} · {idr(i.total)} · {i.status}</option>
-              ))}
+              {eligible.map((i) => {
+                const label = `${i.number} · ${i.user_email} · ${idr(i.total)} · ${i.status}`;
+                return <option key={i.id} value={i.id}>{label}</option>;
+              })}
             </select>
             {eligible.length === 0 && (
               <div className="text-xs text-amber-700 mt-1">No unpaid/overdue invoices available.</div>

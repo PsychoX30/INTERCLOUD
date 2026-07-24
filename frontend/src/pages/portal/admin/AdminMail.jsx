@@ -20,10 +20,18 @@ const AdminMail = () => {
   useEffect(() => { load(); }, []);
 
   const open = async (m) => {
+    // Optimistic-open: set the selected item immediately from the list row so
+    // the detail pane (and the Reply button) render right away — the network
+    // fetch just enriches the body afterwards. Also avoids re-triggering the
+    // full 10s IMAP inbox reload that used to happen inside open().
+    setSelected(m);
     try {
       const { data } = await api.get(`/admin/mail/messages/${m.id}`);
       setSelected(data);
-      load();
+      // Mark-as-read: patch the local list row instead of re-fetching the inbox
+      setRows((prev) => Array.isArray(prev)
+        ? prev.map((x) => (x.id === m.id ? { ...x, unread: false } : x))
+        : prev);
     } catch (e) {
       setSelected({ ...m, body: m.preview || "(Failed to load message body — check IMAP integration or refresh)" });
     }

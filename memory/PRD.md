@@ -127,6 +127,42 @@ webroot pre-created, `server_tokens off`.
   uses live mailbox damien@intercloud-digital.com — see memory/test_credentials.md).
 - Verified end-to-end: compose → delivered_via=smtp → message visible in IMAP inbox.
 
+### Batch 7 — Phase 1 Audit Log + Phase 2 Credit Notes + Phase 3 NOC Monitor (2026-07-24)
+- **Audit Log** (`portal/audit.py`): fire-and-forget `log_audit(db, ...)` helper writes
+  to `audit_logs` collection with actor/target/before/after/ip/user_agent + auto-redacts
+  secret-ish fields (password, api_key, token, …). Instrumented endpoints: user
+  role/password change, user delete, admin password reset, billing settings update,
+  security settings update, integration upsert/delete, factory reset, backup restore,
+  credit-note create/apply/cancel, invoice.settled_by_credit. New endpoints
+  `GET /admin/audit-logs` (paginated + filters: category/action/actor/severity/date/q)
+  and `GET /admin/audit-logs/facets`. Frontend `AdminAuditLog.jsx` with DataTable-style
+  layout, filters, and before/after JSON detail modal.
+- **Credit Notes** (`credit_notes` collection): CN-YYYY-##### numbering, create/apply/cancel
+  endpoints, PDF template (`weasyprint`, same look as invoice PDF). When applied credit
+  ≥ invoice.total → auto-transition invoice status=paid, payment_method=credit_note,
+  reactivates services suspended for THAT invoice (mirrors Duitku webhook pattern with
+  shared `_settle_invoice_from_credit` helper). Frontend `AdminCreditNotes.jsx` with
+  create modal (+ auto_apply toggle) and status chips. `AdminInvoices` gets a `Refund`
+  icon shortcut on unpaid/overdue rows. Client-visible read-only endpoint
+  `GET /client/credit-notes` for their own credits.
+- **NOC Monitor**: `run_noc_probe_sweep()` polls every MikroTik device every 5 min via the
+  SAME `AsyncIOScheduler` (PRD constraint — no second scheduler). Writes `noc_probes`
+  samples (24h uptime %), `noc_device_state` (current up/down), `noc_events` on real
+  UP↔DOWN transitions only (no flap-storm). Alerts to `settings.noc_alert_recipients`
+  (fallback to all role=admin users). New endpoints `GET /admin/noc/devices`,
+  `GET /admin/noc/events`, `POST /admin/noc/run-poll`. Frontend `AdminNOC.jsx` with
+  live KPI grid + device cards + transition event feed + auto-refresh (30s).
+  Billing Defaults panel (AdminFinance) gets a `NOC alert recipients` textarea.
+- **Menu registrations**: 3 new admin routes — `audit-log`/`noc`/`credit-notes` — with
+  ADMIN_MENU_CATALOG entries (default_roles reflect finance/support/admin scope).
+- **Tests**: `test_audit_credit_noc.py` (9 tests, all pass) covering audit filter shape,
+  credit note partial→full settlement, exceeds-total rejection, cancel guard, PDF bytes,
+  NOC idempotent poll.
+- **Frontend testing agent iteration 31**: 7/8 review items pass; 1 HIGH regression noted
+  in AdminMail (double-fetch inside open() caused stale-list race) — FIXED by using
+  optimistic setSelected + patching row in-place instead of re-fetching inbox. Minor
+  React <span-in-option> warning also cleaned up in AdminCreditNotes.
+
 ### Batch 6 — Duitku round-trip + Renewal automation + Reply + Installer hardening (2026-07-24)
 - **DuitkuGateway per POP docs terkini** (`integrations_v2.py`): create signature
   HMAC_SHA256(merchantCode+timestamp, apiKey); callback verify HMAC_SHA256 primary +
