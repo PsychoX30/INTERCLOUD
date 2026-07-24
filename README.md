@@ -103,9 +103,9 @@ echo "==> Ready for fresh install:"
 
 echo "   wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/ins>
 
-echo "   sudo bash install.sh 2>&1 | tee /tmp/install.log"
+echo "   sudo bash install.sh 2>&1 | tee /tmp/install.log"`
 
-`
+
 ## Begin Re-install after done purging
 
 `sudo wget -O install.sh https://raw.githubusercontent.com/PsychoX30/INTERCLOUD/main/scripts/install.sh`
