@@ -569,12 +569,31 @@ server {
 NGINX
 
 ln -sf /etc/nginx/sites-available/intercloud /etc/nginx/sites-enabled/intercloud
-rm -f /etc/nginx/sites-enabled/default
+# Purge any stale certbot leftovers (`intercloud-le-ssl`, `default`, etc.) —
+# they can still reference `ssl_certificate /etc/letsencrypt/live/<domain>/…`
+# after a `--purge` that wiped /etc/letsencrypt, causing nginx to fail with
+# `cannot load certificate` and the whole install to leave nginx inactive.
+find /etc/nginx/sites-enabled -mindepth 1 -maxdepth 1 \
+     ! -name 'intercloud' -exec rm -f {} +
+# Same guard for anything certbot dropped into conf.d (rare but seen).
+find /etc/nginx/conf.d -maxdepth 1 -name '*le-ssl*.conf' -exec rm -f {} + || true
 # Ensure ACME challenge webroot exists (nginx returns 404 for /.well-known
 # otherwise, which breaks HTTP-01 validation).
 install -d -o www-data -g www-data -m 0755 /var/www/html/.well-known/acme-challenge
 nginx -t
-systemctl reload nginx
+# Idempotent start: works whether nginx is fresh-installed, previously
+# stopped, in `failed` state (leftover ssl_certificate from a purged
+# certbot), or masked. `reload` alone fails with "is not active, cannot
+# reload" when the service died on a prior run.
+systemctl unmask nginx.service 2>/dev/null || true
+systemctl reset-failed nginx.service 2>/dev/null || true
+systemctl enable nginx.service >/dev/null 2>&1 || true
+if ! systemctl restart nginx.service; then
+  warn "nginx failed to start — dumping status + last journal lines:"
+  systemctl status nginx.service --no-pager -l | sed -n '1,25p' || true
+  journalctl -u nginx.service -n 40 --no-pager || true
+  die "nginx.service could not be started. Fix the error above then re-run scripts/install.sh."
+fi
 
 # ------------------------------------------------------------------
 # 8. supervisor — backend uvicorn only (frontend is static)
