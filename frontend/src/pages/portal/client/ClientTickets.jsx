@@ -56,14 +56,27 @@ const NewTicketModal = ({ onClose, onCreated }) => {
   const [department, setDepartment] = useState("technical");
   const [priority, setPriority] = useState("medium");
   const [message, setMessage] = useState("");
+  const [deviceId, setDeviceId] = useState("");
+  const [devices, setDevices] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    // Devices linked to this client for optional ticket→device linkage.
+    // Best-effort — silently degrade to the un-linked flow if the endpoint
+    // isn't available for this account.
+    api.get("/client/devices")
+      .then((r) => setDevices(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setDevices([]));
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      await api.post("/client/tickets", { subject, department, priority, message });
+      const payload = { subject, department, priority, message };
+      if (deviceId) payload.device_id = deviceId;
+      await api.post("/client/tickets", payload);
       onCreated();
     } catch (er) {
       setErr(er?.response?.data?.detail || "Failed to create ticket");

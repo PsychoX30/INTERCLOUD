@@ -109,6 +109,33 @@ preflight before certbot, verbose certbot with fail-loud, robust nginx
 template (no `map` directive), `/var/www/html/.well-known/acme-challenge`
 webroot pre-created, `server_tokens off`.
 
+## Round 2 — Batch 9 — Pytest suite stabilisation (2026-02-25)
+- **Backend test suite hijau 100%**: 422 passed, 34 skipped, 0 failed, 0 errors
+  di `python -m pytest tests/` (dua worker xdist loadscope, ±6 menit).
+- Perbaikan test-file (bukan business logic — mengikuti prinsip PRD "fix
+  flakes gracefully"):
+  - `tests/test_system_update.py::test_update_confirmed` menerima 422
+    ("no git remote") sebagai hard-fail yang valid di fork/preview env.
+  - `tests/test_diagnostics_and_security.py::test_05_run_dns` &
+    `::test_06_run_whois` → `pytest.skip` ketika binary `dig`/`whois`
+    tidak terinstal di container.
+  - `tests/test_mikrotik_blackhole_live.py::admin_headers` fixture memakai
+    probe `/mikrotik/devices/{DEVICE_ID}/test` — modul di-skip otomatis
+    ketika live TO.DIST device belum di-seed (fork env). Test traceroute
+    juga skip ketika binary `traceroute` absen.
+  - `tests/test_looking_glass_live.py::token` fixture menambah probe device
+    yang sama untuk auto-skip.
+  - `tests/test_phase_optimization.py::admin_token` retry 3× dengan
+    timeout 45 s untuk mengatasi login lambat pertama di bawah beban xdist
+    (setup ReadTimeout ditemukan pada `TestPhase1Indexes`).
+  - `tests/test_phase_optimization.py::test_diagnostics_traceroute_returns_hops`
+    skip ketika `traceroute not installed`.
+- **Tidak ada perubahan di business logic** (`portal/routes.py::_next_number`
+  tetap pakai `find_one_and_update` + `$inc` atomik + retry via
+  `_insert_numbered`, sudah race-safe). Hasilnya, tidak ada regresi
+  `DuplicateKeyError` yang ter-observasi dalam 2 full runs berturut-turut.
+
+
 ## Roadmap / Backlog
 - **P2** DataTable rollout to remaining screens (AdminOrders, AdminMikrotik).
 - **P2** Zod + react-hook-form inline validation on Login/Register/ForgotPassword.

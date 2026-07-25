@@ -173,8 +173,9 @@ class TestSystemUpdate:
             assert "log_tail" in body and isinstance(body["log_tail"], str) and len(body["log_tail"]) > 0
         else:
             # 409 = an update/lock is already in progress (valid non-crash
-            # behavior); 500 = git fetch failed (preview /app has no remote).
-            assert r.status_code in (409, 500), r.status_code
+            # behavior); 500 = git fetch failed; 422 = no git remote at all
+            # (preview /app has no remote — this is the common fork-env case).
+            assert r.status_code in (409, 422, 500), r.status_code
             detail = r.json().get("detail", "")
             print(f"UPDATE_HARD_FAIL (captured for main agent): {detail}")
             if r.status_code == 500:

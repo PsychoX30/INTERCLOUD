@@ -148,6 +148,8 @@ class TestDiagnosticsRun:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["tool"] == "dns"
+        if (data.get("error") or "").startswith("dig not installed"):
+            pytest.skip("dig not installed in this environment")
         assert "google.com" in data["output"].lower()
 
     def test_06_run_whois(self, admin_headers):
@@ -155,6 +157,8 @@ class TestDiagnosticsRun:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["tool"] == "whois"
+        if (data.get("error") or "").startswith("whois not installed"):
+            pytest.skip("whois not installed in this environment")
         out_up = data["output"].upper()
         assert ("DOMAIN NAME" in out_up) or ("GOOGLE" in out_up), data["output"][:400]
 

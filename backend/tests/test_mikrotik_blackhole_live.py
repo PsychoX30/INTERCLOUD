@@ -36,7 +36,20 @@ def admin_headers():
     )
     assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
     tok = r.json()["token"]
-    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+    # Live-router suite: skip the whole module when the pinned TO.DIST device
+    # isn't seeded (typical for fork/preview envs). Check via the admin API
+    # instead of hitting Mongo directly so any storage backend works.
+    probe = requests.post(
+        f"{API}/portal/admin/mikrotik/devices/{DEVICE_ID}/test",
+        headers=headers, timeout=15,
+    )
+    if probe.status_code == 404:
+        pytest.skip(
+            f"Live TO.DIST device {DEVICE_ID} not present in this environment "
+            "— live-router regression suite skipped."
+        )
+    return headers
 
 
 # Track state so cleanup runs regardless of which test failed
@@ -253,6 +266,8 @@ class TestDiagnosticsTraceroute:
         )
         assert r.status_code == 200, f"HTTP {r.status_code}: {r.text}"
         body = r.json()
+        if (body.get("error") or "").startswith("traceroute not installed"):
+            pytest.skip("traceroute not installed in this environment")
         output = body.get("output") or ""
         summary = body.get("summary") or {}
         assert output.strip(), f"empty output: {body!r}"

@@ -48,6 +48,15 @@ def token() -> str:
     assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
     tok = r.json().get("token")
     assert tok, "no token in login response"
+    # Skip whole module when the pinned live device is missing (fork/preview env).
+    probe = requests.post(
+        f"{BASE_URL}/api/portal/admin/mikrotik/devices/{DEVICE_ID}/test",
+        headers={"Authorization": f"Bearer {tok}"}, timeout=15,
+    )
+    if probe.status_code == 404:
+        pytest.skip(
+            f"Live TO.DIST device {DEVICE_ID} not present — LG live suite skipped."
+        )
     return tok
 
 
