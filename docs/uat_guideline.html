@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8"/>
+<title>Panduan UAT — Intercloud Portal</title>
+<style>
+  @page {
+    size: A4;
+    margin: 22mm 18mm 20mm 18mm;
+    @top-left {
+      content: "Intercloud Portal — Panduan UAT";
+      font-family: "DejaVu Sans", sans-serif;
+      font-size: 8pt;
+      color: #666;
+    }
+    @top-right {
+      content: "v1.0 · 2026-02-25";
+      font-family: "DejaVu Sans", sans-serif;
+      font-size: 8pt;
+      color: #666;
+    }
+    @bottom-center {
+      content: "Halaman " counter(page) " / " counter(pages);
+      font-family: "DejaVu Sans", sans-serif;
+      font-size: 8pt;
+      color: #666;
+    }
+  }
+  @page cover {
+    margin: 0;
+    @top-left  { content: ""; }
+    @top-right { content: ""; }
+    @bottom-center { content: ""; }
+  }
+  .cover {
+    page: cover;
+    height: 297mm;
+    background: linear-gradient(160deg, #0a2350 0%, #143474 55%, #1c4a9c 100%);
+    color: #fff;
+    padding: 42mm 22mm 28mm 22mm;
+    position: relative;
+    page-break-after: always;
+  }
+  .cover .accent {
+    display: inline-block;
+    padding: 4px 12px;
+    background: #f5b120;
+    color: #0a2350;
+    font-weight: 800;
+    font-size: 10pt;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    border-radius: 4px;
+  }
+  .cover h1 {
+    font-size: 42pt;
+    line-height: 1.05;
+    margin: 22px 0 10px 0;
+    font-weight: 900;
+    letter-spacing: -0.5px;
+  }
+  .cover .sub {
+    font-size: 16pt;
+    color: #d7e2f7;
+    max-width: 140mm;
+    line-height: 1.35;
+  }
+  .cover .meta {
+    position: absolute;
+    bottom: 30mm;
+    left: 22mm;
+    right: 22mm;
+    border-top: 1px solid rgba(255,255,255,0.25);
+    padding-top: 12px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 9.5pt;
+    color: #c5d1ea;
+  }
+  .cover .meta strong { color: #fff; display: block; font-size: 11pt; }
+
+  body {
+    font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
+    font-size: 10pt;
+    line-height: 1.5;
+    color: #1a2233;
+  }
+  h1, h2, h3, h4 {
+    color: #0a2350;
+    font-weight: 800;
+    letter-spacing: -0.2px;
+  }
+  h1 { font-size: 22pt; margin: 0 0 4mm 0; }
+  h2 {
+    font-size: 15pt;
+    margin: 12mm 0 4mm 0;
+    padding-bottom: 4px;
+    border-bottom: 2px solid #f5b120;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 12pt;
+    margin: 6mm 0 2mm 0;
+    color: #143474;
+    page-break-after: avoid;
+  }
+  h4 {
+    font-size: 10.5pt;
+    margin: 4mm 0 1mm 0;
+    color: #1c4a9c;
+    page-break-after: avoid;
+  }
+  p { margin: 0 0 2.5mm 0; }
+  ul, ol { margin: 0 0 3mm 0; padding-left: 6mm; }
+  li { margin-bottom: 1mm; }
+  code, .mono {
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 9pt;
+    background: #eef1f7;
+    color: #0a2350;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  pre {
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 8.5pt;
+    background: #0a2350;
+    color: #eaf1ff;
+    padding: 3mm;
+    border-radius: 6px;
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 2mm 0 4mm 0;
+    font-size: 9pt;
+    page-break-inside: avoid;
+  }
+  th, td {
+    border: 1px solid #d2d9e4;
+    padding: 4px 6px;
+    vertical-align: top;
+    text-align: left;
+  }
+  th {
+    background: #0a2350;
+    color: #fff;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+  tr:nth-child(even) td { background: #f6f8fc; }
+  .badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .b-admin    { background: #0a2350; color: #f5b120; }
+  .b-owner    { background: #4b148c; color: #fff; }
+  .b-finance  { background: #6b21a8; color: #fff; }
+  .b-sales    { background: #0e7c5f; color: #fff; }
+  .b-support  { background: #b45309; color: #fff; }
+  .b-ticket   { background: #6b7280; color: #fff; }
+  .b-creative { background: #be185d; color: #fff; }
+  .b-client   { background: #1e40af; color: #fff; }
+
+  .callout {
+    border-left: 4px solid #f5b120;
+    background: #fff8e6;
+    padding: 3mm 4mm;
+    margin: 3mm 0;
+    font-size: 9.5pt;
+    border-radius: 3px;
+    page-break-inside: avoid;
+  }
+  .warn {
+    border-left: 4px solid #dc2626;
+    background: #fef2f2;
+    padding: 3mm 4mm;
+    margin: 3mm 0;
+    font-size: 9.5pt;
+    border-radius: 3px;
+    page-break-inside: avoid;
+  }
+  .ok {
+    border-left: 4px solid #16a34a;
+    background: #f0fdf4;
+    padding: 3mm 4mm;
+    margin: 3mm 0;
+    font-size: 9.5pt;
+    border-radius: 3px;
+    page-break-inside: avoid;
+  }
+  .toc { font-size: 10pt; }
+  .toc ol { list-style: none; padding-left: 0; }
+  .toc li { margin: 1mm 0; padding-left: 6mm; text-indent: -6mm; }
+  .toc .n {
+    display: inline-block;
+    width: 8mm;
+    color: #f5b120;
+    font-weight: 800;
+  }
+  .step {
+    background: #eef1f7;
+    padding: 3mm 4mm;
+    border-radius: 4px;
+    margin: 2mm 0;
+    font-size: 9.5pt;
+    page-break-inside: avoid;
+  }
+  .step .n {
+    display: inline-block;
+    background: #0a2350;
+    color: #f5b120;
+    width: 6mm;
+    height: 6mm;
+    line-height: 6mm;
+    text-align: center;
+    border-radius: 3mm;
+    font-weight: 800;
+    margin-right: 2mm;
+    font-size: 9pt;
+  }
+  .kbd {
+    font-family: "DejaVu Sans Mono", monospace;
+    background: #fff;
+    border: 1px solid #d2d9e4;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 8.5pt;
+  }
+  .role-line { margin: 1mm 0 3mm 0; }
+  .role-line .badge { margin-right: 4px; }
+  .checkbox {
+    display: inline-block;
+    width: 3.5mm; height: 3.5mm;
+    border: 1.4pt solid #0a2350;
+    border-radius: 1mm;
+    margin-right: 3mm;
+    vertical-align: -0.5mm;
+  }
+  .uat-row { padding: 1.5mm 0; border-bottom: 1px dashed #d2d9e4; font-size: 9.5pt; }
+  .uat-row:last-child { border-bottom: none; }
+  .uat-row .id { color: #f5b120; font-weight: 800; font-family: "DejaVu Sans Mono", monospace; }
+  .no-break { page-break-inside: avoid; }
+  .pagebreak { page-break-before: always; }
+
+  .grid2 { display: block; }
+  .grid2 .cell {
+    display: inline-block;
+    width: 48%;
+    vertical-align: top;
+    margin-right: 2%;
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ COVER -->
+<section class="cover">
+  <span class="accent">Panduan UAT</span>
+  <h1>Intercloud Portal</h1>
+  <p class="sub">Panduan lengkap alur kerja sistem, hak akses per peran,
+  dan skenario User Acceptance Testing untuk platform ISP &amp; Data-Center
+  Intercloud Digital Inovasi.</p>
+  <div class="meta">
+    <div><strong>Dokumen</strong>UAT Guideline v1.0</div>
+    <div><strong>Tanggal</strong>25 Februari 2026</div>
+    <div><strong>Untuk</strong>Tim UAT &amp; Stakeholder</div>
+  </div>
+</section>
+
+<!-- ================================================================= -->
+<h1>Daftar Isi</h1>
+<div class="toc">
+<ol>
+  <li><span class="n">1.</span> Ringkasan Sistem &amp; Arsitektur</li>
+  <li><span class="n">2.</span> Peran (Role) &amp; Ringkasan Akses</li>
+  <li><span class="n">3.</span> Alur Kerja Bisnis End-to-End</li>
+  <li><span class="n">4.</span> Fitur Admin &amp; Staff — Rincian per Modul</li>
+  <li><span class="n">5.</span> Fitur Portal Pelanggan (Client)</li>
+  <li><span class="n">6.</span> Alur Pembayaran (Duitku) &amp; Renewal Otomatis</li>
+  <li><span class="n">7.</span> Operasional Jaringan (MikroTik, NOC, DCIM)</li>
+  <li><span class="n">8.</span> Keamanan, Audit Log &amp; Kepatuhan</li>
+  <li><span class="n">9.</span> Skenario UAT — Checklist yang Harus Diverifikasi</li>
+  <li><span class="n">10.</span> Kriteria Sign-off &amp; Kontak</li>
+</ol>
+</div>
+
+<!-- ================================================================= 1 -->
+<h2>1. Ringkasan Sistem &amp; Arsitektur</h2>
+
+<p><strong>Intercloud Portal</strong> adalah portal admin &amp; klien
+untuk operator ISP / Data-Center. Sistem mengintegrasikan penjualan,
+provisioning, NOC monitoring, penagihan otomatis, dan CRM ke dalam satu
+antarmuka dengan pembayaran online (Duitku) dan operasi jaringan MikroTik
+secara langsung.</p>
+
+<h3>1.1 Tumpukan Teknis</h3>
+<table>
+<tr><th style="width:32%">Lapisan</th><th>Teknologi</th></tr>
+<tr><td>Frontend</td><td>React (Create React App) + Tailwind + shadcn/ui, di-serve statis oleh nginx</td></tr>
+<tr><td>Backend</td><td>FastAPI (Python 3.12) + uvicorn, dijalankan oleh supervisor</td></tr>
+<tr><td>Database</td><td>MongoDB 7.0 / 8.0 (Motor async)</td></tr>
+<tr><td>Reverse Proxy</td><td>nginx (HTTP 80 → HTTPS 443 via certbot) menuju backend <code>127.0.0.1:8001</code></td></tr>
+<tr><td>Payment Gateway</td><td><strong>Duitku (satu-satunya)</strong> — Midtrans/Xendit dinonaktifkan by policy</td></tr>
+<tr><td>Live Ops</td><td>MikroTik RouterOS v6/v7 lewat API port 8728/8729</td></tr>
+<tr><td>Email</td><td>Per-admin SMTP + IMAP (cPanel) — bukan SMTP global</td></tr>
+<tr><td>Scheduler</td><td>Satu instance APScheduler untuk semua cron (renewal, NOC probe, backup)</td></tr>
+</table>
+
+<h3>1.2 Struktur URL</h3>
+<ul>
+  <li><code>/</code> — Landing page publik (SEO, artikel, kontak)</li>
+  <li><code>/articles/&lt;slug&gt;</code> — Halaman artikel + <em>dynamic SEO render</em> untuk bot crawler</li>
+  <li><code>/portal/login</code> — Login (staff &amp; client)</li>
+  <li><code>/portal/admin/*</code> — Modul admin/staff (di-block via <code>robots.txt</code>)</li>
+  <li><code>/portal</code> — Dashboard klien</li>
+  <li><code>/status</code> — Halaman status publik (tanpa auth) menampilkan health per grup abstrak</li>
+  <li><code>/api/portal/*</code> — Seluruh endpoint API (di-proxy nginx ke port 8001)</li>
+  <li><code>/sitemap.xml</code>, <code>/robots.txt</code> — SEO artefak</li>
+</ul>
+
+<h3>1.3 Kebijakan Konfigurasi</h3>
+<div class="callout">
+<strong>Yang WAJIB dipatuhi selama UAT:</strong>
+<ul>
+  <li>Pajak (PPN) selalu <strong>manual</strong> per dokumen. Nilai default <em>settings.default_tax_percent</em> hanya prefill, boleh diubah manual saat membuat invoice/quotation.</li>
+  <li>Payment gateway <strong>hanya Duitku</strong>. Tidak boleh ada CTA Midtrans/Xendit di UI klien.</li>
+  <li>Kredensial (API key, merchant code, password SMTP) <strong>tidak boleh</strong> muncul di UI, log, atau file <code>.md</code>. Field password selalu ter-<em>mask</em> pada respons GET.</li>
+  <li>Hanya satu instance APScheduler — tidak boleh ada scheduler tandingan.</li>
+</ul>
+</div>
+
+<!-- ================================================================= 2 -->
+<h2>2. Peran (Role) &amp; Ringkasan Akses</h2>
+
+<p>Portal punya 8 peran (7 staff + 1 client). Menu &amp; hak akses ditentukan
+oleh <em>default_roles</em> di <code>ADMIN_MENU_CATALOG</code> — bisa
+dioverride per user via <em>menu_keys</em>. Feature flag (<em>can_delete_invoices</em>,
+<em>can_export_data</em>, dll.) mengatur aksi granular.</p>
+
+<h3>2.1 Ringkasan Peran</h3>
+<table>
+<tr><th>Peran</th><th>Fungsi Bisnis</th><th>Cakupan Akses</th></tr>
+<tr>
+  <td><span class="badge b-admin">Admin</span></td>
+  <td>Super-user; setup sistem, integrasi, user, backup.</td>
+  <td>Seluruh modul + factory reset + audit log.</td>
+</tr>
+<tr>
+  <td><span class="badge b-owner">Owner</span></td>
+  <td>Eksekutif — visibilitas KPI perusahaan.</td>
+  <td><strong>READ-ONLY global</strong>. Hanya baca Executive Overview + semua modul (write-nya ditolak 403).</td>
+</tr>
+<tr>
+  <td><span class="badge b-finance">Finance</span></td>
+  <td>Penagihan, laporan keuangan, credit note, aset.</td>
+  <td>Invoices, Finance, Credit Notes, Assets, semua Users (baca), Billing Defaults.</td>
+</tr>
+<tr>
+  <td><span class="badge b-sales">Sales</span></td>
+  <td>Akuisisi &amp; retention klien.</td>
+  <td>Hanya klien yang <em>assigned</em> ke user tersebut (CRM, Orders, Quotations, Follow-ups, Invoices klien-nya).</td>
+</tr>
+<tr>
+  <td><span class="badge b-support">Support</span></td>
+  <td>Teknis: provisioning, ticket, MikroTik, diagnostik.</td>
+  <td>Tickets, Products, Provisioning, MikroTik, DCIM, Diagnostics, NOC.</td>
+</tr>
+<tr>
+  <td><span class="badge b-ticket">Ticket-only</span></td>
+  <td>Agen ticket lini pertama.</td>
+  <td>Hanya modul Tickets + Dashboard.</td>
+</tr>
+<tr>
+  <td><span class="badge b-creative">Creative</span></td>
+  <td>Digital Marketing / Content.</td>
+  <td>Articles, Media Library, Content Calendar, UTM Builder, Content Planner.</td>
+</tr>
+<tr>
+  <td><span class="badge b-client">Client</span></td>
+  <td>Pelanggan (perusahaan atau perorangan).</td>
+  <td>Dashboard klien, Services, Invoices, Tickets, Credit Notes (own), pembayaran online.</td>
+</tr>
+</table>
+
+<h3>2.2 Cara Kerja Feature Flag</h3>
+<p>Tiap user staff punya kolom <em>menu_keys</em> (override menu) dan
+<em>feature_flags</em> (override aksi). Admin dapat mengaktifkan / menonaktifkan
+kemampuan seperti <em>can_delete_invoices</em>, <em>can_view_all_clients</em>,
+<em>can_impersonate_client</em> per user dari halaman User Access.</p>
+
+<div class="callout">
+<strong>UAT wajib menguji:</strong> ketika flag di-uncheck, endpoint terkait
+harus mengembalikan <code>403 Forbidden</code> — bukan sekadar menyembunyikan
+tombol di UI.
+</div>
+
+<!-- ================================================================= 3 -->
+<h2>3. Alur Kerja Bisnis End-to-End</h2>
+
+<h3>3.1 Alur Order Baru (New Customer)</h3>
+<div class="step"><span class="n">1</span> Pelanggan mendaftar di landing page → <code>POST /auth/register</code> (email + password + reCAPTCHA). Sistem kirim email welcome via per-admin SMTP.</div>
+<div class="step"><span class="n">2</span> Pelanggan login ke <code>/portal</code> → dashboard klien.</div>
+<div class="step"><span class="n">3</span> Pelanggan pilih paket di landing atau lewat portal → <code>POST /client/orders</code> membuat <em>Order</em> berstatus <code>pending</code>.</div>
+<div class="step"><span class="n">4</span> Sistem otomatis generate <strong>Invoice</strong> (nomor <code>INV-YYYY-#####</code>) dari order tersebut. Pajak prefill dari settings, tetap manual per invoice.</div>
+<div class="step"><span class="n">5</span> Pelanggan bayar via Duitku (klik "Pay Online") atau upload bukti transfer manual.</div>
+<div class="step"><span class="n">6</span> Callback Duitku <code>/webhooks/duitku</code> memverifikasi HMAC-SHA256 → set invoice <code>paid</code> → memicu email <em>payment_received</em> + auto-provisioning + reaktivasi service yang sempat suspended.</div>
+<div class="step"><span class="n">7</span> Service masuk status <code>active</code>. Untuk VPS/Colo: script provisioning MikroTik dijalankan oleh Support atau otomatis (bila flag <em>can_run_provisioning</em> aktif).</div>
+
+<h3>3.2 Alur Renewal Otomatis</h3>
+<p>Cron di APScheduler jalan setiap jam menit ke-20 (dan sekali saat
+startup) — memanggil <code>run_renewal_invoice_sweep</code>:</p>
+<ol>
+  <li>Cek service dengan <code>next_renewal</code> ≤ hari-ini + <em>settings.renewal_lead_days</em>.</li>
+  <li>Guard duplikat: <code>invoice.service_id + renewal_period</code> — invoice hanya dibuat sekali per siklus.</li>
+  <li>Setelah insert sukses, <code>next_renewal</code> baru maju ke siklus berikut.</li>
+  <li>Nomor invoice memakai counter atomik + retry pada <code>DuplicateKeyError</code>.</li>
+  <li>Email <em>invoice_created</em> dikirim ke <em>billing_emails</em> klien.</li>
+</ol>
+<p>Trigger manual (untuk UAT): <code>POST /admin/billing/run-renewal-sweep</code>.</p>
+
+<h3>3.3 Alur Ticket &amp; Escalation</h3>
+<div class="step"><span class="n">1</span> Klien buka ticket <code>POST /client/tickets</code> — pilih departemen (technical/billing/general/sales), prioritas, opsional <em>device_id</em>.</div>
+<div class="step"><span class="n">2</span> Ticket mendapat nomor <code>TCK-YYYY-#####</code>, status <code>open</code>.</div>
+<div class="step"><span class="n">3</span> Staff (support/admin/ticket_only) melihat di modul Tickets dan mengirim balasan <code>POST /client/tickets/{tid}/replies</code>. Status berubah menjadi <code>awaiting_client</code> atau tetap <code>open</code>.</div>
+<div class="step"><span class="n">4</span> Klien balas → status <code>awaiting_staff</code>. Riwayat pesan tersimpan lengkap dengan attachment.</div>
+<div class="step"><span class="n">5</span> Ticket ditutup oleh staff → status <code>closed</code> dan tercatat di <em>audit_logs</em>.</div>
+
+<h3>3.4 Alur Insiden NOC</h3>
+<div class="step"><span class="n">1</span> Setiap 5 menit, <code>run_noc_probe_sweep</code> memprobe semua MikroTik device.</div>
+<div class="step"><span class="n">2</span> Sample uptime disimpan di <em>noc_probes</em>; state up/down current di <em>noc_device_state</em>.</div>
+<div class="step"><span class="n">3</span> Saat transisi <strong>UP↔DOWN</strong> (tidak setiap probe), event dicatat di <em>noc_events</em> dan email alert dikirim ke <em>settings.noc_alert_recipients</em>.</div>
+<div class="step"><span class="n">4</span> Halaman publik <code>/status</code> menampilkan agregat per grup abstrak (Core Network / Customer Edge / Peering). <strong>Tidak</strong> membocorkan nama device atau IP.</div>
+
+<!-- ================================================================= 4 -->
+<h2>4. Fitur Admin &amp; Staff — Rincian per Modul</h2>
+
+<h3>4.1 Overview — Dashboard &amp; Executive Overview</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+  <span class="badge b-owner">Owner</span>
+  <span class="badge b-finance">Finance</span>
+  <span class="badge b-sales">Sales</span>
+  <span class="badge b-support">Support</span>
+  <span class="badge b-ticket">Ticket</span>
+  <span class="badge b-creative">Creative</span>
+</div>
+<ul>
+  <li><strong>Dashboard</strong> — KPI harian: unpaid invoices, overdue count, open tickets, active services. Sales melihat hanya klien assigned.</li>
+  <li><strong>Executive Overview</strong> (admin, owner) — MRR, ARR, ARPU, Churn %, revenue MTD, tren 12 bulan (LineChart), volume invoice (BarChart), Top-5 klien, uptime NOC 24h/7d, outage minutes 30d, ticket load.</li>
+</ul>
+
+<h3>4.2 Sales &amp; Billing</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+  <span class="badge b-finance">Finance</span>
+  <span class="badge b-sales">Sales</span>
+</div>
+<ul>
+  <li><strong>Orders</strong> — Daftar order, konfirmasi transfer manual, konversi ke invoice.</li>
+  <li><strong>Quotations</strong> — Buat penawaran, PDF preview, kirim ke klien via email.</li>
+  <li><strong>Invoices</strong> — Buat/edit invoice manual, edit line items, override pajak, tandai <em>paid/overdue</em>, PDF (logo 130 px), tombol Refund untuk buat Credit Note.</li>
+  <li><strong>Finance</strong> — Laporan revenue, tren, breakdown per kategori, Billing Defaults (default tax %, renewal lead days, NOC alert recipients).</li>
+  <li><strong>Credit Notes</strong> — Nomor <code>CN-YYYY-#####</code>, apply ke invoice (partial/full), auto-transisi invoice ke <em>paid</em> saat credit ≥ total, PDF.</li>
+  <li><strong>Assets</strong> — Aset dengan depresiasi straight-line, laporan per periode.</li>
+</ul>
+
+<h3>4.3 Catalog</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+  <span class="badge b-finance">Finance</span>
+  <span class="badge b-support">Support</span>
+</div>
+<ul>
+  <li><strong>Products</strong> — VPS, Hosting, Colocation, Connectivity — nama, kategori, deskripsi, price_monthly, features list, SLA note.</li>
+  <li><strong>Add-ons</strong> — Modul tambahan (extra IP, backup, dsb.).</li>
+  <li><strong>Categories</strong> — Master kategori produk (slug + label). Rename slug meng-<em>cascade</em> ke semua product terkait.</li>
+  <li><strong>Services</strong> — Instance produk yang di-provision untuk klien (user_id + product_id + status + config).</li>
+</ul>
+
+<h3>4.4 Support &amp; CRM</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+  <span class="badge b-finance">Finance</span>
+  <span class="badge b-sales">Sales</span>
+  <span class="badge b-support">Support</span>
+  <span class="badge b-ticket">Ticket</span>
+  <span class="badge b-creative">Creative</span>
+</div>
+<ul>
+  <li><strong>Users / Clients</strong> — Daftar user staff &amp; klien, edit profil, reset password, atur peran, atur <em>assigned_client_ids</em>.</li>
+  <li><strong>Tickets</strong> — Semua ticket, filter status/priority/departemen, balasan, tutup, link ke device MikroTik.</li>
+  <li><strong>Webmail</strong> — IMAP inbox pribadi tiap admin, compose via SMTP pribadi (<code>/admin/mail/send</code>), Reply prefill "Re:" + quote body, Test Connection.</li>
+  <li><strong>Email Automation</strong> — Template welcome / invoice_created / payment_received / order_confirmed / broadcast, preview dengan variabel, kirim test.</li>
+  <li><strong>Articles</strong> — Knowledge base &amp; blog SEO — WYSIWYG, cover image + alt text, category, status draft/published.</li>
+</ul>
+
+<h3>4.5 Operations</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+  <span class="badge b-support">Support</span>
+</div>
+<ul>
+  <li><strong>Provisioning</strong> — Trigger otomatis script untuk deploy VPS/OS request.</li>
+  <li><strong>MikroTik Ops</strong> — Multi-device (integration + <em>mikrotik_devices</em>), operasi live: interfaces, traffic, blackhole (v7 syntax), looking-glass ping/traceroute/BGP-lookup dengan <em>src_address</em>, backup, torch.</li>
+  <li><strong>DCIM &amp; IPAM</strong> — Rack, PDU, cabling, prefix IPv4/IPv6, alokasi.</li>
+  <li><strong>NOC Monitor</strong> — Live grid device up/down, feed event transisi, tombol Run Poll manual, auto-refresh 30 s.</li>
+  <li><strong>Diagnostics</strong> — Ping, DNS, whois, blacklist (8 zone), portscan, HTTP probe, traceroute, MikroTik torch.</li>
+</ul>
+
+<h3>4.6 Business</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+  <span class="badge b-finance">Finance</span>
+  <span class="badge b-sales">Sales</span>
+  <span class="badge b-support">Support</span>
+  <span class="badge b-creative">Creative</span>
+</div>
+<ul>
+  <li><strong>Customer DB (CRM)</strong> — Pipeline lead → contact → customer, enrichment order/invoice/ticket, filter per sales rep.</li>
+  <li><strong>Project Tracker</strong> — Tahap proyek onboarding klien.</li>
+  <li><strong>Follow-ups</strong> — Reminder aksi ke klien, scoping otomatis untuk sales.</li>
+  <li><strong>Content Planner</strong> — Editorial planner umum (bukan khusus creative).</li>
+  <li><strong>Documents</strong> — Repositori dokumen (NDA, PKS, BAST).</li>
+</ul>
+
+<h3>4.7 Creative (Digital Marketing)</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+  <span class="badge b-creative">Creative</span>
+</div>
+<ul>
+  <li><strong>Media Library</strong> — Upload gambar (<em>filename, url, alt_text, tags, used_in</em>) dengan pencarian &amp; referensi silang ke artikel.</li>
+  <li><strong>Content Calendar</strong> — Jadwal publikasi (title, type, scheduled_at, status, linked_article_id).</li>
+  <li><strong>UTM Builder</strong> — Bangun URL kampanye dengan <em>utm_source/medium/campaign</em>, riwayat &amp; QR.</li>
+</ul>
+
+<h3>4.8 System</h3>
+<div class="role-line">
+  <span class="badge b-admin">Admin</span>
+</div>
+<ul>
+  <li><strong>Integrations</strong> — MikroTik, Duitku, Telegram, cPanel/Plesk, IMAP/SMTP. Password ter-<em>mask</em> pada GET, test-connection real.</li>
+  <li><strong>Security</strong> — IP whitelist, auto-block brute-force (ambang &amp; jendela waktu), notifikasi blokir.</li>
+  <li><strong>Audit Log</strong> — Immutable log semua aksi sensitif (before/after JSON, actor, IP, UA), filter kategori/severity/tanggal.</li>
+  <li><strong>Branding</strong> — Logo terang &amp; gelap (data URI), warna aksen.</li>
+  <li><strong>Landing CMS</strong> — Edit copy landing (<em>settings.key=landing_content</em>).</li>
+  <li><strong>Backup &amp; Restore</strong> — mongodump/mongorestore lewat subprocess; cron harian.</li>
+  <li><strong>Factory Reset</strong> — Double-guarded, preserve settings + admins, buat safety snapshot.</li>
+</ul>
+
+<!-- ================================================================= 5 -->
+<h2>5. Fitur Portal Pelanggan (Client)</h2>
+
+<div class="role-line"><span class="badge b-client">Client</span></div>
+
+<h3>5.1 Dashboard Klien (<code>/portal</code>)</h3>
+<ul>
+  <li>Ringkasan: active services, invoice terbaru (unpaid / overdue), open tickets, jatuh tempo terdekat.</li>
+  <li>Shortcut ke Services, Invoices, Tickets, New Order.</li>
+</ul>
+
+<h3>5.2 Services</h3>
+<ul>
+  <li><code>GET /client/services</code> — daftar service aktif/suspended, tanggal renewal berikutnya.</li>
+  <li><code>GET /client/services/{sid}</code> — detail teknis (IP, kredensial pengelolaan) — kredensial di-mask sesuai kebijakan.</li>
+  <li><code>GET /client/services/{sid}/traffic</code> — grafik traffic (khusus service dengan device MikroTik).</li>
+</ul>
+
+<h3>5.3 Invoices &amp; Pembayaran</h3>
+<ul>
+  <li><code>GET /client/invoices</code> — daftar invoice status <em>unpaid/paid/overdue</em>.</li>
+  <li><code>GET /client/invoices/{iid}</code> — PDF preview dengan logo 130 px, panel bank transfer bila unpaid.</li>
+  <li><code>POST /client/invoices/{iid}/pay-online</code> — inisiasi transaksi Duitku, kembalikan <em>payment_url</em>.</li>
+  <li><code>POST /client/orders/{oid}/confirm-transfer</code> — upload bukti transfer manual.</li>
+  <li><code>GET /client/billing-emails</code> / <code>PUT</code> — atur email finance perusahaan untuk terima invoice.</li>
+  <li><code>GET /client/payment-info</code> — info rekening bank + reminder Duitku.</li>
+</ul>
+
+<h3>5.4 Orders</h3>
+<ul>
+  <li><code>POST /client/orders</code> — order paket baru (product_id + notes + config).</li>
+  <li><code>GET /client/orders</code> — riwayat order.</li>
+</ul>
+
+<h3>5.5 Tickets</h3>
+<ul>
+  <li><code>POST /client/tickets</code> — buka ticket (subject, department, priority, message, opsional device_id).</li>
+  <li><code>GET /client/tickets</code> — daftar &amp; riwayat pesan.</li>
+  <li><code>POST /client/tickets/{tid}/replies</code> — balas ticket, attachment ke depan.</li>
+</ul>
+
+<h3>5.6 Credit Notes</h3>
+<ul>
+  <li><code>GET /client/credit-notes</code> — daftar credit note milik klien (read-only), termasuk sisa balance.</li>
+</ul>
+
+<h3>5.7 Proxmox OS Request (bila tersedia)</h3>
+<ul>
+  <li><code>POST /client/proxmox/os-request</code> — request re-install OS untuk VPS aktif.</li>
+</ul>
+
+<!-- ================================================================= 6 -->
+<h2>6. Alur Pembayaran (Duitku) &amp; Renewal Otomatis</h2>
+
+<h3>6.1 Konfigurasi Duitku</h3>
+<p>Kredensial disimpan di collection <em>integrations</em> (module=<em>duitku</em>,
+enabled=true). Tidak pernah hardcoded. Signature request: <code>HMAC_SHA256(merchantCode
++ timestamp, apiKey)</code>. Callback verifikasi: HMAC-SHA256 utama +
+fallback MD5 legacy + merchantCode match.</p>
+
+<h3>6.2 Alur "Pay Online"</h3>
+<ol>
+  <li>Klien klik "Pay with Duitku" pada halaman invoice unpaid.</li>
+  <li>Backend <code>POST /client/invoices/{iid}/pay-online</code> memanggil <em>createInvoice</em> Duitku (returnUrl wajib + expiryPeriod).</li>
+  <li>Duitku respons <em>paymentUrl</em> → frontend buka di tab baru.</li>
+  <li>Klien selesaikan pembayaran di halaman Duitku.</li>
+  <li>Duitku POST callback ke <code>/webhooks/duitku</code>.</li>
+  <li>Signature valid + status 00 &amp; belum <em>paid</em> → transaksi diproses SEKALI:
+    <ul>
+      <li>Invoice → <em>paid</em>, <em>payment_method=duitku</em>, <em>paid_at</em> di-set.</li>
+      <li>Email <em>payment_received</em> dikirim.</li>
+      <li>Auto-provision order terkait (jika ada).</li>
+      <li>Reaktivasi service suspended karena invoice tersebut.</li>
+    </ul>
+  </li>
+  <li>Callback duplikat: respons <code>{duplicate:true}</code> tanpa efek ganda.</li>
+</ol>
+
+<div class="warn">
+<strong>UAT wajib menguji:</strong>
+<ul>
+  <li>Signature invalid → HTTP 400 dan invoice tidak berubah.</li>
+  <li>Callback dobel → tidak boleh ada duplikat email / reaktivasi ganda.</li>
+  <li>Tombol Midtrans / Xendit <strong>tidak muncul</strong> di UI kecuali flag <em>enable_extra_payment_gateways</em> di-ON (dan flag ini default OFF).</li>
+</ul>
+</div>
+
+<h3>6.3 Renewal Sweep</h3>
+<p>APScheduler menjalankan <code>run_renewal_invoice_sweep</code> tiap jam
+menit ke-20. Setting yang mempengaruhi:</p>
+<ul>
+  <li><em>default_tax_percent</em> — prefill pajak, tetap manual per invoice.</li>
+  <li><em>renewal_lead_days</em> — berapa hari sebelum jatuh tempo invoice dibuat.</li>
+</ul>
+
+<!-- ================================================================= 7 -->
+<h2>7. Operasional Jaringan — MikroTik, NOC, DCIM</h2>
+
+<h3>7.1 Multi-Device MikroTik</h3>
+<p>Device disimpan di collection <em>mikrotik_devices</em>. Legacy fallback: bila tak ada <em>device_id</em>, sistem pakai integration <em>mikrotik</em> tunggal.</p>
+<ul>
+  <li>Test Connection (<em>test-connection</em>) — verifikasi kredensial.</li>
+  <li>Interfaces, traffic per interface, backup export.</li>
+  <li>Blackhole route — <strong>RouterOS v7 syntax</strong> (<code>blackhole=yes</code>). LIST menggunakan server-side filter (<code>?blackhole=yes</code>) supaya tidak stream full BGP table; mendukung <em>prefix_filter</em>.</li>
+  <li>Looking Glass — ping/traceroute dengan <em>src_address</em>, BGP route lookup longest-prefix.</li>
+  <li>Torch — traffic sampling per src/dst (perlu flag <em>can_control_mikrotik</em>).</li>
+</ul>
+
+<h3>7.2 NOC Monitor</h3>
+<ul>
+  <li>Probe sweep tiap 5 menit — polling ke semua device.</li>
+  <li>Hanya transisi UP↔DOWN yang menghasilkan event (mencegah flap-storm).</li>
+  <li>Retention: probes lama di-rollup + dihapus; events <strong>tidak</strong> pernah dihapus oleh retention job.</li>
+  <li>Alert email ke <em>settings.noc_alert_recipients</em>; fallback ke semua user role=admin.</li>
+</ul>
+
+<h3>7.3 Public Status Page (<code>/status</code>)</h3>
+<ul>
+  <li>Tanpa autentikasi — auto-refresh 60 s.</li>
+  <li>Data diagregasi per grup abstrak ("Core Network", "Customer Edge", "Peering &amp; Transit") — konfigurabel dari admin.</li>
+  <li>Status global: <em>operational / degraded / unknown</em>.</li>
+  <li>Incident banner (bila dikonfigurasi) tampil di atas.</li>
+</ul>
+
+<div class="warn">
+<strong>Wajib diuji:</strong> Raw JSON dari <code>/api/portal/public/status</code>
+<strong>tidak boleh</strong> membocorkan nama device, IP, atau topologi.
+</div>
+
+<!-- ================================================================= 8 -->
+<h2>8. Keamanan, Audit Log &amp; Kepatuhan</h2>
+
+<h3>8.1 Autentikasi</h3>
+<ul>
+  <li>Login JWT (bearer token) untuk staff &amp; client.</li>
+  <li><strong>Auto-block</strong>: default 10 gagal / 15 menit → banned 30 menit (konfigurabel di Security Settings).</li>
+  <li>Rate limit login <code>10/min</code> per IP (X-Forwarded-For aware).</li>
+  <li>reCAPTCHA v3 / Cloudflare Turnstile pada login &amp; register.</li>
+  <li>Password harus di-<em>change</em> pada login pertama bila flag <em>must_change_password</em> aktif.</li>
+</ul>
+
+<h3>8.2 Header Keamanan (nginx)</h3>
+<pre>Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+X-Frame-Options: DENY
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()
+Content-Security-Policy-Report-Only: (whitelist self + reCAPTCHA + Turnstile + fonts) + report-uri /api/csp-report
+Cross-Origin-Opener-Policy: same-origin</pre>
+
+<h3>8.3 Audit Log</h3>
+<p>Setiap aksi sensitif ditulis ke collection <em>audit_logs</em> lewat
+<code>log_audit(db, ...)</code>. Field yang tercatat: <em>actor, target,
+before, after, ip, user_agent, category, action, severity, created_at</em>.
+Field secret (password, api_key, token, ...) di-redact otomatis.</p>
+
+<p>Instrumented: user role/password change, delete user, admin password
+reset, billing/security settings update, integration upsert/delete,
+factory reset, backup restore, credit note create/apply/cancel, invoice
+paid-by-credit, status page config update.</p>
+
+<h3>8.4 Kebijakan Lain</h3>
+<ul>
+  <li><strong>robots.txt</strong> Disallow <code>/portal/admin</code> &amp; <code>/api/portal/admin</code>.</li>
+  <li><strong>Sitemap.xml</strong> — hanya URL publik (landing + articles).</li>
+  <li><strong>404 route</strong> — SPA fallback dengan <code>meta robots noindex</code>.</li>
+  <li><strong>Server tokens off</strong> — versi nginx tidak dibocorkan.</li>
+  <li><strong>Backup harian</strong> — cron <code>/etc/cron.d/intercloud-daily-backup</code>.</li>
+</ul>
+
+<!-- ================================================================= 9 -->
+<h2>9. Skenario UAT — Checklist yang Harus Diverifikasi</h2>
+
+<p>Isi ceklis di bawah untuk setiap peran. Jika ada satu <em>fail</em>,
+UAT belum sign-off.</p>
+
+<h3>9.1 Auth &amp; Onboarding</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">A-01</span> Admin login pertama dengan credential seed — dipaksa ganti password.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">A-02</span> Register klien baru dengan reCAPTCHA valid → email welcome diterima di <em>billing_emails</em>.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">A-03</span> 10× login gagal dari 1 IP → percobaan ke-11 mendapat 429 &amp; muncul di Security ▸ Blocked IPs.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">A-04</span> Unblock IP dari admin → login berhasil lagi.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">A-05</span> Change password: password lama tidak boleh dipakai lagi.</div>
+
+<h3>9.2 Peran &amp; Menu</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">R-01</span> Sales login → hanya melihat klien yang di-<em>assigned</em> (bukan semua).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">R-02</span> Sales PUT/DELETE klien milik sales lain → HTTP 403.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">R-03</span> Finance melihat menu Finance, Invoices, Credit Notes, Assets.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">R-04</span> Owner mencoba PUT apapun → HTTP 403 (read-only).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">R-05</span> Ticket-only user hanya melihat menu Tickets + Dashboard.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">R-06</span> Creative melihat Media Library, Content Calendar, UTM Builder.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">R-07</span> Uncheck <em>can_delete_invoices</em> di user X → user X coba DELETE invoice → 403.</div>
+
+<h3>9.3 Sales &amp; Billing</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-01</span> Buat Product baru, kategori valid → tampil di Catalog publik.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-02</span> Klien order product → Order status <em>pending</em> + Invoice <em>unpaid</em> ter-generate otomatis.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-03</span> Invoice PDF preview: logo 130 px, kolom bank transfer muncul untuk status unpaid.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-04</span> Klien A tidak dapat mengakses invoice klien B (bahkan lewat URL langsung).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-05</span> Tandai invoice <em>overdue</em> secara manual → status berubah, cron auto-mark tetap berjalan.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-06</span> Buat Credit Note dengan <em>auto_apply</em> ≥ total invoice → invoice otomatis <em>paid</em>, service reactivated.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-07</span> Credit Note apply melebihi total invoice → ditolak.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-08</span> Quotation di-generate PDF, di-email ke klien.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-09</span> Renewal Sweep manual (<code>POST /admin/billing/run-renewal-sweep</code>) → invoice renewal terbuat sekali per siklus.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">B-10</span> Setting <em>default_tax_percent</em> di-set 11% → invoice baru prefill 11%, admin bisa ubah manual jadi 0 atau 12.</div>
+
+<h3>9.4 Pembayaran Duitku</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">P-01</span> Klien klik "Pay with Duitku" → dialihkan ke halaman payment Duitku.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">P-02</span> Simulasi callback sukses (signature valid) → invoice <em>paid</em>, email diterima, service reactivated.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">P-03</span> Callback signature invalid → HTTP 400, invoice tidak berubah.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">P-04</span> Callback dobel identik → respons <code>duplicate:true</code>, tidak ada aksi ganda.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">P-05</span> Tombol Midtrans / Xendit <strong>tidak muncul</strong> di UI klien (flag <em>enable_extra_payment_gateways</em> = OFF).</div>
+
+<h3>9.5 Tickets &amp; Mail</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">T-01</span> Klien buka ticket → mendapat nomor TCK-YYYY-#####, muncul di list staff.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">T-02</span> Support balas ticket → status <em>awaiting_client</em>, email notification terkirim.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">T-03</span> Klien reply → status <em>awaiting_staff</em>.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">T-04</span> Admin belum setup SMTP pribadi → tombol Compose di Webmail memunculkan pesan "Silakan setup SMTP dulu di Settings ▸ Email…" (bukan 500).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">T-05</span> Setup Email → Test Connection: hasil per IMAP &amp; SMTP tampil hijau/merah.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">T-06</span> Reply email di Webmail memakai prefix "Re:" + kutip body asli.</div>
+
+<h3>9.6 MikroTik &amp; NOC</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">N-01</span> Tambah device MikroTik → Test Connection sukses.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">N-02</span> Add blackhole route (RouterOS v7) → tidak muncul <em>TrapError "unknown parameter type"</em>.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">N-03</span> List blackhole dengan <em>prefix_filter</em> → respons &lt; 5 detik, tidak stream full BGP.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">N-04</span> Looking-Glass ping dengan <em>src_address</em> → parameter terkirim ke RouterOS.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">N-05</span> BGP route lookup untuk /32 → mengembalikan /24 covering (longest prefix).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">N-06</span> Matikan device di lab → dalam 5–10 menit NOC device state jadi <em>down</em>, event tercatat, email alert diterima.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">N-07</span> Public <code>/status</code> menampilkan grup <em>degraded</em>, tanpa nama device / IP di JSON.</div>
+
+<h3>9.7 Landing, SEO &amp; Artikel</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">S-01</span> <code>/sitemap.xml</code> mengembalikan XML valid, semua artikel published tercantum.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">S-02</span> <code>/robots.txt</code> berisi Disallow <em>/portal/admin</em>.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">S-03</span> Curl <code>/articles/&lt;slug&gt;</code> dengan User-Agent Googlebot → HTML meta lengkap (title/description/canonical/JSON-LD).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">S-04</span> Setiap &lt;img&gt; artikel punya <em>alt text</em> (fallback ke title).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">S-05</span> Favicon SVG + apple-touch-icon dapat diakses.</div>
+
+<h3>9.8 Data Integrity</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">D-01</span> Buat 20 invoice paralel (bulk) → semua nomor unik (INV-YYYY-#####), tidak ada 500 karena unique index.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">D-02</span> Hapus kategori yang masih dipakai product → ditolak dengan pesan yang jelas.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">D-03</span> Ubah slug kategori → semua product terkait ikut ter-<em>cascade</em>.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">D-04</span> Backup harian menghasilkan file di <em>backups</em> collection; Factory Reset tetap membuat safety snapshot.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">D-05</span> Audit Log memuat before/after untuk setiap perubahan role/user/security.</div>
+
+<h3>9.9 Kepatuhan Kebijakan</h3>
+<div class="uat-row"><span class="checkbox"></span><span class="id">C-01</span> API GET terhadap integration Duitku me-mask apiKey (tidak plain-text).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">C-02</span> API GET terhadap email settings me-mask password IMAP &amp; SMTP.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">C-03</span> File <code>/app/memory/*.md</code> tidak berisi kredensial produksi.</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">C-04</span> Header <code>Server</code> tidak membocorkan versi nginx (server_tokens off).</div>
+<div class="uat-row"><span class="checkbox"></span><span class="id">C-05</span> Pajak selalu editable manual — bukan auto-generated tanpa opsi override.</div>
+
+<!-- ================================================================= 10 -->
+<h2>10. Kriteria Sign-off &amp; Kontak</h2>
+
+<h3>10.1 Kriteria Sign-off UAT</h3>
+<div class="ok">
+UAT dinyatakan <strong>PASSED</strong> ketika:
+<ul>
+  <li>Seluruh 60+ ceklis di Bab 9 ditandai LULUS.</li>
+  <li>Backend pytest suite: <strong>0 failed, 0 errors</strong> (skipped diperbolehkan untuk test yang butuh binary sistem / live router).</li>
+  <li>Tidak ada regresi kritikal (P0/P1) selama 3 hari kerja stabilisasi.</li>
+  <li>Audit log ter-populate untuk semua aksi sensitif yang diuji.</li>
+  <li>Backup harian berhasil 2 hari berturut-turut &amp; restore ter-uji minimal 1×.</li>
+</ul>
+</div>
+
+<h3>10.2 Kriteria Bugfix Prioritas</h3>
+<table>
+<tr><th>Prioritas</th><th>Contoh</th><th>SLA Fix</th></tr>
+<tr><td><strong>P0 — Blocker</strong></td><td>Login gagal total, invoice hilang, callback Duitku menerima signature invalid, kredensial bocor di UI</td><td>&lt; 4 jam</td></tr>
+<tr><td><strong>P1 — Kritikal</strong></td><td>Fungsi utama tidak sesuai spesifikasi (renewal double-invoice, credit note salah hitung)</td><td>&lt; 1 hari</td></tr>
+<tr><td><strong>P2 — Mayor</strong></td><td>UX defect, empty state kurang jelas, non-critical 500 di edge case</td><td>&lt; 3 hari</td></tr>
+<tr><td><strong>P3 — Minor</strong></td><td>Typo, alignment, warning konsol</td><td>Sprint berikutnya</td></tr>
+</table>
+
+<h3>10.3 Referensi Endpoint</h3>
+<table>
+<tr><th>Kategori</th><th>Endpoint Utama</th></tr>
+<tr><td>Auth</td><td><code>POST /api/portal/auth/login</code>, <code>/register</code>, <code>/change-password</code></td></tr>
+<tr><td>Client</td><td><code>GET /api/portal/client/dashboard|services|invoices|tickets|credit-notes</code></td></tr>
+<tr><td>Order &amp; Pay</td><td><code>POST /api/portal/client/orders</code>, <code>/invoices/{iid}/pay-online</code>, <code>/webhooks/duitku</code></td></tr>
+<tr><td>Admin CRUD</td><td><code>/api/portal/admin/{users|products|invoices|services|tickets|articles|crm|...}</code></td></tr>
+<tr><td>MikroTik</td><td><code>/admin/mikrotik/{devices|interfaces|blackhole|looking-glass|traffic|backups}</code></td></tr>
+<tr><td>NOC</td><td><code>/admin/noc/{devices|events|run-poll}</code>, <code>/public/status</code></td></tr>
+<tr><td>System</td><td><code>/admin/{audit-logs|security/settings|billing/settings|system/factory-reset|backups}</code></td></tr>
+</table>
+
+<h3>10.4 Kontak Tim</h3>
+<table>
+<tr><th>Peran</th><th>Kontak</th></tr>
+<tr><td>Product Owner</td><td>support@intercloud-digital.com</td></tr>
+<tr><td>Tim Development</td><td>via ticket internal (department: technical)</td></tr>
+<tr><td>Emergency (P0)</td><td>Telegram bot alert — dikonfigurasi di Integrations</td></tr>
+</table>
+
+<div class="callout">
+<strong>Catatan penutup:</strong> Panduan ini adalah cerminan fitur portal
+pada tanggal cetak. Setiap perubahan fitur atau kebijakan wajib mem-<em>bump</em>
+versi dokumen di header dan menuliskan alasan di changelog PRD
+(<code>/app/memory/PRD.md</code>).
+</div>
+
+</body>
+</html>
