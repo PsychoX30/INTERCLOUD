@@ -4,11 +4,11 @@ import axios from "axios";
 /**
  * Portal-wide branding hook. Fetches /api/portal/branding once and caches
  * the result in module scope so the second, third, Nth mount all read
- * from memory. Public endpoint — no auth needed.
+ * from memory. Public endpoint - no auth needed.
  *
  * Returns a derived object:
  *   {
- *     logo_dark,          // navy artwork — invoice/PDF/email/white surfaces
+ *     logo_dark,          // navy artwork - invoice/PDF/email/white surfaces
  *     logo_light,         // white artwork for dark surfaces
  *     logo_light_source,  // "uploaded" if admin uploaded a bespoke variant,
  *                         // "inverted" if we auto-derived from logo_dark

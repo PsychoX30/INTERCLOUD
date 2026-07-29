@@ -29,7 +29,7 @@ const AdminEmails = () => {
     <div>
       <PageHeader
         title="Email Automation"
-        subtitle="Instant transactional mail, scheduled invoice reminders, and on-demand blasts. Templates below drive every automatic email — edit subject, body, and send-time freely."
+        subtitle="Instant transactional mail, scheduled invoice reminders, and on-demand blasts. Templates below drive every automatic email - edit subject, body, and send-time freely."
       />
       <div className="flex items-center gap-2 mb-4 border-b border-slate-200 overflow-x-auto">
         <TabBtn active={tab === "templates"} onClick={() => setTab("templates")} icon={Mail} testid="tab-templates">Templates</TabBtn>
@@ -105,7 +105,7 @@ const TemplatesTab = () => {
       const { data } = await api.post("/admin/email/run-scheduler-now");
       const fired = data.fired || {};
       const total = Object.values(fired).reduce((a, b) => a + b, 0);
-      setSaveMsg(`Sweep complete — ${total} emails dispatched, ${data.services_suspended || 0} services suspended.`);
+      setSaveMsg(`Sweep complete - ${total} emails dispatched, ${data.services_suspended || 0} services suspended.`);
     } catch (e) {
       setSaveMsg(e?.response?.data?.detail || "Sweep failed");
     }
@@ -169,7 +169,7 @@ const TemplatesTab = () => {
                   <td className="px-4 py-3 text-xs text-slate-600">
                     {t.offset_days !== null && t.offset_days !== undefined ? (
                       <span>{t.offset_days > 0 ? `+${t.offset_days}` : t.offset_days} day{Math.abs(t.offset_days) === 1 ? "" : "s"}</span>
-                    ) : <span className="text-slate-400">–</span>}
+                    ) : <span className="text-slate-400">-</span>}
                     {t.send_time ? <span className="ml-2 text-slate-500">@ {t.send_time}</span> : null}
                   </td>
                   <td className="px-4 py-3">
@@ -285,7 +285,7 @@ const EditorModal = ({ template, events, onClose, onSaved }) => {
         template_id: template.id, to_email: testEmail,
       });
       setTestMsg(data.ok ? `✓ Test email sent to ${testEmail}` :
-        `⚠ ${data.status}: ${data.error || "SMTP not configured — logged instead"}`);
+        `⚠ ${data.status}: ${data.error || "SMTP not configured - logged instead"}`);
     } catch (er) {
       setTestMsg(er?.response?.data?.detail || "Send failed");
     }
@@ -311,15 +311,15 @@ const EditorModal = ({ template, events, onClose, onSaved }) => {
               <input value={form.name} onChange={(e) => set("name", e.target.value)} className={inputClass} data-testid="editor-name" />
             </label>
             <label className="block">
-              <div className={labelClass}>Event key {template.is_system && <span className="ml-1 text-slate-400 normal-case">(system — read only)</span>}</div>
+              <div className={labelClass}>Event key {template.is_system && <span className="ml-1 text-slate-400 normal-case">(system - read only)</span>}</div>
               <input value={form.event_key} onChange={(e) => set("event_key", e.target.value)} disabled={!!template.is_system} className={`${inputClass} font-mono disabled:bg-slate-100`} data-testid="editor-event-key" />
             </label>
             <label className="block">
               <div className={labelClass}>Subject</div>
-              <input value={form.subject} onChange={(e) => set("subject", e.target.value)} className={inputClass} data-testid="editor-subject" placeholder="Invoice {{invoice.number}} — {{invoice.total_fmt}}" />
+              <input value={form.subject} onChange={(e) => set("subject", e.target.value)} className={inputClass} data-testid="editor-subject" placeholder="Invoice {{invoice.number}} - {{invoice.total_fmt}}" />
             </label>
             <label className="block">
-              <div className={labelClass}>Body (HTML — supports variables)</div>
+              <div className={labelClass}>Body (HTML - supports variables)</div>
               <textarea rows={14} value={form.body_html} onChange={(e) => set("body_html", e.target.value)} className={`${inputClass} h-auto py-2 font-mono text-[12px]`} data-testid="editor-body" />
             </label>
             <div className="grid grid-cols-2 gap-3">
@@ -430,7 +430,7 @@ const BroadcastTab = () => {
           )}
           <label className="block">
             <div className={labelClass}>Subject</div>
-            <input value={subject} onChange={(e) => setSubject(e.target.value)} className={inputClass} required placeholder="Intercloud maintenance — 15 Feb 2026" data-testid="broadcast-subject" />
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} className={inputClass} required placeholder="Intercloud maintenance - 15 Feb 2026" data-testid="broadcast-subject" />
           </label>
           <label className="block">
             <div className={labelClass}>Body HTML (variables supported)</div>
@@ -450,7 +450,7 @@ const BroadcastTab = () => {
               <li>· Test-send a template first to yourself before broadcasting.</li>
               <li>· Use <code>{"{{user.name}}"}</code> so each recipient sees a personalised greeting.</li>
               <li>· Broadcasts silently skip inactive users and rows with empty emails.</li>
-              <li>· When SMTP is disabled every send is <b>logged</b> but not delivered — check the Delivery log tab.</li>
+              <li>· When SMTP is disabled every send is <b>logged</b> but not delivered - check the Delivery log tab.</li>
             </ul>
           </Card>
           {result && (

@@ -17,7 +17,7 @@ const queryClient = new QueryClient({
 const root = ReactDOM.createRoot(document.getElementById("root"));
 
 // The static SEO tags in index.html exist for non-JS crawlers / link unfurlers.
-// In the browser, react-helmet-async owns per-page SEO — remove the static
+// In the browser, react-helmet-async owns per-page SEO - remove the static
 // copies so pages never ship duplicate canonical/og/description tags.
 document.querySelectorAll("[data-static-seo]").forEach((el) => el.remove());
 root.render(

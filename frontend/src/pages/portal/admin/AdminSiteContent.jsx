@@ -3,31 +3,31 @@ import { Save, RotateCcw, Plus, Trash2, Loader2, HelpCircle } from "lucide-react
 import { api } from "../../../portal/api";
 
 // Curated list of the highest-value editable i18n keys. Admins can still add
-// arbitrary keys via the raw JSON tab — this is the polished form path.
+// arbitrary keys via the raw JSON tab - this is the polished form path.
 const CURATED_KEYS = [
-  { section: "Hero",     key: "hero.tag",         label: "Hero — Tagline" },
-  { section: "Hero",     key: "hero.h1a",         label: "Hero — Headline (start)" },
-  { section: "Hero",     key: "hero.h1_stable",   label: "Hero — Adjective 1" },
-  { section: "Hero",     key: "hero.h1_secure",   label: "Hero — Adjective 2" },
-  { section: "Hero",     key: "hero.h1c",         label: "Hero — Headline (end)" },
-  { section: "Hero",     key: "hero.body",        label: "Hero — Body (start)" },
-  { section: "Hero",     key: "hero.body3",       label: "Hero — Body (end)" },
-  { section: "Features", key: "feat.title",       label: "Why-Us — Title" },
-  { section: "Features", key: "feat.subtitle",    label: "Why-Us — Subtitle" },
-  { section: "Services", key: "svc.title",        label: "Services — Title" },
-  { section: "Services", key: "svc.subtitle",    label: "Services — Subtitle" },
-  { section: "Pricing",  key: "pr.title",         label: "Pricing — Title" },
-  { section: "Pricing",  key: "pr.subtitle",      label: "Pricing — Subtitle" },
-  { section: "CTA",      key: "cta_sec.title_a",  label: "CTA — Title (start)" },
-  { section: "CTA",      key: "cta_sec.title_b",  label: "CTA — Title (highlight)" },
-  { section: "CTA",      key: "cta_sec.title_c",  label: "CTA — Title (end)" },
-  { section: "CTA",      key: "cta_sec.body",     label: "CTA — Body" },
-  { section: "FAQ",      key: "faq.title",        label: "FAQ — Title" },
-  { section: "FAQ",      key: "faq.subtitle",     label: "FAQ — Subtitle" },
-  { section: "FAQ",      key: "faq.helpTitle",    label: "FAQ — Help Card Title" },
-  { section: "FAQ",      key: "faq.helpBody",     label: "FAQ — Help Card Body" },
-  { section: "Footer",   key: "footer.tagline",   label: "Footer — Tagline" },
-  { section: "Footer",   key: "footer.copy",      label: "Footer — Copyright line" },
+  { section: "Hero",     key: "hero.tag",         label: "Hero - Tagline" },
+  { section: "Hero",     key: "hero.h1a",         label: "Hero - Headline (start)" },
+  { section: "Hero",     key: "hero.h1_stable",   label: "Hero - Adjective 1" },
+  { section: "Hero",     key: "hero.h1_secure",   label: "Hero - Adjective 2" },
+  { section: "Hero",     key: "hero.h1c",         label: "Hero - Headline (end)" },
+  { section: "Hero",     key: "hero.body",        label: "Hero - Body (start)" },
+  { section: "Hero",     key: "hero.body3",       label: "Hero - Body (end)" },
+  { section: "Features", key: "feat.title",       label: "Why-Us - Title" },
+  { section: "Features", key: "feat.subtitle",    label: "Why-Us - Subtitle" },
+  { section: "Services", key: "svc.title",        label: "Services - Title" },
+  { section: "Services", key: "svc.subtitle",    label: "Services - Subtitle" },
+  { section: "Pricing",  key: "pr.title",         label: "Pricing - Title" },
+  { section: "Pricing",  key: "pr.subtitle",      label: "Pricing - Subtitle" },
+  { section: "CTA",      key: "cta_sec.title_a",  label: "CTA - Title (start)" },
+  { section: "CTA",      key: "cta_sec.title_b",  label: "CTA - Title (highlight)" },
+  { section: "CTA",      key: "cta_sec.title_c",  label: "CTA - Title (end)" },
+  { section: "CTA",      key: "cta_sec.body",     label: "CTA - Body" },
+  { section: "FAQ",      key: "faq.title",        label: "FAQ - Title" },
+  { section: "FAQ",      key: "faq.subtitle",     label: "FAQ - Subtitle" },
+  { section: "FAQ",      key: "faq.helpTitle",    label: "FAQ - Help Card Title" },
+  { section: "FAQ",      key: "faq.helpBody",     label: "FAQ - Help Card Body" },
+  { section: "Footer",   key: "footer.tagline",   label: "Footer - Tagline" },
+  { section: "Footer",   key: "footer.copy",      label: "Footer - Copyright line" },
 ];
 
 const emptyFaq = () => ({
@@ -88,7 +88,7 @@ const AdminSiteContent = () => {
       const { data } = await api.post("/admin/landing-content", body);
       setContent(data);
       setJsonText(JSON.stringify(data, null, 2));
-      setMsg({ kind: "ok", text: "Saved — landing page will reflect changes on next load." });
+      setMsg({ kind: "ok", text: "Saved - landing page will reflect changes on next load." });
     } catch (e) {
       setMsg({ kind: "error", text: e?.response?.data?.detail || e.message });
     } finally { setBusy(false); }
@@ -243,7 +243,7 @@ const AdminSiteContent = () => {
             ))}
             {(content.faqs || []).length === 0 && (
               <div className="text-center py-12 text-slate-400 border border-dashed border-slate-200 rounded-2xl">
-                No CMS FAQs — the public site is using the shipped defaults. Click "Add FAQ" to override.
+                No CMS FAQs - the public site is using the shipped defaults. Click "Add FAQ" to override.
               </div>
             )}
           </div>
@@ -253,7 +253,7 @@ const AdminSiteContent = () => {
       {tab === "json" && (
         <div>
           <div className="mb-2 text-xs text-slate-500">
-            Full document — for power users. Includes any key not surfaced in the "curated" tab.
+            Full document - for power users. Includes any key not surfaced in the "curated" tab.
           </div>
           <textarea rows={26} value={jsonText} onChange={(e) => setJsonText(e.target.value)}
                     className="w-full font-mono text-xs rounded-2xl border border-slate-200 p-4 bg-slate-50"

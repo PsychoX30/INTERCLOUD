@@ -36,12 +36,12 @@ const AdminMikrotik = () => {
     <div>
       <PageHeader
         title="MikroTik Operations"
-        subtitle="Live BGP, Looking Glass, blackhole, backup, reboot, and traffic — real RouterOS calls via librouteros. Supports multiple devices."
+        subtitle="Live BGP, Looking Glass, blackhole, backup, reboot, and traffic - real RouterOS calls via librouteros. Supports multiple devices."
         actions={
           <div className="flex items-center gap-2">
             <div className={labelClass + " mr-1"}>Device:</div>
             <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} className={inputClass + " h-9 py-0"} data-testid="mikrotik-device-picker">
-              {devices.length === 0 && <option value="">— no devices —</option>}
+              {devices.length === 0 && <option value="">- no devices -</option>}
               {devices.map((d) => (
                 <option key={d.id || "legacy"} value={d.id || "legacy"}>
                   {d.name}{d.host ? ` · ${d.host}` : ""}
@@ -110,20 +110,20 @@ const DevicesTab = ({ devices, reload }) => {
             <tr><th className="px-4 py-3 text-left">Name</th><th className="px-4 py-3 text-left">Host</th><th className="px-4 py-3 text-left">Site</th><th className="px-4 py-3 text-left">TLS</th><th className="px-4 py-3 text-left">Test</th><th className="px-4 py-3"></th></tr>
           </thead>
           <tbody>
-            {devices.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">No devices — add your first RouterOS above.</td></tr>}
+            {devices.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">No devices - add your first RouterOS above.</td></tr>}
             {devices.map((d) => {
               const t = testResult[d.id] || {};
               return (
                 <tr key={d.id || "legacy"} className="border-t border-slate-100" data-testid={`mt-device-${d.id || "legacy"}`}>
                   <td className="px-4 py-2 font-bold text-[#0a2350]">{d.name}{d.legacy && <span className="ml-2 text-[10px] uppercase text-amber-700">legacy</span>}</td>
                   <td className="px-4 py-2 font-mono text-xs">{d.host}:{d.port}</td>
-                  <td className="px-4 py-2 text-xs">{d.site || "—"}</td>
+                  <td className="px-4 py-2 text-xs">{d.site || "-"}</td>
                   <td className="px-4 py-2 text-xs">{d.use_tls ? "TLS" : "plain"}</td>
                   <td className="px-4 py-2 text-xs">
                     {t.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
                       t.ok === true  ? <span className="text-emerald-700 font-bold">✓ {t.message}</span> :
                       t.ok === false ? <span className="text-red-700 font-bold">✗ {t.message}</span> :
-                      "—"}
+                      "-"}
                   </td>
                   <td className="px-4 py-2 text-right">
                     {d.id && <>
@@ -207,7 +207,7 @@ const BGPTab = ({ deviceId }) => {
                 <td className="px-4 py-2 font-mono text-xs">{p["remote-as"]}</td>
                 <td className="px-4 py-2 uppercase text-xs font-bold text-[#f5b120]">{p.state || p.status}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{p["prefix-count"] || 0}</td>
-                <td className="px-4 py-2 text-right text-xs text-slate-500">{p.uptime || "—"}</td>
+                <td className="px-4 py-2 text-right text-xs text-slate-500">{p.uptime || "-"}</td>
               </tr>
             ))}
           </tbody>
@@ -269,7 +269,7 @@ const LookingGlassTab = ({ deviceId }) => {
         )}
         {isBgp && (
           <div className="mt-2 text-[11px] text-slate-500">
-            Longest-prefix scan — enter a bare IP (e.g. <span className="font-mono">103.133.20.5</span>) and the router will return the BGP-covering prefix, or use <span className="font-mono">x.x.x.x/xx</span> for an exact-prefix lookup.
+            Longest-prefix scan - enter a bare IP (e.g. <span className="font-mono">103.133.20.5</span>) and the router will return the BGP-covering prefix, or use <span className="font-mono">x.x.x.x/xx</span> for an exact-prefix lookup.
           </div>
         )}
       </Card>
@@ -358,13 +358,13 @@ const BlackholeTab = ({ deviceId }) => {
           )}
         </form>
         <div className="mt-2 text-[11px] text-slate-500">
-          Skip a full-BGP-table dump — the query already filters server-side to <span className="font-mono">?blackhole=yes</span>. Add a parent CIDR to narrow further.
+          Skip a full-BGP-table dump - the query already filters server-side to <span className="font-mono">?blackhole=yes</span>. Add a parent CIDR to narrow further.
           {appliedFilter && <span className="ml-2 text-[#0a2350] font-bold">Active filter: <span className="font-mono">{appliedFilter}</span></span>}
         </div>
       </Card>
 
       <Card className="p-0 overflow-hidden">
-        <div className="px-4 py-2 border-b border-slate-100 bg-slate-50 text-xs font-bold uppercase tracking-widest text-[#0a2350]">Active blackhole routes {appliedFilter && <span className="text-slate-400 font-normal normal-case">— filtered by {appliedFilter}</span>}</div>
+        <div className="px-4 py-2 border-b border-slate-100 bg-slate-50 text-xs font-bold uppercase tracking-widest text-[#0a2350]">Active blackhole routes {appliedFilter && <span className="text-slate-400 font-normal normal-case">- filtered by {appliedFilter}</span>}</div>
         {!rows && <div className="p-6 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin inline mr-2" /> Loading…</div>}
         {rows && (
           <table className="w-full text-sm">
@@ -377,7 +377,7 @@ const BlackholeTab = ({ deviceId }) => {
                 <tr key={r[".id"]} className="border-t border-slate-100" data-testid={`mt-bh-row-${r[".id"]}`}>
                   <td className="px-4 py-2 font-mono text-xs font-bold">{r["dst-address"]}</td>
                   <td className="px-4 py-2">{r.distance}</td>
-                  <td className="px-4 py-2 text-xs text-slate-600">{r.comment || "—"}</td>
+                  <td className="px-4 py-2 text-xs text-slate-600">{r.comment || "-"}</td>
                   <td className="px-4 py-2 text-right">
                     <button onClick={() => del(r[".id"])} className="text-xs text-red-600 hover:text-red-800" data-testid={`mt-bh-del-${r[".id"]}`}>
                       <Trash2 className="h-3 w-3 inline" /> Remove
@@ -439,8 +439,8 @@ const BackupTab = ({ deviceId }) => {
               <tr key={f.name} className="border-t border-slate-100">
                 <td className="px-4 py-2 font-mono text-xs font-bold">{f.name}</td>
                 <td className="px-4 py-2 text-xs uppercase">{f.type || "backup"}</td>
-                <td className="px-4 py-2 text-xs text-slate-500">{f["creation-time"] || "—"}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{f.size ? `${Math.round(f.size / 1024)} KB` : "—"}</td>
+                <td className="px-4 py-2 text-xs text-slate-500">{f["creation-time"] || "-"}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{f.size ? `${Math.round(f.size / 1024)} KB` : "-"}</td>
                 <td className="px-4 py-2 text-right"><button onClick={() => del(f.name)} className="text-xs text-red-600 hover:text-red-800"><Trash2 className="h-3 w-3 inline" /> Delete</button></td>
               </tr>
             ))}
@@ -473,7 +473,7 @@ const RestartTab = ({ deviceId, devices, selectedId }) => {
         <AlertTriangle className="h-6 w-6 text-red-600 mt-0.5" />
         <div>
           <h3 className="text-base font-bold text-[#0a2350]">Reboot RouterOS</h3>
-          <p className="text-xs text-slate-600 mt-1">This will send <span className="font-mono">/system/reboot</span> to <b>{selected?.name || "the selected device"}</b>. Traffic will be interrupted for 30–60 seconds. Requires typing <b>REBOOT</b> to confirm.</p>
+          <p className="text-xs text-slate-600 mt-1">This will send <span className="font-mono">/system/reboot</span> to <b>{selected?.name || "the selected device"}</b>. Traffic will be interrupted for 30-60 seconds. Requires typing <b>REBOOT</b> to confirm.</p>
         </div>
       </div>
       <label>
@@ -540,7 +540,7 @@ const TrafficTab = ({ deviceId }) => {
         <div className="flex-1 max-w-xs">
           <div className={labelClass}>Interface</div>
           <select value={iface} onChange={(e) => setIface(e.target.value)} className={inputClass} data-testid="mt-traffic-iface">
-            <option value="">— pick —</option>
+            <option value="">- pick -</option>
             {interfaces.map((it, i) => <option key={i} value={it.name || it[".id"]}>{it.name || it[".id"]}</option>)}
           </select>
         </div>

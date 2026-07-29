@@ -67,10 +67,10 @@ async def run_mongorestore(archive_bytes: bytes, *, drop: bool = True) -> str:
 
 
 # ============================================================
-# Landing-content defaults — the CMS overrides these keys.
+# Landing-content defaults - the CMS overrides these keys.
 # ============================================================
 LANDING_CONTENT_DEFAULT: dict = {
-    # i18n dict overrides — anything you want to change lives here as
+    # i18n dict overrides - anything you want to change lives here as
     # { "<key>": { "id": "...", "en": "..." } }. Empty dict = no overrides.
     "overrides": {},
     # Structured FAQ (public FAQ section reads this if non-empty; otherwise

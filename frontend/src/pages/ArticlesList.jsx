@@ -13,7 +13,7 @@ const PageMeta = ({ title, description }) => (
     {title ? <title>{title}</title> : null}
     {description ? <meta name="description" content={description} /> : null}
     <link rel="canonical" href="https://intercloud-digital.com/articles" />
-    <meta property="og:title" content={title || "Articles & Insights — Intercloud"} />
+    <meta property="og:title" content={title || "Articles & Insights - Intercloud"} />
     <meta property="og:description" content={description || ""} />
     <meta property="og:url" content="https://intercloud-digital.com/articles" />
   </Helmet>
@@ -35,10 +35,10 @@ const ArticlesList = () => {
   const [tags, setTags] = useState([]);
   const [input, setInput] = useState(q);
 
-  const pageTitle = q ? `Search: “${q}” — Intercloud Articles`
-    : tag ? `#${tag} — Intercloud Articles`
-    : "Articles & Insights — PT Intercloud Digital Inovasi";
-  const pageDesc = "Product updates, industry insights, and announcements from PT Intercloud Digital Inovasi — Indonesia’s trusted cloud, colocation, and connectivity provider.";
+  const pageTitle = q ? `Search: “${q}” - Intercloud Articles`
+    : tag ? `#${tag} - Intercloud Articles`
+    : "Articles & Insights - PT Intercloud Digital Inovasi";
+  const pageDesc = "Product updates, industry insights, and announcements from PT Intercloud Digital Inovasi - Indonesia’s trusted cloud, colocation, and connectivity provider.";
 
   useEffect(() => {
     const p = new URLSearchParams();

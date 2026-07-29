@@ -40,7 +40,7 @@ const AdminUTMBuilder = () => {
     <div data-testid="utm-builder-page">
       <PageHeader
         title="UTM Builder"
-        subtitle="Generate campaign-tagged URLs for social posts, ads, and newsletters — so analytics can attribute every visit correctly."
+        subtitle="Generate campaign-tagged URLs for social posts, ads, and newsletters - so analytics can attribute every visit correctly."
       />
       <div className="grid lg:grid-cols-2 gap-4">
         <Card className="p-5">
@@ -75,7 +75,7 @@ const AdminUTMBuilder = () => {
             <Link2 className="h-3.5 w-3.5 inline mr-1 text-[#f5b120]" />
             Convention: lowercase kebab-case values, consistent naming per channel
             (e.g. <code className="bg-white px-1 rounded">instagram / social / promo-colo-q3</code>).
-            No data is stored — this tool runs entirely in your browser.
+            No data is stored - this tool runs entirely in your browser.
           </div>
         </Card>
       </div>

@@ -2,10 +2,10 @@
 
 Three tiers of trigger:
 
-  * INSTANT — fired synchronously (best-effort) from event hooks in routes.py:
+  * INSTANT - fired synchronously (best-effort) from event hooks in routes.py:
       welcome, order_confirmation, invoice_generated, password_reset
 
-  * SCHEDULED — fired by an APScheduler cron job that runs every hour and
+  * SCHEDULED - fired by an APScheduler cron job that runs every hour and
     scans unpaid invoices, matching them to templates keyed by their
     `offset_days` value relative to `due_date`:
       -3  → invoice_reminder_d3
@@ -15,7 +15,7 @@ Three tiers of trigger:
       +7  → invoice_overdue_d7
       +8  → service_suspension  (also flips linked services to `suspended`)
 
-  * ON-DEMAND — admin explicitly triggers a blast:
+  * ON-DEMAND - admin explicitly triggers a blast:
       maintenance, newsletter
 
 Every send is written to `email_logs` with an audit trail (status,
@@ -41,7 +41,7 @@ log = logging.getLogger("portal.emails")
 
 
 # ============================================================
-# Default template library — seeded on first startup
+# Default template library - seeded on first startup
 # ============================================================
 # HTML wrapper applied to every rendered body so newsletters and
 # transactional mail share consistent branding.
@@ -65,7 +65,7 @@ _WRAPPER_TEMPLATE = """<!doctype html>
       &nbsp;·&nbsp;
       <a href="mailto:support@intercloud-digital.com" style="color:#0a2350;text-decoration:none">support@intercloud-digital.com</a>
       &nbsp;·&nbsp; WhatsApp <a href="https://wa.me/6287812397187" style="color:#0a2350;text-decoration:none">+62 878-1239-7187</a>
-      <div style="margin-top:8px;color:#94a3b8;font-size:10px">This is an automated message from the Intercloud Client Portal. Please do not reply directly — use the portal or contact channels above.</div>
+      <div style="margin-top:8px;color:#94a3b8;font-size:10px">This is an automated message from the Intercloud Client Portal. Please do not reply directly - use the portal or contact channels above.</div>
     </div>
   </div>
 </body></html>"""
@@ -76,7 +76,7 @@ _WRAPPER_TEMPLATE = """<!doctype html>
 _WRAPPER = _WRAPPER_TEMPLATE.replace("__LOGO__", LOGO_URL)
 
 
-# Bump this whenever the shipped default templates meaningfully change — startup
+# Bump this whenever the shipped default templates meaningfully change - startup
 # will then refresh any unedited system templates in place.
 _SEED_VERSION = 2
 
@@ -84,8 +84,8 @@ _SEED_VERSION = 2
 DEFAULT_TEMPLATES: list[dict] = [
     {
         "event_key": "welcome",
-        "name": "Welcome — new user registration",
-        "subject": "Welcome to Intercloud, {{user.name}} — your portal is ready",
+        "name": "Welcome - new user registration",
+        "subject": "Welcome to Intercloud, {{user.name}} - your portal is ready",
         "body_html": (
             "<p style='font-size:15px'>Dear <b>{{user.name}}</b>,</p>"
             "<p>Thank you for choosing <b>PT Intercloud Digital Inovasi</b>. Your Client Portal account has been activated and is ready to use.</p>"
@@ -111,8 +111,8 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "order_confirmation",
-        "name": "Order confirmation — instant",
-        "subject": "Order received — {{order.product_name}} (Ref #{{order.id_short}})",
+        "name": "Order confirmation - instant",
+        "subject": "Order received - {{order.product_name}} (Ref #{{order.id_short}})",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
             "<p>Thank you for your order. We have successfully received your request and it is now being processed by our team.</p>"
@@ -136,8 +136,8 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "invoice_generated",
-        "name": "Invoice issued — instant (D-14 baseline)",
-        "subject": "Invoice {{invoice.number}} — {{invoice.total_fmt}} (due {{invoice.due_date}})",
+        "name": "Invoice issued - instant (D-14 baseline)",
+        "subject": "Invoice {{invoice.number}} - {{invoice.total_fmt}} (due {{invoice.due_date}})",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
             "<p>A new invoice has been issued to your account. Kindly review the details below at your convenience.</p>"
@@ -151,8 +151,8 @@ DEFAULT_TEMPLATES: list[dict] = [
             "  <a href='{{portal.invoice_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Open invoice &rarr;</a>"
             "</p>"
             "<p style='color:#64748b;font-size:12px'>Bank transfer details (IDR):<br>"
-            " · Mandiri &mdash; 1240011911816 (a.n. PT Intercloud Digital Inovasi)<br>"
-            " · BCA &mdash; 4730862038 (a.n. PT Intercloud Digital Inovasi)</p>"
+            " · Mandiri - 1240011911816 (a.n. PT Intercloud Digital Inovasi)<br>"
+            " · BCA - 4730862038 (a.n. PT Intercloud Digital Inovasi)</p>"
             "<p>Should you have any billing questions, please contact "
             "<a href='mailto:finance@intercloud-digital.com'>finance@intercloud-digital.com</a>. Thank you for your continued business.</p>"
             "<p style='margin-top:24px'>Sincerely,<br><b>Intercloud Finance Team</b></p>"
@@ -164,7 +164,7 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "invoice_reminder_d3",
-        "name": "Payment reminder — 3 days before due",
+        "name": "Payment reminder - 3 days before due",
         "subject": "Friendly reminder: invoice {{invoice.number}} due in 3 days",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
@@ -175,7 +175,7 @@ DEFAULT_TEMPLATES: list[dict] = [
             "<p style='margin:22px 0'>"
             "  <a href='{{portal.invoice_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Review &amp; pay invoice &rarr;</a>"
             "</p>"
-            "<p>If payment has already been submitted, please disregard this notice — our systems will update within 1&ndash;2 business hours after settlement.</p>"
+            "<p>If payment has already been submitted, please disregard this notice - our systems will update within 1-2 business hours after settlement.</p>"
             "<p style='margin-top:24px'>Kind regards,<br><b>Intercloud Finance Team</b></p>"
         ),
         "offset_days": -3,
@@ -185,7 +185,7 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "invoice_due",
-        "name": "Payment due — today",
+        "name": "Payment due - today",
         "subject": "Invoice {{invoice.number}} is due today",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
@@ -205,7 +205,7 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "invoice_overdue_d1",
-        "name": "Overdue notice — D+1",
+        "name": "Overdue notice - D+1",
         "subject": "Overdue: invoice {{invoice.number}} (1 day past due)",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
@@ -226,7 +226,7 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "invoice_overdue_d3",
-        "name": "Overdue notice — D+3",
+        "name": "Overdue notice - D+3",
         "subject": "Second notice: invoice {{invoice.number}} (3 days past due)",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
@@ -247,8 +247,8 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "invoice_overdue_d7",
-        "name": "Overdue notice — D+7 (final warning)",
-        "subject": "URGENT — invoice {{invoice.number}} 7 days past due · services will be suspended",
+        "name": "Overdue notice - D+7 (final warning)",
+        "subject": "URGENT - invoice {{invoice.number}} 7 days past due · services will be suspended",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
             "<p>Despite our previous reminders, invoice <b>{{invoice.number}}</b> in the amount of "
@@ -270,8 +270,8 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "service_suspension",
-        "name": "Service suspension — D+8",
-        "subject": "Notice of service suspension — invoice {{invoice.number}}",
+        "name": "Service suspension - D+8",
+        "subject": "Notice of service suspension - invoice {{invoice.number}}",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
             "<p>We regret to inform you that, as invoice <b>{{invoice.number}}</b> "
@@ -307,7 +307,7 @@ DEFAULT_TEMPLATES: list[dict] = [
             "</p>"
             "<p style='color:#64748b;font-size:12px'>If the button does not work, please copy and paste the following link into your browser:<br>"
             "<span style='word-break:break-all'>{{reset_url}}</span></p>"
-            "<p style='color:#64748b;font-size:12px;margin-top:18px'>If you did not request a password reset, no action is required &mdash; your password will remain unchanged. "
+            "<p style='color:#64748b;font-size:12px;margin-top:18px'>If you did not request a password reset, no action is required - your password will remain unchanged. "
             "For security concerns, contact <a href='mailto:security@intercloud-digital.com'>security@intercloud-digital.com</a> immediately.</p>"
             "<p style='margin-top:24px'>Kind regards,<br><b>Intercloud Security Team</b></p>"
         ),
@@ -318,8 +318,8 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "payment_received",
-        "name": "Payment received — invoice paid",
-        "subject": "Payment received — invoice {{invoice.number}}",
+        "name": "Payment received - invoice paid",
+        "subject": "Payment received - invoice {{invoice.number}}",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
             "<p>We are pleased to confirm that your payment for invoice <b>{{invoice.number}}</b> "
@@ -343,7 +343,7 @@ DEFAULT_TEMPLATES: list[dict] = [
     {
         "event_key": "maintenance",
         "name": "Scheduled maintenance notification",
-        "subject": "Scheduled maintenance notice — {{maintenance.title}}",
+        "subject": "Scheduled maintenance notice - {{maintenance.title}}",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
             "<p>We would like to inform you that PT Intercloud Digital Inovasi will be conducting scheduled maintenance as detailed below. "
@@ -365,11 +365,11 @@ DEFAULT_TEMPLATES: list[dict] = [
     },
     {
         "event_key": "newsletter",
-        "name": "Newsletter — monthly (default shell)",
-        "subject": "Intercloud Insights — {{month.name}}",
+        "name": "Newsletter - monthly (default shell)",
+        "subject": "Intercloud Insights - {{month.name}}",
         "body_html": (
             "<p>Dear <b>{{user.name}}</b>,</p>"
-            "<p>Welcome to this month's edition of <b>Intercloud Insights</b> &mdash; our digest of product updates, industry perspectives, and behind-the-scenes stories from PT Intercloud Digital Inovasi.</p>"
+            "<p>Welcome to this month's edition of <b>Intercloud Insights</b> - our digest of product updates, industry perspectives, and behind-the-scenes stories from PT Intercloud Digital Inovasi.</p>"
             "<p style='color:#64748b;font-size:12px;font-style:italic'>Editor's note: replace this default body with your newsletter content before broadcasting. "
             "You may use variables such as <code>{{user.name}}</code>, <code>{{month.name}}</code>, or any custom content and images.</p>"
             "<h3 style='color:#0a2350;margin-top:24px;font-size:16px'>Highlights this month</h3>"
@@ -396,7 +396,7 @@ DEFAULT_TEMPLATES: list[dict] = [
 async def seed_default_templates(db) -> None:
     """Insert missing system templates. Refresh existing ones when the code-side
     version bumps (so shipping improved defaults is a code change, not a manual
-    DB migration). We do NOT clobber templates whose `send_count > 0` — those
+    DB migration). We do NOT clobber templates whose `send_count > 0` - those
     are already in production use and may have been intentionally edited.
     """
     now = datetime.now(timezone.utc).isoformat()
@@ -539,7 +539,7 @@ async def send_via_template(db, *, event_key: str, to_email: str, ctx: dict,
                             user_id: Optional[str] = None) -> dict:
     """Resolve the event_key → active template, render, send via SMTP, log the outcome.
 
-    Never raises — returns a dict `{status, delivered_via, error}` so callers
+    Never raises - returns a dict `{status, delivered_via, error}` so callers
     (order flow, register flow, scheduler) can never break user actions.
     """
     tpl = await db.email_templates.find_one({"event_key": event_key, "is_active": True})
@@ -631,7 +631,7 @@ async def on_password_reset(db, user_doc: dict, reset_url: str) -> None:
 
 
 async def on_invoice_paid(db, invoice_doc: dict, user_doc: dict) -> None:
-    """Payment-received confirmation — fired by the payment webhook (and any
+    """Payment-received confirmation - fired by the payment webhook (and any
     other flow that marks an invoice paid and wants the client notified)."""
     ctx = build_context(user=user_doc, invoice=invoice_doc)
     await send_via_template(db, event_key="payment_received",
@@ -649,7 +649,7 @@ async def get_setting(db, key: str, default=None):
 
 
 # ============================================================
-# Scheduler — invoice reminders + suspension
+# Scheduler - invoice reminders + suspension
 # ============================================================
 # Templates keyed by their scheduled offset (event_key → offset_days).
 _SCHEDULED_EVENTS = {
@@ -731,7 +731,7 @@ async def _run_invoice_reminder_sweep_inner(db, *, now: Optional[datetime] = Non
 
 
 # ============================================================
-# Renewal automation — auto-generate renewal invoices
+# Renewal automation - auto-generate renewal invoices
 # ============================================================
 _CYCLE_MONTHS = {"monthly": 1, "quarterly": 3, "semiannual": 6, "annual": 12}
 
@@ -781,7 +781,7 @@ async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> di
         insert succeeds.
 
     `tax_percent` is pre-filled from `settings.default_tax_percent` (manual,
-    admin-editable per invoice afterwards — never recalculated).
+    admin-editable per invoice afterwards - never recalculated).
     """
     now = now or datetime.now(timezone.utc)
     today = now.date()
@@ -812,7 +812,7 @@ async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> di
             continue
         new_renewal = _add_months(period, months)
         svc_label = svc.get("name") or svc.get("product_name") or "Service"
-        item = {"description": f"Renewal — {svc_label} ({cycle}) · {period} → {new_renewal}",
+        item = {"description": f"Renewal - {svc_label} ({cycle}) · {period} → {new_renewal}",
                 "qty": 1, "unit_price": amount, "total": amount}
         tax_amount = round(amount * tax_percent / 100, 2)
         inv = {
@@ -827,7 +827,7 @@ async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> di
             "status": "unpaid",
             "payment_method": None,
             "paid_at": None,
-            "notes": f"Auto-generated renewal invoice for {svc_label} — period starting {period}.",
+            "notes": f"Auto-generated renewal invoice for {svc_label} - period starting {period}.",
             "service_id": sid,
             "renewal_period": period,
             "created_at": now.isoformat(),
@@ -868,13 +868,13 @@ async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> di
 
 
 # ============================================================
-# NOC — proactive MikroTik reachability polling
+# NOC - proactive MikroTik reachability polling
 # ============================================================
 # Ran every 5 minutes on the SAME scheduler as email reminders + renewal
 # sweeps (per PRD constraint: reuse the existing AsyncIOScheduler). Each
 # tick pings every device via `MikrotikClient.test_connection()` in a
 # threadpool (librouteros is sync), stores a `noc_probes` sample, updates
-# `noc_device_state`, and — on a transition — writes a `noc_events` row +
+# `noc_device_state`, and - on a transition - writes a `noc_events` row +
 # fires an alert email to `settings.noc_alert_recipients`.
 async def run_noc_probe_sweep(db) -> dict:
     """Poll every MikroTik device once. Fire alerts on up→down / down→up transitions."""
@@ -884,7 +884,7 @@ async def run_noc_probe_sweep(db) -> dict:
     probed = 0
     transitions = 0
     for d in devices:
-        # Best-effort probe in threadpool — never crash the sweep
+        # Best-effort probe in threadpool - never crash the sweep
         try:
             import asyncio as _a
             client = _iv2.MikrotikClient(d)
@@ -968,7 +968,7 @@ async def _dispatch_noc_alert(db, device: dict, event: dict) -> bool:
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <tr><td style="padding:6px 0;color:#64748b;width:130px">Device</td><td><b>{device.get('name','unnamed')}</b></td></tr>
         <tr><td style="padding:6px 0;color:#64748b">Host</td><td>{device.get('host','')}</td></tr>
-        <tr><td style="padding:6px 0;color:#64748b">Site</td><td>{device.get('site') or '—'}</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Site</td><td>{device.get('site') or '-'}</td></tr>
         <tr><td style="padding:6px 0;color:#64748b">Detected at</td><td>{event.get('at','')}</td></tr>
         <tr><td style="padding:6px 0;color:#64748b;vertical-align:top">Probe result</td>
             <td style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#334155">{event.get('message','')}</td></tr>
@@ -994,7 +994,7 @@ async def run_noc_probe_retention(db) -> dict:
     (a) Rolls up per-device daily uptime % into `noc_daily_uptime`
         (device_id, date, uptime_pct, sample_count) for every full past day.
     (b) Deletes raw probe samples older than `settings.noc_probe_retention_days`
-        (default 30). NEVER touches `audit_logs` or `noc_events` — those are
+        (default 30). NEVER touches `audit_logs` or `noc_events` - those are
         permanent history."""
     doc = await db.settings.find_one({"key": "noc_probe_retention_days"}) or {}
     try:
@@ -1044,7 +1044,7 @@ _scheduler = None
 def start_scheduler(db):
     """Fire up an in-process APScheduler that runs the sweep hourly.
 
-    Safe to call multiple times — subsequent calls are no-ops.
+    Safe to call multiple times - subsequent calls are no-ops.
     """
     global _scheduler
     if _scheduler is not None:
@@ -1084,10 +1084,10 @@ def start_scheduler(db):
     sched.add_job(_tick, CronTrigger(minute=5))
     # Also run once at startup so the effect is immediate on deploy.
     sched.add_job(_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=10))
-    # Renewal invoice sweep — same scheduler instance, its own hourly slot.
+    # Renewal invoice sweep - same scheduler instance, its own hourly slot.
     sched.add_job(_renewal_tick, CronTrigger(minute=20))
     sched.add_job(_renewal_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=20))
-    # NOC probe sweep — every 5 minutes, on the SAME scheduler (PRD constraint).
+    # NOC probe sweep - every 5 minutes, on the SAME scheduler (PRD constraint).
     sched.add_job(_noc_tick, CronTrigger(minute="*/5"))
     sched.add_job(_noc_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=30))
 
@@ -1098,7 +1098,7 @@ def start_scheduler(db):
         except Exception as e:  # noqa: BLE001
             log.exception(f"[noc-retention-scheduler] tick failed: {e}")
 
-    # NOC probe retention/rollup — daily at 03:40 (same scheduler, alongside backup cron slot).
+    # NOC probe retention/rollup - daily at 03:40 (same scheduler, alongside backup cron slot).
     sched.add_job(_noc_retention_tick, CronTrigger(hour=3, minute=40))
     sched.start()
     _scheduler = sched

@@ -95,7 +95,7 @@ const PortalRegister = () => {
             Start with <span className="text-[#f5b120]">Intercloud</span> in minutes.
           </h1>
           <p className="mt-5 text-white/70 text-sm leading-relaxed">
-            One account for every service — cloud, hosting, VPS, colocation & interconnect.
+            One account for every service - cloud, hosting, VPS, colocation & interconnect.
             Order online, get an invoice instantly, and auto-provision the moment payment is verified.
           </p>
           <ul className="mt-6 space-y-2 text-sm text-white/80">
@@ -229,7 +229,7 @@ const PortalRegister = () => {
                 <input value={f.npwp} onChange={set("npwp")} data-testid="reg-npwp" className={inputCls} placeholder="00.000.000.0-000.000" />
               </label>
               <label className={`${labelCls} col-span-2`}>
-                <span className={labelTxt}>Industry (optional — helps us tailor onboarding)</span>
+                <span className={labelTxt}>Industry (optional - helps us tailor onboarding)</span>
                 <select value={f.industry} onChange={set("industry")} data-testid="reg-industry" className={inputCls}>
                   <option value="">Select…</option>
                   <option>Digital / Media</option>

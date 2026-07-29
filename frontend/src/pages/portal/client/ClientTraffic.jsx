@@ -77,7 +77,7 @@ const ClientTraffic = () => {
           <Card className="p-6">
             <div className="flex items-center gap-2 mb-4">
               <Activity className="h-4 w-4 text-[#f5b120]" />
-              <div className="font-extrabold text-[#0a2350]">Bandwidth (Mbps) — last 24 hours</div>
+              <div className="font-extrabold text-[#0a2350]">Bandwidth (Mbps) - last 24 hours</div>
             </div>
             <TrafficChart points={data.points} />
             <div className="mt-4 flex items-center gap-6 text-xs text-slate-500">

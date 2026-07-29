@@ -190,7 +190,7 @@ const AdminDiagnostics = () => {
               <div className="md:col-span-2">
                 <div className={labelClass}>Interface *</div>
                 <select required value={iface} onChange={(e) => setIface(e.target.value)} className={inputClass} data-testid="diag-torch-interface">
-                  <option value="">— pick interface —</option>
+                  <option value="">- pick interface -</option>
                   {interfaces.map((it, i) => (
                     <option key={i} value={it.name || it[".id"]}>
                       {it.name || it[".id"]}{it.type ? ` (${it.type})` : ""}{it.running === "false" ? " · down" : ""}
@@ -246,7 +246,7 @@ const AdminDiagnostics = () => {
             <div key={k} className="rounded-xl bg-white border border-slate-200 px-4 py-3">
               <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">{k}</div>
               <div className="text-sm font-bold text-[#0a2350] tabular-nums truncate">
-                {v === null || v === undefined ? "—" : (typeof v === "number" && k.includes("rate")) ? fmtRate(v) : String(v)}
+                {v === null || v === undefined ? "-" : (typeof v === "number" && k.includes("rate")) ? fmtRate(v) : String(v)}
               </div>
             </div>
           ))}
@@ -275,10 +275,10 @@ const AdminDiagnostics = () => {
                 {torchRows.slice(0, 100).map((r, i) => (
                   <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                     <td className="px-3 py-2 uppercase text-xs font-bold text-[#f5b120]">{r.protocol || "any"}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{r.src_address || "—"}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{r.src_port || "—"}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{r.dst_address || "—"}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{r.dst_port || "—"}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.src_address || "-"}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.src_port || "-"}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.dst_address || "-"}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.dst_port || "-"}</td>
                     <td className="px-3 py-2 text-right tabular-nums font-semibold text-emerald-700">{fmtRate(r.tx_rate)}</td>
                     <td className="px-3 py-2 text-right tabular-nums font-semibold text-[#0a2350]">{fmtRate(r.rx_rate)}</td>
                   </tr>
@@ -292,7 +292,7 @@ const AdminDiagnostics = () => {
       <Card className="p-0 overflow-hidden">
         <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 bg-slate-50">
           <CurrentIcon className="h-4 w-4 text-[#0a2350]" />
-          <span className="text-xs font-bold uppercase tracking-widest text-[#0a2350]">{current?.label} · {tool === "torch" ? (iface || "—") : (target || "—")}</span>
+          <span className="text-xs font-bold uppercase tracking-widest text-[#0a2350]">{current?.label} · {tool === "torch" ? (iface || "-") : (target || "-")}</span>
           <button type="button" onClick={copy} disabled={!out} className={`ml-auto text-xs ${out ? "text-[#0a2350] hover:text-[#f5b120]" : "text-slate-300"}`} data-testid="diag-copy">
             <Copy className="h-3 w-3 inline" /> Copy
           </button>

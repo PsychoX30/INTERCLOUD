@@ -106,13 +106,13 @@ const PublicStatusPage = () => {
                     <div>
                       <div className="text-slate-500 uppercase tracking-widest text-[10px]">24h uptime</div>
                       <div className="font-bold text-[#0a2540] mt-0.5">
-                        {g.uptime_24h_pct == null ? "—" : `${g.uptime_24h_pct}%`}
+                        {g.uptime_24h_pct == null ? "-" : `${g.uptime_24h_pct}%`}
                       </div>
                     </div>
                     <div>
                       <div className="text-slate-500 uppercase tracking-widest text-[10px]">30d uptime</div>
                       <div className="font-bold text-[#0a2540] mt-0.5">
-                        {g.uptime_30d_pct == null ? "—" : `${g.uptime_30d_pct}%`}
+                        {g.uptime_30d_pct == null ? "-" : `${g.uptime_30d_pct}%`}
                       </div>
                     </div>
                   </div>

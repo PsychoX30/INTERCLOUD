@@ -8,7 +8,7 @@ import { useLang } from "../i18n/LanguageContext";
 
 const COPY = {
   id: {
-    tag: "404 — Halaman tidak ditemukan",
+    tag: "404 - Halaman tidak ditemukan",
     title: "Kami tidak menemukan halaman yang Anda cari.",
     body: "Halaman ini mungkin sudah dipindahkan, dihapus, atau URL yang Anda ketik tidak tepat. Silakan kembali ke halaman utama atau jelajahi artikel terbaru kami.",
     ctaHome: "Kembali ke beranda",
@@ -16,7 +16,7 @@ const COPY = {
     ctaArticles: "Lihat semua artikel",
   },
   en: {
-    tag: "404 — Page not found",
+    tag: "404 - Page not found",
     title: "We couldn't find the page you were looking for.",
     body: "This page may have been moved, deleted, or the URL you entered is incorrect. Please head back to the homepage or explore our latest articles.",
     ctaHome: "Back to home",
@@ -26,7 +26,7 @@ const COPY = {
 };
 
 /**
- * Real 404 page — resolves UAT finding C3: previously ANY unknown route
+ * Real 404 page - resolves UAT finding C3: previously ANY unknown route
  * returned 200 with a blank SPA shell. React Router now catches unmatched
  * routes here so users (and crawlers) see a proper "page not found" UI.
  *
@@ -65,7 +65,7 @@ const NotFound = () => {
   return (
     <div className="bg-white text-[#0a2350] min-h-screen flex flex-col">
       <Helmet>
-        <title>{`${t.tag} — Intercloud`}</title>
+        <title>{`${t.tag} - Intercloud`}</title>
         <meta name="robots" content="noindex, nofollow" />
       </Helmet>
       <Header />

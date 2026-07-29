@@ -3,7 +3,7 @@ import { partners } from "../mock/data";
 import { useLang } from "../i18n/LanguageContext";
 
 // Google's s2 endpoint reliably returns a PNG favicon for any domain at the
-// requested size — good enough to represent small Indonesian ISPs & startups
+// requested size - good enough to represent small Indonesian ISPs & startups
 // that don't publish a hosted vector logo.
 const faviconUrl = (domain) =>
   `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;

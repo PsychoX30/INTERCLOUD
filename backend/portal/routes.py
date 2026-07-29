@@ -140,7 +140,7 @@ async def _next_number(db, coll: str, prefix: str) -> str:
 
 async def _insert_numbered(db, coll: str, prefix: str, doc: dict):
     """Insert a document carrying a unique sequential `number`.
-    Retries with a fresh number on the (rare) DuplicateKeyError — e.g. when a
+    Retries with a fresh number on the (rare) DuplicateKeyError - e.g. when a
     DB restore rolls the counter back underneath concurrent writers."""
     from pymongo.errors import DuplicateKeyError
     for _ in range(5):
@@ -187,7 +187,7 @@ async def _set_setting_value(db, key: str, value) -> None:
     )
 
 
-# Billing defaults — `default_tax_percent` is only ever a SUGGESTED initial
+# Billing defaults - `default_tax_percent` is only ever a SUGGESTED initial
 # value pre-filled into invoice/quotation forms and the renewal auto-invoice
 # generator. It is stored per-document and stays fully manual/overridable
 # (down to 0). Nothing ever recalculates tax_percent after creation.
@@ -232,7 +232,7 @@ async def _log_login_attempt(db, *, email: str, action: str, success: bool, reas
                              ip: str, user_agent: str = "", recaptcha_score: float | None = None,
                              recaptcha_enabled: bool = False):
     """Append a document to `login_attempts` for the Security Analytics dashboard.
-    Best-effort — never raise into the caller. On failure, also runs auto-block check."""
+    Best-effort - never raise into the caller. On failure, also runs auto-block check."""
     try:
         await db.login_attempts.insert_one({
             "email": (email or "").lower(),
@@ -357,7 +357,7 @@ async def _maybe_auto_block(db, ip: str):
         "created_at": now_dt.isoformat(),
         "read": False,
     })
-    # Fire-and-forget alerts — never let a mail/Telegram outage break /auth/login
+    # Fire-and-forget alerts - never let a mail/Telegram outage break /auth/login
     try:
         import asyncio as _asyncio
         _asyncio.create_task(_dispatch_block_alerts(db, ip, fails, int(s["ban_minutes"]), s))
@@ -367,13 +367,13 @@ async def _maybe_auto_block(db, ip: str):
 
 async def _dispatch_block_alerts(db, ip: str, hits: int, ban_minutes: int, settings: dict):
     """Best-effort: send email(s) via SMTP + a Telegram DM.
-    Runs in the background — failures are swallowed."""
+    Runs in the background - failures are swallowed."""
     import logging
     log = logging.getLogger("portal.security")
     from portal import integrations_v2 as _iv2
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    subject = f"[Security] IP {ip} auto-blocked — {hits} failed logins"
+    subject = f"[Security] IP {ip} auto-blocked - {hits} failed logins"
     text = (f"An IP has been auto-blocked by the portal.\n\n"
             f"IP:      {ip}\n"
             f"Hits:    {hits} failed logins within window\n"
@@ -426,7 +426,7 @@ async def _dispatch_block_alerts(db, ip: str, hits: int, ban_minutes: int, setti
 async def _is_ip_blocked(db, ip: str) -> bool:
     if not ip or ip == "unknown":
         return False
-    # Whitelist short-circuit — makes the guard idempotent even if a stale
+    # Whitelist short-circuit - makes the guard idempotent even if a stale
     # block doc still exists for an IP that was just added to the whitelist.
     s = await _get_security_settings(db)
     if _ip_in_whitelist(ip, s.get("whitelist_ips") or []):
@@ -442,7 +442,7 @@ async def _is_ip_blocked(db, ip: str) -> bool:
             expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
         except Exception:
             return False
-    # MongoDB returns naive UTC datetimes — normalize to offset-aware.
+    # MongoDB returns naive UTC datetimes - normalize to offset-aware.
     if isinstance(expires_at, datetime) and expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at and expires_at > now_dt:
@@ -592,7 +592,7 @@ async def register(payload: m.RegisterIn, request: Request):
         # CRM mirroring must never block registration
         pass
 
-    # Fire welcome email (best-effort — never blocks registration)
+    # Fire welcome email (best-effort - never blocks registration)
     try:
         from portal import emails as _em
         await _em.on_user_registered(db, doc)
@@ -751,7 +751,7 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
         "config": payload.config,
         "selections": selections_data,
         "addon_ids": [ObjectId(x) for x in (payload.addon_ids or [])],
-        "cart_snapshot": cart,   # audit — the price shown to the user at confirm time
+        "cart_snapshot": cart,   # audit - the price shown to the user at confirm time
         "billing_cycle": payload.billing_cycle or prod.get("billing_cycle", "monthly"),
         "status": "pending_payment",
         "assigned_admin_id": None,
@@ -765,51 +765,51 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
 
     # 2. Auto-create an invoice for the order (14-day due window)
     items = []
-    # Base line — first billing period
+    # Base line - first billing period
     base_line = cart["base_line"]
     if base_line["monthly"]:
         items.append({
-            "description": f"{prod['name']} — first month",
+            "description": f"{prod['name']} - first month",
             "qty": 1, "unit_price": base_line["monthly"], "total": base_line["monthly"],
         })
     if base_line["setup"]:
         items.append({
-            "description": f"{prod['name']} — setup fee",
+            "description": f"{prod['name']} - setup fee",
             "qty": 1, "unit_price": base_line["setup"], "total": base_line["setup"],
         })
     # Configurable option lines
     for ol in cart["option_lines"]:
         if ol.get("monthly"):
             items.append({
-                "description": f"{ol['group_label']}: {ol['choice']} — monthly",
+                "description": f"{ol['group_label']}: {ol['choice']} - monthly",
                 "qty": 1, "unit_price": ol["monthly"], "total": ol["monthly"],
             })
         if ol.get("setup"):
             items.append({
-                "description": f"{ol['group_label']}: {ol['choice']} — setup",
+                "description": f"{ol['group_label']}: {ol['choice']} - setup",
                 "qty": 1, "unit_price": ol["setup"], "total": ol["setup"],
             })
     # Add-on lines
     for al in cart["addon_lines"]:
         if al.get("monthly"):
             items.append({
-                "description": f"Add-on: {al['name']} — monthly",
+                "description": f"Add-on: {al['name']} - monthly",
                 "qty": 1, "unit_price": al["monthly"], "total": al["monthly"],
             })
         if al.get("setup"):
             items.append({
-                "description": f"Add-on: {al['name']} — setup",
+                "description": f"Add-on: {al['name']} - setup",
                 "qty": 1, "unit_price": al["setup"], "total": al["setup"],
             })
 
     if not items:
-        # Custom quote / firewall — mark order as needing manual quotation, no auto-invoice
+        # Custom quote / firewall - mark order as needing manual quotation, no auto-invoice
         await db.orders.update_one({"_id": doc["_id"]}, {"$set": {"status": "awaiting_quote"}})
         doc["status"] = "awaiting_quote"
         doc["provision_log"].append({"at": _now(), "step": "awaiting_quote", "message": "Custom-priced product; sales will send a quotation."})
     else:
         line_subtotal = sum(i["total"] for i in items)
-        # PPN pre-filled from the admin-editable global default — stored on the
+        # PPN pre-filled from the admin-editable global default - stored on the
         # invoice and manually overridable afterwards; never recalculated.
         tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
         tax = round(line_subtotal * tax_percent / 100, 2)
@@ -841,7 +841,7 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
         doc["invoice_id"] = ir.inserted_id
         doc["provision_log"].append({"at": _now(), "step": "invoice_created", "message": f"Invoice {number} generated ({total:,.0f} IDR)."})
 
-    # Fire order + invoice notification emails (best-effort — never blocks the order)
+    # Fire order + invoice notification emails (best-effort - never blocks the order)
     try:
         from portal import emails as _em
         user_doc = await db.users.find_one({"_id": ObjectId(user["id"])}) or {"email": user["email"], "name": user["name"]}
@@ -878,7 +878,7 @@ def _serialize_order(d: dict) -> dict:
 async def _auto_provision(db, order: dict) -> dict:
     """Actually run auto-provisioning based on product category.
     Returns the created service (or None if manual setup is required).
-    Currently uses realistic mocked module calls — swap for real cPanel/Plesk/
+    Currently uses realistic mocked module calls - swap for real cPanel/Plesk/
     Proxmox API calls once credentials are wired via /admin/integrations.
     """
     prod = await db.products.find_one({"_id": order["product_id"]})
@@ -913,7 +913,7 @@ async def _auto_provision(db, order: dict) -> dict:
         cfg.setdefault("ip", "103.28.14." + str((hash(str(order["_id"])) % 240) + 10))
         await _log("vm_created", f"Proxmox VM created on {cfg['node']} with {cfg['os']} (mock).")
     elif cat in ("dedicated", "colocation", "interconnect", "firewall", "lease"):
-        # These need manual DC/network setup — mark the service as provisioning
+        # These need manual DC/network setup - mark the service as provisioning
         cfg.setdefault("rack", "TBD by NOC")
         await _log("manual_setup_required", "Requires physical / network setup by NOC team.")
     else:
@@ -924,7 +924,7 @@ async def _auto_provision(db, order: dict) -> dict:
         "product_id": prod["_id"],
         "product_name": prod["name"],
         "category": cat,
-        "name": f"{prod['name']} — {order.get('user_name','')}",
+        "name": f"{prod['name']} - {order.get('user_name','')}",
         "status": "active" if cat in ("hosting", "vps", "cloud") else "pending",
         "start_date": now.date().isoformat(),
         "next_renewal": (now + timedelta(days=30)).date().isoformat(),
@@ -953,7 +953,7 @@ async def client_orders(user=Depends(get_current_user)):
 def _deny_creative(user: dict) -> None:
     """Creative role is content-scoped: block billing/CRM/sales surfaces."""
     if user.get("role") == "creative":
-        raise HTTPException(status_code=403, detail="Content team only — no billing/CRM access")
+        raise HTTPException(status_code=403, detail="Content team only - no billing/CRM access")
 
 
 async def _serialize_ticket(db, d: dict) -> dict:
@@ -1075,7 +1075,7 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
         "open_tickets": open_tickets,
     }
 
-    # Financial stats — visible to finance/admin OR sales (scoped to their book).
+    # Financial stats - visible to finance/admin OR sales (scoped to their book).
     if staff["role"] in FINANCE_ROLES or staff["role"] == "sales":
         inv_q_base = {} if scope_user_ids is None else {"user_id": {"$in": scope_user_ids}}
         unpaid = await db.invoices.count_documents({**inv_q_base, "status": "unpaid"})
@@ -1105,7 +1105,7 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
 
 
 # ============================================================
-# Per-admin email settings (F1) — every staff member configures their
+# Per-admin email settings (F1) - every staff member configures their
 # own IMAP/SMTP so Admin ▸ Mail shows their personal inbox instead of
 # a single shared mailbox. Stored on the user document under
 # `email_settings` with the same shape the shared iv2 integration uses.
@@ -1224,7 +1224,7 @@ async def test_my_email_settings(payload: dict = None, user=Depends(get_current_
             if kind == "imap":
                 return iv2.IMAPClient(cfg).test_connection()
             return iv2.SMTPMailer(cfg).test_connection()
-        except Exception as e:  # pragma: no cover — test_connection already catches
+        except Exception as e:  # pragma: no cover - test_connection already catches
             return {"ok": False, "message": f"{type(e).__name__}: {e}"}
 
     imap_res = _test("imap")
@@ -1383,7 +1383,7 @@ async def admin_create_user(payload: m.UserCreateIn, admin=Depends(get_current_a
     }
     r = await db.users.insert_one(doc)
     doc["_id"] = r.inserted_id
-    # Mirror this new user into CRM (as "existing" client — admin-created)
+    # Mirror this new user into CRM (as "existing" client - admin-created)
     if payload.role == "client":
         try:
             await _upsert_crm_from_user(db, doc, status="existing",
@@ -1608,7 +1608,7 @@ async def admin_list_products(admin=Depends(get_current_admin)):
 
 @router.get("/portal-public/products")
 async def public_products():
-    """Products list — public catalog used by client order flow."""
+    """Products list - public catalog used by client order flow."""
     db = (await _get_db())
     docs = await db.products.find({"is_active": True, "is_addon": {"$ne": True}}).sort([("sort_order", 1), ("category", 1)]).to_list(500)
     return [_serialize_product(d) for d in docs]
@@ -1616,7 +1616,7 @@ async def public_products():
 
 @router.get("/portal-public/addons")
 async def public_addons():
-    """Add-on products — used by client Order flow to attach to a base product."""
+    """Add-on products - used by client Order flow to attach to a base product."""
     db = (await _get_db())
     docs = await db.products.find({"is_active": True, "is_addon": True}).sort([("sort_order", 1), ("name", 1)]).to_list(500)
     return [_serialize_product(d) for d in docs]
@@ -1650,7 +1650,7 @@ async def admin_delete_product(pid: str, admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# ORDER PREVIEW — build a WHMCS-style price cart WITHOUT persisting
+# ORDER PREVIEW - build a WHMCS-style price cart WITHOUT persisting
 # ============================================================
 
 async def _price_cart(db, *, product: dict, selections: list, addon_ids: list, tax_percent: float = 11.0) -> dict:
@@ -1808,7 +1808,7 @@ async def client_confirm_transfer(oid: str, payload: dict, user=Depends(get_curr
     return _serialize_order(d)
 
 
-# Invoices (staff — Sales sees only invoices of their assigned clients)
+# Invoices (staff - Sales sees only invoices of their assigned clients)
 @router.get("/admin/invoices")
 async def admin_list_invoices(staff=Depends(get_current_staff)):
     _deny_creative(staff)
@@ -1947,7 +1947,7 @@ async def admin_update_quotation_status(
     return await _serialize_quotation(db, d)
 
 
-# Tickets (staff — any staff role can view/reply)
+# Tickets (staff - any staff role can view/reply)
 @router.get("/admin/tickets")
 async def admin_list_tickets(staff=Depends(get_current_staff),
                              device_id: Optional[str] = None):
@@ -2091,7 +2091,7 @@ async def client_payment_info(user=Depends(get_current_user)):
 async def get_billing_settings(staff=Depends(get_current_staff)):
     """Global billing defaults. `default_tax_percent` is only the *suggested*
     initial PPN % pre-filled into new invoices/quotations and renewal
-    auto-invoices — always overridable per document, down to 0."""
+    auto-invoices - always overridable per document, down to 0."""
     db = await _get_db()
     return {k: await _get_setting_value(db, k, dv)
             for k, dv in BILLING_SETTING_DEFAULTS.items()}
@@ -2129,7 +2129,7 @@ async def put_billing_settings(payload: dict, request: Request, admin=Depends(ge
 @router.post("/admin/billing/run-renewal-sweep")
 async def run_renewal_sweep_now(admin=Depends(get_current_admin)):
     """Manually trigger the renewal auto-invoice sweep (same job the hourly
-    scheduler runs). Idempotent — re-running never duplicates invoices."""
+    scheduler runs). Idempotent - re-running never duplicates invoices."""
     db = await _get_db()
     from portal import emails as _em
     return await _em.run_renewal_invoice_sweep(db)
@@ -2147,7 +2147,7 @@ from .integrations_registry import (
 async def list_integration_modules(admin=Depends(get_current_admin)):
     """Return the module registry (schemas for the Add Server dialog).
 
-    Midtrans/Xendit stay hidden unless `enable_extra_payment_gateways` is on —
+    Midtrans/Xendit stay hidden unless `enable_extra_payment_gateways` is on -
     Duitku is the only active payment gateway by policy."""
     db = await _get_db()
     allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
@@ -2283,7 +2283,7 @@ async def update_bank_accounts(payload: list, admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# WEBMAIL (staff-only) — SMTP for sending, IMAP for inbox.
+# WEBMAIL (staff-only) - SMTP for sending, IMAP for inbox.
 # Currently backed by MongoDB (mock) so the UX works end-to-end.
 # When an SMTP + IMAP integration is enabled under /admin/integrations,
 # these endpoints can be swapped to real IMAP/SMTP calls.
@@ -2292,7 +2292,7 @@ async def update_bank_accounts(payload: list, admin=Depends(get_current_admin)):
 @router.get("/admin/mail/inbox")
 async def admin_mail_inbox(staff=Depends(get_current_staff)):
     db = await _get_db()
-    # ---- F1: Per-admin inbox — use the caller's OWN email_settings ----
+    # ---- F1: Per-admin inbox - use the caller's OWN email_settings ----
     user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
     my_settings = (user_doc or {}).get("email_settings") or {}
     my_imap = my_settings.get("imap") or {}
@@ -2300,7 +2300,7 @@ async def admin_mail_inbox(staff=Depends(get_current_staff)):
         try:
             live = iv2.IMAPClient(my_imap).fetch_recent()
         except iv2.IMAPConnectionError as e:
-            # Personal IMAP creds are set but the mailbox can't be reached —
+            # Personal IMAP creds are set but the mailbox can't be reached -
             # tell the operator exactly why so they can fix it.
             return {"not_setup": True, "reason": "connection_failed",
                     "message": f"IMAP tidak bisa terhubung. {e}",
@@ -2326,7 +2326,7 @@ async def admin_mail_inbox(staff=Depends(get_current_staff)):
 @router.get("/admin/mail/messages/{mid}")
 async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
-    # ---- IMAP live message (id prefixed with "imap-") — uses caller's own creds ----
+    # ---- IMAP live message (id prefixed with "imap-") - uses caller's own creds ----
     if mid.startswith("imap-"):
         uid = mid[len("imap-"):]
         user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
@@ -2348,7 +2348,7 @@ async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
                 raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
         raise HTTPException(status_code=404, detail="IMAP message no longer available (mailbox may have been re-synced)")
 
-    # ---- Mongo-backed message (legacy seeded demo — no per-user creds path) ----
+    # ---- Mongo-backed message (legacy seeded demo - no per-user creds path) ----
     try:
         oid = _oid(mid)
     except Exception:
@@ -2468,7 +2468,7 @@ async def admin_mail_sent(staff=Depends(get_current_staff)):
 
 
 # ============================================================
-# BUSINESS — CRM, Projects, Content Planner, Follow-ups, Documents
+# BUSINESS - CRM, Projects, Content Planner, Follow-ups, Documents
 # ============================================================
 
 # ---------- CRM (customers/prospects) ----------
@@ -2914,13 +2914,13 @@ async def dcim_racks(staff=Depends(get_current_staff)):
     if not docs:
         # First-load seed for demo
         seed = [
-            {"name": "Rack B12", "site": "Cyber 1 — Metta (Lantai 5)", "u_size": 42,
+            {"name": "Rack B12", "site": "Cyber 1 - Metta (Lantai 5)", "u_size": 42,
              "occupancy": [{"u_top": 40, "u_bot": 40, "label": "Patch Panel", "customer": ""},
                             {"u_top": 39, "u_bot": 39, "label": "sw-tor-1", "customer": "internal"},
                             {"u_top": 38, "u_bot": 38, "label": "sw-tor-2", "customer": "internal"},
                             {"u_top": 36, "u_bot": 34, "label": "3U Server", "customer": "PT Contoh Digital"}],
              "power_draw_w": 2450, "power_cap_w": 6000},
-            {"name": "Rack A05", "site": "Cyber 1 — Omni (Lantai 2)", "u_size": 42,
+            {"name": "Rack A05", "site": "Cyber 1 - Omni (Lantai 2)", "u_size": 42,
              "occupancy": [{"u_top": 24, "u_bot": 20, "label": "5U Blade Chassis", "customer": "Bank ABC"}],
              "power_draw_w": 3800, "power_cap_w": 6000},
         ]
@@ -2936,9 +2936,9 @@ async def dcim_prefixes(staff=Depends(get_current_staff)):
     docs = await db.dcim_prefixes.find({}).to_list(500)
     if not docs:
         seed = [
-            {"prefix": "103.28.14.0/24", "usage": 148, "capacity": 256, "vlan": "vlan-100", "site": "Cyber 1 — Metta", "family": 4},
-            {"prefix": "103.28.15.0/24", "usage": 22, "capacity": 256, "vlan": "vlan-110", "site": "Cyber 1 — Omni", "family": 4},
-            {"prefix": "2401:a900:1234::/48", "usage": 3, "capacity": 65536, "vlan": "vlan-100", "site": "Cyber 1 — Metta", "family": 6},
+            {"prefix": "103.28.14.0/24", "usage": 148, "capacity": 256, "vlan": "vlan-100", "site": "Cyber 1 - Metta", "family": 4},
+            {"prefix": "103.28.15.0/24", "usage": 22, "capacity": 256, "vlan": "vlan-110", "site": "Cyber 1 - Omni", "family": 4},
+            {"prefix": "2401:a900:1234::/48", "usage": 3, "capacity": 65536, "vlan": "vlan-100", "site": "Cyber 1 - Metta", "family": 6},
             {"prefix": "10.10.0.0/16", "usage": 1284, "capacity": 65534, "vlan": "mgmt", "site": "Internal", "family": 4},
         ]
         for s in seed:
@@ -3057,8 +3057,8 @@ async def dcim_sites(staff=Depends(get_current_staff)):
     docs = await db.dcim_sites.find({}).sort("name", 1).to_list(500)
     if not docs:
         for s in [
-            {"name": "Cyber 1 — Metta Lantai 5", "code": "JKT-METTA-5F", "address": "Cyber 1 Building, Jakarta"},
-            {"name": "Cyber 1 — Omni Lantai 2", "code": "JKT-OMNI-2F", "address": "Cyber 1 Building, Jakarta"},
+            {"name": "Cyber 1 - Metta Lantai 5", "code": "JKT-METTA-5F", "address": "Cyber 1 Building, Jakarta"},
+            {"name": "Cyber 1 - Omni Lantai 2", "code": "JKT-OMNI-2F", "address": "Cyber 1 Building, Jakarta"},
             {"name": "TIFA Building", "code": "JKT-TIFA", "address": "TIFA Building, Jakarta"},
             {"name": "APJII DC Cyber 1 Lantai 1", "code": "JKT-APJII-1F", "address": "Cyber 1 Building, Jakarta"},
         ]:
@@ -3099,7 +3099,7 @@ async def dcim_prefix_delete(pid: str, staff=Depends(get_current_staff)):
 
 
 # ============================================================
-# PROXMOX — available OS templates & OS request ticket bridge
+# PROXMOX - available OS templates & OS request ticket bridge
 # ============================================================
 @router.get("/admin/proxmox/os-templates")
 async def proxmox_os_templates(staff=Depends(get_current_staff)):
@@ -3496,7 +3496,7 @@ async def admin_finance_report(admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# PDF (HTML/PDF) documents — Invoice & Quotation
+# PDF (HTML/PDF) documents - Invoice & Quotation
 # Rendered as an HTML preview by default; add ?format=pdf for a real
 # WeasyPrint-rendered downloadable .pdf that matches the WHMCS-style layout.
 # ============================================================
@@ -3622,7 +3622,7 @@ LOGO_URL = _BRANDING_DEFAULTS["logo_dark"]
 # ============================================================
 @router.get("/branding")
 async def branding_get():
-    """Public read — landing/emails/frontend fetch the current branding."""
+    """Public read - landing/emails/frontend fetch the current branding."""
     db = await _get_db()
     return await _get_branding_dict(db)
 
@@ -3686,7 +3686,7 @@ from portal.backups import (
 
 @router.get("/landing-content")
 async def landing_content_get():
-    """Public — Landing page fetches on mount and merges overrides on top of
+    """Public - Landing page fetches on mount and merges overrides on top of
     the shipped i18n dict + hardcoded FAQ list."""
     db = await _get_db()
     return await _get_landing_content(db)
@@ -3710,7 +3710,7 @@ async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
         "faqs":      payload.get("faqs")      if isinstance(payload.get("faqs"), list)      else [],
         "contact":   payload.get("contact")   if isinstance(payload.get("contact"), dict)   else {},
     }
-    # 128 KB cap on the whole doc — plenty for a landing page's worth of text.
+    # 128 KB cap on the whole doc - plenty for a landing page's worth of text.
     approx = len(str(clean))
     if approx > 128 * 1024:
         raise HTTPException(status_code=413,
@@ -3726,7 +3726,7 @@ async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
 
 @router.delete("/admin/landing-content")
 async def landing_content_reset(admin=Depends(get_current_admin)):
-    """Wipe all landing overrides — Landing renders the shipped defaults."""
+    """Wipe all landing overrides - Landing renders the shipped defaults."""
     db = await _get_db()
     await db.settings.update_one(
         {"key": "landing_content"},
@@ -3743,7 +3743,7 @@ async def landing_content_reset(admin=Depends(get_current_admin)):
 @router.get("/admin/backup/download")
 async def backup_download(admin=Depends(get_current_admin)):
     """Download a full gzipped BSON archive of every collection.
-    Streams via a plain `bytes` response — the archive is small enough
+    Streams via a plain `bytes` response - the archive is small enough
     for the ~1000-row datasets this portal carries."""
     from fastapi.responses import Response as _R
     try:
@@ -3767,7 +3767,7 @@ async def system_factory_reset(payload: m.FactoryResetIn,
                                admin=Depends(get_current_admin)):
     """DANGER: wipe the database back to a fresh-install state.
 
-    Behaviour (see /app/memory/PRD.md — user-approved scope):
+    Behaviour (see /app/memory/PRD.md - user-approved scope):
       • Preserves the entire `settings` collection (branding + landing CMS).
       • Preserves ALL users whose `role == "admin"` (multiple admins survive).
       • Deletes every other document in every other collection.
@@ -3885,7 +3885,7 @@ async def backup_restore(request: Request, admin=Depends(get_current_admin), con
         log = await _run_mongorestore(blob, drop=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Restore failed: {e}")
-    # Audit — restore also drops audit_logs, so the marker is the first row after.
+    # Audit - restore also drops audit_logs, so the marker is the first row after.
     db = await _get_db()
     await log_audit(db, actor=admin, action="system.backup_restore", category="system",
                     target_type="system", target_label="Backup Restore",
@@ -3899,7 +3899,7 @@ async def backup_restore(request: Request, admin=Depends(get_current_admin), con
 
 
 # ============================================================
-# System update — runs scripts/update.sh which git-pulls, installs deps,
+# System update - runs scripts/update.sh which git-pulls, installs deps,
 # rebuilds the frontend, and restarts supervisor. Auto-backs up first.
 # ============================================================
 @router.get("/admin/system/version")
@@ -3931,7 +3931,7 @@ async def system_version(admin=Depends(get_current_admin)):
 
 @router.post("/admin/system/update")
 async def system_update(admin=Depends(get_current_admin), confirm: str = ""):
-    """Run `scripts/update.sh` in the checkout — auto-backs up first, then
+    """Run `scripts/update.sh` in the checkout - auto-backs up first, then
     `git pull`, `pip install`, `yarn install && yarn build`, and restarts
     supervisor. **Preserves both .env files and the live database**.
 
@@ -3989,7 +3989,7 @@ async def system_update(admin=Depends(get_current_admin), confirm: str = ""):
                                        f"Log: {text[-800:]}")
         if rc == 4:
             raise HTTPException(status_code=422,
-                                detail="This checkout has no git remote — "
+                                detail="This checkout has no git remote - "
                                        "cannot update. Deploy a proper git "
                                        "clone (see docs/production.md).")
         raise HTTPException(status_code=500,
@@ -4041,7 +4041,7 @@ def _pdf_template(
         f"<tr>"
         f"<td>{_long_date(t.get('date',''))}</td>"
         f"<td>{t.get('gateway','')}</td>"
-        f"<td>{t.get('transaction_id','') or '—'}</td>"
+        f"<td>{t.get('transaction_id','') or '-'}</td>"
         f"<td class='amt'>{_idr(t.get('amount',0))}</td>"
         f"</tr>"
         for t in transactions
@@ -4078,7 +4078,7 @@ def _pdf_template(
         )
         bank_block = f"""
         <div class="bank-panel">
-          <div class="section-title" style="margin-top:0">Payment — Bank Transfer</div>
+          <div class="section-title" style="margin-top:0">Payment - Bank Transfer</div>
           {bank_rows}
           <div class="bank-note">Please include invoice number <b>{number}</b> in the transfer memo. Confirmation via WhatsApp speeds up reconciliation.</div>
         </div>
@@ -4112,7 +4112,7 @@ def _pdf_template(
              color:#fff; font-weight:800; letter-spacing:.2em; padding:8px 0; font-size:14px;
              box-shadow:0 2px 6px rgba(0,0,0,.15); }}
 
-  /* Header — logo sized generously so a wordmark reads cleanly on print */
+  /* Header - logo sized generously so a wordmark reads cleanly on print */
   .head {{ display:flex; justify-content:space-between; align-items:center; gap:24px; }}
   .head .logo {{ flex:0 0 auto; max-width:55%; }}
   .head .logo img {{ height:130px; max-height:130px; width:auto; max-width:100%; object-fit:contain; display:block; }}
@@ -4325,7 +4325,7 @@ async def render_quotation_pdf(qid: str, format: str = "html", staff=Depends(get
         extra_footer=(
             "<div style='margin-top:22px;font-size:11px;color:#64748b;line-height:1.7'>"
             "This quotation is valid until the date shown above. Prices are in Indonesian Rupiah (IDR) and exclude any applicable "
-            "withholding tax. To accept this quotation, reply via email or WhatsApp — an invoice will be issued upon acceptance."
+            "withholding tax. To accept this quotation, reply via email or WhatsApp - an invoice will be issued upon acceptance."
             "</div>"
         ),
         for_pdf=(format == "pdf"),
@@ -4382,7 +4382,7 @@ async def client_service_traffic(sid: str, user=Depends(get_current_user)):
 
 
 # ============================================================
-# Password lifecycle — change / admin-reset / forgot / reset
+# Password lifecycle - change / admin-reset / forgot / reset
 # ============================================================
 import hashlib  # noqa: E402
 import secrets as _secrets  # noqa: E402
@@ -4478,7 +4478,7 @@ async def auth_forgot_password(payload: m.ForgotPasswordIn, request: Request):
             # SMTP down or not configured → log the link to backend log so admin can share it.
             import logging
             logging.getLogger("portal.password_reset").warning(
-                f"[password-reset] SMTP unavailable ({e}) — reset link for {email}: {reset_url}"
+                f"[password-reset] SMTP unavailable ({e}) - reset link for {email}: {reset_url}"
             )
     # Always the same response
     return {"ok": True, "message": "If an account exists for that email, a reset link has been sent."}
@@ -4507,7 +4507,7 @@ async def auth_reset_password(payload: m.ResetPasswordIn, request: Request):
 async def _send_password_notice(db, user: dict, *, kind: str, reset_url: str = "") -> None:
     """Compose + send transactional email via SMTP integration.
 
-    Raises on any failure — caller decides whether to swallow.
+    Raises on any failure - caller decides whether to swallow.
     """
     smtp = await iv2.get_settings(db, "smtp") if False else None  # avoid circular; done below
     # Late import (routes.py appended block hasn't imported iv2 up here in this hunk)
@@ -4525,7 +4525,7 @@ async def _send_password_notice(db, user: dict, *, kind: str, reset_url: str = "
             f"background:#0a2350;color:#fff;text-decoration:none;border-radius:99px;"
             f"font-weight:700;letter-spacing:.05em'>Reset password</a></p>"
             f"<p style='color:#64748b;font-size:12px'>If the button doesn't work, copy and paste this link:<br>{reset_url}</p>"
-            f"<p style='color:#64748b;font-size:12px'>Didn't request this? You can ignore this email — your password wasn't changed.</p>"
+            f"<p style='color:#64748b;font-size:12px'>Didn't request this? You can ignore this email - your password wasn't changed.</p>"
         )
     else:
         subject = "Your Intercloud portal password was reset"
@@ -4570,8 +4570,8 @@ async def integrations_v2_upsert(provider: str, payload: dict, request: Request,
     if provider in _EXTRA_PAYMENT_MODULES and not bool(
             await _get_setting_value(db, "enable_extra_payment_gateways", False)):
         raise HTTPException(status_code=400,
-                            detail="Gateway ini dinonaktifkan — Duitku adalah satu-satunya payment gateway aktif.")
-    # Merge — never drop existing secrets if the incoming value is empty
+                            detail="Gateway ini dinonaktifkan - Duitku adalah satu-satunya payment gateway aktif.")
+    # Merge - never drop existing secrets if the incoming value is empty
     existing = await iv2.get_settings(db, provider) or {}
     creds_in = payload.get("credentials") or {}
     merged_creds = {**(existing.get("credentials") or {})}
@@ -4599,7 +4599,7 @@ async def integrations_v2_upsert(provider: str, payload: dict, request: Request,
 async def integrations_v2_delete(provider: str, request: Request, admin=Depends(get_current_admin)):
     """Wipe all persisted settings for a provider (credentials + options + enabled).
 
-    Useful for rotating credentials cleanly — the PUT endpoint merges by design,
+    Useful for rotating credentials cleanly - the PUT endpoint merges by design,
     so it cannot clear a stored secret on its own.
     """
     if provider not in iv2.INTEGRATION_SCHEMA:
@@ -4631,13 +4631,13 @@ async def integrations_v2_test(provider: str, admin=Depends(get_current_admin)):
     if provider == "imap":
         return iv2.IMAPClient(settings).test_connection()
     if provider in ("cpanel", "plesk"):
-        # No SDK adapter yet — validate that required fields are present.
+        # No SDK adapter yet - validate that required fields are present.
         c = settings.get("credentials") or {}
         missing = [k for k in ("host", "username") if not c.get(k)]
         secret_ok = bool(c.get("api_token") or c.get("password"))
         if missing or not secret_ok:
             return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
-        return {"ok": True, "message": f"{provider.upper()} credentials look complete — live wiring pending."}
+        return {"ok": True, "message": f"{provider.upper()} credentials look complete - live wiring pending."}
     return {"ok": False, "message": "No test method"}
 
 
@@ -4787,7 +4787,7 @@ async def mikrotik_devices_test(did: str, admin=Depends(get_current_admin)):
 
 
 async def _run_mikrotik(db, device_id: str | None, fn_name: str, *args, **kwargs):
-    """Helper — resolve the device, dispatch a MikrotikClient method in a
+    """Helper - resolve the device, dispatch a MikrotikClient method in a
     threadpool (librouteros is sync), return the result."""
     d = await _get_mikrotik_device(db, device_id)
     client = iv2.MikrotikClient(d)
@@ -4897,10 +4897,10 @@ async def mikrotik_reboot(payload: dict, admin=Depends(get_current_admin)):
     return await _run_mikrotik(db, payload.get("device_id"), "reboot")
 
 
-# ---------------- Payment gateway — create + webhook ----------------
+# ---------------- Payment gateway - create + webhook ----------------
 async def _payment_settings(db, provider: str) -> Optional[dict]:
     """Resolve gateway settings from either storage system:
-    1. `integration_settings` (iv2, provider-keyed) — preferred;
+    1. `integration_settings` (iv2, provider-keyed) - preferred;
     2. the module-hub `integrations` row (admin UI "Add Server" dialog),
        mapped into the iv2 shape. Duitku is the only mapped provider.
     Returns an iv2-shaped dict or None when not configured/enabled."""
@@ -4955,7 +4955,7 @@ async def client_pay_online(iid: str, request: Request, provider: str = "duitku"
     if not callback:
         if not base:
             raise HTTPException(status_code=500,
-                                detail="Cannot determine public callback URL — set it in the Duitku integration config.")
+                                detail="Cannot determine public callback URL - set it in the Duitku integration config.")
         callback = f"{base}/api/portal/webhooks/{provider}"
     kwargs = dict(
         invoice_id=inv["number"] or str(inv["_id"]),
@@ -4964,7 +4964,7 @@ async def client_pay_online(iid: str, request: Request, provider: str = "duitku"
         callback_url=callback,
     )
     if provider == "duitku":
-        # returnUrl is REQUIRED by the POP docs — send the client back to their
+        # returnUrl is REQUIRED by the POP docs - send the client back to their
         # invoices page after payment (config override supported).
         return_url = (opts.get("return_url") or "").strip()
         if not return_url and base:
@@ -5066,7 +5066,7 @@ async def payment_webhook(provider: str, request: Request):
 
 
 # ============================================================
-# SECURITY — Login Attempt Analytics
+# SECURITY - Login Attempt Analytics
 # ============================================================
 @router.get("/admin/security/login-analytics")
 async def login_analytics(
@@ -5425,7 +5425,7 @@ async def diagnostics_tools_list(admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# FINANCE V2 — Kas Kecil / Salaries / Sales Fees / Excel reports
+# FINANCE V2 - Kas Kecil / Salaries / Sales Fees / Excel reports
 # ============================================================
 from fastapi.responses import StreamingResponse  # noqa: E402
 import io as _io  # noqa: E402
@@ -5856,7 +5856,7 @@ async def finance_finalized_reports(admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# Email Automation — templates, preview, logs, blasts
+# Email Automation - templates, preview, logs, blasts
 # ============================================================
 from portal import emails as _emails  # noqa: E402
 
@@ -5934,7 +5934,7 @@ async def admin_email_template_delete(tid: str, admin=Depends(get_current_admin)
         raise HTTPException(status_code=404, detail="Template not found")
     if d.get("is_system"):
         raise HTTPException(status_code=400,
-                            detail="System templates cannot be deleted — pause them via is_active=false instead")
+                            detail="System templates cannot be deleted - pause them via is_active=false instead")
     await db.email_templates.delete_one({"_id": d["_id"]})
     return {"ok": True}
 
@@ -5983,8 +5983,8 @@ async def admin_email_template_preview(payload: m.EmailPreviewIn,
     extra = {
         "reset_url": os.environ.get("REACT_APP_BACKEND_URL", "") + "/portal/reset-password?token=SAMPLE",
         "maintenance": {"title": "Emergency network upgrade",
-                        "window": "Sabtu, 15 Feb 2026, 02:00–04:00 WIB",
-                        "impact": "Kemungkinan latensi meningkat 5–10 menit."},
+                        "window": "Sabtu, 15 Feb 2026, 02:00-04:00 WIB",
+                        "impact": "Kemungkinan latensi meningkat 5-10 menit."},
         "month": {"name": datetime.now(timezone.utc).strftime("%B %Y")},
     }
     ctx = _emails.build_context(user=user_doc, invoice=inv_doc, order=order_doc, extra=extra)
@@ -6024,7 +6024,7 @@ async def admin_email_template_send_test(payload: m.EmailSendTestIn,
 @router.post("/admin/email/broadcast")
 async def admin_email_broadcast(payload: m.EmailNewsletterIn,
                                 admin=Depends(get_current_admin)):
-    """One-off broadcast — newsletter / maintenance / arbitrary."""
+    """One-off broadcast - newsletter / maintenance / arbitrary."""
     db = await _get_db()
     recipients: List[dict] = []
     if payload.audience == "all_clients":
@@ -6098,13 +6098,13 @@ async def admin_email_event_catalog(admin=Depends(get_current_admin)):
             {"key": "welcome", "label": "Welcome (on registration)", "trigger": "instant"},
             {"key": "order_confirmation", "label": "Order confirmation", "trigger": "instant"},
             {"key": "invoice_generated", "label": "Invoice generated (D-14)", "trigger": "instant"},
-            {"key": "invoice_reminder_d3", "label": "Payment reminder — D-3", "trigger": "scheduled",
+            {"key": "invoice_reminder_d3", "label": "Payment reminder - D-3", "trigger": "scheduled",
              "offset_days": -3},
             {"key": "invoice_due", "label": "Payment due today", "trigger": "scheduled", "offset_days": 0},
-            {"key": "invoice_overdue_d1", "label": "Overdue — D+1", "trigger": "scheduled", "offset_days": 1},
-            {"key": "invoice_overdue_d3", "label": "Overdue — D+3", "trigger": "scheduled", "offset_days": 3},
-            {"key": "invoice_overdue_d7", "label": "Overdue — D+7 (final)", "trigger": "scheduled", "offset_days": 7},
-            {"key": "service_suspension", "label": "Service suspension — D+8",
+            {"key": "invoice_overdue_d1", "label": "Overdue - D+1", "trigger": "scheduled", "offset_days": 1},
+            {"key": "invoice_overdue_d3", "label": "Overdue - D+3", "trigger": "scheduled", "offset_days": 3},
+            {"key": "invoice_overdue_d7", "label": "Overdue - D+7 (final)", "trigger": "scheduled", "offset_days": 7},
+            {"key": "service_suspension", "label": "Service suspension - D+8",
              "trigger": "scheduled", "offset_days": 8},
             {"key": "password_reset", "label": "Password reset link", "trigger": "instant"},
             {"key": "maintenance", "label": "Maintenance / downtime", "trigger": "on_demand"},
@@ -6122,7 +6122,7 @@ async def admin_email_event_catalog(admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# Articles / CMS — admin editor + public listing + search
+# Articles / CMS - admin editor + public listing + search
 # ============================================================
 import re as _re_slug  # noqa: E402
 
@@ -6361,12 +6361,12 @@ async def public_article_detail(slug: str):
 
 
 # ============================================================
-# Sitemap — dynamic XML for search engines
+# Sitemap - dynamic XML for search engines
 # ============================================================
 _SITEMAP_STATIC_ROUTES = [
     ("", "1.0", "daily"),                # /
     ("articles", "0.9", "daily"),         # /articles
-    ("status", "0.5", "hourly"),          # /status — public uptime page
+    ("status", "0.5", "hourly"),          # /status - public uptime page
     ("legal/terms", "0.3", "yearly"),
     ("legal/aup", "0.3", "yearly"),
     ("legal/sla", "0.3", "yearly"),
@@ -6433,7 +6433,7 @@ async def sitemap_xml(request: Request):
 
 
 # ============================================================
-# SEO — dynamic rendering for crawlers / link-preview bots
+# SEO - dynamic rendering for crawlers / link-preview bots
 # ============================================================
 # Non-JS crawlers (WhatsApp/Telegram/Facebook/Twitter/Slack/Discord link
 # unfurlers and some search bots) never execute the SPA, so per-article
@@ -6472,7 +6472,7 @@ async def seo_render_article(slug: str, request: Request):
     body_html = f"""<!doctype html>
 <html lang="id"><head>
 <meta charset="utf-8">
-<title>{e(title)} — Intercloud</title>
+<title>{e(title)} - Intercloud</title>
 <meta name="description" content="{e(desc)}">
 <link rel="canonical" href="{e(canonical)}">
 <meta property="og:type" content="article">
@@ -6496,7 +6496,7 @@ async def seo_render_article(slug: str, request: Request):
 
 
 # ============================================================
-# AUDIT LOGS — read-only history of sensitive admin actions
+# AUDIT LOGS - read-only history of sensitive admin actions
 # ============================================================
 @router.get("/admin/audit-logs")
 async def admin_audit_logs_list(
@@ -6514,12 +6514,12 @@ async def admin_audit_logs_list(
     """Paginated list of audit rows, newest first.
 
     Filters (all optional):
-      • `category` — one of security/billing/integrations/users/system/noc
-      • `action`   — exact action key (e.g. "user.role_change")
-      • `actor_id` — filter to a specific admin's actions
-      • `severity` — info/warning/critical
-      • `q`        — case-insensitive substring on actor_email/target_label
-      • `date_from`, `date_to` — ISO date strings (inclusive)
+      • `category` - one of security/billing/integrations/users/system/noc
+      • `action`   - exact action key (e.g. "user.role_change")
+      • `actor_id` - filter to a specific admin's actions
+      • `severity` - info/warning/critical
+      • `q`        - case-insensitive substring on actor_email/target_label
+      • `date_from`, `date_to` - ISO date strings (inclusive)
     """
     db = await _get_db()
     limit = max(1, min(int(limit or 200), 500))
@@ -6569,7 +6569,7 @@ async def admin_audit_logs_facets(admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# NOC — proactive MikroTik reachability polling
+# NOC - proactive MikroTik reachability polling
 # ============================================================
 async def _noc_uptime_window(db, dev_ids, days: int):
     """Uptime % over the last `days` days, combining `noc_daily_uptime`
@@ -6682,7 +6682,7 @@ async def noc_run_retention_now(admin=Depends(get_current_admin)):
 
 
 # ============================================================
-# CREDIT NOTES — refunds & adjustments applied to invoices
+# CREDIT NOTES - refunds & adjustments applied to invoices
 # ============================================================
 def _credit_note_serialize(d: dict, invoice: dict | None = None, user: dict | None = None) -> dict:
     return {
@@ -6715,7 +6715,7 @@ async def _sum_applied_credit(db, invoice_id: ObjectId) -> float:
 
 async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
     """If the total applied credit meets/exceeds the invoice total, flip the
-    invoice to paid and reactivate suspended services — same effect as a
+    invoice to paid and reactivate suspended services - same effect as a
     Duitku webhook, but source=credit_note. Returns number of services
     reactivated. Idempotent: filters status != paid."""
     total_credit = await _sum_applied_credit(db, invoice["_id"])
@@ -7021,7 +7021,7 @@ def _credit_note_html(*, cn: dict, invoice: dict | None, billed_to: dict,
     </div>
     <div class="card">
       <h3>Reference Invoice</h3>
-      <div style="font-weight:700; color:#0a2540; font-size:14px">#{inv_no or '—'}</div>
+      <div style="font-weight:700; color:#0a2540; font-size:14px">#{inv_no or '-'}</div>
       <div class="sub">Invoice total: {_idr(inv_total)}</div>
       {'<div class="sub">Applied on: ' + _long_date((cn.get('applied_at') or '')[:10]) + '</div>' if cn.get('applied_at') else ''}
     </div>
@@ -7046,7 +7046,7 @@ def _credit_note_html(*, cn: dict, invoice: dict | None, billed_to: dict,
 
 
 def _billing_block(u: dict) -> str:
-    """Small helper — same shape used by invoice PDF sidebar."""
+    """Small helper - same shape used by invoice PDF sidebar."""
     lines = []
     if u.get("attention"): lines.append(f"<b>{u['attention']}</b>")
     elif u.get("name"):    lines.append(f"<b>{u['name']}</b>")
@@ -7075,7 +7075,7 @@ async def _invoice_outstanding(db, invoice: dict) -> float:
 
 
 # ============================================================
-# EXECUTIVE OVERVIEW — read-only for owner/admin
+# EXECUTIVE OVERVIEW - read-only for owner/admin
 # ============================================================
 async def _get_current_owner(user=Depends(get_current_user)):
     """Access gate: owner or admin only. Owner is READ-ONLY globally."""
@@ -7313,7 +7313,7 @@ async def status_page_config_put(payload: dict, request: Request, admin=Depends(
 
 
 # ============================================================
-# MEDIA LIBRARY — shared assets for the Digital Creative team
+# MEDIA LIBRARY - shared assets for the Digital Creative team
 # ============================================================
 from fastapi import UploadFile, File, Form  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
@@ -7445,7 +7445,7 @@ async def media_delete(mid: str, staff=Depends(get_current_content)):
     used = await _media_usage(db, mid)
     if used:
         raise HTTPException(status_code=409, detail={
-            "message": "Asset is still in use — detach it first.",
+            "message": "Asset is still in use - detach it first.",
             "used_in": used,
         })
     try:
@@ -7458,7 +7458,7 @@ async def media_delete(mid: str, staff=Depends(get_current_content)):
 
 @router.get("/media/file/{mid}", include_in_schema=False)
 async def media_file(mid: str):
-    """Public file serve — media is referenced from public articles."""
+    """Public file serve - media is referenced from public articles."""
     db = await _get_db()
     d = await db.media_assets.find_one({"_id": _oid(mid)})
     if not d:
@@ -7471,7 +7471,7 @@ async def media_file(mid: str):
 
 
 # ============================================================
-# CONTENT CALENDAR — plan articles / campaigns / social posts
+# CONTENT CALENDAR - plan articles / campaigns / social posts
 # ============================================================
 def _serialize_calendar(d: dict) -> dict:
     return {
@@ -7590,7 +7590,7 @@ async def _sync_article_calendar(db, article: dict, staff) -> None:
 
 
 # ============================================================
-# TICKET ↔ DEVICE linking — minimal device options for dropdowns
+# TICKET ↔ DEVICE linking - minimal device options for dropdowns
 # ============================================================
 @router.get("/tickets/device-options")
 async def ticket_device_options(user=Depends(get_current_user)):

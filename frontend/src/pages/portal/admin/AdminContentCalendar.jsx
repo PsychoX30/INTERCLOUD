@@ -93,7 +93,7 @@ const AdminContentCalendar = () => {
                     return (
                       <button key={e.id} onClick={() => setEditing(e)}
                               className={`w-full text-left px-1.5 py-1 rounded-md border text-[10px] font-semibold truncate flex items-center gap-1 ${meta.chip} focus-visible:ring-2 focus-visible:ring-[#f5b120]`}
-                              title={`${meta.label} · ${e.status} — ${e.title}`}
+                              title={`${meta.label} · ${e.status} - ${e.title}`}
                               data-testid={`calendar-entry-${e.id}`}>
                         <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[e.status] || "bg-slate-400"}`} />
                         <span className="truncate">{e.title}</span>
@@ -110,7 +110,7 @@ const AdminContentCalendar = () => {
           <div className="mt-4">
             <EmptyState
               title="Nothing planned this month"
-              body="Plan your first article, campaign, or social post — the team sees everything in one calendar."
+              body="Plan your first article, campaign, or social post - the team sees everything in one calendar."
             />
             <div className="text-center mt-3">
               <button className={btnPrimary} onClick={() => setEditing("new")} data-testid="calendar-empty-new">

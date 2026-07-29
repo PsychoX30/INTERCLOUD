@@ -27,7 +27,7 @@ const AdminUsers = () => {
     { key: "email", label: "Email", sortable: true,
       render: (v) => <span className="text-slate-600">{v}</span> },
     { key: "company", label: "Company", sortable: true,
-      render: (v) => <span className="text-slate-600">{v || "—"}</span> },
+      render: (v) => <span className="text-slate-600">{v || "-"}</span> },
     { key: "role", label: "Role", sortable: true,
       render: (v) => (
         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${
@@ -41,7 +41,7 @@ const AdminUsers = () => {
       ) },
     { key: "_access", label: "Access", sortable: false,
       render: (_v, u) => (
-        u.role === "client" ? <span className="text-slate-400">—</span> : (
+        u.role === "client" ? <span className="text-slate-400">-</span> : (
           <div className="flex flex-col gap-0.5 text-xs">
             {u.menu_keys && u.menu_keys.length > 0
               ? <span className="font-semibold">{u.menu_keys.length} menu(s)</span>
@@ -184,7 +184,7 @@ const AdminResetPasswordModal = ({ user, onClose, onDone }) => {
   );
 };
 
-/* ==== User access modal — menu permissions + feature flags + client assignments ==== */
+/* ==== User access modal - menu permissions + feature flags + client assignments ==== */
 const UserAccessModal = ({ user, catalog, clients, onClose, onDone }) => {
   const [menuKeys, setMenuKeys] = useState(user.menu_keys || []);
   const [flags, setFlags] = useState(user.feature_flags || []);

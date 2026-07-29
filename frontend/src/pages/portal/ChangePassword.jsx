@@ -5,7 +5,7 @@ import { Lock, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 
 /**
- * Change-password screen — available to every logged-in role (client and staff).
+ * Change-password screen - available to every logged-in role (client and staff).
  * Route: /portal/settings/password
  */
 const ChangePassword = () => {
@@ -37,7 +37,7 @@ const ChangePassword = () => {
     <div>
       <PageHeader
         title="Change password"
-        subtitle={`Signed in as ${user?.name || user?.email}. Choose a new password — you'll stay logged in on this device.`}
+        subtitle={`Signed in as ${user?.name || user?.email}. Choose a new password - you'll stay logged in on this device.`}
       />
       <div className="max-w-lg">
         <Card className="p-6">

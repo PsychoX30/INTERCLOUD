@@ -7,7 +7,7 @@ import { AuthProvider } from "./portal/AuthContext";
 import { RequireAuth } from "./portal/ProtectedRoute";
 import ScrollToTop from "./components/ScrollToTop";
 
-// Landing is LCP-critical for SEO — keep eager
+// Landing is LCP-critical for SEO - keep eager
 import Landing from "./pages/Landing";
 import NotFound from "./pages/NotFound";
 
@@ -175,7 +175,7 @@ function App() {
 
                 <Route path="/portal" element={<Navigate to="/portal/login" replace />} />
 
-                {/* UAT C3 fix — real 404 UI for any unmatched path, replacing
+                {/* UAT C3 fix - real 404 UI for any unmatched path, replacing
                     the previous "everything returns 200 blank shell" bug. */}
                 <Route path="*" element={<NotFound />} />
               </Routes>

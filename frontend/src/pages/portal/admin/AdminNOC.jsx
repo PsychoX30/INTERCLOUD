@@ -44,7 +44,7 @@ const AdminNOC = () => {
   const unknownCount = devices.filter((d) => d.status === "unknown").length;
   const avgUptime = devices.length
     ? (devices.reduce((a, d) => a + (d.uptime_24h_pct ?? 0), 0) / devices.length).toFixed(1)
-    : "—";
+    : "-";
 
   return (
     <div data-testid="noc-page">
@@ -96,7 +96,7 @@ const AdminNOC = () => {
           <Card className="overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-200 bg-slate-50">
               <div className="text-xs font-bold uppercase tracking-widest text-slate-600">Recent Transition Events</div>
-              <div className="text-xs text-slate-500 mt-0.5">Only real up→down / down→up transitions are recorded — no flap noise.</div>
+              <div className="text-xs text-slate-500 mt-0.5">Only real up→down / down→up transitions are recorded - no flap noise.</div>
             </div>
             {events.length === 0 ? (
               <div className="p-6"><EmptyState title="No transitions yet" body="Devices haven't changed state since monitoring started." /></div>
@@ -127,7 +127,7 @@ const AdminNOC = () => {
                               {down ? <WifiOff className="h-3 w-3" /> : <Wifi className="h-3 w-3" />} {ev.type.replace("_", " ")}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-xs text-slate-600 max-w-md truncate" title={ev.message}>{ev.message || "—"}</td>
+                          <td className="px-4 py-3 text-xs text-slate-600 max-w-md truncate" title={ev.message}>{ev.message || "-"}</td>
                           <td className="px-4 py-3">
                             {ev.email_notified
                               ? <span className="inline-flex items-center gap-1 text-xs text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5" /> sent</span>
@@ -200,11 +200,11 @@ const DeviceCard = ({ d, tickets = [] }) => {
       <div className="grid grid-cols-3 gap-2 text-xs">
         <div>
           <div className="text-[10px] uppercase tracking-widest text-slate-400">24h uptime</div>
-          <div className="font-bold text-slate-800">{d.uptime_24h_pct == null ? "—" : `${d.uptime_24h_pct}%`}</div>
+          <div className="font-bold text-slate-800">{d.uptime_24h_pct == null ? "-" : `${d.uptime_24h_pct}%`}</div>
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-widest text-slate-400">30d uptime</div>
-          <div className="font-bold text-slate-800" data-testid={`noc-device-30d-${d.id}`}>{d.uptime_30d_pct == null ? "—" : `${d.uptime_30d_pct}%`}</div>
+          <div className="font-bold text-slate-800" data-testid={`noc-device-30d-${d.id}`}>{d.uptime_30d_pct == null ? "-" : `${d.uptime_30d_pct}%`}</div>
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-widest text-slate-400">Samples</div>
@@ -222,7 +222,7 @@ const DeviceCard = ({ d, tickets = [] }) => {
                     className="block text-[11px] text-[#0a2350] hover:text-[#f5b120] truncate focus-visible:ring-2 focus-visible:ring-[#f5b120] rounded"
                     title={t.subject}>
                 <TicketIcon className="h-3 w-3 inline mr-1 text-slate-400" />
-                {t.number ? `${t.number} — ` : ""}{t.subject}
+                {t.number ? `${t.number} - ` : ""}{t.subject}
               </Link>
             ))}
           </div>

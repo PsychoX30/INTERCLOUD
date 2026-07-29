@@ -107,7 +107,7 @@ const Infrastructure = () => {
           })}
         </div>
 
-        {/* Journey strip — how the layers connect */}
+        {/* Journey strip - how the layers connect */}
         <div
           className="mt-12 rounded-3xl bg-[#0a2350] text-white p-6 md:p-8 relative overflow-hidden"
           data-testid="infra-journey"

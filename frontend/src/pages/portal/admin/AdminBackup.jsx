@@ -99,7 +99,7 @@ const AdminBackup = () => {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
-      setMsg({ kind: "ok", text: `Restore complete — ${body.bytes_received} bytes replayed.` });
+      setMsg({ kind: "ok", text: `Restore complete - ${body.bytes_received} bytes replayed.` });
       setFile(null); setConfirmText("");
       if (fileRef.current) fileRef.current.value = "";
     } catch (e) {
@@ -112,7 +112,7 @@ const AdminBackup = () => {
       <div className="mb-8">
         <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Backup, Restore &amp; Update</h1>
         <p className="mt-1.5 text-sm text-slate-500 max-w-2xl">
-          Manage full snapshots of the portal — download a backup archive, restore from an existing
+          Manage full snapshots of the portal - download a backup archive, restore from an existing
           one, or roll the running system forward to the latest release from GitHub.
         </p>
       </div>
@@ -135,7 +135,7 @@ const AdminBackup = () => {
             <div className="text-lg font-bold text-[#0a2350]">Update system from GitHub</div>
             <div className="mt-1 text-sm text-slate-500">
               Pulls the latest release, installs any new dependencies, rebuilds the frontend, and restarts the backend.
-              Data is <b>always preserved</b> — a full DB snapshot is taken automatically before anything changes.
+              Data is <b>always preserved</b> - a full DB snapshot is taken automatically before anything changes.
             </div>
 
             {version && (
@@ -237,7 +237,7 @@ const AdminBackup = () => {
         </div>
       </div>
 
-      {/* Factory Reset — DANGER ZONE */}
+      {/* Factory Reset - DANGER ZONE */}
       <div className="mt-6 rounded-2xl border-2 border-red-300 bg-gradient-to-br from-red-50/60 to-white p-6 shadow-sm" data-testid="admin-factory-reset-card">
         <div className="flex items-start gap-4">
           <div className="h-12 w-12 rounded-xl bg-red-600 text-white flex items-center justify-center flex-shrink-0">
@@ -249,7 +249,7 @@ const AdminBackup = () => {
               <b>Irreversible.</b> This wipes every collection back to a fresh-install state.
               <ul className="list-disc pl-5 mt-1 text-[13px]">
                 <li><b>Preserved:</b> the entire <span className="font-mono">settings</span> collection (branding + landing CMS) and all users with <span className="font-mono">role = admin</span>.</li>
-                <li><b>Deleted:</b> every other collection — clients, orders, invoices, tickets, services, MikroTik devices, articles, assets, etc.</li>
+                <li><b>Deleted:</b> every other collection - clients, orders, invoices, tickets, services, MikroTik devices, articles, assets, etc.</li>
                 <li>A safety snapshot is taken automatically to <span className="font-mono">/var/backups/intercloud/pre-factory-reset-*.archive.gz</span> before anything is dropped.</li>
               </ul>
             </div>
@@ -322,7 +322,7 @@ const AdminBackup = () => {
         <div className="font-semibold text-[#0a2350] mb-1.5">Notes</div>
         <ul className="list-disc pl-5 space-y-1 text-[13px]">
           <li>Backups use <span className="font-mono">mongodump --archive --gzip</span>. Restores use <span className="font-mono">mongorestore --archive --gzip --drop</span>.</li>
-          <li>Best practice: download a backup <b>immediately before</b> any maintenance activity — MikroTik migrations, schema changes, bulk imports.</li>
+          <li>Best practice: download a backup <b>immediately before</b> any maintenance activity - MikroTik migrations, schema changes, bulk imports.</li>
           <li>Store archives off-server (cloud storage, S3, private git-lfs) so the loss of this preview environment doesn't also lose the recovery snapshot.</li>
           <li>Updates auto-snapshot the DB into <span className="font-mono">/var/backups/intercloud/pre-update-*.archive.gz</span> (30-day retention).</li>
         </ul>

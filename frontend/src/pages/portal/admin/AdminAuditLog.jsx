@@ -151,13 +151,13 @@ const AdminAuditLog = () => {
                         <div className="font-mono text-xs text-slate-800">{r.action}</div>
                         <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border ${CATEGORY_TONES[r.category] || "bg-slate-100 text-slate-700 border-slate-300"}`}>{r.category}</span>
                       </td>
-                      <td className="px-4 py-3 max-w-[240px] truncate" title={r.target_label}>{r.target_label || "—"}</td>
+                      <td className="px-4 py-3 max-w-[240px] truncate" title={r.target_label}>{r.target_label || "-"}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-bold uppercase ${sev.bg}`}>
                           <SevIcon className="h-3 w-3" /> {r.severity}
                         </span>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-600">{r.ip || "—"}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-600">{r.ip || "-"}</td>
                       <td className="px-4 py-3 text-right">
                         <button onClick={() => setDetail(r)} className="text-slate-500 hover:text-[#0a2350]" data-testid={`audit-view-${r.id}`}>
                           <Eye className="h-4 w-4" />
@@ -172,7 +172,7 @@ const AdminAuditLog = () => {
         )}
         {/* Pagination */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 text-xs text-slate-600">
-          <div data-testid="audit-total">Showing {rows.length ? page * PAGE_SIZE + 1 : 0}–{page * PAGE_SIZE + rows.length} of {total}</div>
+          <div data-testid="audit-total">Showing {rows.length ? page * PAGE_SIZE + 1 : 0}-{page * PAGE_SIZE + rows.length} of {total}</div>
           <div className="flex items-center gap-2">
             <button disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))} className={`p-1.5 rounded hover:bg-slate-100 ${page === 0 && "opacity-30 cursor-not-allowed"}`} data-testid="audit-prev"><ChevronLeft className="h-4 w-4" /></button>
             <span>Page {page + 1} / {totalPages}</span>
@@ -195,8 +195,8 @@ const AdminAuditLog = () => {
             <div className="p-5 space-y-3 text-sm">
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Actor" value={`${detail.actor_email} (${detail.actor_role})`} />
-                <Field label="Target" value={detail.target_label || "—"} />
-                <Field label="IP" value={detail.ip || "—"} mono />
+                <Field label="Target" value={detail.target_label || "-"} />
+                <Field label="IP" value={detail.ip || "-"} mono />
                 <Field label="Severity" value={detail.severity} />
               </div>
               {detail.user_agent && <Field label="User Agent" value={detail.user_agent} mono />}

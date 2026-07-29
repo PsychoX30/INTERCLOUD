@@ -9,7 +9,7 @@ const PoP = () => {
   const items = [
     { id: "metta", icon: Server,   nameKey: "pop.item1.name", descKey: "pop.item1.desc", floor: "5F" },
     { id: "omni",  icon: Layers,   nameKey: "pop.item2.name", descKey: "pop.item2.desc", floor: "2F" },
-    { id: "tifa",  icon: Building2, nameKey: "pop.item3.name", descKey: "pop.item3.desc", floor: "—"  },
+    { id: "tifa",  icon: Building2, nameKey: "pop.item3.name", descKey: "pop.item3.desc", floor: "-"  },
     { id: "apjii", icon: Waypoints, nameKey: "pop.item4.name", descKey: "pop.item4.desc", floor: "1F" },
   ];
 

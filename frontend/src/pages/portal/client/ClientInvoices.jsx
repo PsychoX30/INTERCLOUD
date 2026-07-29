@@ -170,7 +170,7 @@ const InvoiceDetail = ({ invoice, onClose }) => {
                   className={`text-left rounded-xl border-2 p-4 transition-colors ${pay === "duitku" ? "border-[#f5b120] bg-[#f5b120]/5" : "border-slate-200 hover:border-slate-300"}`}
                 >
                   <div className="flex items-center gap-2"><CreditCard className="h-4 w-4 text-[#0a2350]" /> <span className="font-bold text-[#0a2350]">Duitku Gateway</span></div>
-                  <p className="text-xs text-slate-500 mt-1">VA, e-wallet, QRIS, retail outlet — instant settlement.{duitkuOn ? "" : " (Not enabled yet)"}</p>
+                  <p className="text-xs text-slate-500 mt-1">VA, e-wallet, QRIS, retail outlet - instant settlement.{duitkuOn ? "" : " (Not enabled yet)"}</p>
                 </button>
               </div>
 
@@ -193,7 +193,7 @@ const InvoiceDetail = ({ invoice, onClose }) => {
                     className={btnPrimary}
                     data-testid="wa-confirm-payment"
                   >
-                    I&apos;ve paid — confirm via WhatsApp
+                    I&apos;ve paid - confirm via WhatsApp
                   </a>
                 </div>
               )}

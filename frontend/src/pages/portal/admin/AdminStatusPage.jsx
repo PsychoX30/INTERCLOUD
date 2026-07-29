@@ -43,7 +43,7 @@ const AdminStatusPage = () => {
     <div data-testid="status-page-config">
       <PageHeader
         title="Public Status Page"
-        subtitle="Konfigurasi halaman status publik di /status. Perangkat MikroTik dikelompokkan ke label abstrak — nama device dan IP tidak pernah bocor ke publik."
+        subtitle="Konfigurasi halaman status publik di /status. Perangkat MikroTik dikelompokkan ke label abstrak - nama device dan IP tidak pernah bocor ke publik."
         actions={
           <a href={`${BASE.replace(/\/$/, '')}/status`} target="_blank" rel="noreferrer" className={btnSecondary} data-testid="status-page-preview">
             <ExternalLink className="h-4 w-4" /> Preview public page

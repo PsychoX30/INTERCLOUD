@@ -191,8 +191,8 @@ class MikrotikClient:
         """Connect to RouterOS, transparently handling the two login flavours.
 
         `librouteros.connect()` defaults to `token` login which works on
-        RouterOS ≥6.43. On older devices — or when the user configured a
-        "plain" account — the handshake fails. We try token first, then fall
+        RouterOS ≥6.43. On older devices - or when the user configured a
+        "plain" account - the handshake fails. We try token first, then fall
         back to `plain` so both worlds work without extra configuration.
         """
         import librouteros
@@ -295,7 +295,7 @@ class MikrotikClient:
 
         RouterOS API queries don't support CIDR containment, but they DO
         support exact `?dst-address=IP/LEN`. We scan from /32 (or the user's
-        supplied prefix length) down to /0 — the router pre-filters each
+        supplied prefix length) down to /0 - the router pre-filters each
         query server-side, so on a full-BGP table this is ~O(33) fast
         queries instead of streaming ~900k rows.
 
@@ -409,7 +409,7 @@ class MikrotikClient:
         """Add a blackhole route.
 
         RouterOS 7 rejects `type=blackhole` on `/ip/route/add` with
-        `unknown parameter: type` — the new syntax is `blackhole=yes`.
+        `unknown parameter: type` - the new syntax is `blackhole=yes`.
         We try v7 first and fall back to v6 syntax if the router does not
         recognise the `blackhole` boolean.
         """
@@ -524,7 +524,7 @@ class MikrotikClient:
         """Run `/tool/torch` for a short duration and return the aggregated flow list.
 
         Uses a bounded `duration` (2s default, 10s max) so the API socket does
-        not stream indefinitely.  All arguments are validated by the caller —
+        not stream indefinitely.  All arguments are validated by the caller -
         `interface` is required, everything else defaults to a wildcard.
         """
         try:
@@ -719,7 +719,7 @@ class DuitkuGateway:
         self.base = "https://api-sandbox.duitku.com" if self.sandbox else "https://api-prod.duitku.com"
 
     def _sig_create(self, timestamp: str) -> str:
-        # Per current POP docs (changelog Apr 2026 — "Signature enhancement using
+        # Per current POP docs (changelog Apr 2026 - "Signature enhancement using
         # HMAC"): signature = HMAC_SHA256(merchantCode + timestamp, apiKey).
         return hmac.new(self.api_key.encode(),
                         f"{self.merchant_code}{timestamp}".encode(),
@@ -747,7 +747,7 @@ class DuitkuGateway:
                              callback_url: str, return_url: str = "",
                              expiry_minutes: int = 1440, customer_name: str = "",
                              phone_number: str = "") -> dict:
-        """POP API createInvoice — https://docs.duitku.com/pop/en/#create-invoice.
+        """POP API createInvoice - https://docs.duitku.com/pop/en/#create-invoice.
 
         Required per docs: paymentAmount, merchantOrderId, productDetails, email,
         callbackUrl, returnUrl. Auth headers: x-duitku-timestamp (ms),
@@ -884,7 +884,7 @@ INTEGRATION_SCHEMA = {
     "midtrans": {
         "label": "Midtrans (Snap)",
         "category": "payment",
-        "description": "Indonesian payment gateway — Snap + Core API (VA, e-wallet, QRIS, cards).",
+        "description": "Indonesian payment gateway - Snap + Core API (VA, e-wallet, QRIS, cards).",
         "credentials": [
             {"key": "server_key", "label": "Server Key", "type": "password", "required": True},
             {"key": "client_key", "label": "Client Key", "type": "text", "required": True},
@@ -908,7 +908,7 @@ INTEGRATION_SCHEMA = {
     "duitku": {
         "label": "Duitku",
         "category": "payment",
-        "description": "Indonesian payment gateway — VA, e-wallet, QRIS, retail outlets.",
+        "description": "Indonesian payment gateway - VA, e-wallet, QRIS, retail outlets.",
         "credentials": [
             {"key": "merchant_code", "label": "Merchant Code", "type": "text", "required": True},
             {"key": "api_key", "label": "API Key", "type": "password", "required": True},
@@ -961,7 +961,7 @@ INTEGRATION_SCHEMA = {
              "placeholder": "6Lc..."},
         ],
         "options": [
-            {"key": "min_score", "label": "Min score threshold (0.0 – 1.0)", "type": "number", "default": 0.5},
+            {"key": "min_score", "label": "Min score threshold (0.0 - 1.0)", "type": "number", "default": 0.5},
             {"key": "expected_hostname", "label": "Expected hostname (leave blank to skip check)", "type": "text",
              "placeholder": "portal.intercloud-digital.com"},
             {"key": "verify_action", "label": "Enforce action match (login/register/forgot)", "type": "checkbox", "default": True},
@@ -996,7 +996,7 @@ CATEGORY_LABELS = {
 
 
 # ============================================================
-# SMTP — password reset + generic transactional mail
+# SMTP - password reset + generic transactional mail
 # ============================================================
 class SMTPMailer:
     def __init__(self, settings: dict):
@@ -1051,7 +1051,7 @@ class SMTPMailer:
 
 
 # ============================================================
-# IMAP — read inbox for the Webmail tab
+# IMAP - read inbox for the Webmail tab
 # ============================================================
 class IMAPClient:
     def __init__(self, settings: dict):
@@ -1168,7 +1168,7 @@ class IMAPConnectionError(RuntimeError):
 
 
 # ============================================================
-# reCAPTCHA v3 — score-based verification for auth endpoints
+# reCAPTCHA v3 - score-based verification for auth endpoints
 # ============================================================
 class RecaptchaV3Verifier:
     """Async wrapper around Google's reCAPTCHA v3 siteverify endpoint.
@@ -1203,7 +1203,7 @@ class RecaptchaV3Verifier:
 
     async def test_connection(self) -> dict:
         """Test by calling siteverify with an obviously-invalid token.
-        Google returns success=false + `invalid-input-response` — that means
+        Google returns success=false + `invalid-input-response` - that means
         our secret_key is at least valid enough to make the call."""
         if not self.secret_key:
             return {"ok": False, "message": "Secret key is empty."}
@@ -1265,7 +1265,7 @@ class RecaptchaV3Verifier:
 
 
 async def get_recaptcha_settings(db) -> Optional[dict]:
-    """Convenience helper — returns the doc only if enabled."""
+    """Convenience helper - returns the doc only if enabled."""
     doc = await get_settings(db, "recaptcha")
     if doc and doc.get("enabled"):
         return doc
@@ -1284,7 +1284,7 @@ async def enforce_recaptcha(db, token: Optional[str], action: str, remote_ip: Op
 
 
 # ============================================================
-# Telegram Bot — security notifications
+# Telegram Bot - security notifications
 # ============================================================
 class TelegramNotifier:
     """Minimal Telegram Bot API wrapper for sending Markdown-safe messages
@@ -1337,7 +1337,7 @@ class TelegramNotifier:
 
 
 async def get_telegram_settings(db) -> Optional[dict]:
-    """Convenience helper — returns the doc only if enabled."""
+    """Convenience helper - returns the doc only if enabled."""
     doc = await get_settings(db, "telegram")
     if doc and doc.get("enabled"):
         return doc

@@ -73,7 +73,7 @@ const ProxmoxProvision = () => {
 
         <div className="col-span-2">
           <div className="flex items-center justify-between mb-2">
-            <div className={labelClass}>OS Template — from Proxmox ISO library</div>
+            <div className={labelClass}>OS Template - from Proxmox ISO library</div>
             <button type="button" className="text-xs font-bold text-[#f5b120] hover:text-[#0a2350]" onClick={() => setReqOpen(true)}>OS not listed? Request one →</button>
           </div>
           <div className="rounded-xl border border-slate-200 max-h-56 overflow-y-auto divide-y divide-slate-100">
@@ -316,7 +316,7 @@ const MikroRestart = () => (
 
 const MikroTraffic = () => (
   <Card className="p-6">
-    <p className="text-sm text-slate-600 mb-4">Interface-level traffic monitor (mock — wire to SNMP via MikroTik integration to serve live data).</p>
+    <p className="text-sm text-slate-600 mb-4">Interface-level traffic monitor (mock - wire to SNMP via MikroTik integration to serve live data).</p>
     <div className="grid sm:grid-cols-2 gap-3">
       {[["ether1 · WAN APJII", 640, 512], ["ether2 · WAN OpenIXP", 280, 194], ["sfp1 · CoreLink", 1120, 890], ["bridge · Customer VLANs", 940, 720]].map(([n, i, o]) => (
         <div key={n} className="rounded-xl bg-slate-50 border border-slate-200 p-4">
@@ -335,7 +335,7 @@ export const AdminDCIM = () => {
   const [tab, setTab] = useState("racks");
   return (
     <div>
-      <PageHeader title="DCIM & IPAM" subtitle="Live, editable rack and IP address management — inspired by NetBox but native to this console." />
+      <PageHeader title="DCIM & IPAM" subtitle="Live, editable rack and IP address management - inspired by NetBox but native to this console." />
       <div className="flex gap-2 border-b border-slate-200 mb-4">
         {[["racks", "Racks"], ["prefixes", "Prefixes"], ["ips", "IP Addresses"], ["sites", "Sites"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} data-testid={`dcim-tab-${k}`}
@@ -393,7 +393,7 @@ const RacksTab = () => {
                 <div className={`h-full ${pct > 80 ? "bg-red-500" : "bg-emerald-500"}`} style={{ width: `${Math.min(100, pct)}%` }} />
               </div>
               <div className="mt-1 text-[11px] text-slate-500">{r.power_draw_w}/{r.power_cap_w} W · {pct.toFixed(0)}%</div>
-              {/* Rack elevation — one segment per U, coloured by occupancy */}
+              {/* Rack elevation - one segment per U, coloured by occupancy */}
               <div className="mt-3">
                 <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-slate-400 mb-1">
                   <span>Elevation (U{r.u_size} → U1)</span>
@@ -459,7 +459,7 @@ const RackForm = ({ rack, onClose, onDone }) => {
     <DModal title={rack ? "Edit rack" : "New rack"} onClose={onClose}>
       <form onSubmit={submit} className="grid grid-cols-2 gap-3" data-testid="rack-form">
         <label className="col-span-2"><div className={labelClass}>Rack name *</div><input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inputClass} /></label>
-        <label className="col-span-2"><div className={labelClass}>Site</div><input value={f.site} onChange={(e) => setF({ ...f, site: e.target.value })} className={inputClass} placeholder="Cyber 1 — Metta" /></label>
+        <label className="col-span-2"><div className={labelClass}>Site</div><input value={f.site} onChange={(e) => setF({ ...f, site: e.target.value })} className={inputClass} placeholder="Cyber 1 - Metta" /></label>
         <label><div className={labelClass}>U size</div><input type="number" min="1" value={f.u_size} onChange={(e) => setF({ ...f, u_size: e.target.value })} className={inputClass} /></label>
         <label><div className={labelClass}>Power cap (W)</div><input type="number" min="0" value={f.power_cap_w} onChange={(e) => setF({ ...f, power_cap_w: e.target.value })} className={inputClass} /></label>
         <label className="col-span-2"><div className={labelClass}>Power draw (W)</div><input type="number" min="0" value={f.power_draw_w} onChange={(e) => setF({ ...f, power_draw_w: e.target.value })} className={inputClass} /></label>
@@ -479,13 +479,13 @@ const OccupancyEditor = ({ rack, onClose, onDone }) => {
   const remove = (i) => setRows(rows.filter((_, x) => x !== i));
   const save = async () => { await api.put(`/admin/dcim/racks/${rack.id}`, { occupancy: rows }); onDone(); };
   return (
-    <DModal title={`Occupancy — ${rack.name}`} onClose={onClose}>
+    <DModal title={`Occupancy - ${rack.name}`} onClose={onClose}>
       <div className="space-y-2 max-h-60 overflow-y-auto mb-3">
         {rows.map((r, i) => (
           <div key={i} className="flex items-center gap-2 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-sm">
-            <span className="font-mono w-20 text-xs">U{r.u_bot}–U{r.u_top}</span>
+            <span className="font-mono w-20 text-xs">U{r.u_bot}-U{r.u_top}</span>
             <span className="flex-1 truncate font-semibold text-[#0a2350]">{r.label}</span>
-            <span className="text-xs text-slate-500">{r.customer || "—"}</span>
+            <span className="text-xs text-slate-500">{r.customer || "-"}</span>
             <button onClick={() => remove(i)} className="text-slate-400 hover:text-red-600">×</button>
           </div>
         ))}
@@ -611,7 +611,7 @@ const IPsTab = () => {
         </select>
         <button className={btnPrimary} onClick={() => setEditing("new")}>+ New IP</button>
       </div>
-      {ips.length === 0 && <div className="text-center py-8 text-sm text-slate-500">No IP records — add your first below.</div>}
+      {ips.length === 0 && <div className="text-center py-8 text-sm text-slate-500">No IP records - add your first below.</div>}
       {ips.length > 0 && (
         <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
           <table className="w-full min-w-[720px] text-sm">
@@ -621,9 +621,9 @@ const IPsTab = () => {
             <tbody>{ips.map((ip) => (
               <tr key={ip.id} className="border-t border-slate-100">
                 <td className="px-4 py-3 font-mono">{ip.address}</td>
-                <td className="px-4 py-3 text-xs">{ip.hostname || "—"}</td>
-                <td className="px-4 py-3 text-xs">{ip.role || "—"}</td>
-                <td className="px-4 py-3 text-xs">{ip.customer || "—"}</td>
+                <td className="px-4 py-3 text-xs">{ip.hostname || "-"}</td>
+                <td className="px-4 py-3 text-xs">{ip.role || "-"}</td>
+                <td className="px-4 py-3 text-xs">{ip.customer || "-"}</td>
                 <td className="px-4 py-3 text-xs"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${ip.status === "active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"}`}>{ip.status}</span></td>
                 <td className="px-4 py-3 text-right">
                   <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(ip)}>Edit</button>
@@ -732,7 +732,7 @@ export const AdminDiagnostics = () => {
   };
   return (
     <div>
-      <PageHeader title="Diagnostic Tools" subtitle="Ping, traceroute, nslookup, whois, and blacklist checks — from Intercloud's network vantage point." />
+      <PageHeader title="Diagnostic Tools" subtitle="Ping, traceroute, nslookup, whois, and blacklist checks - from Intercloud's network vantage point." />
       <Card className="p-6">
         <form onSubmit={run} className="flex flex-wrap items-end gap-2">
           <label className="flex-1 min-w-[220px]"><div className={labelClass}>Target (IP or Domain)</div><input required value={target} onChange={(e) => setTarget(e.target.value)} className={inputClass} data-testid="diag-target" /></label>
@@ -752,7 +752,7 @@ export const AdminDiagnostics = () => {
 /* -------------------- Add-ons (coming soon skeleton) -------------------- */
 export const AdminAddons = () => (
   <div>
-    <PageHeader title="Product Add-ons" subtitle="Attach optional extras to any base product — extra IPv4, DDoS protection, weekly backups, control panel license." />
+    <PageHeader title="Product Add-ons" subtitle="Attach optional extras to any base product - extra IPv4, DDoS protection, weekly backups, control panel license." />
     <Card className="p-6">
       <table className="w-full min-w-[720px] text-sm">
         <thead className="text-xs uppercase tracking-widest text-slate-500 border-b border-slate-200"><tr><th className="text-left py-2">Add-on</th><th className="text-left">Category</th><th className="text-right">Monthly</th><th className="text-left">Attached to</th></tr></thead>
@@ -764,7 +764,7 @@ export const AdminAddons = () => (
           ["Managed OS", "managed", "Rp 500.000", "VPS · Dedicated"],
         ].map((r, i) => (<tr key={i} className="border-b border-slate-100"><td className="py-2 font-bold text-[#0a2350]">{r[0]}</td><td className="uppercase text-xs font-bold text-[#f5b120]">{r[1]}</td><td className="text-right font-semibold">{r[2]}</td><td className="text-xs text-slate-500">{r[3]}</td></tr>))}</tbody>
       </table>
-      <p className="mt-4 text-[11px] text-slate-500">Full CRUD coming next — model already lives on the backend.</p>
+      <p className="mt-4 text-[11px] text-slate-500">Full CRUD coming next - model already lives on the backend.</p>
     </Card>
   </div>
 );

@@ -8,7 +8,7 @@ import {
   Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck,
 } from "lucide-react";
 
-/* Unified Integrations page — replaces the old split "Integrations" + "Real APIs".
+/* Unified Integrations page - replaces the old split "Integrations" + "Real APIs".
    Drives the /admin/integrations-v2 schema (single source of truth). Adds IMAP
    for inbound mail alongside SMTP for outbound. */
 
@@ -62,7 +62,7 @@ const AdminIntegrations = () => {
     <div>
       <PageHeader
         title="Integrations"
-        subtitle="Every third-party credential in one place — virtualization (Proxmox), network (MikroTik), hosting provisioning (cPanel / Plesk), payment gateways, and email (SMTP outbound + IMAP inbound). Paste credentials, hit Test, then Save."
+        subtitle="Every third-party credential in one place - virtualization (Proxmox), network (MikroTik), hosting provisioning (cPanel / Plesk), payment gateways, and email (SMTP outbound + IMAP inbound). Paste credentials, hit Test, then Save."
       />
 
       <div className="mb-5 grid sm:grid-cols-3 gap-3">

@@ -7,7 +7,7 @@ const DESC = "PT. Intercloud Digital Inovasi menyediakan layanan Cloud, Hosting,
 const OG_DESC = "Penyedia layanan Cloud, Data Center, Konektivitas & Solusi IT terpercaya di Indonesia. SLA 99,5%, dukungan 24/7, harga terbaik.";
 const OG_IMAGE = `${ORIGIN}/og-image.png`;
 
-// Homepage/default SEO — mirrors the static tags in public/index.html that
+// Homepage/default SEO - mirrors the static tags in public/index.html that
 // index.js strips at runtime so react-helmet-async is the single owner.
 export const DefaultSeo = ({ title = TITLE, description = DESC, path = "/" }) => (
   <Helmet>

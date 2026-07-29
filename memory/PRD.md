@@ -109,6 +109,54 @@ preflight before certbot, verbose certbot with fail-loud, robust nginx
 template (no `map` directive), `/var/www/html/.well-known/acme-challenge`
 webroot pre-created, `server_tokens off`.
 
+## Round 2 — Batch 10 — Global UI polish & anti-slop token pass (2026-02-25)
+- **Design read**: "Global token & readability refresh untuk semua surface,
+  tetap navy `#0a2350` + kuning `#f5b120`, fokus visibility (WCAG AA/AAA
+  kontras), readability (font scale, line-height), konsistensi (accent /
+  radius / focus lock), tanpa merombak struktur layout." Dial 5 / 3 / 4.
+- **Semua fitur tetap jalan** — backend pytest 422 passed / 34 skipped /
+  0 failed setelah refactor.
+- Perubahan yang cascade otomatis lewat token-level CSS
+  (`/app/frontend/src/index.css` + `/app/frontend/src/App.css`):
+  - Semantic CSS variables baru: `--ic-navy-*`, `--ic-yellow-*`,
+    `--ic-text-{primary,secondary,muted,subtle}` — semua sudah audited
+    untuk WCAG AA/AAA kontras di white bg.
+  - Shadcn HSL vars di-remap ke brand: primary=navy, accent=yellow,
+    ring=yellow, chart colors=brand palette. Semua komponen shadcn
+    inherit tanpa rebuild.
+  - Focus ring beralih dari navy-outline 2px → **kuning `#f5b120`
+    outline 2px + offset 2px** (highest contrast pada semua bg).
+  - Body font stack diperbarui memakai **Plus Jakarta Sans**
+    (sudah loaded) dengan `font-feature-settings: 'cv02','cv03','cv04','cv11'`
+    + `text-rendering: optimizeLegibility` + line-height 1.55.
+  - `text-slate-500` / `text-gray-500` di-force ke `slate-600` (7.5:1
+    vs putih, dari 4.6:1) supaya lolos AA global.
+  - Heading defaults (h1-h6): weight 800, letter-spacing -0.015em,
+    line-height 1.15, **color: inherit** (tidak memaksa navy — hero
+    dark tetap `text-white` aman).
+  - Type-scale utility baru: `.ic-h1/.ic-h2/.ic-h3/.ic-lead/.ic-body/.ic-meta`
+    dengan `clamp()` untuk fluid scaling.
+  - `.App` height: `100vh` → `100dvh` (viewport stability iOS).
+  - `.card-lift` refined cubic-bezier + reduced-motion aware.
+  - `.ic-tile` interactive class baru dengan focus-visible ring kuning.
+  - Disabled state: opacity 0.5 → 0.65 (fix AA fail pada tombol disabled).
+- **EM-DASH BAN (Section 9.G taste-skill)** sweep total:
+  - 295 `—` di frontend .jsx/.js → 0.
+  - `emails.py` (43), `routes.py` (114), + 8 file `portal/*.py` lain → 0.
+  - `&mdash;`/`&ndash;` HTML entities di email templates juga dihapus.
+  - Semua string user-visible (headline, email subject/body, PDF invoice
+    text, DCIM data labels, error messages, notification subjects) sekarang
+    pakai hyphen `-` biasa.
+  - Test `test_pdf_docs.py::test_unpaid_invoice_shows_bank_transfer_panel`
+    diupdate assertion string untuk cocok policy baru.
+- Diverifikasi via screenshot smoke:
+  - `/` (landing hero) — heading tetap navy `#0a2350` + kuning aksen,
+    body copy lebih terbaca dengan Jakarta Sans + leading 1.55.
+  - `/portal/login` — form clean, hierarchy tegas.
+  - `/portal/admin/dashboard` — KPI number extrabold + tighter tracking,
+    sidebar rapi.
+  - `/status` — status page kontras jelas, badge Degraded tetap merah.
+
 ## Round 2 — Batch 9 — Pytest suite stabilisation (2026-02-25)
 - **Backend test suite hijau 100%**: 422 passed, 34 skipped, 0 failed, 0 errors
   di `python -m pytest tests/` (dua worker xdist loadscope, ±6 menit).

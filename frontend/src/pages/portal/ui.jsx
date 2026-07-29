@@ -100,7 +100,7 @@ export const ComingSoon = ({ title, description, features = [] }) => (
       <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#f5b120]/20 text-[#0a2350] text-[10px] font-bold uppercase tracking-widest">
         Coming Soon
       </div>
-      <h3 className="mt-4 text-xl font-extrabold text-[#0a2350]">Module ready — awaiting real credentials</h3>
+      <h3 className="mt-4 text-xl font-extrabold text-[#0a2350]">Module ready - awaiting real credentials</h3>
       <p className="mt-2 text-sm text-slate-500 max-w-lg mx-auto">
         The UI screens are mocked. Add the credentials in <span className="font-semibold">Integrations</span> and this module will go live.
       </p>

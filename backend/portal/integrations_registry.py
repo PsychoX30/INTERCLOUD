@@ -66,7 +66,7 @@ MODULE_SCHEMAS = {
     "duitku": {
         "label": "Duitku Payment Gateway",
         "category": "payment",
-        "description": "Indonesian payment gateway — VA, e-wallet, QRIS, retail outlets.",
+        "description": "Indonesian payment gateway - VA, e-wallet, QRIS, retail outlets.",
         "fields": [
             FIELD("merchant_code", "Merchant Code", required=True),
             FIELD("api_key", "API Key", "password", required=True),

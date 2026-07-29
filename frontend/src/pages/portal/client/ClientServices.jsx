@@ -141,7 +141,7 @@ const ServiceDetail = ({ service, onClose }) => {
                 <button className={btnSecondary}>Rebuild OS</button>
                 <button className={btnSecondary}>Snapshot</button>
               </div>
-              <p className="mt-3 text-[11px] text-slate-500">Proxmox integration mocked — will go live once credentials are added under Integrations.</p>
+              <p className="mt-3 text-[11px] text-slate-500">Proxmox integration mocked - will go live once credentials are added under Integrations.</p>
             </Card>
           )}
 
@@ -156,7 +156,7 @@ const ServiceDetail = ({ service, onClose }) => {
                 <button className={btnSecondary}>Change Password</button>
                 <button className={btnSecondary}>Restore Backup</button>
               </div>
-              <p className="mt-3 text-[11px] text-slate-500">cPanel/Plesk integration mocked — will go live once credentials are added under Integrations.</p>
+              <p className="mt-3 text-[11px] text-slate-500">cPanel/Plesk integration mocked - will go live once credentials are added under Integrations.</p>
             </Card>
           )}
         </div>

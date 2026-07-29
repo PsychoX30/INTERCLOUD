@@ -61,7 +61,7 @@ const AdminMediaLibrary = () => {
       const d = e?.response?.data?.detail;
       if (e?.response?.status === 409) {
         const list = (d?.used_in || []).map((u) => u.label).join(", ");
-        toast.error(`Still in use: ${list || "referenced elsewhere"} — detach it first.`);
+        toast.error(`Still in use: ${list || "referenced elsewhere"} - detach it first.`);
       } else {
         toast.error(typeof d === "string" ? d : "Delete failed");
       }
@@ -74,7 +74,7 @@ const AdminMediaLibrary = () => {
     <div data-testid="media-library-page">
       <PageHeader
         title="Media Library"
-        subtitle="Shared images for articles, branding, and campaigns. Uploaded files are served from this portal — reuse them anywhere via their URL."
+        subtitle="Shared images for articles, branding, and campaigns. Uploaded files are served from this portal - reuse them anywhere via their URL."
         actions={
           <>
             <input ref={fileRef} type="file" accept="image/*" className="hidden"
@@ -111,7 +111,7 @@ const AdminMediaLibrary = () => {
           <EmptyState
             title={rows.length === 0 ? "The media library is empty" : "No assets match your filter"}
             body={rows.length === 0
-              ? "Upload your first image — it becomes instantly reusable as an article cover, branding asset, or campaign visual."
+              ? "Upload your first image - it becomes instantly reusable as an article cover, branding asset, or campaign visual."
               : "Try clearing the search box or tag filter."}
           />
           {rows.length === 0 && (
@@ -201,7 +201,7 @@ const EditModal = ({ m, onClose, onSaved }) => {
   );
 };
 
-// Reusable picker modal — used by AdminArticles (cover) and AdminBranding (logo)
+// Reusable picker modal - used by AdminArticles (cover) and AdminBranding (logo)
 export const MediaPickerModal = ({ onPick, onClose }) => {
   const [rows, setRows] = useState(null);
   useEffect(() => { api.get("/admin/media").then((r) => setRows(r.data || [])); }, []);

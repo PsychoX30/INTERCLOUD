@@ -6,21 +6,21 @@ import { MediaPickerModal } from "./AdminMediaLibrary";
 const FIELDS = [
   {
     key: "logo_dark",
-    label: "Logo — dark on white",
-    hint: "The MAIN logo. Used on invoice PDFs, email headers, browser search cards, and the Admin sidebar. Upload a version whose colours read well on a WHITE background — the light-on-dark variant is auto-derived from this by inverting colours.",
+    label: "Logo - dark on white",
+    hint: "The MAIN logo. Used on invoice PDFs, email headers, browser search cards, and the Admin sidebar. Upload a version whose colours read well on a WHITE background - the light-on-dark variant is auto-derived from this by inverting colours.",
     background: "#ffffff",
   },
   {
     key: "logo_light",
-    label: "Logo — light on dark (optional override)",
-    hint: "Leave empty — the landing header/footer will auto-invert your dark-on-white logo to a white silhouette. Upload here ONLY if you want a bespoke variant (e.g. tagline in a different colour).",
+    label: "Logo - light on dark (optional override)",
+    hint: "Leave empty - the landing header/footer will auto-invert your dark-on-white logo to a white silhouette. Upload here ONLY if you want a bespoke variant (e.g. tagline in a different colour).",
     background: "#0a2350",
     invert_fallback: true,
   },
   {
     key: "favicon",
     label: "Favicon",
-    hint: "The 32×32 icon in the browser tab. Any square PNG will do — the browser scales it down.",
+    hint: "The 32×32 icon in the browser tab. Any square PNG will do - the browser scales it down.",
     background: "#f1f5f9",
   },
   {
@@ -31,7 +31,7 @@ const FIELDS = [
   },
 ];
 
-const MAX_BYTES = 4 * 1024 * 1024; // 4 MB — matches backend cap.
+const MAX_BYTES = 4 * 1024 * 1024; // 4 MB - matches backend cap.
 
 const fileToDataUrl = (file) =>
   new Promise((resolve, reject) => {
@@ -42,7 +42,7 @@ const fileToDataUrl = (file) =>
   });
 
 const readableBytes = (n) => {
-  if (!n && n !== 0) return "—";
+  if (!n && n !== 0) return "-";
   if (n > 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   if (n > 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${n} B`;
@@ -64,7 +64,7 @@ const AdminBranding = () => {
   const onFile = async (key, file) => {
     if (!file) return;
     if (file.size > MAX_BYTES) {
-      setMsg({ kind: "error", text: `${file.name} is ${readableBytes(file.size)} — max ${readableBytes(MAX_BYTES)}` });
+      setMsg({ kind: "error", text: `${file.name} is ${readableBytes(file.size)} - max ${readableBytes(MAX_BYTES)}` });
       return;
     }
     if (!/^image\//.test(file.type)) {
@@ -113,7 +113,7 @@ const AdminBranding = () => {
       <div className="mb-8">
         <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Branding</h1>
         <p className="mt-1.5 text-sm text-slate-500 max-w-2xl">
-          Upload logo variants, favicon, and email banner without touching code. Changes take effect immediately — new invoices, PDFs, and emails will use the uploaded artwork.
+          Upload logo variants, favicon, and email banner without touching code. Changes take effect immediately - new invoices, PDFs, and emails will use the uploaded artwork.
         </p>
       </div>
 
@@ -198,10 +198,10 @@ const AdminBranding = () => {
       <div className="mt-8 rounded-2xl border border-slate-200 bg-slate-50/40 p-5 text-sm text-slate-600">
         <div className="font-semibold text-[#0a2350] mb-1.5">Where these are used</div>
         <ul className="list-disc pl-5 space-y-1 text-[13px]">
-          <li><b>logo_dark</b> — Invoice / Quotation PDF header, all transactional email headers, and the JSON-LD publisher logo picked up by Google search results.</li>
-          <li><b>logo_light</b> — Landing page header + footer (dark navy background).</li>
-          <li><b>favicon</b> — Reserved for a future favicon-swap; currently uploaded to storage only. Bake into <span className="font-mono">public/index.html</span> or wait for the runtime favicon injector.</li>
-          <li><b>email_banner</b> — Optional wide banner rendered inside the email body wrapper. Empty means no banner.</li>
+          <li><b>logo_dark</b> - Invoice / Quotation PDF header, all transactional email headers, and the JSON-LD publisher logo picked up by Google search results.</li>
+          <li><b>logo_light</b> - Landing page header + footer (dark navy background).</li>
+          <li><b>favicon</b> - Reserved for a future favicon-swap; currently uploaded to storage only. Bake into <span className="font-mono">public/index.html</span> or wait for the runtime favicon injector.</li>
+          <li><b>email_banner</b> - Optional wide banner rendered inside the email body wrapper. Empty means no banner.</li>
         </ul>
       </div>
       {pickerKey && (

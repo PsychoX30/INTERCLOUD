@@ -33,7 +33,7 @@ const REASON_TONE = {
   recaptcha_low_score: "text-amber-700 bg-amber-50 border-amber-200",
 };
 const fmtTime = (iso) => {
-  if (!iso) return "—";
+  if (!iso) return "-";
   try { return new Date(iso).toLocaleString("id-ID", { hour: "2-digit", minute: "2-digit", month: "short", day: "2-digit" }); }
   catch { return iso.slice(0, 19); }
 };
@@ -209,7 +209,7 @@ const AnalyticsPanel = () => {
               {data.recent.map((r) => (
                 <tr key={r.id} className="border-t border-slate-100">
                   <td className="px-4 py-2 text-xs text-slate-500">{fmtTime(r.created_at)}</td>
-                  <td className="px-4 py-2 truncate max-w-[220px]" title={r.email}>{r.email || "—"}</td>
+                  <td className="px-4 py-2 truncate max-w-[220px]" title={r.email}>{r.email || "-"}</td>
                   <td className="px-4 py-2 uppercase text-[10px] font-bold text-[#f5b120]">{r.action}</td>
                   <td className="px-4 py-2 font-mono text-xs">{r.ip}</td>
                   <td className="px-4 py-2">
@@ -218,7 +218,7 @@ const AnalyticsPanel = () => {
                     </span>
                   </td>
                   <td className="px-4 py-2 text-right font-mono text-xs">
-                    {typeof r.recaptcha_score === "number" ? r.recaptcha_score.toFixed(2) : "—"}
+                    {typeof r.recaptcha_score === "number" ? r.recaptcha_score.toFixed(2) : "-"}
                   </td>
                 </tr>
               ))}

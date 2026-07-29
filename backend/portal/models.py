@@ -46,7 +46,7 @@ class FactoryResetIn(BaseModel):
     """Payload for POST /admin/system/factory-reset.
 
     - `admin_password`: current admin's password, re-entered for confirmation.
-    - `confirm`: must equal the literal string "FACTORY RESET" — a second
+    - `confirm`: must equal the literal string "FACTORY RESET" - a second
       seatbelt on top of the password check so a leaked token alone can't
       wipe an install.
     """
@@ -180,7 +180,7 @@ class ProductIn(BaseModel):
     billing_cycle: Literal["monthly", "quarterly", "semiannual", "annual"] = "monthly"
     features: List[str] = []
     is_active: bool = True
-    # New — WHMCS-style configurable product
+    # New - WHMCS-style configurable product
     is_addon: bool = False
     applies_to_product_ids: List[str] = []     # for add-ons: which base products this attaches to
     applies_to_categories: List[str] = []      # for add-ons: OR-attach to any product in these cats
@@ -246,13 +246,13 @@ class OrderIn(BaseModel):
     product_id: str
     notes: str = ""
     config: dict = {}                             # legacy free-form (kept for back-compat)
-    selections: List[OrderConfigSelection] = []   # new — WHMCS-style option choices
+    selections: List[OrderConfigSelection] = []   # new - WHMCS-style option choices
     addon_ids: List[str] = []                     # attached add-on product IDs
     billing_cycle: Optional[str] = None           # optional override; else product default
 
 
 class OrderPreviewOut(BaseModel):
-    """Price breakdown returned by POST /orders/preview — used by the Review step."""
+    """Price breakdown returned by POST /orders/preview - used by the Review step."""
     base_line: dict
     option_lines: List[dict] = []
     addon_lines: List[dict] = []

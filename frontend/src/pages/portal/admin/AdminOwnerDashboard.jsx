@@ -23,7 +23,7 @@ const AdminOwnerDashboard = () => {
     <div data-testid="owner-dashboard-page">
       <PageHeader
         title="Executive Overview"
-        subtitle="Read-only, fleet-wide summary — MRR, ARR, ARPU, churn, revenue trend, NOC uptime, SLA outage minutes, and top-revenue clients. Refreshes on demand."
+        subtitle="Read-only, fleet-wide summary - MRR, ARR, ARPU, churn, revenue trend, NOC uptime, SLA outage minutes, and top-revenue clients. Refreshes on demand."
         actions={<button className={btnSecondary} onClick={load} data-testid="owner-refresh"><RefreshCw className="h-4 w-4" /> Refresh</button>}
       />
 
@@ -37,18 +37,18 @@ const AdminOwnerDashboard = () => {
 
       {/* NOC + Support row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <BigKPI label="NOC Uptime (24h)" value={d.noc.uptime_24h_pct == null ? "—" : `${d.noc.uptime_24h_pct}%`}
+        <BigKPI label="NOC Uptime (24h)" value={d.noc.uptime_24h_pct == null ? "-" : `${d.noc.uptime_24h_pct}%`}
                 sub={`${d.noc.samples_24h} probes · ${d.noc.devices_down}/${d.noc.devices_total} down`}
                 tone={d.noc.uptime_24h_pct == null ? "default" : d.noc.uptime_24h_pct >= 99.5 ? "emerald" : d.noc.uptime_24h_pct >= 99 ? "warn" : "danger"}
                 testid="owner-uptime-24h" Icon={ShieldCheck} />
-        <BigKPI label="NOC Uptime (7d)" value={d.noc.uptime_7d_pct == null ? "—" : `${d.noc.uptime_7d_pct}%`} sub="Rolling 7-day fleet avg" tone={d.noc.uptime_7d_pct == null ? "default" : d.noc.uptime_7d_pct >= 99.5 ? "emerald" : "warn"} testid="owner-uptime-7d" Icon={ShieldCheck} />
+        <BigKPI label="NOC Uptime (7d)" value={d.noc.uptime_7d_pct == null ? "-" : `${d.noc.uptime_7d_pct}%`} sub="Rolling 7-day fleet avg" tone={d.noc.uptime_7d_pct == null ? "default" : d.noc.uptime_7d_pct >= 99.5 ? "emerald" : "warn"} testid="owner-uptime-7d" Icon={ShieldCheck} />
         <BigKPI label="Outage minutes (30d)" value={d.noc.outage_minutes_30d} sub="Sum of 5-min down samples" tone={d.noc.outage_minutes_30d > 60 ? "danger" : "warn"} testid="owner-outage-30d" Icon={AlertTriangle} />
         <BigKPI label="Open tickets" value={d.support.open_tickets} sub={`${d.support.critical_open} critical`} tone={d.support.critical_open > 0 ? "danger" : "default"} testid="owner-tickets" Icon={ServerCog} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <Card className="p-5 lg:col-span-2">
-          <div className="text-sm font-bold text-[#0a2350] mb-1">Revenue trend — last 12 months</div>
+          <div className="text-sm font-bold text-[#0a2350] mb-1">Revenue trend - last 12 months</div>
           <div className="text-xs text-slate-500 mb-3">Paid invoices summed by month.</div>
           <div className="h-72" style={{ minWidth: 0 }}>
             <ResponsiveContainer width="100%" height="100%" minHeight={288}>
@@ -87,7 +87,7 @@ const AdminOwnerDashboard = () => {
 
       <Card className="p-5 mb-6">
         <div className="text-sm font-bold text-[#0a2350] mb-1">Invoices generated per month</div>
-        <div className="text-xs text-slate-500 mb-3">Volume of paid invoices — signals sales/renewal cadence.</div>
+        <div className="text-xs text-slate-500 mb-3">Volume of paid invoices - signals sales/renewal cadence.</div>
         <div className="h-56" style={{ minWidth: 0 }}>
           <ResponsiveContainer width="100%" height="100%" minHeight={224}>
             <BarChart data={d.revenue_trend_12m}>

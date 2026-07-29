@@ -43,8 +43,8 @@ const dict = {
     en: "to",
   },
   "hero.body3": {
-    id: "— semuanya kami dukung dengan solusi yang tepat.",
-    en: "— we support you with the right solution.",
+    id: "- semuanya kami dukung dengan solusi yang tepat.",
+    en: "- we support you with the right solution.",
   },
   "hero.aud.company": { id: "Perusahaan", en: "Enterprises" },
   "hero.aud.software": { id: "Software House", en: "Software Houses" },
@@ -57,8 +57,8 @@ const dict = {
   "feat.eyebrow": { id: "Why Choose Us", en: "Why Choose Us" },
   "feat.title": { id: "Kenapa Memilih Intercloud?", en: "Why Choose Intercloud?" },
   "feat.subtitle": {
-    id: "Kami tidak hanya menyediakan layanan — kami menjadi partner strategis untuk pertumbuhan bisnis digital Anda.",
-    en: "We're more than a service provider — we're a strategic partner for your digital growth.",
+    id: "Kami tidak hanya menyediakan layanan - kami menjadi partner strategis untuk pertumbuhan bisnis digital Anda.",
+    en: "We're more than a service provider - we're a strategic partner for your digital growth.",
   },
 
   // Infrastructure (How it works)
@@ -66,8 +66,8 @@ const dict = {
   "infra.title_a": { id: "Empat lapisan yang menopang", en: "Four layers that keep" },
   "infra.title_b": { id: "operasional digital Anda", en: "your digital business online" },
   "infra.subtitle": {
-    id: "Dari fasilitas fisik Tier III hingga konektivitas global — begini cara Intercloud menghadirkan infrastruktur yang stabil, aman, dan siap berkembang untuk bisnis Anda.",
-    en: "From Tier III physical facilities to global connectivity — here's how Intercloud delivers stable, secure, and scalable infrastructure for your business.",
+    id: "Dari fasilitas fisik Tier III hingga konektivitas global - begini cara Intercloud menghadirkan infrastruktur yang stabil, aman, dan siap berkembang untuk bisnis Anda.",
+    en: "From Tier III physical facilities to global connectivity - here's how Intercloud delivers stable, secure, and scalable infrastructure for your business.",
   },
   "infra.dc.title": { id: "Fasilitas Data Center", en: "Data Center Facility" },
   "infra.dc.meta": { id: "Layer 1 · Fasilitas Fisik", en: "Layer 1 · Physical Facility" },
@@ -142,16 +142,16 @@ const dict = {
   },
   "dg.help.title": { id: "Belum yakin pilih yang mana?", en: "Not sure which to pick?" },
   "dg.help.body": {
-    id: "Konsultasikan kebutuhan server Anda bersama tim Intercloud Digital Inovasi — kami bantu rekomendasikan solusi yang paling sesuai.",
-    en: "Consult with the Intercloud Digital Inovasi team — we'll recommend the solution that fits you best.",
+    id: "Konsultasikan kebutuhan server Anda bersama tim Intercloud Digital Inovasi - kami bantu rekomendasikan solusi yang paling sesuai.",
+    en: "Consult with the Intercloud Digital Inovasi team - we'll recommend the solution that fits you best.",
   },
 
   // Pricing
   "pr.eyebrow": { id: "Katalog Layanan", en: "Service Catalog" },
   "pr.title": { id: "Paket Lengkap untuk Skala Bisnis Anda", en: "Complete Plans for Every Business Scale" },
   "pr.subtitle": {
-    id: "Harga transparan untuk Dedicated Server, Colocation, dan Interconnect & BGP Session — infrastruktur cloud terbaik dari Data Center Jakarta.",
-    en: "Transparent pricing for Dedicated Server, Colocation, and Interconnect & BGP Session — top cloud infrastructure from Jakarta's data centers.",
+    id: "Harga transparan untuk Dedicated Server, Colocation, dan Interconnect & BGP Session - infrastruktur cloud terbaik dari Data Center Jakarta.",
+    en: "Transparent pricing for Dedicated Server, Colocation, and Interconnect & BGP Session - top cloud infrastructure from Jakarta's data centers.",
   },
   "pr.tab.dedicated": { id: "Dedicated Server", en: "Dedicated Server" },
   "pr.tab.colocation": { id: "Colocation", en: "Colocation" },
@@ -161,8 +161,8 @@ const dict = {
   "pr.setupFee": { id: "setup fee", en: "setup fee" },
   "pr.custom.title": { id: "Butuh spesifikasi custom atau paket enterprise?", en: "Need custom specs or an enterprise plan?" },
   "pr.custom.body": {
-    id: "Kami menyediakan custom quotation untuk Cloud, Firewall Solution, Lease to Own Appliance, dan kebutuhan hybrid infrastructure — sesuai kebutuhan bisnis Anda.",
-    en: "We provide custom quotations for Cloud, Firewall Solution, Lease-to-Own Appliance, and hybrid infrastructure needs — tailored to your business.",
+    id: "Kami menyediakan custom quotation untuk Cloud, Firewall Solution, Lease to Own Appliance, dan kebutuhan hybrid infrastructure - sesuai kebutuhan bisnis Anda.",
+    en: "We provide custom quotations for Cloud, Firewall Solution, Lease-to-Own Appliance, and hybrid infrastructure needs - tailored to your business.",
   },
 
   // Partners
@@ -174,8 +174,8 @@ const dict = {
   },
   "pt.count.label": { id: "Klien & Mitra Aktif", en: "Active Clients & Partners" },
   "pt.count.body": {
-    id: "Dari operator fiber-to-the-home lokal hingga brand ritel — Intercloud mendukung koneksi, cloud, dan colocation mereka setiap hari.",
-    en: "From local fiber-to-the-home operators to retail brands — Intercloud powers their connectivity, cloud, and colocation every day.",
+    id: "Dari operator fiber-to-the-home lokal hingga brand ritel - Intercloud mendukung koneksi, cloud, dan colocation mereka setiap hari.",
+    en: "From local fiber-to-the-home operators to retail brands - Intercloud powers their connectivity, cloud, and colocation every day.",
   },
 
   // PoP
@@ -186,10 +186,10 @@ const dict = {
     en: "Four strategic PoP locations in Jakarta connect your infrastructure to the Intercloud network with low latency and high reliability.",
   },
   "pop.tagLabel": { id: "Lokasi", en: "Location" },
-  "pop.item1.name": { id: "Metta DC — Cyber 1, Lantai 5", en: "Metta DC — Cyber 1, 5th Floor" },
-  "pop.item2.name": { id: "Omni DC — Cyber 1, Lantai 2", en: "Omni DC — Cyber 1, 2nd Floor" },
+  "pop.item1.name": { id: "Metta DC - Cyber 1, Lantai 5", en: "Metta DC - Cyber 1, 5th Floor" },
+  "pop.item2.name": { id: "Omni DC - Cyber 1, Lantai 2", en: "Omni DC - Cyber 1, 2nd Floor" },
   "pop.item3.name": { id: "TIFA Building", en: "TIFA Building" },
-  "pop.item4.name": { id: "APJII DC — Cyber 1, Lantai 1", en: "APJII DC — Cyber 1, 1st Floor" },
+  "pop.item4.name": { id: "APJII DC - Cyber 1, Lantai 1", en: "APJII DC - Cyber 1, 1st Floor" },
   "pop.item1.desc": {
     id: "PoP utama untuk BGP peering, interkoneksi domestik, dan konektivitas ke IXP lokal.",
     en: "Primary PoP for BGP peering, domestic interconnection, and local IXP connectivity.",
@@ -241,8 +241,8 @@ const dict = {
 
   // Footer
   "footer.tagline": {
-    id: "PT. Intercloud Digital Inovasi — penyedia layanan Cloud, Data Center, Konektivitas, dan Solusi IT terpercaya di Indonesia.",
-    en: "PT. Intercloud Digital Inovasi — a trusted provider of Cloud, Data Center, Connectivity, and IT Solutions in Indonesia.",
+    id: "PT. Intercloud Digital Inovasi - penyedia layanan Cloud, Data Center, Konektivitas, dan Solusi IT terpercaya di Indonesia.",
+    en: "PT. Intercloud Digital Inovasi - a trusted provider of Cloud, Data Center, Connectivity, and IT Solutions in Indonesia.",
   },
   "footer.pages": { id: "Pages", en: "Pages" },
   "footer.services": { id: "Layanan", en: "Services" },
@@ -319,7 +319,7 @@ export const LanguageProvider = ({ children }) => {
 
   const setLang = useCallback((next) => setLangState(next), []);
 
-  // Merged translation dict — overrides win over shipped defaults.
+  // Merged translation dict - overrides win over shipped defaults.
   const mergedDict = useMemo(
     () => ({ ...dict, ...(overrides || {}) }),
     [overrides]

@@ -4,7 +4,7 @@ import { useLocation } from "react-router-dom";
 /**
  * On every route change scroll the window (and the outermost scrollable
  * container) back to the top. React Router keeps the previous scroll
- * position when navigating between routes — for content-heavy pages like
+ * position when navigating between routes - for content-heavy pages like
  * TOS / AUP / SLA the user would otherwise land mid-page.
  *
  * If the URL has a hash (e.g. /#services), we instead try to scroll that
@@ -20,7 +20,7 @@ const ScrollToTop = () => {
 
   useEffect(() => {
     if (hash) {
-      // Poll briefly for the target — Landing sections mount after the route
+      // Poll briefly for the target - Landing sections mount after the route
       // component itself, so the element may not exist in the very first tick.
       const id = hash.slice(1);
       let attempts = 0;

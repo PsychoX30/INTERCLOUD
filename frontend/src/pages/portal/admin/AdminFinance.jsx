@@ -113,7 +113,7 @@ const BillingDefaultsPane = () => {
         <div className="text-lg font-bold text-[#0a2350] mb-1">Billing Defaults</div>
         <p className="text-sm text-slate-500 mb-5">
           Nilai PPN di bawah hanyalah <b>saran awal</b> yang di-prefill saat membuat invoice/quotation
-          baru dan invoice renewal otomatis — selalu bisa diubah manual per dokumen (termasuk 0%).
+          baru dan invoice renewal otomatis - selalu bisa diubah manual per dokumen (termasuk 0%).
           Tidak ada perhitungan ulang otomatis setelah dokumen dibuat.
         </p>
         {err && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
@@ -191,7 +191,7 @@ const RevenueList = ({ rows }) => (
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.id} className="border-t border-slate-100"><td className="px-4 py-3 text-slate-600">{r.paid_at}</td><td className="px-4 py-3 font-semibold">{r.number}</td><td className="px-4 py-3">{r.customer || "—"}</td><td className="px-4 py-3 text-right font-bold text-emerald-700">{idr(r.total)}</td></tr>
+          <tr key={r.id} className="border-t border-slate-100"><td className="px-4 py-3 text-slate-600">{r.paid_at}</td><td className="px-4 py-3 font-semibold">{r.number}</td><td className="px-4 py-3">{r.customer || "-"}</td><td className="px-4 py-3 text-right font-bold text-emerald-700">{idr(r.total)}</td></tr>
         ))}
         {rows.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-400">No paid invoices in the period.</td></tr>}
       </tbody>
@@ -207,7 +207,7 @@ const AssetsList = ({ rows }) => (
       </thead>
       <tbody>
         {rows.map((a) => (
-          <tr key={a.id} className="border-t border-slate-100"><td className="px-4 py-3 font-semibold text-[#0a2350]">{a.name}</td><td className="px-4 py-3">{a.category}</td><td className="px-4 py-3 text-slate-600">{a.purchase_date}</td><td className="px-4 py-3 text-right tabular-nums">{idr(a.value)}</td><td className="px-4 py-3 text-right tabular-nums text-slate-500">{idr(a.salvage_value || 0)}</td><td className="px-4 py-3 text-right tabular-nums">{a.useful_life_years || "—"}</td><td className="px-4 py-3 text-right tabular-nums text-amber-700">{idr(a.annual_depreciation || 0)}</td><td className="px-4 py-3 text-right font-bold tabular-nums">{idr(a.book_value)}</td><td className="px-4 py-3 text-right tabular-nums text-red-700">{idr(a.accumulated_depreciation)}</td></tr>
+          <tr key={a.id} className="border-t border-slate-100"><td className="px-4 py-3 font-semibold text-[#0a2350]">{a.name}</td><td className="px-4 py-3">{a.category}</td><td className="px-4 py-3 text-slate-600">{a.purchase_date}</td><td className="px-4 py-3 text-right tabular-nums">{idr(a.value)}</td><td className="px-4 py-3 text-right tabular-nums text-slate-500">{idr(a.salvage_value || 0)}</td><td className="px-4 py-3 text-right tabular-nums">{a.useful_life_years || "-"}</td><td className="px-4 py-3 text-right tabular-nums text-amber-700">{idr(a.annual_depreciation || 0)}</td><td className="px-4 py-3 text-right font-bold tabular-nums">{idr(a.book_value)}</td><td className="px-4 py-3 text-right tabular-nums text-red-700">{idr(a.accumulated_depreciation)}</td></tr>
         ))}
       </tbody>
     </table>
@@ -277,7 +277,7 @@ const LedgerPane = ({ rows, onChange, kind, extras }) => {
             {rows.map((r) => (
               <tr key={r.id} className="border-t border-slate-100">
                 <td className="px-4 py-3 text-slate-600">{r.date}</td>
-                {extras.map((k) => <td key={k} className="px-4 py-3">{r[k] || "—"}</td>)}
+                {extras.map((k) => <td key={k} className="px-4 py-3">{r[k] || "-"}</td>)}
                 <td className="px-4 py-3 text-right font-bold text-red-700">{idr(r.amount)}</td>
                 <td className="px-4 py-3 text-right">
                   <button onClick={() => del(r.id, r.period_yyyy_mm)} className="text-slate-600 hover:text-red-600" title="Delete"><Trash2 className="h-4 w-4" /></button>

@@ -66,7 +66,7 @@ class TestInvoicePdf:
         assert "Transactions" in html
         assert "Balance" in html
         # No bank block (bank block only for unpaid/overdue)
-        assert "Payment — Bank Transfer" not in html
+        assert "Payment - Bank Transfer" not in html
 
     def test_unpaid_invoice_shows_bank_transfer_panel(self, tokens):
         invs = requests.get(f"{API}/admin/invoices", headers=_h(tokens["admin"])).json()
@@ -75,7 +75,7 @@ class TestInvoicePdf:
         r = requests.get(f"{API}/documents/invoice/{unpaid['id']}?token={tokens['admin']}")
         html = r.text
         assert re.search(r">UNPAID<", html)
-        assert "Payment — Bank Transfer" in html
+        assert "Payment - Bank Transfer" in html
         assert "1240011911816" in html   # MANDIRI
         assert "4730862038" in html      # BCA
 

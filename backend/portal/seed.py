@@ -1,9 +1,9 @@
-"""First-boot seed — creates ONLY the admin user.
+"""First-boot seed - creates ONLY the admin user.
 
 On a fresh install we want the operator to start from an empty slate so the
 system is immediately usable for real customers, without demo debris to
 clean up. Historic demo seeding (client, sales/support/ticket-agent users,
-sample products, invoices, tickets, articles) has been removed — those
+sample products, invoices, tickets, articles) has been removed - those
 records will only exist if the operator (or a restored backup) creates
 them.
 
@@ -45,13 +45,13 @@ async def _seed_admin(db):
             "assigned_client_ids": [],
             "billing_emails": [],
             # Installer sets ADMIN_MUST_CHANGE_PASSWORD=true when it auto-generated
-            # a random password — forces a rotation on first login.
+            # a random password - forces a rotation on first login.
             "must_change_password": os.environ.get(
                 "ADMIN_MUST_CHANGE_PASSWORD", "").lower() in ("1", "true", "yes"),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
     elif not verify_password(admin_pw, a["password_hash"]):
-        # Env-driven password rotation — keeps the door open for the operator
+        # Env-driven password rotation - keeps the door open for the operator
         # who edits backend/.env to change the admin password.
         await db.users.update_one(
             {"_id": a["_id"]},
@@ -99,7 +99,7 @@ async def _write_credentials_file(db):
         import pathlib
         pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
-            f.write("# Intercloud Portal — First-boot credentials\n\n")
+            f.write("# Intercloud Portal - First-boot credentials\n\n")
             f.write("The installer seeds ONE user (admin). All other data starts empty.\n\n")
             f.write(f"| Role  | Email | Password |\n| --- | --- | --- |\n")
             f.write(f"| admin | {admin_email} | {admin_pw} |\n\n")

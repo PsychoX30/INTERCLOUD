@@ -49,8 +49,8 @@ export const features = [
     icon: "network",
     title: { id: "Koneksi Stabil", en: "Stable Connectivity" },
     desc: {
-      id: "Multi-upstream IIX, IX, dan Tier-1 global — cepat untuk domestik & internasional.",
-      en: "Multi-upstream IIX, IX, and Tier-1 global links — fast for domestic and international traffic.",
+      id: "Multi-upstream IIX, IX, dan Tier-1 global - cepat untuk domestik & internasional.",
+      en: "Multi-upstream IIX, IX, and Tier-1 global links - fast for domestic and international traffic.",
     },
   },
   {
@@ -78,8 +78,8 @@ export const services = [
       en: "Public, private, and hybrid cloud infrastructure with high performance, auto-scaling, and enterprise-grade security.",
     },
     overview: {
-      id: "Cloud Service adalah infrastruktur komputasi virtual yang bisa dipakai on-demand — Anda bisa menaikkan atau menurunkan resource sesuai kebutuhan, tanpa perlu investasi hardware fisik. Cocok untuk perusahaan yang ingin bergerak cepat tanpa dibatasi oleh CAPEX.",
-      en: "Cloud Service is on-demand virtual compute — you scale resources up or down without investing in physical hardware. Ideal for businesses that want to move fast without CAPEX constraints.",
+      id: "Cloud Service adalah infrastruktur komputasi virtual yang bisa dipakai on-demand - Anda bisa menaikkan atau menurunkan resource sesuai kebutuhan, tanpa perlu investasi hardware fisik. Cocok untuk perusahaan yang ingin bergerak cepat tanpa dibatasi oleh CAPEX.",
+      en: "Cloud Service is on-demand virtual compute - you scale resources up or down without investing in physical hardware. Ideal for businesses that want to move fast without CAPEX constraints.",
     },
     signals: {
       id: [
@@ -140,11 +140,11 @@ export const services = [
       en: "Fast hosting for websites and lightweight apps",
     },
     short: {
-      id: "Shared hosting NVMe SSD dengan cPanel, LiteSpeed, & keamanan lengkap — praktis dan mudah dikelola.",
-      en: "NVMe SSD shared hosting with cPanel, LiteSpeed, and complete security — simple and easy to manage.",
+      id: "Shared hosting NVMe SSD dengan cPanel, LiteSpeed, & keamanan lengkap - praktis dan mudah dikelola.",
+      en: "NVMe SSD shared hosting with cPanel, LiteSpeed, and complete security - simple and easy to manage.",
     },
     overview: {
-      id: "Web Hosting adalah solusi paling praktis untuk website company profile, landing page, blog, atau aplikasi skala kecil–menengah. Server dikelola oleh tim kami sehingga Anda tinggal fokus pada konten dan bisnis.",
+      id: "Web Hosting adalah solusi paling praktis untuk website company profile, landing page, blog, atau aplikasi skala kecil-menengah. Server dikelola oleh tim kami sehingga Anda tinggal fokus pada konten dan bisnis.",
       en: "Web Hosting is the simplest option for company websites, landing pages, blogs, and small-to-mid apps. Our team manages the servers so you focus on content and business.",
     },
     signals: {
@@ -165,11 +165,11 @@ export const services = [
       { icon: Building2, label: { id: "Company profile & landing page", en: "Company profile & landing pages" } },
       { icon: Globe, label: { id: "Blog, portfolio, & microsite", en: "Blogs, portfolios & microsites" } },
       { icon: Rocket, label: { id: "MVP & aplikasi ringan", en: "MVPs & light apps" } },
-      { icon: CreditCard, label: { id: "Toko online kecil-menengah", en: "Small–mid online stores" } },
+      { icon: CreditCard, label: { id: "Toko online kecil-menengah", en: "Small-mid online stores" } },
     ],
     comparison: {
-      id: "Dibanding VPS, Web Hosting jauh lebih praktis karena sudah full-managed — cocok kalau Anda belum butuh kontrol server penuh dan ingin biaya paling efisien.",
-      en: "Versus VPS, Web Hosting is far simpler because it's fully managed — ideal when you don't need full server control and want the most cost-efficient option.",
+      id: "Dibanding VPS, Web Hosting jauh lebih praktis karena sudah full-managed - cocok kalau Anda belum butuh kontrol server penuh dan ingin biaya paling efisien.",
+      en: "Versus VPS, Web Hosting is far simpler because it's fully managed - ideal when you don't need full server control and want the most cost-efficient option.",
     },
     features: {
       id: [
@@ -201,8 +201,8 @@ export const services = [
       en: "Flexible with dedicated resources",
     },
     short: {
-      id: "VPS KVM full-root access dengan storage NVMe & jaringan 1Gbps — kontrol penuh untuk aplikasi custom.",
-      en: "KVM VPS with full root access, NVMe storage & 1Gbps networking — full control for custom apps.",
+      id: "VPS KVM full-root access dengan storage NVMe & jaringan 1Gbps - kontrol penuh untuk aplikasi custom.",
+      en: "KVM VPS with full root access, NVMe storage & 1Gbps networking - full control for custom apps.",
     },
     overview: {
       id: "VPS adalah pilihan tepat ketika bisnis mulai membutuhkan resource lebih fleksibel dan kontrol lebih luas dibanding shared hosting. Anda mendapat root access, memilih OS, dan mengatur stack aplikasi sesuai kebutuhan.",
@@ -266,8 +266,8 @@ export const services = [
       en: "1U to full-rack space with N+1 power, precision cooling, and premium multi-upstream connectivity.",
     },
     overview: {
-      id: "Colocation adalah layanan penempatan server fisik milik Anda di data center kami. Anda memiliki hardware-nya, kami menyediakan tempatnya — lengkap dengan power redundant, cooling, fire suppression, dan konektivitas kelas enterprise.",
-      en: "Colocation lets you place your own physical servers inside our data center. You own the hardware, we provide the environment — with redundant power, cooling, fire suppression, and enterprise connectivity.",
+      id: "Colocation adalah layanan penempatan server fisik milik Anda di data center kami. Anda memiliki hardware-nya, kami menyediakan tempatnya - lengkap dengan power redundant, cooling, fire suppression, dan konektivitas kelas enterprise.",
+      en: "Colocation lets you place your own physical servers inside our data center. You own the hardware, we provide the environment - with redundant power, cooling, fire suppression, and enterprise connectivity.",
     },
     signals: {
       id: [
@@ -296,7 +296,7 @@ export const services = [
     features: {
       id: [
         "Data Center bersertifikasi Tier III",
-        "Redundant power N+1 (450W – 20A)",
+        "Redundant power N+1 (450W - 20A)",
         "Presisi cooling & fire suppression",
         "1Gbps local & CDN, 100Mbps global",
         "IP Public + remote hand support",
@@ -304,7 +304,7 @@ export const services = [
       ],
       en: [
         "Tier III certified data center",
-        "Redundant N+1 power (450W – 20A)",
+        "Redundant N+1 power (450W - 20A)",
         "Precision cooling & fire suppression",
         "1Gbps local & CDN, 100Mbps global",
         "Public IP + remote hand support",
@@ -323,12 +323,12 @@ export const services = [
       en: "A physical server dedicated to peak performance",
     },
     short: {
-      id: "Bare-metal server high-performance yang seluruh resource-nya dedicated untuk Anda — cocok untuk workload berat & database.",
-      en: "High-performance bare-metal server where every resource is dedicated to you — perfect for heavy workloads and databases.",
+      id: "Bare-metal server high-performance yang seluruh resource-nya dedicated untuk Anda - cocok untuk workload berat & database.",
+      en: "High-performance bare-metal server where every resource is dedicated to you - perfect for heavy workloads and databases.",
     },
     overview: {
       id: "Dedicated Server adalah layanan server khusus yang digunakan oleh satu pelanggan saja. Artinya, seluruh resource server tidak dibagi dengan pengguna lain, sehingga performa lebih stabil, keamanan lebih terjaga, dan pengelolaan teknis lebih leluasa.",
-      en: "A Dedicated Server is a server used by a single customer. Every resource is exclusively yours — leading to steadier performance, tighter security, and greater technical flexibility.",
+      en: "A Dedicated Server is a server used by a single customer. Every resource is exclusively yours - leading to steadier performance, tighter security, and greater technical flexibility.",
     },
     signals: {
       id: [
@@ -360,7 +360,7 @@ export const services = [
     features: {
       id: [
         "CPU 8 Core / 16 Thread",
-        "16GB DDR4 – upgradeable",
+        "16GB DDR4 - upgradeable",
         "2 x 300GB SAS / opsional NVMe",
         "Local BW up to 1Gbps",
         "Global BW up to 100Mbps",
@@ -368,7 +368,7 @@ export const services = [
       ],
       en: [
         "CPU 8-core / 16-thread",
-        "16GB DDR4 – upgradeable",
+        "16GB DDR4 - upgradeable",
         "2 x 300GB SAS / optional NVMe",
         "Local BW up to 1Gbps",
         "Global BW up to 100Mbps",
@@ -391,8 +391,8 @@ export const services = [
       en: "Lease-with-ownership scheme for enterprise servers, routers, firewalls, and switches from leading brands.",
     },
     overview: {
-      id: "Lease to Own Appliance memungkinkan bisnis Anda menggunakan hardware enterprise (Dell, HP, Cisco, Mikrotik, Huawei) dengan skema cicilan fleksibel — termasuk instalasi, maintenance, dan spare part. Di akhir kontrak, hardware sepenuhnya menjadi milik Anda.",
-      en: "Lease-to-Own Appliance lets your business use enterprise hardware (Dell, HP, Cisco, Mikrotik, Huawei) with flexible installments — including installation, maintenance, and spare parts. At contract end, the hardware becomes yours.",
+      id: "Lease to Own Appliance memungkinkan bisnis Anda menggunakan hardware enterprise (Dell, HP, Cisco, Mikrotik, Huawei) dengan skema cicilan fleksibel - termasuk instalasi, maintenance, dan spare part. Di akhir kontrak, hardware sepenuhnya menjadi milik Anda.",
+      en: "Lease-to-Own Appliance lets your business use enterprise hardware (Dell, HP, Cisco, Mikrotik, Huawei) with flexible installments - including installation, maintenance, and spare parts. At contract end, the hardware becomes yours.",
     },
     signals: {
       id: [
@@ -448,8 +448,8 @@ export const services = [
       en: "Next-Gen protection for your entire network",
     },
     short: {
-      id: "NGFW managed dengan IPS/IDS, deep packet inspection, web filtering, & SSL VPN — 24/7 monitored.",
-      en: "Managed NGFW with IPS/IDS, deep packet inspection, web filtering, and SSL VPN — monitored 24/7.",
+      id: "NGFW managed dengan IPS/IDS, deep packet inspection, web filtering, & SSL VPN - 24/7 monitored.",
+      en: "Managed NGFW with IPS/IDS, deep packet inspection, web filtering, and SSL VPN - monitored 24/7.",
     },
     overview: {
       id: "Firewall Solution kami menggunakan Next-Generation Firewall (Fortinet, Palo Alto, Sophos) yang di-manage penuh oleh tim security engineer kami. Anda mendapat perlindungan enterprise-grade tanpa perlu memikirkan konfigurasi, patching, atau update signature.",
@@ -509,8 +509,8 @@ export const services = [
       en: "Low-latency Layer-2 interconnection between data centers",
     },
     short: {
-      id: "Dedicated port Layer 2 antar DC untuk replikasi, DR, & hybrid infrastructure — latency intra-Jakarta < 5ms.",
-      en: "Dedicated Layer-2 ports between DCs for replication, DR, and hybrid infrastructure — intra-Jakarta latency under 5ms.",
+      id: "Dedicated port Layer 2 antar DC untuk replikasi, DR, & hybrid infrastructure - latency intra-Jakarta < 5ms.",
+      en: "Dedicated Layer-2 ports between DCs for replication, DR, and hybrid infrastructure - intra-Jakarta latency under 5ms.",
     },
     overview: {
       id: "DC to DC Connectivity adalah link dedicated Layer 2 yang menghubungkan dua atau lebih data center. Ideal untuk replikasi database real-time, disaster recovery site, hybrid cloud, dan multi-cloud architecture.",
@@ -545,7 +545,7 @@ export const services = [
         "Dedicated Port Layer 2 (EPL / EVPL)",
         "Interkoneksi antar Data Center",
         "Latency < 5ms intra-Jakarta",
-        "Bandwidth 10Mbps – 10Gbps",
+        "Bandwidth 10Mbps - 10Gbps",
         "Redundant path opsional",
         "Exclude FO & UTP",
       ],
@@ -553,7 +553,7 @@ export const services = [
         "Dedicated Layer-2 Port (EPL / EVPL)",
         "Data-center to data-center interconnection",
         "Latency < 5ms intra-Jakarta",
-        "Bandwidth 10Mbps – 10Gbps",
+        "Bandwidth 10Mbps - 10Gbps",
         "Optional redundant path",
         "Excludes FO & UTP",
       ],
@@ -702,7 +702,7 @@ export const faqs = [
     },
     a: {
       id: "Cloud Service adalah infrastruktur komputasi virtual yang bisa dipakai on-demand, tanpa perlu investasi hardware fisik. Cocok untuk startup, software house, e-commerce, dan enterprise yang ingin scalable, cepat deploy, dan bayar sesuai pemakaian. Layanan cloud Intercloud mencakup Public, Private, dan Hybrid Cloud dengan SLA 99,5%.",
-      en: "Cloud Service is on-demand virtual compute infrastructure — no physical hardware investment needed. Ideal for startups, software houses, e-commerce, and enterprises that want to scale, deploy quickly, and pay for what they use. Intercloud's cloud covers Public, Private, and Hybrid Cloud with a 99.5% SLA.",
+      en: "Cloud Service is on-demand virtual compute infrastructure - no physical hardware investment needed. Ideal for startups, software houses, e-commerce, and enterprises that want to scale, deploy quickly, and pay for what they use. Intercloud's cloud covers Public, Private, and Hybrid Cloud with a 99.5% SLA.",
     },
   },
   {
@@ -711,8 +711,8 @@ export const faqs = [
       en: "What's the difference between Web Hosting, VPS, and Dedicated Server?",
     },
     a: {
-      id: "Web Hosting berbagi resource dengan pengguna lain (shared) — cocok untuk website skala kecil-menengah. VPS memberi resource terisolasi dengan full-root access untuk aplikasi custom. Dedicated Server adalah server fisik penuh khusus untuk Anda — performa maksimal untuk database berat, gaming, atau aplikasi mission-critical.",
-      en: "Web Hosting shares resources with other users (shared) — ideal for small-to-mid websites. VPS provides isolated resources with full root access for custom applications. A Dedicated Server is a full physical server exclusively for you — peak performance for heavy databases, gaming, or mission-critical apps.",
+      id: "Web Hosting berbagi resource dengan pengguna lain (shared) - cocok untuk website skala kecil-menengah. VPS memberi resource terisolasi dengan full-root access untuk aplikasi custom. Dedicated Server adalah server fisik penuh khusus untuk Anda - performa maksimal untuk database berat, gaming, atau aplikasi mission-critical.",
+      en: "Web Hosting shares resources with other users (shared) - ideal for small-to-mid websites. VPS provides isolated resources with full root access for custom applications. A Dedicated Server is a full physical server exclusively for you - peak performance for heavy databases, gaming, or mission-critical apps.",
     },
   },
   {
@@ -732,7 +732,7 @@ export const faqs = [
     },
     a: {
       id: "Anda memiliki server fisik sendiri, kami menyediakan tempatnya. Server Anda kami tempatkan di rack data center bersertifikasi Tier III yang memiliki power redundant N+1, presisi cooling, fire suppression, keamanan biometric 24/7, serta konektivitas premium multi-upstream. Anda cukup fokus pada aplikasi, kami urus infrastrukturnya.",
-      en: "You own the physical server; we provide the location. We place your server in a Tier III certified data-center rack with N+1 redundant power, precision cooling, fire suppression, biometric 24/7 security, and premium multi-upstream connectivity. You focus on applications — we handle the infrastructure.",
+      en: "You own the physical server; we provide the location. We place your server in a Tier III certified data-center rack with N+1 redundant power, precision cooling, fire suppression, biometric 24/7 security, and premium multi-upstream connectivity. You focus on applications - we handle the infrastructure.",
     },
   },
   {
@@ -742,7 +742,7 @@ export const faqs = [
     },
     a: {
       id: "Kami menggunakan Next-Generation Firewall dari brand enterprise (Fortinet, Palo Alto, Sophos) dengan fitur IPS/IDS real-time, deep packet inspection, web filtering, application control, hingga SSL VPN. Semua di-manage 24/7 oleh tim security engineer kami sehingga Anda tidak perlu memikirkan konfigurasi & update.",
-      en: "We use Next-Generation Firewalls from enterprise brands (Fortinet, Palo Alto, Sophos) with real-time IPS/IDS, deep packet inspection, web filtering, application control, and SSL VPN. Everything is managed 24/7 by our security engineers — you don't have to worry about configuration or updates.",
+      en: "We use Next-Generation Firewalls from enterprise brands (Fortinet, Palo Alto, Sophos) with real-time IPS/IDS, deep packet inspection, web filtering, application control, and SSL VPN. Everything is managed 24/7 by our security engineers - you don't have to worry about configuration or updates.",
     },
   },
   {
@@ -761,8 +761,8 @@ export const faqs = [
       en: "How long does service activation take?",
     },
     a: {
-      id: "VPS & Cloud aktif dalam 15–30 menit setelah pembayaran. Dedicated Server dalam 1–3 hari kerja. Colocation & DC Interconnect membutuhkan survey teknis 2–5 hari kerja tergantung kompleksitas. Firewall Solution & Lease to Own biasanya 3–7 hari kerja setelah kontrak ditandatangani.",
-      en: "VPS & Cloud activate within 15–30 minutes after payment. Dedicated Server in 1–3 business days. Colocation & DC Interconnect require a 2–5 business-day technical survey depending on complexity. Firewall Solution & Lease-to-Own usually take 3–7 business days after the contract is signed.",
+      id: "VPS & Cloud aktif dalam 15-30 menit setelah pembayaran. Dedicated Server dalam 1-3 hari kerja. Colocation & DC Interconnect membutuhkan survey teknis 2-5 hari kerja tergantung kompleksitas. Firewall Solution & Lease to Own biasanya 3-7 hari kerja setelah kontrak ditandatangani.",
+      en: "VPS & Cloud activate within 15-30 minutes after payment. Dedicated Server in 1-3 business days. Colocation & DC Interconnect require a 2-5 business-day technical survey depending on complexity. Firewall Solution & Lease-to-Own usually take 3-7 business days after the contract is signed.",
     },
   },
   {
@@ -789,7 +789,7 @@ export const faqs = [
 
 // ---------- PARTNERS ----------
 // Real clients & partners of PT Intercloud Digital Inovasi.
-// Logos are pulled from Google's favicon CDN at 128px — reliable for small
+// Logos are pulled from Google's favicon CDN at 128px - reliable for small
 // Indonesian ISPs & startups that don't have hosted vector logos.
 // Instagram-only brands fall back to an initials badge (no `domain`).
 export const partners = [

@@ -9,7 +9,7 @@ import { ChevronDown, ChevronUp, ChevronsUpDown, Search, Inbox } from "lucide-re
  *  - Loading skeleton
  *  - Memoised row rendering
  *
- * Not a replacement for TanStack Table — meant for the many small tables in
+ * Not a replacement for TanStack Table - meant for the many small tables in
  * this app where TanStack's setup cost is disproportionate.
  *
  * Usage:

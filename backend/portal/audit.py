@@ -1,6 +1,6 @@
 """Audit log helper for sensitive admin actions.
 
-Every write to `audit_logs` is best-effort — a logging failure MUST never
+Every write to `audit_logs` is best-effort - a logging failure MUST never
 prevent the underlying action from completing (imagine a factory-reset
 succeeding but the log-insert exploding: the operator would be locked
 out with no evidence of what happened). All callers use fire-and-forget
@@ -104,7 +104,7 @@ async def log_audit(
     severity: str = "info",
     request=None,
 ) -> None:
-    """Insert a single audit_logs row. Never raises — best-effort only."""
+    """Insert a single audit_logs row. Never raises - best-effort only."""
     try:
         actor_id, actor_email, actor_role = _actor_from(actor)
         ip, ua = _extract_request(request)

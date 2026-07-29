@@ -21,7 +21,7 @@ const AdminMail = () => {
 
   const open = async (m) => {
     // Optimistic-open: set the selected item immediately from the list row so
-    // the detail pane (and the Reply button) render right away — the network
+    // the detail pane (and the Reply button) render right away - the network
     // fetch just enriches the body afterwards. Also avoids re-triggering the
     // full 10s IMAP inbox reload that used to happen inside open().
     setSelected(m);
@@ -33,7 +33,7 @@ const AdminMail = () => {
         ? prev.map((x) => (x.id === m.id ? { ...x, unread: false } : x))
         : prev);
     } catch (e) {
-      setSelected({ ...m, body: m.preview || "(Failed to load message body — check IMAP integration or refresh)" });
+      setSelected({ ...m, body: m.preview || "(Failed to load message body - check IMAP integration or refresh)" });
     }
   };
 
@@ -54,7 +54,7 @@ const AdminMail = () => {
     <div>
       <PageHeader
         title="Webmail"
-        subtitle="Inbox pribadi Anda — setiap staff punya credential cPanel IMAP/SMTP sendiri."
+        subtitle="Inbox pribadi Anda - setiap staff punya credential cPanel IMAP/SMTP sendiri."
         actions={
           <div className="flex gap-2">
             <button className={btnSecondary} onClick={() => setShowSetup(true)} data-testid="mail-setup-btn">
@@ -271,7 +271,7 @@ const SetupEmailModal = ({ onClose, onDone }) => {
         <div className="flex justify-between items-start mb-4">
           <div>
             <div className="text-xl font-extrabold text-[#0a2350]">Setup Email Pribadi (cPanel)</div>
-            <div className="text-sm text-slate-500">Kredensial ini hanya untuk akun Anda — admin lain tidak bisa melihatnya.</div>
+            <div className="text-sm text-slate-500">Kredensial ini hanya untuk akun Anda - admin lain tidak bisa melihatnya.</div>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-800"><XIcon className="h-5 w-5" /></button>
         </div>
@@ -311,7 +311,7 @@ const SetupEmailModal = ({ onClose, onDone }) => {
                       </div>
                       <div className="min-w-0">
                         <div className={`text-sm font-bold ${r.ok ? "text-emerald-700" : "text-red-700"}`}>
-                          {kind.toUpperCase()} {r.ok ? "— koneksi berhasil" : "— gagal"}
+                          {kind.toUpperCase()} {r.ok ? "- koneksi berhasil" : "- gagal"}
                         </div>
                         <div className="text-xs text-slate-500 break-words">{r.message}</div>
                       </div>

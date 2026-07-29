@@ -102,7 +102,7 @@ const AdminArticles = () => {
                   <td className="px-4 py-3 text-xs text-slate-600">
                     <div className="flex flex-wrap gap-1">{(a.tags || []).slice(0, 4).map((t) => <span key={t} className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200">#{t}</span>)}</div>
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">{a.author_name || "—"}</td>
+                  <td className="px-4 py-3 text-xs text-slate-600">{a.author_name || "-"}</td>
                   <td className="px-4 py-3 text-right font-semibold text-slate-700">{a.view_count}</td>
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{fullDateTime(a.updated_at)}</td>
                   <td className="px-4 py-3 text-right">
@@ -246,7 +246,7 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
                 </label>
                 <div className="grid sm:grid-cols-2 gap-3">
                   <label className="block">
-                    <div className={labelClass}>Slug <span className="ml-1 text-slate-400 normal-case">(optional — auto)</span></div>
+                    <div className={labelClass}>Slug <span className="ml-1 text-slate-400 normal-case">(optional - auto)</span></div>
                     <input value={form.slug} onChange={(e) => set("slug", e.target.value)} className={inputClass} placeholder="auto-from-title" data-testid="editor-slug" />
                   </label>
                   <label className="block">
@@ -320,11 +320,11 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
             {tab === "seo" && (
               <>
                 <label className="block">
-                  <div className={labelClass}>Tags <span className="ml-1 text-slate-400 normal-case">(comma separated — auto-lowercased)</span></div>
+                  <div className={labelClass}>Tags <span className="ml-1 text-slate-400 normal-case">(comma separated - auto-lowercased)</span></div>
                   <input value={tagText} onChange={(e) => set("tags", e.target.value.split(",").map((t) => t.trim()))} className={inputClass} placeholder="cloud, indonesia, guide" data-testid="editor-tags" />
                 </label>
                 <label className="block">
-                  <div className={labelClass}>Meta title <span className="ml-1 text-slate-400 normal-case">(SEO — defaults to title)</span></div>
+                  <div className={labelClass}>Meta title <span className="ml-1 text-slate-400 normal-case">(SEO - defaults to title)</span></div>
                   <input value={form.meta_title} onChange={(e) => set("meta_title", e.target.value)} className={inputClass} data-testid="editor-meta-title" />
                 </label>
                 <label className="block">
@@ -357,7 +357,7 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
               </label>
               <label className="block mb-3">
                 <div className={labelClass}>Author name</div>
-                <input value={form.author_name} onChange={(e) => set("author_name", e.target.value)} className={inputClass} placeholder="Auto — your account" data-testid="editor-author" />
+                <input value={form.author_name} onChange={(e) => set("author_name", e.target.value)} className={inputClass} placeholder="Auto - your account" data-testid="editor-author" />
               </label>
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={!!form.is_featured} onChange={(e) => set("is_featured", e.target.checked)} data-testid="editor-featured" />
@@ -375,7 +375,7 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
                 <div className="p-4">
                   <div className="text-[10px] uppercase tracking-widest font-bold text-[#f5b120]">{form.category || "Article"}</div>
                   <h2 className="mt-1 text-lg font-extrabold text-[#0a2350] leading-tight">{form.title || "Untitled article"}</h2>
-                  <p className="mt-2 text-sm text-slate-600">{form.excerpt || "—"}</p>
+                  <p className="mt-2 text-sm text-slate-600">{form.excerpt || "-"}</p>
                   <div className="mt-3 flex flex-wrap gap-1">
                     {(Array.isArray(form.tags) ? form.tags : String(form.tags || "").split(",")).map((t) => t && t.trim()).filter(Boolean).slice(0, 6).map((t) => (
                       <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-600">#{t.toLowerCase().trim()}</span>

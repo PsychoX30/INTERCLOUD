@@ -52,7 +52,7 @@ const Header = () => {
 
   // Anchor click handler: if we're already on the landing page, prevent the
   // full navigation and just scrollIntoView (smooth). Otherwise let the
-  // router navigate to /#hash — ScrollToTop will handle the scroll on mount.
+  // router navigate to /#hash - ScrollToTop will handle the scroll on mount.
   const goToSection = (hash, e) => {
     if (onLanding) {
       e.preventDefault();

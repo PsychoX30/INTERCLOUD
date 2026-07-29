@@ -1,4 +1,4 @@
-"""Real network diagnostic tools — ping, traceroute, DNS, whois, blacklist.
+"""Real network diagnostic tools - ping, traceroute, DNS, whois, blacklist.
 
 All commands are:
 - Sandboxed: strict input validation (only alnum + `.` `-` `_` `:` for IPv6).
@@ -72,7 +72,7 @@ async def _run(argv: List[str], timeout: float, input_bytes: bytes | None = None
 
 
 # ============================================================
-# PING — pure-python ping3 (SOCK_DGRAM, works without root)
+# PING - pure-python ping3 (SOCK_DGRAM, works without root)
 # ============================================================
 async def run_ping(target: str, *, count: int = 5, timeout: float = 2.0) -> Dict[str, Any]:
     t = validate_target(target)
@@ -123,13 +123,13 @@ async def run_ping(target: str, *, count: int = 5, timeout: float = 2.0) -> Dict
                      f"{summary['loss_percent']}% packet loss")
         lines.append(f"rtt min/avg/max = {summary['min_ms']}/{summary['avg_ms']}/{summary['max_ms']} ms")
     else:
-        lines.append("100% packet loss — host unreachable or ICMP filtered")
+        lines.append("100% packet loss - host unreachable or ICMP filtered")
 
     return {"tool": "ping", "output": "\n".join(lines), "summary": summary, "results": results}
 
 
 # ============================================================
-# TRACEROUTE — /usr/bin/traceroute
+# TRACEROUTE - /usr/bin/traceroute
 # ============================================================
 async def run_traceroute(target: str, *, max_hops: int = 15) -> Dict[str, Any]:
     t = validate_target(target)
@@ -144,7 +144,7 @@ async def run_traceroute(target: str, *, max_hops: int = 15) -> Dict[str, Any]:
 
 
 # ============================================================
-# NSLOOKUP / DIG — bind9 dig
+# NSLOOKUP / DIG - bind9 dig
 # ============================================================
 async def run_dns(target: str, *, record: str = "A") -> Dict[str, Any]:
     t = validate_target(target)
@@ -172,7 +172,7 @@ async def run_whois(target: str) -> Dict[str, Any]:
 
 
 # ============================================================
-# BLACKLIST — DNSBL lookups
+# BLACKLIST - DNSBL lookups
 # ============================================================
 DNSBL_ZONES = [
     ("Spamhaus ZEN",   "zen.spamhaus.org"),
@@ -231,7 +231,7 @@ async def run_blacklist(target: str) -> Dict[str, Any]:
 
 
 # ============================================================
-# PORT SCAN — TCP connect against a curated well-known list
+# PORT SCAN - TCP connect against a curated well-known list
 # ============================================================
 COMMON_PORTS = [21, 22, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995,
                 3000, 3306, 3389, 5432, 6379, 8080, 8443, 27017]
@@ -260,7 +260,7 @@ async def run_port_scan(target: str, *, ports: List[int] | None = None) -> Dict[
     results = await asyncio.gather(*[_probe(p) for p in port_list])
     open_ports = [r for r in results if r["open"]]
 
-    lines = [f"TCP port scan against {t} ({ip}) — {len(port_list)} common ports", ""]
+    lines = [f"TCP port scan against {t} ({ip}) - {len(port_list)} common ports", ""]
     for r in results:
         state = f"OPEN ({r['latency_ms']}ms)" if r["open"] else "closed"
         lines.append(f"  {r['port']:>6}/tcp   {state}")
@@ -278,7 +278,7 @@ async def run_port_scan(target: str, *, ports: List[int] | None = None) -> Dict[
 
 
 # ============================================================
-# HTTP HEAD — fetch a URL, return status/headers/timing
+# HTTP HEAD - fetch a URL, return status/headers/timing
 # ============================================================
 async def run_http_check(target: str) -> Dict[str, Any]:
     import httpx
@@ -309,7 +309,7 @@ async def run_http_check(target: str) -> Dict[str, Any]:
 
 
 # ============================================================
-# MIKROTIK TORCH — /tool/torch via librouteros
+# MIKROTIK TORCH - /tool/torch via librouteros
 # ============================================================
 _IFACE_RX  = re.compile(r"^[A-Za-z0-9\.\-_:/ ]{1,64}$")
 _CIDR_RX   = re.compile(r"^[0-9a-fA-F:\.\/]{1,45}$")
@@ -339,12 +339,12 @@ async def run_torch(target: str | None = None, *, interface: str = "",
         raise ValueError("port must be `any`, a single port, or a range like 80-90")
 
     if _db is None:
-        raise ValueError("Torch requires the configured MikroTik integration — server did not supply db handle")
+        raise ValueError("Torch requires the configured MikroTik integration - server did not supply db handle")
 
     from portal import integrations_v2 as iv2
     settings = await iv2.get_settings(_db, "mikrotik")
     if not settings or not settings.get("enabled"):
-        raise ValueError("MikroTik integration is not enabled — configure it in Admin ▸ Integrations first")
+        raise ValueError("MikroTik integration is not enabled - configure it in Admin ▸ Integrations first")
 
     started = time.time()
     client = iv2.MikrotikClient(settings)

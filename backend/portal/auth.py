@@ -2,7 +2,7 @@
 
 Roles:
 - admin       : full access (superuser)
-- owner       : read-only globally (executive visibility — MRR/ARPU/churn/uptime)
+- owner       : read-only globally (executive visibility - MRR/ARPU/churn/uptime)
 - sales       : limited to their assigned clients; can create quotes/orders for them
 - support     : product + tech tools + all tickets; CANNOT see finance/revenue
 - ticket_only : only tickets (read + reply)
@@ -26,9 +26,9 @@ CATALOG_ROLES = {"admin", "support"}  # product mgmt
 OPS_ROLES = {"admin", "support"}  # provisioning/mikrotik/dcim/diagnostics
 USER_MGMT_ROLES = {"admin"}
 TICKET_ROLES = {"admin", "sales", "support", "ticket_only"}
-# Executive read-only visibility — cannot write, only see aggregated dashboards.
+# Executive read-only visibility - cannot write, only see aggregated dashboards.
 OWNER_ROLES = {"admin", "owner"}
-# Digital Creative team — read/write scoped to content tooling ONLY
+# Digital Creative team - read/write scoped to content tooling ONLY
 # (articles, media library, content calendar). No billing/CRM/NOC/finance.
 CONTENT_ROLES = {"admin", "creative"}
 

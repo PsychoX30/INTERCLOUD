@@ -29,21 +29,21 @@ const AdminAssets = () => {
       render: (_v, a) => (
         <>
           <div className="font-semibold text-[#0a2350]">{a.name}</div>
-          <div className="text-xs text-slate-500">{a.vendor || "—"} · {a.location || "—"}</div>
+          <div className="text-xs text-slate-500">{a.vendor || "-"} · {a.location || "-"}</div>
         </>
       ) },
     { key: "serial_number", label: "Serial", sortable: true, mono: true,
-      render: (v) => <span className="font-mono text-xs">{v || "—"}</span> },
+      render: (v) => <span className="font-mono text-xs">{v || "-"}</span> },
     { key: "category", label: "Category", sortable: true,
       render: (v) => <span className="uppercase text-xs font-bold text-[#f5b120]">{v}</span> },
     { key: "purchase_date", label: "Purchased", sortable: true,
-      render: (v) => <span className="text-xs text-slate-500">{shortDate(v) || "—"}</span> },
+      render: (v) => <span className="text-xs text-slate-500">{shortDate(v) || "-"}</span> },
     { key: "value", label: "Cost", sortable: true, align: "right",
       render: (v) => <span className="font-semibold">{money(v)}</span> },
     { key: "salvage_value", label: "Salvage", sortable: true, align: "right",
       render: (v) => <span className="text-xs text-slate-500">{money(v || 0)}</span> },
     { key: "useful_life_years", label: "Life", sortable: true, align: "right",
-      render: (v) => <span className="text-xs">{v ? `${v} yr` : "—"}</span> },
+      render: (v) => <span className="text-xs">{v ? `${v} yr` : "-"}</span> },
     { key: "annual_depreciation", label: "Annual Dep.", sortable: true, align: "right",
       render: (v) => <span className="text-amber-700">{money(v || 0)}</span> },
     { key: "book_value", label: "Book Value", sortable: true, align: "right",
@@ -157,7 +157,7 @@ const AssetForm = ({ a, onClose, onDone }) => {
         {/* Live preview */}
         <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4" data-testid="asset-preview">
           <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
-            <Calculator className="h-3 w-3" /> Preview — Straight-Line
+            <Calculator className="h-3 w-3" /> Preview - Straight-Line
           </div>
           {preview ? (
             <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-4">

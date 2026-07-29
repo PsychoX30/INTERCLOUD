@@ -1,4 +1,4 @@
-"""Runtime branding — resolves logo / favicon / email banner from Mongo.
+"""Runtime branding - resolves logo / favicon / email banner from Mongo.
 
 Values live in the `settings` collection under key=`branding` with shape:
     {
@@ -12,7 +12,7 @@ Missing keys fall through to the hardcoded DEFAULTS. This lets ops upload
 new artwork in Admin ▸ Branding without redeploying.
 
 We ship *inline SVG data URIs* as defaults so the portal renders correctly
-on any host without any external asset dependency — no dead-link 404s, no
+on any host without any external asset dependency - no dead-link 404s, no
 CORS, no CDN outages. Operators are expected to upload their real brand
 assets via Admin ▸ Branding on first boot.
 """
@@ -39,26 +39,26 @@ def _file_datauri(filename: str, mime: str) -> str:
     return f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
 
 
-# Wordmark logo — navy artwork for invoice PDFs, email headers, and any
+# Wordmark logo - navy artwork for invoice PDFs, email headers, and any
 # white-background surface. Loaded from the bundled `assets/logo_dark.webp`
 # (the official Intercloud Digital Inovasi navy artwork). Falls back to an
 # SVG wordmark placeholder if the file is missing so the portal always has
 # a renderable default. Operators may still upload a bespoke variant via
-# Admin ▸ Branding — that upload takes precedence.
+# Admin ▸ Branding - that upload takes precedence.
 _DEFAULT_LOGO_DARK = _file_datauri("logo_dark.webp", "image/webp") or _svg_datauri(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 60">'
     '<text x="0" y="45" font-family="Inter,Arial,sans-serif" font-size="40" '
     'font-weight="800" letter-spacing="-1" fill="#0a2350">INTERCLOUD</text></svg>'
 )
 
-# Light-on-dark logo — loaded from the bundled `assets/logo_light.webp`
+# Light-on-dark logo - loaded from the bundled `assets/logo_light.webp`
 # (the official Intercloud Digital Inovasi white artwork). Falls back to
 # empty if the file is missing, which triggers the frontend's auto-invert
 # behaviour on logo_dark. Operators may still upload a bespoke variant via
-# Admin ▸ Branding — that upload takes precedence over this default.
+# Admin ▸ Branding - that upload takes precedence over this default.
 _DEFAULT_LOGO_LIGHT = _file_datauri("logo_light.webp", "image/webp")
 
-# Favicon — 64×64 rounded navy tile with a gold "I" glyph.
+# Favicon - 64×64 rounded navy tile with a gold "I" glyph.
 _DEFAULT_FAVICON = _svg_datauri(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
     '<rect width="64" height="64" rx="12" fill="#0a2350"/>'

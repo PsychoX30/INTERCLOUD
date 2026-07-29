@@ -1,4 +1,4 @@
-"""Phase-2 security hardening — shared limiter + headers + log filter.
+"""Phase-2 security hardening - shared limiter + headers + log filter.
 
 - `limiter` is a slowapi Limiter, imported from routes.py to decorate the
   4 auth endpoints (login/register/forgot/reset). One IP → N req/min.
@@ -36,7 +36,7 @@ from starlette.responses import Response
 
 
 # ============================================================
-# Rate limiter — one instance shared across the app
+# Rate limiter - one instance shared across the app
 # ============================================================
 limiter = Limiter(
     key_func=_client_ip,
@@ -54,7 +54,7 @@ PUBLIC_STATUS_LIMIT        = "60/minute"   # unauthenticated /public/status + si
 
 
 # ============================================================
-# Security headers — CSP is ENFORCED (report-only kept alongside
+# Security headers - CSP is ENFORCED (report-only kept alongside
 # for one release cycle as a safety net; same policy string).
 # ============================================================
 CSP_POLICY = (
@@ -92,7 +92,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         h.setdefault("X-Frame-Options", "DENY")
         h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         h.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
-        # ENFORCED CSP — violations are blocked by the browser.
+        # ENFORCED CSP - violations are blocked by the browser.
         h.setdefault("Content-Security-Policy", CSP_POLICY)
         # Report-only kept for one release cycle (safety net + telemetry).
         h.setdefault("Content-Security-Policy-Report-Only", CSP_POLICY)

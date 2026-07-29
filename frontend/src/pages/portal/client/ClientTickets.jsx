@@ -63,7 +63,7 @@ const NewTicketModal = ({ onClose, onCreated }) => {
 
   useEffect(() => {
     // Devices linked to this client for optional ticket→device linkage.
-    // Best-effort — silently degrade to the un-linked flow if the endpoint
+    // Best-effort - silently degrade to the un-linked flow if the endpoint
     // isn't available for this account.
     api.get("/client/devices")
       .then((r) => setDevices(Array.isArray(r.data) ? r.data : []))
@@ -117,7 +117,7 @@ const NewTicketModal = ({ onClose, onCreated }) => {
             <div>
               <div className={labelClass}>Related device <span className="ml-1 text-slate-400 normal-case">(optional)</span></div>
               <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} className={inputClass} data-testid="ticket-device-select">
-                <option value="">— none —</option>
+                <option value="">- none -</option>
                 {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
             </div>

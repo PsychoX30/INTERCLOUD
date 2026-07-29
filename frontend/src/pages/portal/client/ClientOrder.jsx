@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 
 /* -------------------------------------------------------------------------
-   WHMCS-style order flow — 5 steps:
+   WHMCS-style order flow - 5 steps:
      1. Pick a product          (browse categories)
      2. Configure options       (RAM / CPU / OS / quantities)
      3. Attach add-ons          (optional)
@@ -25,7 +25,7 @@ const STEPS = [
 
 const idr = (v) => "Rp" + Number(v || 0).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
-/* ============ Step 1 — pick a product from categories ============ */
+/* ============ Step 1 - pick a product from categories ============ */
 const StepPick = ({ products, categories, chosen, setChosen, onNext }) => {
   const [cat, setCat] = useState(categories[0]?.slug || "");
   const list = useMemo(
@@ -115,7 +115,7 @@ const StepPick = ({ products, categories, chosen, setChosen, onNext }) => {
   );
 };
 
-/* ============ Step 2 — configure options for the chosen product ============ */
+/* ============ Step 2 - configure options for the chosen product ============ */
 const StepConfigure = ({ product, selections, setSelections, onNext, onBack }) => {
   const groups = product.option_groups || [];
 
@@ -256,7 +256,7 @@ const StepConfigure = ({ product, selections, setSelections, onNext, onBack }) =
                 data-testid={`order-qty-${g.key}`}
               />
               <div className="text-sm text-slate-500">
-                <b>{g.unit_label || "unit"}</b> — {idr(g.unit_price_monthly || 0)}/mo each
+                <b>{g.unit_label || "unit"}</b> - {idr(g.unit_price_monthly || 0)}/mo each
                 {(g.unit_price_setup || 0) > 0 && ` · +${idr(g.unit_price_setup)} setup each`}
               </div>
             </div>
@@ -272,7 +272,7 @@ const StepConfigure = ({ product, selections, setSelections, onNext, onBack }) =
   );
 };
 
-/* ============ Step 3 — pick optional add-ons ============ */
+/* ============ Step 3 - pick optional add-ons ============ */
 const StepAddons = ({ product, allAddons, addonIds, setAddonIds, onNext, onBack }) => {
   const applicable = useMemo(
     () => allAddons.filter((a) =>
@@ -339,7 +339,7 @@ const StepAddons = ({ product, allAddons, addonIds, setAddonIds, onNext, onBack 
   );
 };
 
-/* ============ Step 4 — review cart, confirm, generate invoice ============ */
+/* ============ Step 4 - review cart, confirm, generate invoice ============ */
 const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, onConfirmed }) => {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -391,14 +391,14 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, on
         <div className="text-xs text-slate-500 uppercase tracking-widest font-bold">{product.category}</div>
 
         <div className="mt-5 space-y-2.5">
-          <Row label={`${product.name} — base plan (monthly)`} value={idr(preview.base_line.monthly)} />
-          {preview.base_line.setup > 0 && <Row label={`${product.name} — setup fee`} value={idr(preview.base_line.setup)} muted />}
+          <Row label={`${product.name} - base plan (monthly)`} value={idr(preview.base_line.monthly)} />
+          {preview.base_line.setup > 0 && <Row label={`${product.name} - setup fee`} value={idr(preview.base_line.setup)} muted />}
 
           {preview.option_lines.length > 0 && <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mt-4">Configuration</div>}
           {preview.option_lines.map((ol, i) => (
             <React.Fragment key={i}>
               {ol.monthly > 0 && <Row label={`${ol.group_label}: ${ol.choice}`} value={`+${idr(ol.monthly)}/mo`} muted />}
-              {ol.setup > 0 && <Row label={`${ol.group_label}: ${ol.choice} — setup`} value={`+${idr(ol.setup)}`} muted />}
+              {ol.setup > 0 && <Row label={`${ol.group_label}: ${ol.choice} - setup`} value={`+${idr(ol.setup)}`} muted />}
             </React.Fragment>
           ))}
 
@@ -406,7 +406,7 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, on
           {preview.addon_lines.map((al, i) => (
             <React.Fragment key={i}>
               <Row label={`Add-on: ${al.name}`} value={`+${idr(al.monthly)}/mo`} muted />
-              {al.setup > 0 && <Row label={`Add-on: ${al.name} — setup`} value={`+${idr(al.setup)}`} muted />}
+              {al.setup > 0 && <Row label={`Add-on: ${al.name} - setup`} value={`+${idr(al.setup)}`} muted />}
             </React.Fragment>
           ))}
         </div>
@@ -458,7 +458,7 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, on
   );
 };
 
-/* ============ Step 5 — success ============ */
+/* ============ Step 5 - success ============ */
 const StepDone = ({ result, onNewOrder }) => (
   <div className="mt-4">
     <Card className="p-8 text-center" data-testid="order-done">
@@ -468,7 +468,7 @@ const StepDone = ({ result, onNewOrder }) => (
       <h3 className="text-2xl font-extrabold text-[#0a2350] mt-4">Order placed successfully</h3>
       <p className="mt-2 text-slate-600 max-w-md mx-auto">
         {result.invoice_id
-          ? "An invoice has been generated. Pay via bank transfer or the payment gateway — we auto-provision the moment payment is verified."
+          ? "An invoice has been generated. Pay via bank transfer or the payment gateway - we auto-provision the moment payment is verified."
           : "This is a custom-priced product. Our sales team will send you a formal quotation shortly."}
       </p>
       <div className="mt-6 inline-flex gap-2 flex-wrap justify-center">
@@ -633,7 +633,7 @@ const ClientOrder = () => {
                       {o.invoice_id ? (
                         <Link to="/portal/client/invoices" className="text-[#f5b120] font-semibold text-xs">View →</Link>
                       ) : (
-                        <span className="text-slate-400 text-xs">—</span>
+                        <span className="text-slate-400 text-xs">-</span>
                       )}
                     </td>
                   </tr>

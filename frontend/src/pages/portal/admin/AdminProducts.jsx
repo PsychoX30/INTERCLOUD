@@ -6,7 +6,7 @@ import { Edit, Trash2, Plus, ChevronDown, ChevronUp, X, Puzzle, Package } from "
 import { DataTable } from "../../../components/ui/data-table";
 
 /* ---------------------------------------------------------------
-   Admin Products page — WHMCS-style catalog editor
+   Admin Products page - WHMCS-style catalog editor
    • Categories load from /admin/categories (dynamic)
    • Option groups: dropdown / checkbox / quantity, with per-option
      monthly/setup deltas and defaults
@@ -41,7 +41,7 @@ const AdminProducts = () => {
     <div>
       <PageHeader
         title="Products & Services"
-        subtitle="Base plans, add-ons, and per-plan configurable options — visible to clients during the order flow."
+        subtitle="Base plans, add-ons, and per-plan configurable options - visible to clients during the order flow."
         actions={<button className={btnPrimary} onClick={() => setEditing("new")} data-testid="new-product-btn"><Plus className="h-4 w-4" /> New product</button>}
       />
 
@@ -80,11 +80,11 @@ const AdminProducts = () => {
               <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-slate-100 text-slate-700 px-2 py-0.5 rounded"><Package className="h-3 w-3" /> Base</span>
             ) },
           { key: "option_groups", label: "Options", sortable: false,
-            render: (v) => <span className="text-xs text-slate-500">{(v || []).length > 0 ? `${v.length} groups` : "—"}</span> },
+            render: (v) => <span className="text-xs text-slate-500">{(v || []).length > 0 ? `${v.length} groups` : "-"}</span> },
           { key: "price_monthly", label: "Monthly", sortable: true, align: "right",
-            render: (v) => <span className="font-semibold">{v ? money(v) : "—"}</span> },
+            render: (v) => <span className="font-semibold">{v ? money(v) : "-"}</span> },
           { key: "setup_fee", label: "Setup", sortable: true, align: "right",
-            render: (v) => v ? money(v) : "—" },
+            render: (v) => v ? money(v) : "-" },
           { key: "is_active", label: "Status", sortable: true,
             render: (v) => <StatusBadge status={v ? "enabled" : "disabled"} /> },
           { key: "_actions", label: "Actions", sortable: false, align: "right",
@@ -215,8 +215,8 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
           <label><div className={labelClass}>Sort order</div><input type="number" value={f.sort_order} onChange={(e) => setF({ ...f, sort_order: e.target.value })} className={inputClass} /></label>
           <label><div className={labelClass}>Status</div>
             <select value={f.is_active ? "y" : "n"} onChange={(e) => setF({ ...f, is_active: e.target.value === "y" })} className={inputClass}>
-              <option value="y">Enabled — visible to clients</option>
-              <option value="n">Disabled — hidden</option>
+              <option value="y">Enabled - visible to clients</option>
+              <option value="n">Disabled - hidden</option>
             </select>
           </label>
 

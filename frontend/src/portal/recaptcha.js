@@ -1,5 +1,5 @@
 /**
- * Google reCAPTCHA v3 helper — vanilla script loader + token executor.
+ * Google reCAPTCHA v3 helper - vanilla script loader + token executor.
  *
  * Pulls config from `GET /api/portal/auth/config` on first use, caches it,
  * lazily injects Google's script, and returns a fresh token for the given

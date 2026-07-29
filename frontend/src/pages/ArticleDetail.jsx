@@ -11,7 +11,7 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api/portal`;
 const SITE_ORIGIN = "https://intercloud-digital.com";
 const DEFAULT_OG_IMAGE = `${SITE_ORIGIN}/og-image.png`;
 
-// Per-page SEO via react-helmet-async — replaces the old direct DOM
+// Per-page SEO via react-helmet-async - replaces the old direct DOM
 // mutation approach so every meta/OG/JSON-LD tag is declaratively managed.
 const ArticleSEO = ({ a }) => {
   if (!a) return null;
@@ -48,7 +48,7 @@ const ArticleSEO = ({ a }) => {
   };
   return (
     <Helmet>
-      <title>{`${title} — Intercloud`}</title>
+      <title>{`${title} - Intercloud`}</title>
       <meta name="description" content={desc} />
       {keywords ? <meta name="keywords" content={keywords} /> : null}
       <link rel="canonical" href={canonical} />

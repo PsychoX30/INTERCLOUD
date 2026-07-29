@@ -62,7 +62,7 @@ const AdminCreditNotes = () => {
     <div data-testid="credit-notes-page">
       <PageHeader
         title="Credit Notes"
-        subtitle="Refunds and adjustments applied against unpaid invoices. When applied credits meet or exceed an invoice's total, the invoice is auto-marked paid and suspended services reactivate — same behavior as a payment webhook."
+        subtitle="Refunds and adjustments applied against unpaid invoices. When applied credits meet or exceed an invoice's total, the invoice is auto-marked paid and suspended services reactivate - same behavior as a payment webhook."
         actions={
           <div className="flex items-center gap-2">
             <button className={btnSecondary} onClick={load} data-testid="cn-refresh"><RefreshCw className="h-4 w-4" /> Refresh</button>
@@ -119,7 +119,7 @@ const AdminCreditNotes = () => {
                       <div className="font-semibold text-[#0a2350]">{r.user_name}</div>
                       <div className="text-xs text-slate-500">{r.user_email}</div>
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs">{r.invoice_number || "—"}</td>
+                    <td className="px-4 py-3 font-mono text-xs">{r.invoice_number || "-"}</td>
                     <td className="px-4 py-3 text-right font-bold">{idr(r.amount)}</td>
                     <td className="px-4 py-3 max-w-[240px] truncate" title={r.reason}>{r.reason}</td>
                     <td className="px-4 py-3">
@@ -211,7 +211,7 @@ const CreateModal = ({ invoices, onClose, onSaved }) => {
           <div>
             <label className={labelClass}>Invoice (unpaid or overdue)*</label>
             <select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)} className={inputClass} data-testid="cn-modal-invoice">
-              <option value="">— Select invoice —</option>
+              <option value="">- Select invoice -</option>
               {eligible.map((i) => {
                 const label = `${i.number} · ${i.user_email} · ${idr(i.total)} · ${i.status}`;
                 return <option key={i.id} value={i.id}>{label}</option>;

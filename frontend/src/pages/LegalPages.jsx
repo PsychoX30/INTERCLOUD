@@ -90,7 +90,7 @@ export const TermsOfService = () => (
   <LegalShell title="Terms of Service" updated="February 2026" kicker="Legal">
     <H2>1. Agreement</H2>
     <P>These Terms and Conditions govern the relationship between <b>PT Intercloud Digital Inovasi</b> ("Intercloud", "we", "us") and the customer ("you", "customer") for the use of our Cloud, Hosting, VPS, Colocation, Dedicated Server, Firewall, DC-to-DC Connectivity, and Lease-to-Own Appliance services. By placing an order, activating a service, or using our client portal, you accept these terms in full.</P>
-    <P>Violating or ignoring any of the following terms will result in sanctions up to and including account suspension or termination — with or without prior notification depending on the severity.</P>
+    <P>Violating or ignoring any of the following terms will result in sanctions up to and including account suspension or termination - with or without prior notification depending on the severity.</P>
 
     <H2>2. Applicable Parties</H2>
     <P>This Agreement binds Intercloud and the customer whose identity is registered through our sales channels or client portal. Rights and obligations under this agreement cannot be transferred or assigned to any other party without our prior written consent.</P>
@@ -122,7 +122,7 @@ export const TermsOfService = () => (
     <P>Every service comes with allocated power, bandwidth, and network resources. If your usage exceeds the allocated capacity or disrupts other customers, Intercloud reserves the right to throttle, cap, or temporarily suspend the service until the issue is resolved. We will always attempt to notify you first, except in cases where immediate action is required to protect our network.</P>
 
     <H2>6. Billing & Payment</H2>
-    <P>You agree to provide accurate contact and payment information during onboarding. Services are provisioned once payment confirmation is received — typically within 24 hours on working days.</P>
+    <P>You agree to provide accurate contact and payment information during onboarding. Services are provisioned once payment confirmation is received - typically within 24 hours on working days.</P>
     <UL>
       <li>Invoices are issued based on the service activation date and are payable within the period stated on the invoice.</li>
       <li>Accounts unpaid within <b>7 days</b> after the due date are subject to service suspension.</li>
@@ -130,7 +130,7 @@ export const TermsOfService = () => (
       <li>Reactivation of terminated services may incur re-provisioning and setup fees.</li>
     </UL>
     <Callout>
-      Accepted payment methods: <b>Bank transfer (Mandiri, BCA)</b> and <b>payment gateway (Duitku)</b> — details are displayed inside your invoice.
+      Accepted payment methods: <b>Bank transfer (Mandiri, BCA)</b> and <b>payment gateway (Duitku)</b> - details are displayed inside your invoice.
     </Callout>
 
     <H2>7. Refunds</H2>
@@ -145,7 +145,7 @@ export const TermsOfService = () => (
     <P>You use Intercloud services at your own risk. While we maintain redundant infrastructure and Tier III facilities, you remain responsible for backing up your own data. Intercloud is not liable for data loss resulting from system failures, security breaches on customer-managed equipment, or operator error. We strongly recommend that customers keep independent off-site backups of critical data.</P>
 
     <H2>9. Indemnification</H2>
-    <P>You agree to defend, indemnify, and hold harmless Intercloud, its directors, employees, and affiliates from any and all claims, liabilities, losses, and reasonable attorney's fees arising from equipment, applications, or content hosted on our infrastructure — including but not limited to copyright infringement, illegal activity, or any harmful content that you or your users place on our network.</P>
+    <P>You agree to defend, indemnify, and hold harmless Intercloud, its directors, employees, and affiliates from any and all claims, liabilities, losses, and reasonable attorney's fees arising from equipment, applications, or content hosted on our infrastructure - including but not limited to copyright infringement, illegal activity, or any harmful content that you or your users place on our network.</P>
 
     <H2>10. Disclaimer</H2>
     <P>Intercloud provides all services on an "as-is" basis, without any warranty (express or implied) of merchantability, fitness for a particular purpose, or non-infringement. We are not liable for any business damages arising from delays, outages, or circumstances beyond our reasonable control (force majeure).</P>
@@ -213,7 +213,7 @@ export const AcceptableUsePolicy = () => (
     <UL>
       <li>Maintain secure configurations on all customer-managed equipment</li>
       <li>Keep operating systems and applications updated with security patches</li>
-      <li>Protect access credentials — do not share account passwords or API tokens</li>
+      <li>Protect access credentials - do not share account passwords or API tokens</li>
       <li>Address reported security vulnerabilities promptly</li>
       <li>Notify Intercloud immediately of any security incident or breach affecting our network</li>
     </UL>
@@ -270,14 +270,14 @@ export const ServiceLevelAgreement = () => (
     </UL>
 
     <H2>4. Environmental Controls</H2>
-    <P>Our data centers maintain the temperature, humidity, and airflow required by enterprise hardware — with precision cooling, humidity control, and continuous monitoring.</P>
+    <P>Our data centers maintain the temperature, humidity, and airflow required by enterprise hardware - with precision cooling, humidity control, and continuous monitoring.</P>
 
     <H2>5. Physical Security</H2>
     <UL>
       <li>24/7 on-site manned security personnel</li>
       <li>Biometric access control at every perimeter layer</li>
       <li>CCTV with 90-day retention</li>
-      <li>Multi-layer perimeter — building, floor, cage, rack</li>
+      <li>Multi-layer perimeter - building, floor, cage, rack</li>
     </UL>
     <P>Customers remain responsible for the security of their own equipment, data, and access credentials.</P>
 
@@ -289,7 +289,7 @@ export const ServiceLevelAgreement = () => (
       <li>Network connectivity verification (BGP session, upstream ping)</li>
       <li>Facility and infrastructure support</li>
     </UL>
-    <P>Response times vary by service tier and issue severity — critical infrastructure incidents receive the highest priority.</P>
+    <P>Response times vary by service tier and issue severity - critical infrastructure incidents receive the highest priority.</P>
 
     <H2>7. Scheduled Maintenance</H2>
     <P>We schedule preventive maintenance to keep the facility and network healthy. Customers receive <b>7-14 days advance notice</b> via email and the client portal for any planned maintenance that may impact services. We aim to schedule maintenance windows during off-peak hours (weekend nights) to minimize impact.</P>
@@ -325,7 +325,7 @@ export const ServiceLevelAgreement = () => (
     </UL>
 
     <H2>11. Data & Backup Responsibility</H2>
-    <P>Customers are solely responsible for backing up their own data. Intercloud maintains facility redundancy but does not guarantee against customer-side data loss and is not responsible for customer backups. Managed-backup add-ons are available — contact sales for pricing.</P>
+    <P>Customers are solely responsible for backing up their own data. Intercloud maintains facility redundancy but does not guarantee against customer-side data loss and is not responsible for customer backups. Managed-backup add-ons are available - contact sales for pricing.</P>
 
     <H2>12. SLA Modifications</H2>
     <P>Intercloud reserves the right to modify this SLA with reasonable notice to customers. Significant changes will be communicated by email and via the client portal.</P>

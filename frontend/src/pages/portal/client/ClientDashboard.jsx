@@ -28,7 +28,7 @@ const ClientDashboard = () => {
           <AlertTriangle className="h-6 w-6 flex-shrink-0" />
           <div className="flex-1">
             <div className="font-extrabold">
-              You have {s.overdue_invoices} overdue invoice{s.overdue_invoices > 1 ? "s" : ""} — {money(s.overdue_total)}
+              You have {s.overdue_invoices} overdue invoice{s.overdue_invoices > 1 ? "s" : ""} - {money(s.overdue_total)}
             </div>
             <div className="text-sm mt-1 opacity-90">
               Please settle to avoid service interruption. Bank transfer + payment gateway options are available.

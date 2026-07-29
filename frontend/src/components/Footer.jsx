@@ -5,7 +5,7 @@ import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN, EMAIL, ADDRESS } from "../mock/data
 import { useLang, pick } from "../i18n/LanguageContext";
 import useBranding from "../hooks/useBranding";
 
-// Section anchor — behaves like Header's nav links: scroll on landing,
+// Section anchor - behaves like Header's nav links: scroll on landing,
 // route+scroll on other pages. Kept local since Footer is the only other
 // consumer.
 const SectionLink = ({ hash, children, className, testid }) => {

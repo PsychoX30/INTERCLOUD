@@ -74,7 +74,7 @@ const PortalLogin = () => {
           </h1>
           <p className="mt-5 text-white/70 text-sm leading-relaxed">
             View active services, pay invoices, open a ticket to our 24/7 engineers,
-            and order new products — all in a single dashboard.
+            and order new products - all in a single dashboard.
           </p>
           <div className="mt-8 grid grid-cols-3 gap-3 text-center text-xs">
             <div className="rounded-xl border border-white/10 py-4">
@@ -165,7 +165,7 @@ const PortalLogin = () => {
           {captchaOn && (
             <div className="mt-3 text-[11px] text-slate-500 flex items-center gap-1.5" data-testid="login-recaptcha-badge">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-              Protected by Google reCAPTCHA v3 — <a className="underline" href="https://policies.google.com/privacy" target="_blank" rel="noreferrer">Privacy</a> · <a className="underline" href="https://policies.google.com/terms" target="_blank" rel="noreferrer">Terms</a>
+              Protected by Google reCAPTCHA v3 - <a className="underline" href="https://policies.google.com/privacy" target="_blank" rel="noreferrer">Privacy</a> · <a className="underline" href="https://policies.google.com/terms" target="_blank" rel="noreferrer">Terms</a>
             </div>
           )}
 

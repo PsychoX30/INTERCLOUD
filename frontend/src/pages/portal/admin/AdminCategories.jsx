@@ -25,7 +25,7 @@ const AdminCategories = () => {
         </>
       ) },
     { key: "description", label: "Description", sortable: false,
-      render: (v) => <span className="text-slate-600">{v || "—"}</span> },
+      render: (v) => <span className="text-slate-600">{v || "-"}</span> },
     { key: "sort_order", label: "Sort", sortable: true, align: "right",
       render: (v) => <span className="text-slate-600 tabular-nums">{v}</span> },
     { key: "product_count", label: "Products", sortable: true,

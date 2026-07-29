@@ -6,7 +6,7 @@ import { Lock, ArrowLeft, Loader2, AlertTriangle, CheckCircle2, Cloud } from "lu
 
 /**
  * Public "Forgot password" screen. Always shows a neutral confirmation
- * regardless of whether the email exists — no user enumeration.
+ * regardless of whether the email exists - no user enumeration.
  */
 const PortalForgotPassword = () => {
   const [email, setEmail] = useState("");
@@ -71,7 +71,7 @@ const PortalForgotPassword = () => {
             </div>
           ) : (
             <>
-              <p className="text-sm text-slate-500 mt-1.5">Enter your account email — we'll send a one-time link within a minute.</p>
+              <p className="text-sm text-slate-500 mt-1.5">Enter your account email - we'll send a one-time link within a minute.</p>
               {err && (
                 <div className="mt-4 flex items-start gap-2 text-sm bg-red-50 border border-red-200 text-red-700 rounded-xl px-3 py-2.5">
                   <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" /><span>{err}</span>

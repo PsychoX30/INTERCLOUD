@@ -15,7 +15,7 @@ const Modal = ({ children, onClose, title }) => (
 );
 
 /* =========================================================================
-   CRM — Customers / Prospects
+   CRM - Customers / Prospects
    ========================================================================= */
 const idr = (v) => "Rp" + Number(v || 0).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
@@ -67,7 +67,7 @@ export const AdminCRM = () => {
     <div>
       <PageHeader
         title="Customer Database (CRM)"
-        subtitle="Prospects, partnerships, existing & past clients — all in one directory."
+        subtitle="Prospects, partnerships, existing & past clients - all in one directory."
         actions={<button className={btnPrimary} onClick={() => setEditing("new")} data-testid="new-crm-btn"><Plus className="h-4 w-4" /> Add Contact</button>}
       />
 
@@ -145,13 +145,13 @@ export const AdminCRM = () => {
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-slate-500">{c.company || "—"}</div>
+                    <div className="text-xs text-slate-500">{c.company || "-"}</div>
                   </td>
                   <td className="px-4 py-3">
-                    <div>{c.email || "—"}</div>
-                    <div className="text-xs text-slate-500">{c.phone || "—"}</div>
+                    <div>{c.email || "-"}</div>
+                    <div className="text-xs text-slate-500">{c.phone || "-"}</div>
                   </td>
-                  <td className="px-4 py-3">{c.industry || "—"}</td>
+                  <td className="px-4 py-3">{c.industry || "-"}</td>
                   <td className="px-4 py-3" data-testid={`crm-latest-order-${c.id}`}>
                     {c.latest_order ? (
                       <div className="flex flex-col gap-0.5">
@@ -168,7 +168,7 @@ export const AdminCRM = () => {
                           className="text-xs text-slate-600 hover:text-[#f5b120] truncate max-w-[220px] inline-block"
                           title={c.latest_order.product_name}
                         >
-                          {c.latest_order.product_name || "—"}
+                          {c.latest_order.product_name || "-"}
                         </Link>
                         <div className="text-[10px] text-slate-400">{shortDate(c.latest_order.created_at)}</div>
                       </div>
@@ -178,7 +178,7 @@ export const AdminCRM = () => {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className={`font-extrabold ${c.lifetime_value > 0 ? "text-[#0a2350]" : "text-slate-400"}`} data-testid={`crm-ltv-${c.id}`}>
-                      {c.lifetime_value > 0 ? idr(c.lifetime_value) : "—"}
+                      {c.lifetime_value > 0 ? idr(c.lifetime_value) : "-"}
                     </div>
                     {c.won_orders_count > 0 && (
                       <div className="text-[10px] text-slate-500">{c.won_orders_count} active service{c.won_orders_count > 1 ? "s" : ""}</div>
@@ -248,7 +248,7 @@ export const AdminProjects = () => {
     <div>
       <PageHeader
         title="Project Tracker"
-        subtitle="Ongoing work — implementation projects, migrations, and internal initiatives."
+        subtitle="Ongoing work - implementation projects, migrations, and internal initiatives."
         actions={<button className={btnPrimary} onClick={() => setEditing("new")} data-testid="new-proj-btn"><Plus className="h-4 w-4" /> New Project</button>}
       />
       {rows.length === 0 && <EmptyState title="No projects" />}
@@ -259,14 +259,14 @@ export const AdminProjects = () => {
               <div>
                 <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">{p.priority}</div>
                 <div className="text-lg font-extrabold text-[#0a2350] leading-tight">{p.name}</div>
-                <div className="text-xs text-slate-500 mt-0.5">Customer: {p.customer_name || "—"} · Owner: {p.owner || "—"}</div>
+                <div className="text-xs text-slate-500 mt-0.5">Customer: {p.customer_name || "-"} · Owner: {p.owner || "-"}</div>
               </div>
               <StatusBadge status={p.status} />
             </div>
             <div className="mt-3 h-2 bg-slate-100 rounded-full overflow-hidden">
               <div className="h-full bg-gradient-to-r from-[#f5b120] to-[#0a2350]" style={{ width: `${p.progress || 0}%` }} />
             </div>
-            <div className="text-[11px] text-slate-500 mt-1">{p.progress || 0}% complete · Target {shortDate(p.target_date) || "—"}</div>
+            <div className="text-[11px] text-slate-500 mt-1">{p.progress || 0}% complete · Target {shortDate(p.target_date) || "-"}</div>
             {p.description && <p className="mt-3 text-sm text-slate-600 line-clamp-2">{p.description}</p>}
             <div className="mt-4 flex justify-end gap-2">
               <button className={btnSecondary} onClick={() => setEditing(p)}>Edit</button>
@@ -357,7 +357,7 @@ export const AdminContent = () => {
                 </td>
                 <td className="px-4 py-3 uppercase text-xs font-bold text-[#f5b120]">{c.channel}</td>
                 <td className="px-4 py-3 text-xs">{c.type}</td>
-                <td className="px-4 py-3">{c.owner || "—"}</td>
+                <td className="px-4 py-3">{c.owner || "-"}</td>
                 <td className="px-4 py-3 text-slate-500">{shortDate(c.publish_date)}</td>
                 <td className="px-4 py-3"><StatusBadge status={c.status} /></td>
                 <td className="px-4 py-3 text-right">
@@ -432,7 +432,7 @@ export const AdminFollowups = () => {
     <div>
       <PageHeader
         title="Follow-up Checklist"
-        subtitle="Never miss a warm lead — track outreach tasks by due date."
+        subtitle="Never miss a warm lead - track outreach tasks by due date."
         actions={<button className={btnPrimary} onClick={() => setModal(true)}><Plus className="h-4 w-4" /> New Task</button>}
       />
       {rows.length === 0 && <EmptyState title="No follow-ups scheduled" />}
@@ -450,7 +450,7 @@ export const AdminFollowups = () => {
                 <div className="flex-1 min-w-0">
                   <div className={`font-semibold text-[#0a2350] ${r.done ? "line-through" : ""}`}>{r.task}</div>
                   <div className="text-xs text-slate-500">
-                    {r.customer_name || "—"} · {r.channel} · due {shortDate(r.due_date) || "no date"} · {r.owner}
+                    {r.customer_name || "-"} · {r.channel} · due {shortDate(r.due_date) || "no date"} · {r.owner}
                   </div>
                 </div>
                 <button onClick={() => del(r.id)} className="text-slate-400 hover:text-red-600"><Trash2 className="h-4 w-4" /></button>
@@ -511,7 +511,7 @@ export const AdminDocuments = () => {
                 <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">{d.category}</div>
               </div>
               <div className="mt-4 text-base font-extrabold text-[#0a2350] leading-tight">{d.title}</div>
-              <div className="text-xs text-slate-500 mt-1">{d.customer_name || "—"} · {fullDateTime(d.created_at)}</div>
+              <div className="text-xs text-slate-500 mt-1">{d.customer_name || "-"} · {fullDateTime(d.created_at)}</div>
               {d.notes && <p className="mt-2 text-sm text-slate-600 line-clamp-2">{d.notes}</p>}
               <div className="mt-4 flex gap-2">
                 {d.url && <a href={d.url} target="_blank" rel="noreferrer" className={btnSecondary}>Open</a>}
