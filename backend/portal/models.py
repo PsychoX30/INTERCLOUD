@@ -211,6 +211,44 @@ class CategoryOut(CategoryIn):
 
 
 # ---------- SERVICES (client-owned instances) ----------
+class HostingConfig(BaseModel):
+    """Skema config layanan hosting (services.config untuk category=hosting)."""
+    control_panel: Literal["cpanel", "plesk", "directadmin"] = "cpanel"
+    domain: str = ""
+    username: str = ""
+    package: str = ""
+    server_host: str = ""
+    ip: str = ""
+    provision_status: Literal["pending", "provisioned", "failed", "manual"] = "manual"
+    provisioned_at: str = ""
+
+
+class HostingProvisionIn(BaseModel):
+    """Payload provisioning akun hosting via panel API."""
+    control_panel: Literal["cpanel", "plesk", "directadmin"] = "cpanel"
+    domain: str
+    username: str = ""
+    password: str = ""
+    package: str = ""
+
+
+class SelfServiceLogEntry(BaseModel):
+    """Riwayat aksi mandiri klien pada layanan (start/stop/reboot/reset_password/upgrade)."""
+    at: str
+    action: str
+    by: str
+
+
+class PendingUpgrade(BaseModel):
+    """Upgrade resource yang menunggu pembayaran invoice selisih."""
+    cpu: int = 0
+    ram_gb: int = 0
+    disk_gb: int = 0
+    monthly_delta: float = 0
+    invoice_id: str
+    requested_at: str
+
+
 class ServiceOut(BaseModel):
     id: str
     user_id: str
@@ -223,6 +261,8 @@ class ServiceOut(BaseModel):
     next_renewal: str
     price_monthly: float
     config: dict = {}
+    self_service_log: List[SelfServiceLogEntry] = []
+    pending_upgrade: Optional[PendingUpgrade] = None
 
 
 class ServiceCreateIn(BaseModel):

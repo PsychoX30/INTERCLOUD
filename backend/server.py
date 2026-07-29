@@ -163,6 +163,11 @@ async def startup_seed():
         # MikroTik devices: ordered listing + fast name lookup
         await db.mikrotik_devices.create_index("created_at")
         await db.mikrotik_devices.create_index("name")
+        # Admin dashboard: Pusat Notifikasi (device down) + Tagihan Terbaru
+        await db.noc_device_state.create_index("status")
+        await db.invoices.create_index([("created_at", -1)])
+        # Hosting provisioning: lookup akun hosting per kategori + domain
+        await db.services.create_index([("category", 1), ("config.domain", 1)])
         # Articles: public listing sorted by publish date, unique slug already set
         await db.articles.create_index([("published", 1), ("published_at", -1)])
         # Assets: filter by category + status combo

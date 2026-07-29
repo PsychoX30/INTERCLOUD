@@ -309,11 +309,40 @@ def _serialize_shared_mail_state(request):
 
 def pytest_sessionstart(session):
     global _demo_users_done
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    # Master (or non-distributed run): snapshot integration_settings so the
+    # suites that toggle/delete providers can't clobber the live dev config.
+    if worker is None:
+        try:
+            import pickle
+            from pymongo import MongoClient
+            db = MongoClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
+            docs = list(db.integration_settings.find({}))
+            with open("/tmp/ic_integration_settings.snapshot", "wb") as f:
+                pickle.dump(docs, f)
+        except Exception:
+            pass
     # xdist: only the first worker (or a non-distributed run) seeds fixtures;
     # the data is idempotent and long-lived, so other workers just reuse it.
-    worker = os.environ.get("PYTEST_XDIST_WORKER")
     if worker not in (None, "gw0"):
         return
     if not _demo_users_done:
         _ensure_demo_users_impl()
         _demo_users_done = True
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # Restore integration_settings exactly as they were before the run.
+    if os.environ.get("PYTEST_XDIST_WORKER") is not None:
+        return
+    try:
+        import pickle
+        from pymongo import MongoClient
+        with open("/tmp/ic_integration_settings.snapshot", "rb") as f:
+            docs = pickle.load(f)
+        db = MongoClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
+        db.integration_settings.delete_many({})
+        if docs:
+            db.integration_settings.insert_many(docs)
+    except Exception:
+        pass

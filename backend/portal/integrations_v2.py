@@ -172,6 +172,169 @@ class ProxmoxClient:
 # ============================================================
 # Mikrotik RouterOS
 # ============================================================
+class CpanelClient:
+    """WHM API 1 client - provisioning akun shared hosting via API token."""
+
+    def __init__(self, settings: dict):
+        creds = settings.get("credentials") or {}
+        opts = settings.get("options") or {}
+        self.host = (creds.get("host") or "").rstrip("/")
+        if self.host and not self.host.startswith("http"):
+            self.host = f"https://{self.host}:2087"
+        self.username = creds.get("username") or "root"
+        self.token = creds.get("api_token") or ""
+        self.ssl_verify = bool(opts.get("ssl_verify", True))
+        self.default_package = opts.get("default_package") or "default"
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"whm {self.username}:{self.token}"}
+
+    async def _call(self, fn: str, params: dict) -> dict:
+        async with httpx.AsyncClient(timeout=45, verify=self.ssl_verify) as c:
+            r = await c.get(f"{self.host}/json-api/{fn}",
+                            headers=self._headers(),
+                            params={"api.version": 1, **params})
+            r.raise_for_status()
+            return r.json()
+
+    async def test_connection(self) -> dict:
+        try:
+            data = await self._call("version", {})
+            v = (data.get("data") or {}).get("version", "?")
+            return {"ok": True, "message": f"WHM {v}", "details": data.get("data")}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:200]}
+
+    async def list_packages(self) -> list:
+        data = await self._call("listpkgs", {})
+        return [p.get("name") for p in (data.get("data") or {}).get("pkg", [])]
+
+    async def create_account(self, domain: str, username: str, password: str,
+                             package: str | None = None, contact_email: str = "") -> dict:
+        params = {"domain": domain, "username": username, "password": password,
+                  "plan": package or self.default_package}
+        if contact_email:
+            params["contactemail"] = contact_email
+        data = await self._call("createacct", params)
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "createacct failed")
+        return data.get("data") or {}
+
+    async def suspend_account(self, username: str, reason: str = "") -> dict:
+        data = await self._call("suspendacct", {"user": username, "reason": reason})
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "suspendacct failed")
+        return meta
+
+    async def unsuspend_account(self, username: str) -> dict:
+        data = await self._call("unsuspendacct", {"user": username})
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "unsuspendacct failed")
+        return meta
+
+
+class PleskClient:
+    """Plesk REST API client - provisioning akun hosting (subscription)."""
+
+    def __init__(self, settings: dict):
+        creds = settings.get("credentials") or {}
+        opts = settings.get("options") or {}
+        self.host = (creds.get("host") or "").rstrip("/")
+        if self.host and not self.host.startswith("http"):
+            self.host = f"https://{self.host}:8443"
+        self.username = creds.get("username") or "admin"
+        self.token = creds.get("api_token") or ""
+        self.password = creds.get("password") or ""
+        self.ssl_verify = bool(opts.get("ssl_verify", True))
+        self.default_plan = opts.get("default_plan") or "Default Domain"
+
+    def _headers(self) -> dict:
+        h = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.token:
+            h["X-API-Key"] = self.token
+        return h
+
+    def _auth(self):
+        return None if self.token else (self.username, self.password)
+
+    async def test_connection(self) -> dict:
+        try:
+            async with httpx.AsyncClient(timeout=45, verify=self.ssl_verify) as c:
+                r = await c.get(f"{self.host}/api/v2/server",
+                                headers=self._headers(), auth=self._auth())
+                r.raise_for_status()
+                data = r.json()
+                return {"ok": True, "message": f"Plesk {data.get('version', '?')}", "details": data}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:200]}
+
+    async def create_account(self, domain: str, username: str, password: str,
+                             plan: str | None = None, contact_email: str = "") -> dict:
+        body = {"name": domain, "hosting_type": "virtual",
+                "plan": {"name": plan or self.default_plan},
+                "owner_login": self.username,
+                "hosting_settings": {"ftp_login": username, "ftp_password": password}}
+        async with httpx.AsyncClient(timeout=60, verify=self.ssl_verify) as c:
+            r = await c.post(f"{self.host}/api/v2/domains",
+                             headers=self._headers(), auth=self._auth(), json=body)
+            r.raise_for_status()
+            return r.json()
+
+
+class DirectAdminClient:
+    """DirectAdmin legacy API client - provisioning akun hosting via CMD_API."""
+
+    def __init__(self, settings: dict):
+        creds = settings.get("credentials") or {}
+        opts = settings.get("options") or {}
+        self.host = (creds.get("host") or "").rstrip("/")
+        if self.host and not self.host.startswith("http"):
+            self.host = f"https://{self.host}:2222"
+        self.username = creds.get("username") or "admin"
+        self.token = creds.get("api_token") or creds.get("password") or ""
+        self.ssl_verify = bool(opts.get("ssl_verify", True))
+        self.default_package = opts.get("default_package") or "default"
+        self.default_ip = opts.get("default_ip") or ""
+
+    def _auth(self):
+        return (self.username, self.token)
+
+    @staticmethod
+    def _parse(text: str) -> dict:
+        from urllib.parse import parse_qs
+        return {k: v[0] if len(v) == 1 else v for k, v in parse_qs(text).items()}
+
+    async def test_connection(self) -> dict:
+        try:
+            async with httpx.AsyncClient(timeout=45, verify=self.ssl_verify) as c:
+                r = await c.get(f"{self.host}/CMD_API_SHOW_USERS", auth=self._auth())
+                r.raise_for_status()
+                parsed = self._parse(r.text)
+                if parsed.get("error") == "1":
+                    return {"ok": False, "message": parsed.get("text") or "Auth failed"}
+                return {"ok": True, "message": "DirectAdmin reachable", "details": {"users_sample": str(parsed)[:120]}}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:200]}
+
+    async def create_account(self, domain: str, username: str, password: str,
+                             package: str | None = None, contact_email: str = "") -> dict:
+        params = {"action": "create", "add": "Submit", "username": username,
+                  "email": contact_email or f"{username}@{domain}", "passwd": password,
+                  "passwd2": password, "domain": domain,
+                  "package": package or self.default_package,
+                  "ip": self.default_ip, "notify": "no"}
+        async with httpx.AsyncClient(timeout=60, verify=self.ssl_verify) as c:
+            r = await c.post(f"{self.host}/CMD_API_ACCOUNT_USER", auth=self._auth(), data=params)
+            r.raise_for_status()
+            parsed = self._parse(r.text)
+            if parsed.get("error") == "1":
+                raise RuntimeError(parsed.get("details") or parsed.get("text") or "createacct failed")
+            return parsed
+
+
 class MikrotikClient:
     """Wraps librouteros for BGP/interface/traffic reads.
 
@@ -890,6 +1053,21 @@ INTEGRATION_SCHEMA = {
         ],
         "options": [
             {"key": "default_plan", "label": "Default subscription plan", "type": "text"},
+            {"key": "ssl_verify", "label": "Verify SSL", "type": "checkbox", "default": True},
+        ],
+    },
+    "directadmin": {
+        "label": "DirectAdmin",
+        "category": "provisioning",
+        "description": "Auto-provision DirectAdmin hosting accounts via legacy API.",
+        "credentials": [
+            {"key": "host", "label": "DirectAdmin host (https://…:2222)", "type": "text", "required": True},
+            {"key": "username", "label": "Admin/Reseller username", "type": "text", "required": True},
+            {"key": "api_token", "label": "Login key / API token", "type": "password", "required": True},
+        ],
+        "options": [
+            {"key": "default_package", "label": "Default hosting package", "type": "text", "default": "default"},
+            {"key": "default_ip", "label": "Shared IP (optional)", "type": "text"},
             {"key": "ssl_verify", "label": "Verify SSL", "type": "checkbox", "default": True},
         ],
     },

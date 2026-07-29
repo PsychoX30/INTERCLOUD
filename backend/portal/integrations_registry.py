@@ -34,6 +34,18 @@ MODULE_SCHEMAS = {
             FIELD("password", "Password", "password", required=True),
         ],
     },
+    "directadmin": {
+        "label": "DirectAdmin",
+        "category": "provisioning",
+        "description": "Auto-provision DirectAdmin hosting accounts via legacy API.",
+        "fields": [
+            FIELD("hostname", "Hostname or IP Address", required=True, placeholder="da.example.com"),
+            FIELD("port", "Port", "number", default=2222),
+            FIELD("protocol", "Protocol", "select", options=["https", "http"], default="https"),
+            FIELD("username", "Admin/Reseller Username", required=True),
+            FIELD("api_token", "Login Key / API Token", "password", required=True),
+        ],
+    },
     "proxmox": {
         "label": "Proxmox VE",
         "category": "virtualization",

@@ -1,5 +1,9 @@
 """All portal routes (auth + client + admin) under /api/portal."""
 import os
+import secrets
+import re
+
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from bson import ObjectId
 from datetime import datetime, timezone, timedelta
@@ -658,6 +662,32 @@ async def client_services(user=Depends(get_current_user)):
     return result
 
 
+@router.get("/client/hosting-accounts")
+async def client_hosting_accounts(user=Depends(get_current_user)):
+    """Daftar akun hosting (cPanel/Plesk/DirectAdmin) milik klien."""
+    db = await _get_db()
+    docs = await db.services.find(
+        {"user_id": ObjectId(user["id"]), "category": "hosting"}
+    ).sort("created_at", -1).to_list(200)
+    out = []
+    for d in docs:
+        cfg = d.get("config") or {}
+        out.append({
+            "id": str(d["_id"]),
+            "product_name": d.get("product_name", ""),
+            "name": d.get("name", ""),
+            "status": d.get("status", "active"),
+            "next_renewal": d.get("next_renewal", ""),
+            "price_monthly": d.get("price_monthly", 0),
+            "control_panel": cfg.get("control_panel", ""),
+            "domain": cfg.get("domain") or cfg.get("hostname", ""),
+            "username": cfg.get("username", ""),
+            "ip": cfg.get("ip", ""),
+            "provision_status": cfg.get("provision_status", "manual"),
+        })
+    return out
+
+
 @router.get("/client/services/{sid}")
 async def client_service_detail(sid: str, user=Depends(get_current_user)):
     db = await _get_db()
@@ -676,12 +706,50 @@ async def client_service_detail(sid: str, user=Depends(get_current_user)):
         "next_renewal": d.get("next_renewal", ""),
         "price_monthly": d.get("price_monthly", 0),
         "config": d.get("config", {}),
+        "self_service_log": (d.get("self_service_log") or [])[-10:],
+        "pending_upgrade": bool(d.get("pending_upgrade")),
     }
 
 
 # ---------------- Client self-service VM control ----------------
 _CLIENT_VM_ACTIONS = ("start", "stop", "reboot")
 _VM_CATEGORIES = ("vps", "cloud", "dedicated")
+
+
+@router.get("/client/vms")
+async def client_vms(user=Depends(get_current_user)):
+    """Daftar semua VM milik klien dengan status terkini dari Proxmox."""
+    db = await _get_db()
+    svcs = await db.services.find(
+        {"user_id": ObjectId(user["id"]), "category": {"$in": list(_VM_CATEGORIES)}}
+    ).sort("created_at", -1).to_list(100)
+    s = await iv2.get_settings(db, "proxmox")
+    client = iv2.ProxmoxClient(s) if (s and s.get("enabled")) else None
+    out = []
+    for svc in svcs:
+        cfg = svc.get("config") or {}
+        item = {
+            "service_id": str(svc["_id"]),
+            "name": svc.get("name", ""),
+            "product_name": svc.get("product_name", ""),
+            "service_status": svc.get("status", ""),
+            "node": cfg.get("node"),
+            "vmid": cfg.get("vmid"),
+            "configured": False,
+            "status": "unknown",
+        }
+        if client and cfg.get("node") and cfg.get("vmid"):
+            item["configured"] = True
+            try:
+                st = await client.vm_status(cfg["node"], int(cfg["vmid"]))
+                item["status"] = st.get("status", "unknown")
+                item["uptime"] = st.get("uptime")
+                item["cpu"] = st.get("cpu")
+                item["mem"] = st.get("mem")
+            except Exception:
+                item["status"] = "unreachable"
+        out.append(item)
+    return out
 
 
 @router.get("/client/services/{sid}/vm")
@@ -710,6 +778,11 @@ async def client_vm_reset_password(sid: str, payload: dict, request: Request, us
     """Self-service guest OS password reset via QEMU guest agent (audited)."""
     username = (payload.get("username") or "root").strip()
     password = payload.get("password") or ""
+    generated = False
+    if not password and payload.get("generate"):
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%"
+        password = "".join(secrets.choice(alphabet) for _ in range(16))
+        generated = True
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="Password minimal 8 karakter")
     db = await _get_db()
@@ -749,7 +822,10 @@ async def client_vm_reset_password(sid: str, payload: dict, request: Request, us
     await db.services.update_one(
         {"_id": svc["_id"]},
         {"$push": {"self_service_log": {"at": _now(), "action": "reset_password", "by": user["email"]}}})
-    return {"ok": True, "username": username}
+    out = {"ok": True, "username": username}
+    if generated:
+        out["generated_password"] = password
+    return out
 
 
 @router.post("/client/services/{sid}/vm/{action}")
@@ -1139,13 +1215,48 @@ async def _auto_provision(db, order: dict) -> dict:
     await _log("provisioning_started", f"Provisioning started for category '{cat}'.")
 
     if cat in ("hosting",):
-        # cPanel/Plesk auto-account
-        module = await db.integrations.find_one({"module": {"$in": ["cpanel", "plesk"]}, "status": "enabled"})
-        provider = module["module"] if module else "cpanel"
-        cfg.setdefault("control_panel", "cPanel/WHM" if provider == "cpanel" else "Plesk")
-        cfg.setdefault("hostname", f"{order['user_email'].split('@')[0]}.icd-cust.net")
-        cfg.setdefault("ip", "103.28.14." + str((hash(str(order["_id"])) % 240) + 10))
-        await _log("panel_account_created", f"{provider.upper()} account provisioned (mock).")
+        # Live provisioning cPanel/Plesk/DirectAdmin bila integrasi aktif; fallback mock.
+        _PANELS = [
+            ("cpanel", "cPanel/WHM", iv2.CpanelClient, "package"),
+            ("plesk", "Plesk", iv2.PleskClient, "plan"),
+            ("directadmin", "DirectAdmin", iv2.DirectAdminClient, "package"),
+        ]
+        chosen = None
+        for key, label, cls, pkg_kw in _PANELS:
+            s = await iv2.get_settings(db, key)
+            if s and s.get("enabled"):
+                chosen = (key, label, cls, pkg_kw, s)
+                break
+        if chosen:
+            key, panel_label, cls, pkg_kw, settings = chosen
+            domain = cfg.get("domain") or f"{order['user_email'].split('@')[0]}.icd-cust.net"
+            uname = re.sub(r"[^a-z0-9]", "", order["user_email"].split("@")[0].lower())[:8] or "icduser"
+            if uname[0].isdigit():
+                uname = "u" + uname[:7]
+            pw_alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%"
+            password = "".join(secrets.choice(pw_alphabet) for _ in range(16))
+            try:
+                await cls(settings).create_account(
+                    domain=domain, username=uname, password=password,
+                    contact_email=order["user_email"], **{pkg_kw: cfg.get("package") or None})
+                cfg.update({"control_panel": panel_label, "domain": domain,
+                            "username": uname, "provision_status": "provisioned",
+                            "provisioned_at": _now()})
+                await _log("panel_account_created",
+                           f"{panel_label} account '{uname}' created for {domain} (live).")
+            except Exception as e:
+                cfg.update({"control_panel": panel_label, "domain": domain,
+                            "username": uname, "provision_status": "failed"})
+                await _log("panel_account_failed",
+                           f"{panel_label} provisioning gagal: {str(e)[:150]}. Perlu tindak lanjut manual.")
+        else:
+            module = await db.integrations.find_one({"module": {"$in": ["cpanel", "plesk", "directadmin"]}, "status": "enabled"})
+            provider = module["module"] if module else "cpanel"
+            cfg.setdefault("control_panel", {"cpanel": "cPanel/WHM", "plesk": "Plesk", "directadmin": "DirectAdmin"}.get(provider, "cPanel/WHM"))
+            cfg.setdefault("hostname", f"{order['user_email'].split('@')[0]}.icd-cust.net")
+            cfg.setdefault("ip", "103.28.14." + str((hash(str(order["_id"])) % 240) + 10))
+            cfg.setdefault("provision_status", "manual")
+            await _log("panel_account_created", f"{provider.upper()} account provisioned (mock).")
     elif cat in ("vps", "cloud"):
         module = await db.integrations.find_one({"module": "proxmox", "status": "enabled"})
         cfg.setdefault("node", (module or {}).get("config", {}).get("default_node") or "prox-jkt-05")
@@ -1283,6 +1394,76 @@ async def client_reply_ticket(tid: str, payload: m.TicketReplyIn, user=Depends(g
 # ============================================================
 # ADMIN
 # ============================================================
+async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
+    """Pusat Notifikasi: kumpulkan peringatan penting lintas modul dengan severity."""
+    alerts = []
+    if staff["role"] in FINANCE_ROLES or staff["role"] == "sales":
+        inv_q = {} if scope_user_ids is None else {"user_id": {"$in": scope_user_ids}}
+        overdue_docs = await db.invoices.find(
+            {**inv_q, "status": "overdue"}).sort("due_date", 1).to_list(5)
+        for d in overdue_docs:
+            alerts.append({
+                "type": "invoice_overdue",
+                "severity": "danger",
+                "title": f"Invoice {d.get('number', '')} jatuh tempo",
+                "detail": f"Jatuh tempo {d.get('due_date', '')}",
+                "link": "/portal/admin/invoices",
+            })
+        today = datetime.now(timezone.utc).date()
+        soon = (today + timedelta(days=3)).isoformat()
+        due_soon = await db.invoices.find(
+            {**inv_q, "status": "unpaid",
+             "due_date": {"$gte": today.isoformat(), "$lte": soon}}).sort("due_date", 1).to_list(5)
+        for d in due_soon:
+            alerts.append({
+                "type": "invoice_due_soon",
+                "severity": "warning",
+                "title": f"Invoice {d.get('number', '')} segera jatuh tempo",
+                "detail": f"Jatuh tempo {d.get('due_date', '')}",
+                "link": "/portal/admin/invoices",
+            })
+    down_states = await db.noc_device_state.find({"status": "down"}).to_list(20)
+    dev_map = {m["_id"]: m.get("name", "unnamed") async for m in db.mikrotik_devices.find(
+        {"_id": {"$in": [s["device_id"] for s in down_states]}})} if down_states else {}
+    for s in down_states:
+        if s["device_id"] not in dev_map:
+            continue
+        alerts.append({
+            "type": "device_down",
+            "severity": "danger",
+            "title": f"Perangkat {dev_map[s['device_id']]} DOWN",
+            "detail": s.get("last_message") or "Tidak merespons probe",
+            "link": "/portal/admin/noc",
+        })
+    pending_orders = await db.orders.count_documents({"status": "pending_verification"})
+    if pending_orders:
+        alerts.append({
+            "type": "orders_pending",
+            "severity": "warning",
+            "title": f"{pending_orders} order menunggu verifikasi",
+            "detail": "Verifikasi pembayaran untuk memproses provisioning",
+            "link": "/portal/admin/orders",
+        })
+    order = {"danger": 0, "warning": 1, "info": 2}
+    alerts.sort(key=lambda a: order.get(a["severity"], 9))
+    return alerts
+
+
+@router.get("/admin/notifications")
+async def admin_notifications(severity: str | None = None, staff=Depends(get_current_staff)):
+    """Pusat Notifikasi dengan filter prioritas (?severity=danger|warning)."""
+    db = await _get_db()
+    scope_user_ids = None
+    if staff["role"] == "sales":
+        scope_user_ids = [ObjectId(cid) for cid in staff.get("assigned_client_ids") or []]
+    alerts = await _build_admin_alerts(db, staff, scope_user_ids)
+    if severity:
+        if severity not in ("danger", "warning", "info"):
+            raise HTTPException(status_code=400, detail="severity harus danger, warning, atau info")
+        alerts = [a for a in alerts if a["severity"] == severity]
+    return {"alerts": alerts, "count": len(alerts)}
+
+
 @router.get("/admin/dashboard")
 async def admin_dashboard(staff=Depends(get_current_staff)):
     db = await _get_db()
@@ -1344,7 +1525,6 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
 
     # ---- Tagihan terbaru (Ringkasan Umum) + Pusat Notifikasi ----
     recent_invoices = []
-    alerts = []
     if staff["role"] in FINANCE_ROLES or staff["role"] == "sales":
         inv_q_base = {} if scope_user_ids is None else {"user_id": {"$in": scope_user_ids}}
         recent_docs = await db.invoices.find(inv_q_base).sort("created_at", -1).to_list(5)
@@ -1359,30 +1539,8 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
             "due_date": d.get("due_date", ""),
         } for d in recent_docs]
 
-        overdue_alert_docs = await db.invoices.find(
-            {**inv_q_base, "status": "overdue"}
-        ).sort("due_date", 1).to_list(5)
-        for d in overdue_alert_docs:
-            alerts.append({
-                "type": "invoice_overdue",
-                "severity": "danger",
-                "title": f"Invoice {d.get('number', '')} jatuh tempo",
-                "detail": f"Jatuh tempo {d.get('due_date', '')}",
-                "link": "/portal/admin/invoices",
-            })
-
-    down_states = await db.noc_device_state.find({"status": "down"}).to_list(20)
-    dev_map = {m["_id"]: m.get("name", "unnamed") async for m in db.mikrotik_devices.find(
-        {"_id": {"$in": [s["device_id"] for s in down_states]}})} if down_states else {}
-    down_states = [s for s in down_states if s["device_id"] in dev_map]
-    for s in down_states:
-        alerts.append({
-            "type": "device_down",
-            "severity": "danger",
-            "title": f"Perangkat {dev_map[s['device_id']]} DOWN",
-            "detail": s.get("last_message") or "Tidak merespons probe",
-            "link": "/portal/admin/noc",
-        })
+    alerts = await _build_admin_alerts(db, staff, scope_user_ids)
+    down_count = sum(1 for a in alerts if a["type"] == "device_down")
 
     # ---- System health: status real dari registry integrations ----
     health = [
@@ -1390,7 +1548,6 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
         {"name": "MongoDB", "status": "ok", "detail": "Connected"},
     ]
     mikrotik_count = await db.mikrotik_devices.count_documents({})
-    down_count = len(down_states)
     if mikrotik_count:
         health.append({
             "name": "MikroTik Ops",
@@ -2169,6 +2326,56 @@ async def admin_create_invoice(payload: m.InvoiceIn, admin=Depends(get_current_a
     return await _serialize_invoice(db, doc)
 
 
+async def _apply_pending_upgrade(db, inv: dict) -> bool:
+    """Terapkan upgrade resource setelah invoice selisih dibayar (idempotent).
+
+    Dipanggil dari semua jalur invoice -> paid (webhook Duitku, admin mark-paid,
+    settle via credit note). Best-effort live resize cores/memory di Proxmox."""
+    up = inv.get("upgrade")
+    sid = inv.get("service_id")
+    if not (up and sid):
+        return False
+    try:
+        svc = await db.services.find_one({"_id": ObjectId(sid)})
+    except Exception:
+        return False
+    pending = (svc or {}).get("pending_upgrade")
+    if not svc or not pending or pending.get("invoice_id") != str(inv["_id"]):
+        return False
+
+    def _num(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    cfg = svc.get("config") or {}
+    new_cpu = _num(cfg.get("cpu")) + int(up.get("cpu") or 0)
+    new_ram = _num(cfg.get("ram_gb")) + int(up.get("ram_gb") or 0)
+    new_disk = _num(cfg.get("disk_gb")) + int(up.get("disk_gb") or 0)
+    await db.services.update_one(
+        {"_id": svc["_id"]},
+        {"$set": {"config.cpu": new_cpu, "config.ram_gb": new_ram, "config.disk_gb": new_disk},
+         "$inc": {"price_monthly": float(up.get("monthly_delta") or 0)},
+         "$unset": {"pending_upgrade": ""},
+         "$push": {"self_service_log": {"at": _now(), "action": "upgrade_applied",
+                                         "by": f"billing (invoice {inv.get('number', '')})"}}})
+    try:
+        s = await iv2.get_settings(db, "proxmox")
+        if s and s.get("enabled") and cfg.get("node") and cfg.get("vmid"):
+            body = {}
+            if up.get("cpu"):
+                body["cores"] = new_cpu
+            if up.get("ram_gb"):
+                body["memory"] = new_ram * 1024
+            if body:
+                await iv2.ProxmoxClient(s)._post(
+                    f"/nodes/{cfg['node']}/qemu/{int(cfg['vmid'])}/config", body)
+    except Exception:
+        pass
+    return True
+
+
 @router.put("/admin/invoices/{iid}/status")
 async def admin_update_invoice_status(
     iid: str, payload: m.InvoiceStatusIn, admin=Depends(get_current_admin)
@@ -2195,6 +2402,10 @@ async def admin_update_invoice_status(
             )
             order = await db.orders.find_one({"_id": order["_id"]})
             await _auto_provision(db, order)
+
+    # Eksekusi upgrade resource yang menunggu pembayaran invoice ini.
+    if payload.status == "paid":
+        await _apply_pending_upgrade(db, d)
 
     return await _serialize_invoice(db, d)
 
@@ -5016,7 +5227,28 @@ async def integrations_v2_test(provider: str, admin=Depends(get_current_admin)):
         return iv2.SMTPMailer(settings).test_connection()
     if provider == "imap":
         return iv2.IMAPClient(settings).test_connection()
-    if provider in ("cpanel", "plesk"):
+    if provider == "cpanel":
+        c = settings.get("credentials") or {}
+        missing = [k for k in ("host", "username") if not c.get(k)]
+        secret_ok = bool(c.get("api_token") or c.get("password"))
+        if missing or not secret_ok:
+            return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
+        return await iv2.CpanelClient(settings).test_connection()
+    if provider == "plesk":
+        c = settings.get("credentials") or {}
+        missing = [k for k in ("host", "username") if not c.get(k)]
+        secret_ok = bool(c.get("api_token") or c.get("password"))
+        if missing or not secret_ok:
+            return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
+        return await iv2.PleskClient(settings).test_connection()
+    if provider == "directadmin":
+        c = settings.get("credentials") or {}
+        missing = [k for k in ("host", "username") if not c.get(k)]
+        secret_ok = bool(c.get("api_token") or c.get("password"))
+        if missing or not secret_ok:
+            return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
+        return await iv2.DirectAdminClient(settings).test_connection()
+    if provider in ("plesk",):
         # No SDK adapter yet - validate that required fields are present.
         c = settings.get("credentials") or {}
         missing = [k for k in ("host", "username") if not c.get(k)]
@@ -5427,6 +5659,13 @@ async def payment_webhook(provider: str, request: Request):
                 await _auto_provision(db, order)
             except Exception:
                 pass
+
+    # 2b) Eksekusi upgrade resource yang menunggu pembayaran invoice ini
+    if inv:
+        try:
+            await _apply_pending_upgrade(db, inv)
+        except Exception:
+            pass
 
     # 3) Reactivate services suspended for non-payment of THIS invoice
     reactivated = 0
@@ -7135,6 +7374,10 @@ async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
          "$unset": {"suspended_at": "", "suspended_reason": ""}},
     )
     reactivated = res.modified_count
+    try:
+        await _apply_pending_upgrade(db, invoice)
+    except Exception:
+        pass
     await log_audit(db, actor=admin, action="invoice.settled_by_credit", category="billing",
                     target_type="invoice", target_id=str(invoice["_id"]),
                     target_label=inv_no,
