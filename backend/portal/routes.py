@@ -1214,6 +1214,26 @@ async def _auto_provision(db, order: dict) -> dict:
 
     await _log("provisioning_started", f"Provisioning started for category '{cat}'.")
 
+    # Spesifikasi dari opsi konfigurasi + add-on ikut dibawa ke service config
+    sel_specs = {}
+    for s in order.get("selections", []) or []:
+        gk = s.get("group_key")
+        if not gk:
+            continue
+        if s.get("option_labels"):
+            sel_specs[gk] = s["option_labels"][0] if len(s["option_labels"]) == 1 else s["option_labels"]
+        elif s.get("quantity") is not None:
+            sel_specs[gk] = s["quantity"]
+    if sel_specs:
+        cfg.setdefault("selected_options", sel_specs)
+    if order.get("addon_ids"):
+        addon_docs = await db.products.find({"_id": {"$in": order["addon_ids"]}}).to_list(50)
+        if addon_docs:
+            cfg.setdefault("addons", [a.get("name", "") for a in addon_docs])
+            await _log("addons_attached",
+                       "Add-on terpasang: " + ", ".join(a.get("name", "") for a in addon_docs))
+
+    hosting_credentials = None
     if cat in ("hosting",):
         # Live provisioning cPanel/Plesk/DirectAdmin bila integrasi aktif; fallback mock.
         _PANELS = [
@@ -1244,6 +1264,13 @@ async def _auto_provision(db, order: dict) -> dict:
                             "provisioned_at": _now()})
                 await _log("panel_account_created",
                            f"{panel_label} account '{uname}' created for {domain} (live).")
+                bare_host = re.sub(r"^https?://", "", (settings.get("credentials") or {}).get("host") or "").split(":")[0].split("/")[0]
+                panel_port = {"cpanel": 2083, "plesk": 8443, "directadmin": 2222}[key]
+                hosting_credentials = {
+                    "panel": panel_label, "domain": domain, "username": uname,
+                    "password": password,
+                    "panel_url": f"https://{bare_host}:{panel_port}" if bare_host else "",
+                }
             except Exception as e:
                 cfg.update({"control_panel": panel_label, "domain": domain,
                             "username": uname, "provision_status": "failed"})
@@ -1291,6 +1318,16 @@ async def _auto_provision(db, order: dict) -> dict:
         {"$set": {"service_id": sr.inserted_id, "status": "active" if svc["status"] == "active" else "provisioning"},
          "$push": {"provision_log": {"at": _now(), "step": "service_handover", "message": "Service delivered to client dashboard."}}},
     )
+    if hosting_credentials:
+        u = await db.users.find_one({"_id": order["user_id"]})
+        if u:
+            from portal import emails as _em
+            try:
+                await _em.on_hosting_provisioned(db, u, svc, hosting_credentials)
+                await _log("credentials_emailed",
+                           f"Detail akun hosting dikirim via email ke {u.get('email', '')}.")
+            except Exception as e:
+                await _log("credentials_email_failed", f"Gagal mengirim email detail akun: {str(e)[:120]}")
     return svc
 
 
@@ -1391,6 +1428,49 @@ async def client_reply_ticket(tid: str, payload: m.TicketReplyIn, user=Depends(g
     return await _serialize_ticket(db, d)
 
 
+@router.put("/client/tickets/{tid}/close")
+async def client_close_ticket(tid: str, user=Depends(get_current_user)):
+    """UAT-011: klien dapat menutup tiketnya sendiri."""
+    db = await _get_db()
+    d = await db.tickets.find_one({"_id": _oid(tid), "user_id": ObjectId(user["id"])})
+    if not d:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if d.get("status") == "closed":
+        raise HTTPException(status_code=400, detail="Tiket sudah ditutup")
+    now = _now()
+    await db.tickets.update_one({"_id": d["_id"]}, {
+        "$set": {"status": "closed", "closed_at": now, "closed_by": "client", "updated_at": now},
+        "$push": {"replies": {"author_id": user["id"], "author_name": user["name"],
+                              "author_role": "system",
+                              "message": "Tiket ditutup oleh klien.", "created_at": now}},
+    })
+    d = await db.tickets.find_one({"_id": d["_id"]})
+    return await _serialize_ticket(db, d)
+
+
+@router.put("/admin/tickets/{tid}/status")
+async def admin_ticket_status(tid: str, payload: m.TicketStatusIn, staff=Depends(get_current_staff)):
+    """UAT-011: staf dapat mengubah status tiket (termasuk close/resolve)."""
+    db = await _get_db()
+    d = await db.tickets.find_one({"_id": _oid(tid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    now = _now()
+    upd = {"status": payload.status, "updated_at": now}
+    if payload.status == "closed":
+        upd["closed_at"] = now
+        upd["closed_by"] = "staff"
+    await db.tickets.update_one({"_id": d["_id"]}, {
+        "$set": upd,
+        "$push": {"replies": {"author_id": staff["id"], "author_name": staff["name"],
+                              "author_role": "system",
+                              "message": f"Status tiket diubah menjadi '{payload.status}' oleh {staff['name']}.",
+                              "created_at": now}},
+    })
+    d = await db.tickets.find_one({"_id": d["_id"]})
+    return await _serialize_ticket(db, d)
+
+
 # ============================================================
 # ADMIN
 # ============================================================
@@ -1443,6 +1523,18 @@ async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
             "title": f"{pending_orders} order menunggu verifikasi",
             "detail": "Verifikasi pembayaran untuk memproses provisioning",
             "link": "/portal/admin/orders",
+        })
+    failed_services = await db.services.find(
+        {"config.provision_status": "failed"}).sort("created_at", -1).to_list(5)
+    for s in failed_services:
+        addons = (s.get("config") or {}).get("addons") or []
+        detail = ("Termasuk add-on: " + ", ".join(addons)) if addons else "Perlu tindak lanjut manual di panel"
+        alerts.append({
+            "type": "provision_failed",
+            "severity": "danger",
+            "title": f"Provisioning gagal: {s.get('product_name') or s.get('name', '')}",
+            "detail": detail,
+            "link": "/portal/admin/services",
         })
     order = {"danger": 0, "warning": 1, "info": 2}
     alerts.sort(key=lambda a: order.get(a["severity"], 9))
@@ -2094,11 +2186,105 @@ async def public_products():
 
 
 @router.get("/portal-public/addons")
-async def public_addons():
-    """Add-on products - used by client Order flow to attach to a base product."""
+async def public_addons(product_id: Optional[str] = None):
+    """Add-on products - used by client Order flow to attach to a base product.
+    Dengan ?product_id= hasil difilter sesuai kompatibilitas add-on (applies_to)."""
     db = (await _get_db())
     docs = await db.products.find({"is_active": True, "is_addon": True}).sort([("sort_order", 1), ("name", 1)]).to_list(500)
-    return [_serialize_product(d) for d in docs]
+    rows = [_serialize_product(d) for d in docs]
+    if product_id:
+        prod = await db.products.find_one({"_id": _oid(product_id)})
+        if not prod:
+            raise HTTPException(status_code=404, detail="Product not found")
+        cat = prod.get("category", "")
+
+        def _compatible(a: dict) -> bool:
+            pids = a.get("applies_to_product_ids") or []
+            cats = a.get("applies_to_categories") or []
+            if not pids and not cats:
+                return True
+            return product_id in pids or cat in cats
+
+        rows = [a for a in rows if _compatible(a)]
+    return rows
+
+
+def _serialize_lead(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "email": d.get("email", ""),
+        "phone": d.get("phone", ""),
+        "company": d.get("company", ""),
+        "need": d.get("need", ""),
+        "message": d.get("message", ""),
+        "source": d.get("source", "landing"),
+        "status": d.get("status", "new"),
+        "crm_id": str(d["crm_id"]) if d.get("crm_id") else None,
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.post("/portal-public/leads")
+async def public_submit_lead(payload: m.LeadIn, request: Request):
+    """Terima lead dari form landing page (publik). reCAPTCHA v3 diverifikasi bila aktif,
+    lead disimpan dan otomatis disinkronkan ke CRM sebagai prospect."""
+    db = await _get_db()
+    remote_ip = request.client.host if request.client else None
+    await iv2.enforce_recaptcha(db, payload.recaptcha_token, "lead", remote_ip)
+    email = payload.email.lower()
+    ten_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    dup = await db.leads.find_one({"email": email, "created_at": {"$gte": ten_min_ago}})
+    if dup:
+        return {"ok": True, "lead_id": str(dup["_id"]), "duplicate": True}
+    # Sinkron CRM: upsert prospect berdasarkan email
+    crm = await db.crm_customers.find_one({"email": email})
+    if crm:
+        crm_id = crm["_id"]
+    else:
+        r = await db.crm_customers.insert_one({
+            "name": payload.name, "email": email, "phone": payload.phone,
+            "company": payload.company, "position": "", "industry": "",
+            "status": "prospect",
+            "notes": f"Lead dari landing page ({payload.need or 'umum'})",
+            "created_at": _now(), "updated_at": _now(),
+        })
+        crm_id = r.inserted_id
+    doc = {
+        "name": payload.name,
+        "email": email,
+        "phone": payload.phone,
+        "company": payload.company,
+        "need": payload.need,
+        "message": payload.message,
+        "source": payload.source or "landing",
+        "status": "new",
+        "crm_id": crm_id,
+        "ip": remote_ip,
+        "created_at": _now(),
+    }
+    r = await db.leads.insert_one(doc)
+    return {"ok": True, "lead_id": str(r.inserted_id), "duplicate": False}
+
+
+@router.get("/admin/leads")
+async def admin_list_leads(status: Optional[str] = None, staff=Depends(get_current_staff)):
+    _deny_creative(staff)
+    db = await _get_db()
+    q = {"status": status} if status else {}
+    docs = await db.leads.find(q).sort("created_at", -1).to_list(1000)
+    return [_serialize_lead(d) for d in docs]
+
+
+@router.put("/admin/leads/{lid}/status")
+async def admin_update_lead_status(lid: str, payload: m.LeadStatusIn, staff=Depends(get_current_staff)):
+    _deny_creative(staff)
+    db = await _get_db()
+    await db.leads.update_one({"_id": _oid(lid)}, {"$set": {"status": payload.status}})
+    d = await db.leads.find_one({"_id": _oid(lid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return _serialize_lead(d)
 
 
 @router.post("/admin/products", response_model=m.ProductOut)
@@ -2406,6 +2592,8 @@ async def admin_update_invoice_status(
     # Eksekusi upgrade resource yang menunggu pembayaran invoice ini.
     if payload.status == "paid":
         await _apply_pending_upgrade(db, d)
+        await _auto_register_domain(db, d)
+        await _apply_domain_renewal(db, d)
 
     return await _serialize_invoice(db, d)
 
@@ -3446,7 +3634,21 @@ async def followups_delete(fid: str, staff=Depends(get_current_staff)):
     return {"deleted": r.deleted_count}
 
 
-# ---------- Documents (metadata only for MVP) ----------
+# ---------- Documents (metadata + file upload lokal) ----------
+from pathlib import Path as _DocPath  # noqa: E402
+
+DOCS_DIR = _DocPath(__file__).resolve().parent.parent / "uploads" / "documents"
+_DOC_ALLOWED_TYPES = {
+    "application/pdf", "image/png", "image/jpeg", "image/webp",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/zip", "application/x-zip-compressed", "text/plain", "text/csv",
+}
+_DOC_MAX_BYTES = 15 * 1024 * 1024  # 15 MB
+
+
 def _serialize_doc(d):
     return {
         "id": str(d["_id"]),
@@ -3455,6 +3657,9 @@ def _serialize_doc(d):
         "customer_name": d.get("customer_name", ""),
         "url": d.get("url", ""),
         "notes": d.get("notes", ""),
+        "filename": d.get("filename", ""),
+        "size_bytes": d.get("size_bytes", 0),
+        "has_file": bool(d.get("stored_name")),
         "created_at": _iso(d.get("created_at", "")),
     }
 
@@ -3485,8 +3690,28 @@ async def docs_create(payload: dict, staff=Depends(get_current_staff)):
 @router.delete("/admin/documents/{did}")
 async def docs_delete(did: str, staff=Depends(get_current_staff)):
     db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if d and d.get("stored_name"):
+        try:
+            (DOCS_DIR / d["stored_name"]).unlink(missing_ok=True)
+        except Exception:
+            pass
     r = await db.documents.delete_one({"_id": _oid(did)})
     return {"deleted": r.deleted_count}
+
+
+@router.get("/documents/file/{did}")
+async def docs_file(did: str):
+    """Serve dokumen bisnis yang di-upload (URL ber-ObjectId, seperti media)."""
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if not d or not d.get("stored_name"):
+        raise HTTPException(status_code=404, detail="Document not found")
+    fp = DOCS_DIR / d["stored_name"]
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
+                        filename=d.get("filename") or d["stored_name"])
 
 
 # ============================================================
@@ -4045,6 +4270,45 @@ async def expenses_delete(eid: str, admin=Depends(get_current_admin)):
 
 
 # Extended finance report (revenue + expenses + assets)
+@router.get("/admin/assets/report/depreciation")
+async def assets_depreciation_report(months: int = 12, admin=Depends(get_current_admin)):
+    """Laporan total beban depresiasi aset aktif per periode (bulanan, N bulan terakhir)."""
+    db = await _get_db()
+    months = max(1, min(months, 60))
+    assets = await db.assets.find({}).to_list(2000)
+    now = datetime.now(timezone.utc)
+    periods = []
+    for i in range(months - 1, -1, -1):
+        y = now.year + (now.month - 1 - i) // 12
+        mo = (now.month - 1 - i) % 12 + 1
+        periods.append(f"{y:04d}-{mo:02d}")
+    rows = []
+    for pkey in periods:
+        cur_idx = int(pkey[:4]) * 12 + int(pkey[5:7]) - 1
+        total, count = 0.0, 0
+        for a in assets:
+            dep = _asset_depreciation(a)
+            monthly = dep["monthly_depreciation"]
+            purchase = (a.get("purchase_date") or "")[:10]
+            if monthly <= 0 or not purchase or pkey < purchase[:7]:
+                continue
+            try:
+                pd_ = datetime.strptime(purchase, "%Y-%m-%d")
+            except Exception:
+                continue
+            end_idx = pd_.year * 12 + (pd_.month - 1) + dep["total_months"]
+            if cur_idx >= end_idx:
+                continue
+            disposed = (a.get("disposed_at") or "")[:7]
+            if a.get("status") == "disposed" and disposed and pkey > disposed:
+                continue
+            total += monthly
+            count += 1
+        rows.append({"period": pkey, "depreciation": round(total, 2), "active_assets": count})
+    return {"months": months, "rows": rows,
+            "total_depreciation": round(sum(r["depreciation"] for r in rows), 2)}
+
+
 @router.get("/admin/finance/report")
 async def admin_finance_report(admin=Depends(get_current_admin)):
     db = await _get_db()
@@ -5248,15 +5512,387 @@ async def integrations_v2_test(provider: str, admin=Depends(get_current_admin)):
         if missing or not secret_ok:
             return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
         return await iv2.DirectAdminClient(settings).test_connection()
-    if provider in ("plesk",):
-        # No SDK adapter yet - validate that required fields are present.
+    if provider == "rna":
         c = settings.get("credentials") or {}
-        missing = [k for k in ("host", "username") if not c.get(k)]
-        secret_ok = bool(c.get("api_token") or c.get("password"))
-        if missing or not secret_ok:
-            return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
-        return {"ok": True, "message": f"{provider.upper()} credentials look complete - live wiring pending."}
+        missing = [k for k in ("reseller_id", "api_key") if not c.get(k)]
+        if missing:
+            return {"ok": False, "message": f"Missing credentials: {', '.join(missing)}"}
+        return await iv2.RdashClient(settings).test_connection()
     return {"ok": False, "message": "No test method"}
+
+
+# ---------------- Client domains (RNA.id / RDASH) ----------------
+_DOMAIN_NAME_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
+
+
+async def _rna_client(db):
+    s = await iv2.get_settings(db, "rna")
+    if s and s.get("enabled"):
+        return iv2.RdashClient(s)
+    return None
+
+
+async def _rdap_lookup(domain: str) -> dict:
+    """Public RDAP fallback (rdap.org) so WHOIS is live even without reseller creds."""
+    import httpx
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        r = await c.get(f"https://rdap.org/domain/{domain}",
+                        headers={"Accept": "application/rdap+json"})
+    if r.status_code == 404:
+        return {"registered": False, "registrar": "", "status": [], "created": "",
+                "updated": "", "expiry": "", "nameservers": [], "dnssec": "unsigned"}
+    r.raise_for_status()
+    j = r.json()
+    events = {e.get("eventAction"): (e.get("eventDate") or "")[:10] for e in j.get("events", [])}
+    registrar = ""
+    for ent in j.get("entities", []):
+        if "registrar" in (ent.get("roles") or []):
+            for item in (ent.get("vcardArray") or [None, []])[1]:
+                if item and item[0] == "fn" and len(item) > 3:
+                    registrar = item[3]
+    return {
+        "registered": True,
+        "registrar": registrar,
+        "status": j.get("status") or [],
+        "created": events.get("registration", ""),
+        "updated": events.get("last changed", ""),
+        "expiry": events.get("expiration", ""),
+        "nameservers": [n.get("ldhName", "").lower() for n in j.get("nameservers", []) if n.get("ldhName")],
+        "dnssec": "signed" if (j.get("secureDNS") or {}).get("delegationSigned") else "unsigned",
+    }
+
+
+@router.get("/client/domains/whois")
+async def client_domain_whois(domain: str, user=Depends(get_current_user)):
+    db = await _get_db()
+    name = domain.strip().lower()
+    if not _DOMAIN_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Nama domain tidak valid")
+    rna = await _rna_client(db)
+    if rna:
+        try:
+            w = await rna.whois(name)
+            return {
+                "live": True, "source": "rna",
+                "domain": w.get("name") or name,
+                "registered": not bool(w.get("available")),
+                "registrar": w.get("registrar", ""),
+                "status": w.get("status") or [],
+                "created": (w.get("created_at") or "")[:10],
+                "updated": (w.get("updated_at") or "")[:10],
+                "expiry": (w.get("expired_at") or "")[:10],
+                "registrant": "REDACTED FOR PRIVACY",
+                "nameservers": w.get("nameserver") or [],
+                "dnssec": w.get("dnssec") or "unsigned",
+            }
+        except Exception as e:
+            import logging
+            logging.getLogger("portal.domains").warning("RNA whois gagal untuk %s: %s", name, e)
+    try:
+        data = await _rdap_lookup(name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"WHOIS lookup gagal: {str(e)[:120]}")
+    return {"live": True, "source": "rdap", "domain": name,
+            "registrant": "REDACTED FOR PRIVACY", **data}
+
+
+_TLD_PRICES_IDR = {".com": 165000, ".id": 250000, ".co.id": 300000, ".net": 185000,
+                   ".org": 175000, ".my.id": 25000, ".web.id": 55000, ".biz.id": 55000}
+
+
+def _tld_price(name: str) -> int:
+    tld = next((t for t in sorted(_TLD_PRICES_IDR, key=len, reverse=True) if name.endswith(t)), None)
+    return _TLD_PRICES_IDR.get(tld, 95000)
+
+
+async def _dns_domain_taken(name: str) -> bool:
+    """DNS fallback: NXDOMAIN on the NS query means the domain is very likely available."""
+    import dns.asyncresolver
+    import dns.resolver
+    resolver = dns.asyncresolver.Resolver()
+    resolver.lifetime = 4
+    try:
+        await resolver.resolve(name, "NS")
+        return True
+    except dns.resolver.NXDOMAIN:
+        return False
+    except Exception:
+        return True
+
+
+async def _check_domains_availability(db, names: list) -> list:
+    """Availability via RNA.id bila aktif; fallback live DNS check."""
+    import asyncio
+    rna = await _rna_client(db)
+
+    async def _one(n: str) -> dict:
+        if rna:
+            try:
+                res = await rna.availability(n)
+                item = res[0] if res else {}
+                return {"domain": n, "available": bool(item.get("available")), "source": "rna"}
+            except Exception:
+                pass
+        try:
+            taken = await _dns_domain_taken(n)
+            return {"domain": n, "available": not taken, "source": "dns"}
+        except Exception:
+            return {"domain": n, "available": None, "source": "dns"}
+
+    out = list(await asyncio.gather(*(_one(n) for n in names)))
+    for r in out:
+        r["price"] = _tld_price(r["domain"])
+    return out
+
+
+@router.get("/client/domains/suggest")
+async def client_domain_suggest(q: str, user=Depends(get_current_user)):
+    db = await _get_db()
+    base = re.sub(r"[^a-z0-9-]", "", q.strip().lower().split(".")[0])[:40].strip("-")
+    if len(base) < 2:
+        raise HTTPException(status_code=400, detail="Kata kunci minimal 2 karakter")
+    variants = [f"get{base}.com", f"{base}online.com", f"{base}-id.com", f"my{base}.id",
+                f"{base}store.com", f"{base}.web.id", f"{base}hq.com", f"{base}.biz.id"]
+    results = await _check_domains_availability(db, variants)
+    return {"live": True, "query": base, "suggestions": results}
+
+
+@router.post("/client/domains/order")
+async def client_domain_order(payload: m.DomainOrderIn, request: Request, user=Depends(get_current_user)):
+    """Order registrasi domain: buat record + invoice; registrasi otomatis jalan saat lunas."""
+    db = await _get_db()
+    name = payload.domain.strip().lower()
+    if not _DOMAIN_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Nama domain tidak valid")
+    existing = await db.domains.find_one({"domain": name, "status": {"$in": ["pending", "active", "expiring"]}})
+    if existing:
+        raise HTTPException(status_code=400, detail="Domain sudah terdaftar dalam sistem")
+    chk = (await _check_domains_availability(db, [name]))[0]
+    if chk["available"] is False:
+        raise HTTPException(status_code=400, detail="Domain tidak tersedia untuk registrasi")
+    price = _tld_price(name) * payload.years
+    tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
+    tax = round(price * tax_percent / 100.0, 2)
+    due = (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat()
+    dom = {
+        "user_id": ObjectId(user["id"]),
+        "domain": name,
+        "tld": "." + name.split(".", 1)[1],
+        "status": "pending",
+        "registrar": "rna",
+        "years": payload.years,
+        "auto_renew": payload.auto_renew,
+        "registered_at": None,
+        "expires_at": None,
+        "nameservers": [],
+        "price": price,
+        "invoice_id": None,
+        "order_ref": None,
+        "created_at": _now(),
+    }
+    dr = await db.domains.insert_one(dom)
+    inv = {
+        "user_id": ObjectId(user["id"]),
+        "items": [{"description": f"Registrasi domain {name} ({payload.years} tahun)",
+                   "qty": 1, "price": price, "total": price}],
+        "subtotal": price,
+        "tax_percent": tax_percent,
+        "tax_amount": tax,
+        "total": round(price + tax, 2),
+        "due_date": due,
+        "status": "unpaid",
+        "payment_method": None,
+        "paid_at": None,
+        "notes": f"Registrasi domain {name} - diproses otomatis setelah pembayaran.",
+        "domain_id": str(dr.inserted_id),
+        "created_at": _now(),
+    }
+    inv = await _insert_numbered(db, "invoices", "INV", inv)
+    await db.domains.update_one({"_id": dr.inserted_id}, {"$set": {"invoice_id": str(inv["_id"])}})
+    await log_audit(db, actor=user, action="client_domain.order_created", category="domains",
+                    target_type="domain", target_id=str(dr.inserted_id), target_label=name,
+                    metadata={"invoice": inv["number"], "total": inv["total"], "years": payload.years},
+                    request=request)
+    return {"ok": True, "domain_id": str(dr.inserted_id), "invoice_id": str(inv["_id"]),
+            "number": inv["number"], "total": inv["total"], "due_date": due}
+
+
+async def _auto_register_domain(db, inv: dict) -> bool:
+    """Registrasi domain otomatis di RNA.id setelah invoice registrasi lunas. Idempotent
+    (hanya memproses domain berstatus pending)."""
+    if not inv.get("domain_id"):
+        return False
+    try:
+        dom = await db.domains.find_one({"_id": _oid(inv["domain_id"]), "status": "pending"})
+    except Exception:
+        return False
+    if not dom:
+        return False
+    now = datetime.now(timezone.utc)
+    fallback_expiry = (now + timedelta(days=365 * int(dom.get("years", 1)))).date().isoformat()
+    rna = await _rna_client(db)
+    if rna:
+        try:
+            res = await rna.register(dom["domain"], int(dom.get("years", 1)))
+            ns = [res.get(f"nameserver_{i}") for i in range(1, 6) if res.get(f"nameserver_{i}")]
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+                "status": "active",
+                "registered_at": now.date().isoformat(),
+                "expires_at": (res.get("expired_at") or "")[:10] or fallback_expiry,
+                "nameservers": ns or rna.default_ns,
+                "order_ref": str(res.get("id") or ""),
+                "provision_note": "Registered live via RNA.id (RDASH).",
+            }})
+            return True
+        except Exception as e:
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+                "provision_note": f"Registrasi RNA.id gagal: {str(e)[:150]}. Perlu tindak lanjut manual.",
+            }})
+            return False
+    await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+        "status": "active",
+        "registered_at": now.date().isoformat(),
+        "expires_at": fallback_expiry,
+        "nameservers": ["ns1.intercloud-digital.com", "ns2.intercloud-digital.com"],
+        "provision_note": "Integrasi RNA.id belum aktif - dicatat internal, submit manual ke registrar.",
+    }})
+    return True
+
+
+@router.post("/client/domains/{did}/renew")
+async def client_domain_renew(did: str, payload: m.DomainRenewIn, request: Request,
+                              user=Depends(get_current_user)):
+    """Order perpanjangan domain: buat invoice; perpanjangan otomatis jalan saat lunas."""
+    db = await _get_db()
+    dom = await db.domains.find_one({"_id": _oid(did), "user_id": ObjectId(user["id"])})
+    if not dom:
+        raise HTTPException(status_code=404, detail="Domain tidak ditemukan")
+    if dom.get("status") not in ("active", "expiring", "expired"):
+        raise HTTPException(status_code=400, detail="Domain belum bisa diperpanjang (masih pending)")
+    if dom.get("pending_renewal"):
+        raise HTTPException(status_code=400, detail="Masih ada perpanjangan yang menunggu pembayaran")
+    name = dom["domain"]
+    price = _tld_price(name) * payload.years
+    tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
+    tax = round(price * tax_percent / 100.0, 2)
+    due = (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
+    inv = {
+        "user_id": ObjectId(user["id"]),
+        "items": [{"description": f"Perpanjangan domain {name} ({payload.years} tahun)",
+                   "qty": 1, "price": price, "total": price}],
+        "subtotal": price,
+        "tax_percent": tax_percent,
+        "tax_amount": tax,
+        "total": round(price + tax, 2),
+        "due_date": due,
+        "status": "unpaid",
+        "payment_method": None,
+        "paid_at": None,
+        "notes": f"Perpanjangan domain {name} - diproses otomatis setelah pembayaran.",
+        "domain_renewal": {"domain_id": str(dom["_id"]), "years": payload.years},
+        "created_at": _now(),
+    }
+    inv = await _insert_numbered(db, "invoices", "INV", inv)
+    await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+        "pending_renewal": {"years": payload.years, "invoice_id": str(inv["_id"]),
+                            "requested_at": _now()}}})
+    await log_audit(db, actor=user, action="client_domain.renew_requested", category="domains",
+                    target_type="domain", target_id=str(dom["_id"]), target_label=name,
+                    metadata={"invoice": inv["number"], "total": inv["total"], "years": payload.years},
+                    request=request)
+    return {"ok": True, "domain_id": str(dom["_id"]), "invoice_id": str(inv["_id"]),
+            "number": inv["number"], "total": inv["total"], "due_date": due}
+
+
+def _add_years(date_str: str, years: int) -> str:
+    base = None
+    try:
+        base = datetime.strptime((date_str or "")[:10], "%Y-%m-%d")
+    except Exception:
+        base = datetime.now(timezone.utc)
+    if base.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        base = datetime.now(timezone.utc)
+    try:
+        return base.replace(year=base.year + years).date().isoformat()
+    except ValueError:
+        return base.replace(year=base.year + years, day=28).date().isoformat()
+
+
+async def _apply_domain_renewal(db, inv: dict) -> bool:
+    """Perpanjangan domain otomatis (RNA.id) setelah invoice lunas. Idempotent
+    (hanya memproses domain yang pending_renewal-nya menunjuk ke invoice ini)."""
+    ren = inv.get("domain_renewal")
+    if not ren:
+        return False
+    try:
+        dom = await db.domains.find_one({"_id": _oid(ren["domain_id"]),
+                                         "pending_renewal.invoice_id": str(inv["_id"])})
+    except Exception:
+        return False
+    if not dom:
+        return False
+    years = int(ren.get("years", 1))
+    new_expiry = _add_years(dom.get("expires_at") or "", years)
+    note = "Integrasi RNA.id belum aktif - perpanjangan dicatat internal, submit manual ke registrar."
+    rna = await _rna_client(db)
+    if rna and dom.get("order_ref"):
+        try:
+            res = await rna.renew(dom["order_ref"], years, (dom.get("expires_at") or "")[:10])
+            new_expiry = (res.get("expired_at") or "")[:10] or new_expiry
+            note = "Renewed live via RNA.id (RDASH)."
+        except Exception as e:
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+                "provision_note": f"Perpanjangan RNA.id gagal: {str(e)[:150]}. Perlu tindak lanjut manual."}})
+            return False
+    await db.domains.update_one({"_id": dom["_id"]}, {
+        "$set": {"status": "active", "expires_at": new_expiry, "provision_note": note},
+        "$unset": {"pending_renewal": ""},
+    })
+    return True
+
+
+def _serialize_domain(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "domain": d.get("domain", ""),
+        "tld": d.get("tld", ""),
+        "status": d.get("status", "pending"),
+        "registrar": d.get("registrar", "rna"),
+        "years": d.get("years", 1),
+        "registered_at": d.get("registered_at"),
+        "expires_at": d.get("expires_at"),
+        "auto_renew": d.get("auto_renew", True),
+        "nameservers": d.get("nameservers", []),
+        "price": d.get("price", 0),
+        "invoice_id": d.get("invoice_id"),
+        "pending_renewal": bool(d.get("pending_renewal")),
+        "renewal_invoice_id": (d.get("pending_renewal") or {}).get("invoice_id"),
+        "provision_note": d.get("provision_note", ""),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/client/domains")
+async def client_domains_list(user=Depends(get_current_user)):
+    db = await _get_db()
+    docs = await db.domains.find({"user_id": ObjectId(user["id"])}).sort("created_at", -1).to_list(500)
+    return [_serialize_domain(d) for d in docs]
+
+
+@router.get("/client/domains/check")
+async def client_domain_check(domain: str, user=Depends(get_current_user)):
+    """Cek ketersediaan live: nama polos → semua TLD populer; nama ber-TLD → exact match."""
+    db = await _get_db()
+    raw = domain.strip().lower()
+    base = re.sub(r"[^a-z0-9-]", "", raw.split(".")[0])[:63].strip("-")
+    if len(base) < 2:
+        raise HTTPException(status_code=400, detail="Nama domain minimal 2 karakter")
+    if "." in raw and _DOMAIN_NAME_RE.match(raw):
+        names = [raw]
+    else:
+        names = [f"{base}{tld}" for tld in _TLD_PRICES_IDR]
+    results = await _check_domains_availability(db, names)
+    return {"live": True, "query": raw, "results": results}
 
 
 # ---------------- Proxmox live actions ----------------
@@ -5472,16 +6108,94 @@ async def mikrotik_blackhole_add(payload: dict, admin=Depends(get_current_admin)
     prefix = (payload.get("prefix") or "").strip()
     if not prefix:
         raise HTTPException(status_code=400, detail="prefix required")
-    return await _run_mikrotik(db, payload.get("device_id"),
-                               "blackhole_add", prefix,
-                               comment=payload.get("comment") or "portal-blackhole")
+    dev = await _get_mikrotik_device(db, payload.get("device_id"))
+    result = await _run_mikrotik(db, payload.get("device_id"),
+                                 "blackhole_add", prefix,
+                                 comment=payload.get("comment") or "portal-blackhole")
+    await db.blackhole_log.insert_one({
+        "prefix": prefix, "action": "add", "by": admin.get("email", ""),
+        "source": "manual", "device": dev.get("name", ""),
+        "ok": not (isinstance(result, dict) and result.get("error")),
+        "detail": str(result)[:300], "at": _now(),
+    })
+    return result
 
 
 @router.delete("/admin/mikrotik/blackhole/{route_id}")
 async def mikrotik_blackhole_remove(route_id: str, admin=Depends(get_current_admin),
                                     device_id: str | None = None):
     db = await _get_db()
-    return await _run_mikrotik(db, device_id, "blackhole_remove", route_id)
+    dev = await _get_mikrotik_device(db, device_id)
+    result = await _run_mikrotik(db, device_id, "blackhole_remove", route_id)
+    prefix = (result or {}).get("prefix") if isinstance(result, dict) else ""
+    await db.blackhole_log.insert_one({
+        "prefix": prefix or route_id, "action": "remove", "by": admin.get("email", ""),
+        "source": "manual", "device": dev.get("name", ""),
+        "ok": not (isinstance(result, dict) and result.get("error")),
+        "detail": str(result)[:300], "at": _now(),
+    })
+    return result
+
+
+@router.get("/admin/noc/blackhole-log")
+async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100,
+                            admin=Depends(get_current_admin)):
+    """Riwayat announce/remove blackhole (auto + manual) dengan pencarian prefix/aktor."""
+    db = await _get_db()
+    limit = max(1, min(limit, 500))
+    query = {}
+    if q:
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query = {"$or": [{"prefix": rx}, {"by": rx}, {"device": rx}]}
+    docs = await db.blackhole_log.find(query).sort("at", -1).to_list(limit)
+    return [{
+        "id": str(d["_id"]),
+        "prefix": d.get("prefix", ""),
+        "action": d.get("action", "add"),
+        "by": d.get("by", ""),
+        "source": d.get("source", "manual"),
+        "device": d.get("device", ""),
+        "ok": d.get("ok", True),
+        "at": d.get("at", ""),
+    } for d in docs]
+
+
+@router.get("/admin/noc/netflow/sankey")
+async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
+                             admin=Depends(get_current_admin)):
+    """Data agregat arus trafik (torch MikroTik live) untuk Diagram Sankey:
+    flows = [{src, dst, gbps}] top-N berdasarkan rate."""
+    db = await _get_db()
+    limit = max(3, min(limit, 50))
+    devices = ([await _get_mikrotik_device(db, device_id)] if device_id
+               else await db.mikrotik_devices.find({}).to_list(50))
+    agg: dict = {}
+    sampled = 0
+    for d in devices:
+        if not d:
+            continue
+        iface = d.get("main_interface") or d.get("interface") or "ether1"
+        try:
+            import asyncio as _a
+            client = iv2.MikrotikClient(d)
+            res = await _a.get_event_loop().run_in_executor(
+                None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
+        except Exception:
+            continue
+        if not res.get("ok"):
+            continue
+        sampled += 1
+        for f in res.get("rows", []):
+            src = (f.get("src_address") or "").split("/")[0]
+            dst = (f.get("dst_address") or "").split("/")[0]
+            if not src or not dst or src == dst:
+                continue
+            agg[(src, dst)] = agg.get((src, dst), 0) + f.get("rx_rate", 0) + f.get("tx_rate", 0)
+    flows = sorted(({"src": k[0], "dst": k[1], "gbps": round(v / 1e9, 3)}
+                    for k, v in agg.items() if v > 0),
+                   key=lambda x: x["gbps"], reverse=True)[:limit]
+    return {"live": sampled > 0, "devices_sampled": sampled,
+            "flows": flows, "sampled_at": _now()}
 
 
 # ---------- Backup ----------
@@ -5513,6 +6227,189 @@ async def mikrotik_reboot(payload: dict, admin=Depends(get_current_admin)):
     if confirm != "REBOOT":
         raise HTTPException(status_code=400, detail="Confirm by sending {confirm: 'REBOOT'}")
     return await _run_mikrotik(db, payload.get("device_id"), "reboot")
+
+
+# ---------------- NOC: DDoS threshold rules (CRUD) ----------------
+def _serialize_threshold_rule(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "metric": d.get("metric", "pps"),
+        "threshold": d.get("threshold", 0),
+        "window_s": d.get("window_s", 60),
+        "action": d.get("action", "alert"),
+        "enabled": d.get("enabled", True),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/admin/noc/threshold-rules")
+async def noc_threshold_rules_list(admin=Depends(get_current_admin)):
+    db = await _get_db()
+    docs = await db.ddos_threshold_rules.find({}).sort("created_at", -1).to_list(200)
+    return [_serialize_threshold_rule(d) for d in docs]
+
+
+@router.post("/admin/noc/threshold-rules")
+async def noc_threshold_rules_create(payload: m.ThresholdRuleIn, request: Request,
+                                     admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = payload.model_dump()
+    doc["created_at"] = _now()
+    r = await db.ddos_threshold_rules.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="noc.threshold_rule_created", category="noc",
+                    target_type="threshold_rule", target_id=str(r.inserted_id),
+                    target_label=payload.name, metadata=payload.model_dump(), request=request)
+    return _serialize_threshold_rule(doc)
+
+
+@router.put("/admin/noc/threshold-rules/{rid}")
+async def noc_threshold_rules_update(rid: str, payload: m.ThresholdRuleIn, request: Request,
+                                     admin=Depends(get_current_admin)):
+    db = await _get_db()
+    upd = payload.model_dump()
+    res = await db.ddos_threshold_rules.update_one({"_id": _oid(rid)}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    d = await db.ddos_threshold_rules.find_one({"_id": _oid(rid)})
+    await log_audit(db, actor=admin, action="noc.threshold_rule_updated", category="noc",
+                    target_type="threshold_rule", target_id=rid,
+                    target_label=payload.name, metadata=upd, request=request)
+    return _serialize_threshold_rule(d)
+
+
+@router.delete("/admin/noc/threshold-rules/{rid}")
+async def noc_threshold_rules_delete(rid: str, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    d = await db.ddos_threshold_rules.find_one({"_id": _oid(rid)})
+    r = await db.ddos_threshold_rules.delete_one({"_id": _oid(rid)})
+    if d:
+        await log_audit(db, actor=admin, action="noc.threshold_rule_deleted", category="noc",
+                        target_type="threshold_rule", target_id=rid,
+                        target_label=d.get("name", ""), request=request)
+    return {"deleted": r.deleted_count}
+
+
+@router.post("/admin/noc/ddos/run-detect")
+async def noc_ddos_run_detect(admin=Depends(get_current_admin)):
+    """Jalankan evaluasi threshold + deteksi insiden DDoS sekarang (manual trigger)."""
+    db = await _get_db()
+    from portal import emails as _em
+    return await _em.run_ddos_detection_sweep(db)
+
+
+def _serialize_ddos_incident(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "target": d.get("target", ""),
+        "attack_type": d.get("attack_type", ""),
+        "pps": d.get("pps", 0),
+        "bps": d.get("bps", 0),
+        "severity": d.get("severity", "medium"),
+        "status": d.get("status", "active"),
+        "action": d.get("action", "alert"),
+        "rule_id": d.get("rule_id"),
+        "rule_name": d.get("rule_name", ""),
+        "device": d.get("device", ""),
+        "started_at": d.get("started_at", ""),
+        "ended_at": d.get("ended_at"),
+        "notified": d.get("notified", []),
+    }
+
+
+@router.get("/admin/noc/ddos/incidents")
+async def noc_ddos_incidents(status: Optional[str] = None, limit: int = 100,
+                             admin=Depends(get_current_admin)):
+    db = await _get_db()
+    q = {"status": status} if status else {}
+    limit = max(1, min(limit, 500))
+    docs = await db.ddos_incidents.find(q).sort("started_at", -1).to_list(limit)
+    return [_serialize_ddos_incident(d) for d in docs]
+
+
+@router.put("/admin/noc/ddos/incidents/{iid}/status")
+async def noc_ddos_incident_status(iid: str, payload: m.DDoSIncidentStatusIn, request: Request,
+                                   admin=Depends(get_current_admin)):
+    db = await _get_db()
+    upd = {"status": payload.status}
+    if payload.status in ("resolved", "false_positive"):
+        upd["ended_at"] = _now()
+    res = await db.ddos_incidents.update_one({"_id": _oid(iid)}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    d = await db.ddos_incidents.find_one({"_id": _oid(iid)})
+    await log_audit(db, actor=admin, action="noc.ddos_incident_status", category="noc",
+                    target_type="ddos_incident", target_id=iid,
+                    target_label=d.get("target", ""), metadata=upd, request=request)
+    return _serialize_ddos_incident(d)
+
+
+# ---------------- NOC: saluran notifikasi insiden (CRUD) + log pengiriman ----------------
+def _serialize_notif_channel(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "type": d.get("type", "email"),
+        "target": d.get("target", ""),
+        "events": d.get("events", []),
+        "enabled": d.get("enabled", True),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/admin/noc/notif-channels")
+async def noc_notif_channels_list(admin=Depends(get_current_admin)):
+    db = await _get_db()
+    docs = await db.notif_channels.find({}).sort("created_at", -1).to_list(100)
+    return [_serialize_notif_channel(d) for d in docs]
+
+
+@router.post("/admin/noc/notif-channels")
+async def noc_notif_channels_create(payload: m.NotifChannelIn, request: Request,
+                                    admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = payload.model_dump()
+    doc["created_at"] = _now()
+    r = await db.notif_channels.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="noc.notif_channel_created", category="noc",
+                    target_type="notif_channel", target_id=str(r.inserted_id),
+                    target_label=f"{payload.type}:{payload.target}", request=request)
+    return _serialize_notif_channel(doc)
+
+
+@router.put("/admin/noc/notif-channels/{cid}")
+async def noc_notif_channels_update(cid: str, payload: m.NotifChannelIn, request: Request,
+                                    admin=Depends(get_current_admin)):
+    db = await _get_db()
+    res = await db.notif_channels.update_one({"_id": _oid(cid)}, {"$set": payload.model_dump()})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    d = await db.notif_channels.find_one({"_id": _oid(cid)})
+    return _serialize_notif_channel(d)
+
+
+@router.delete("/admin/noc/notif-channels/{cid}")
+async def noc_notif_channels_delete(cid: str, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    r = await db.notif_channels.delete_one({"_id": _oid(cid)})
+    return {"deleted": r.deleted_count}
+
+
+@router.get("/admin/noc/ddos/notify-log")
+async def noc_ddos_notify_log(limit: int = 100, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    limit = max(1, min(limit, 500))
+    docs = await db.ddos_notify_log.find({}).sort("at", -1).to_list(limit)
+    return [{
+        "id": str(d["_id"]),
+        "incident_id": d.get("incident_id", ""),
+        "target": d.get("target", ""),
+        "channel_type": d.get("channel_type", ""),
+        "channel_target": d.get("channel_target", ""),
+        "status": d.get("status", ""),
+        "at": d.get("at", ""),
+    } for d in docs]
 
 
 # ---------------- Payment gateway - create + webhook ----------------
@@ -5664,6 +6561,14 @@ async def payment_webhook(provider: str, request: Request):
     if inv:
         try:
             await _apply_pending_upgrade(db, inv)
+        except Exception:
+            pass
+
+    # 2c) Registrasi domain otomatis (RNA.id) untuk invoice registrasi domain
+    if inv:
+        try:
+            await _auto_register_domain(db, inv)
+            await _apply_domain_renewal(db, inv)
         except Exception:
             pass
 
@@ -6164,6 +7069,65 @@ router.post("/admin/sales-fees")(_sf_create)
 router.delete("/admin/sales-fees/{item_id}")(_sf_delete)
 
 
+@router.get("/documents/salary-slip/{sid}")
+async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_current_admin)):
+    """UAT-034: slip gaji PDF per entri salary (WeasyPrint)."""
+    db = await _get_db()
+    d = await db.salaries.find_one({"_id": _oid(sid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Salary entry not found")
+    period = d.get("period_yyyy_mm") or (d.get("date") or "")[:7]
+    amount = float(d.get("amount") or 0)
+    amount_str = "Rp " + f"{amount:,.0f}".replace(",", ".")
+    employee = d.get("employee") or "-"
+    category = d.get("category") or "Gaji pokok"
+    issued = datetime.now(timezone.utc).date().isoformat()
+    html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 24mm 18mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color: #0f172a; font-size: 13px; }}
+      .head {{ display: flex; justify-content: space-between; border-bottom: 3px solid #0a2350; padding-bottom: 14px; }}
+      .co {{ font-size: 19px; font-weight: 800; color: #0a2350; }}
+      .co small {{ display:block; font-size: 10px; color:#64748b; font-weight: 400; margin-top: 3px; }}
+      h1 {{ font-size: 15px; letter-spacing: 2px; color: #0a2350; margin: 26px 0 4px; text-transform: uppercase; }}
+      .meta {{ color: #64748b; font-size: 11px; margin-bottom: 20px; }}
+      table {{ width: 100%; border-collapse: collapse; }}
+      td, th {{ padding: 10px 12px; border: 1px solid #e2e8f0; text-align: left; }}
+      th {{ background: #f8fafc; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; width: 34%; }}
+      .amt {{ font-size: 17px; font-weight: 800; color: #0a2350; }}
+      .foot {{ margin-top: 44px; display: flex; justify-content: space-between; font-size: 11px; color: #64748b; }}
+      .sig {{ text-align: center; }}
+      .sig .line {{ margin-top: 56px; border-top: 1px solid #94a3b8; padding-top: 5px; width: 190px; }}
+      .conf {{ margin-top: 26px; font-size: 9.5px; color: #94a3b8; }}
+    </style></head><body>
+      <div class="head">
+        <div class="co">INTERCLOUD DIGITAL INOVASI<small>Jakarta, Indonesia · support@intercloud-digital.com · +62 878-1239-7187</small></div>
+        <div style="text-align:right"><div style="font-size:11px;color:#64748b">SLIP GAJI</div>
+          <div style="font-weight:800;color:#0a2350">{period}</div></div>
+      </div>
+      <h1>Slip Gaji Karyawan</h1>
+      <div class="meta">Diterbitkan {issued} · No. ref {str(d["_id"])[-8:].upper()}</div>
+      <table>
+        <tr><th>Nama karyawan</th><td style="font-weight:700">{employee}</td></tr>
+        <tr><th>Periode</th><td>{period}</td></tr>
+        <tr><th>Kategori</th><td>{category}</td></tr>
+        <tr><th>Tanggal pembayaran</th><td>{(d.get("date") or "")[:10]}</td></tr>
+        <tr><th>Jumlah diterima (net)</th><td class="amt">{amount_str}</td></tr>
+        <tr><th>Catatan</th><td>{d.get("notes") or "-"}</td></tr>
+      </table>
+      <div class="foot">
+        <div class="sig">Diserahkan oleh,<div class="line">Finance - Intercloud</div></div>
+        <div class="sig">Diterima oleh,<div class="line">{employee}</div></div>
+      </div>
+      <div class="conf">Dokumen ini bersifat rahasia dan dihasilkan otomatis oleh Intercloud Portal.</div>
+    </body></html>"""
+    if format == "pdf":
+        pdf_bytes = _render_pdf_bytes(html)
+        emp_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", employee).strip("-") or "karyawan"
+        return Response(content=pdf_bytes, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="SlipGaji-{emp_slug}-{period}.pdf"'})
+    return HTMLResponse(content=html)
+
+
 # ---------------- Finance detailed report ----------------
 @router.get("/admin/finance/detailed")
 async def finance_detailed(admin=Depends(get_current_admin)):
@@ -6466,6 +7430,72 @@ async def finance_annual_xlsx(year: int, admin=Depends(get_current_admin)):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="Intercloud_Finance_Annual_{year}.xlsx"'},
     )
+
+
+@router.get("/admin/finance/cashflow-forecast")
+async def finance_cashflow_forecast(admin=Depends(get_current_admin)):
+    """Proyeksi arus kas 30/60/90 hari: inflow dari invoice unpaid/overdue + renewal
+    layanan aktif; outflow dari run-rate 3 bulan terakhir keempat buku beban."""
+    db = await _get_db()
+    today = datetime.now(timezone.utc).date()
+    horizon = today + timedelta(days=91)
+
+    events = []  # (date, amount, kind)
+    async for inv in db.invoices.find({"status": {"$in": ["unpaid", "overdue"]}}):
+        try:
+            due = datetime.strptime((inv.get("due_date") or "")[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        due = max(due, today)
+        if due < horizon:
+            events.append((due, float(inv.get("total") or 0), "invoice"))
+    async for svc in db.services.find({"status": "active"}):
+        try:
+            due = datetime.strptime((svc.get("next_renewal") or "")[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if today <= due < horizon:
+            events.append((due, float(svc.get("price_monthly") or 0), "renewal"))
+
+    three_months_ago = (today - timedelta(days=90)).isoformat()
+    monthly_expense = 0.0
+    for coll in ("expenses", "kas_kecil", "salaries", "sales_fees"):
+        total = 0.0
+        async for e in db[coll].find({"date": {"$gte": three_months_ago}}):
+            total += float(e.get("amount") or 0)
+        monthly_expense += total / 3.0
+    daily_expense = monthly_expense / 30.0
+
+    weekly = []
+    cumulative = 0.0
+    for w in range(13):
+        ws = today + timedelta(days=w * 7)
+        we = ws + timedelta(days=7)
+        inflow = sum(a for (dt, a, _k) in events if ws <= dt < we)
+        outflow = daily_expense * 7
+        net = inflow - outflow
+        cumulative += net
+        weekly.append({"week_start": ws.isoformat(), "inflow": round(inflow, 2),
+                       "outflow": round(outflow, 2), "net": round(net, 2),
+                       "cumulative": round(cumulative, 2)})
+
+    def _bucket(days: int) -> dict:
+        end = today + timedelta(days=days)
+        inflow = sum(a for (dt, a, _k) in events if dt < end)
+        outflow = daily_expense * days
+        return {"inflow": round(inflow, 2), "outflow": round(outflow, 2),
+                "net": round(inflow - outflow, 2)}
+
+    return {
+        "as_of": today.isoformat(),
+        "monthly_expense_run_rate": round(monthly_expense, 2),
+        "buckets": {"d30": _bucket(30), "d60": _bucket(60), "d90": _bucket(90)},
+        "weekly": weekly,
+        "sources": {
+            "unpaid_invoices": sum(1 for e in events if e[2] == "invoice"),
+            "upcoming_renewals": sum(1 for e in events if e[2] == "renewal"),
+        },
+    }
 
 
 @router.get("/admin/finance/reports")
@@ -8043,6 +9073,42 @@ async def media_upload(file: UploadFile = File(...),
     }
     await db.media_assets.insert_one(doc)
     return _serialize_media(doc)
+
+
+@router.post("/admin/documents/upload")
+async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
+                      category: str = Form("contract"), customer_name: str = Form(""),
+                      notes: str = Form(""), staff=Depends(get_current_staff)):
+    """UAT-003: upload dokumen lokal (drag & drop) selain link URL."""
+    db = await _get_db()
+    ctype = file.content_type or "application/octet-stream"
+    if ctype not in _DOC_ALLOWED_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"Tipe file {ctype} tidak didukung. Gunakan PDF, Word, Excel, gambar, ZIP, atau teks.")
+    raw = await file.read()
+    if len(raw) > _DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Ukuran file melebihi 15 MB")
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    did = ObjectId()
+    ext = _DocPath(file.filename or "dokumen.bin").suffix.lower() or ".bin"
+    stored_name = f"{did}{ext}"
+    (DOCS_DIR / stored_name).write_bytes(raw)
+    doc = {
+        "_id": did,
+        "title": (title or "").strip() or (file.filename or "Dokumen"),
+        "category": category or "contract",
+        "customer_name": customer_name or "",
+        "url": f"/api/portal/documents/file/{did}",
+        "notes": notes or "",
+        "filename": file.filename or stored_name,
+        "stored_name": stored_name,
+        "content_type": ctype,
+        "size_bytes": len(raw),
+        "uploaded_by": staff["email"],
+        "created_at": _now(),
+    }
+    await db.documents.insert_one(doc)
+    return _serialize_doc(doc)
 
 
 @router.put("/admin/media/{mid}")

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, fullDateTime } from "../../../portal/api";
 import { PageHeader, Card, Loading, StatusBadge, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { LifeBuoy, Send, Plus, MessageCircle } from "lucide-react";
+import { LifeBuoy, Send, Plus, MessageCircle, XCircle } from "lucide-react";
 
 const ClientTickets = () => {
   const [rows, setRows] = useState(null);
@@ -152,6 +152,15 @@ const TicketDetail = ({ ticket, onClose }) => {
     } finally { setBusy(false); }
   };
 
+  const closeTicket = async () => {
+    if (!window.confirm("Tutup tiket ini? Anda tetap bisa membuka tiket baru kapan saja.")) return;
+    setBusy(true);
+    try {
+      const { data } = await api.put(`/client/tickets/${t.id}/close`);
+      setT(data);
+    } finally { setBusy(false); }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
@@ -176,10 +185,24 @@ const TicketDetail = ({ ticket, onClose }) => {
           ))}
         </div>
         <form onSubmit={send} className="p-4 border-t border-slate-100 bg-slate-50">
-          <textarea rows={2} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply…" className={`${inputClass} h-auto py-2`} data-testid="ticket-reply-input" />
-          <div className="mt-2 flex justify-end gap-2">
+          <textarea rows={2} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply…" className={`${inputClass} h-auto py-2`} data-testid="ticket-reply-input" disabled={t.status === "closed"} />
+          <div className="mt-2 flex items-center justify-end gap-2">
+            {t.status !== "closed" && (
+              <button
+                type="button"
+                onClick={closeTicket}
+                disabled={busy}
+                className="mr-auto inline-flex items-center gap-1.5 text-xs font-bold text-red-600 hover:text-red-700 disabled:opacity-50"
+                data-testid="ticket-close-btn"
+              >
+                <XCircle className="h-4 w-4" /> Tutup Tiket
+              </button>
+            )}
+            {t.status === "closed" && (
+              <span className="mr-auto text-xs font-bold text-slate-400" data-testid="ticket-closed-label">Tiket sudah ditutup</span>
+            )}
             <button type="button" className={btnSecondary} onClick={onClose}>Close</button>
-            <button type="submit" disabled={busy || !reply.trim()} className={btnPrimary} data-testid="ticket-reply-send"><MessageCircle className="h-4 w-4" /> Reply</button>
+            <button type="submit" disabled={busy || !reply.trim() || t.status === "closed"} className={btnPrimary} data-testid="ticket-reply-send"><MessageCircle className="h-4 w-4" /> Reply</button>
           </div>
         </form>
       </div>

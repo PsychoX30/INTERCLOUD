@@ -55,6 +55,14 @@ const AdminTickets = () => {
   );
 };
 
+const TICKET_STATUSES = [
+  ["open", "Open"],
+  ["awaiting_client", "Awaiting client"],
+  ["awaiting_staff", "Awaiting staff"],
+  ["resolved", "Resolved"],
+  ["closed", "Closed"],
+];
+
 const TicketDetail = ({ ticket, onClose }) => {
   const [t, setT] = useState(ticket);
   const [reply, setReply] = useState("");
@@ -67,11 +75,30 @@ const TicketDetail = ({ ticket, onClose }) => {
       setT(data); setReply("");
     } finally { setBusy(false); }
   };
+  const setStatus = async (status) => {
+    setBusy(true);
+    try {
+      const { data } = await api.put(`/admin/tickets/${t.id}/status`, { status });
+      setT(data);
+    } finally { setBusy(false); }
+  };
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl bg-white rounded-t-3xl sm:rounded-3xl overflow-hidden max-h-[90vh] flex flex-col">
         <div className="p-6 bg-[#0a2350] text-white">
-          <div className="flex items-center gap-2"><span className="font-mono text-xs font-bold text-[#f5b120]">{t.number}</span><StatusBadge status={t.status} /></div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs font-bold text-[#f5b120]">{t.number}</span>
+            <StatusBadge status={t.status} />
+            <select
+              value={t.status}
+              onChange={(e) => setStatus(e.target.value)}
+              disabled={busy}
+              className="ml-auto h-8 rounded-lg bg-white/10 border border-white/20 text-white text-xs font-bold px-2 focus:outline-none [&>option]:text-[#0a2350]"
+              data-testid="admin-ticket-status-select"
+            >
+              {TICKET_STATUSES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </div>
           <div className="text-xl font-extrabold mt-1">{t.subject}</div>
           <div className="text-xs text-white/70">{t.user_name} · {t.user_email}</div>
         </div>

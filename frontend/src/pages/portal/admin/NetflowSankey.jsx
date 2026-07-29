@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Sankey, Tooltip, ResponsiveContainer, Layer, Rectangle } from "recharts";
+import { api } from "../../../portal/api";
 import { Card } from "../ui";
 import { Network, HelpCircle } from "lucide-react";
 
-// MOCK netflow flows - akan diganti data live kolektor Netflow di fase backend.
+// Fallback sample flows - dipakai bila belum ada perangkat MikroTik yang bisa disampling.
 const FLOWS = [
   { src: "203.0.113.10", dst: "VM Web Cluster", gbps: 4.2 },
   { src: "203.0.113.10", dst: "VM Database", gbps: 1.1 },
@@ -57,7 +58,19 @@ const SankeyNode = ({ x, y, width, height, payload }) => (
 
 export const NetflowSankey = () => {
   const [hover, setHover] = useState(null);
-  const data = useMemo(() => buildSankey(FLOWS), []);
+  const [flows, setFlows] = useState(FLOWS);
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    api.get("/admin/noc/netflow/sankey")
+      .then((r) => {
+        if (r.data?.live && (r.data.flows || []).length > 0) {
+          setFlows(r.data.flows);
+          setLive(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+  const data = useMemo(() => buildSankey(flows), [flows]);
   return (
     <Card className="overflow-hidden mb-6" data-testid="netflow-sankey">
       <div className="px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
@@ -79,7 +92,10 @@ export const NetflowSankey = () => {
             </span>
           </div>
           <div className="text-xs text-slate-500 mt-0.5">
-            Visualisasi arah trafik (data tiruan - kolektor Netflow live menyusul di fase backend).
+            Visualisasi arah trafik{" "}
+            {live
+              ? <span className="text-emerald-600 font-bold" data-testid="sankey-live-badge">(live dari MikroTik)</span>
+              : <span data-testid="sankey-sample-badge">(data sampel - menampilkan live otomatis saat perangkat MikroTik tersambung)</span>}
           </div>
         </div>
         {hover && (

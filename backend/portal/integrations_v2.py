@@ -335,6 +335,89 @@ class DirectAdminClient:
             return parsed
 
 
+class RdashClient:
+    """RNA.id (RDASH) domain reseller API - availability, WHOIS, register, renew, NS.
+    Docs: https://docs.rdash.id/developer/api - Basic Auth (reseller_id:api_key)."""
+
+    BASE = "https://api.rdash.id/v1"
+
+    def __init__(self, settings: dict):
+        creds = settings.get("credentials") or {}
+        opts = settings.get("options") or {}
+        self.reseller_id = str(creds.get("reseller_id") or "")
+        self.api_key = creds.get("api_key") or ""
+        self.customer_id = str(opts.get("customer_id") or "")
+        self.default_ns = [ns.strip() for ns in str(opts.get("default_ns") or "").split(",") if ns.strip()]
+
+    def _auth(self):
+        return (self.reseller_id, self.api_key)
+
+    async def _req(self, method: str, path: str, *, params: dict = None, data: dict = None) -> dict:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.request(method, f"{self.BASE}{path}", auth=self._auth(),
+                                params=params, data=data)
+            if r.status_code >= 400:
+                try:
+                    msg = r.json().get("message") or r.text[:180]
+                except Exception:
+                    msg = r.text[:180]
+                raise RuntimeError(f"RDASH {r.status_code}: {msg}")
+            return r.json()
+
+    async def test_connection(self) -> dict:
+        try:
+            data = await self._req("GET", "/account/profile")
+            prof = data.get("data") or {}
+            name = prof.get("name") or prof.get("company_name") or prof.get("email") or "reseller"
+            return {"ok": True, "message": f"RDASH connected as {name}", "details": prof}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:200]}
+
+    async def balance(self) -> dict:
+        data = await self._req("GET", "/account/balance")
+        return data.get("data") or {}
+
+    async def prices(self) -> list:
+        data = await self._req("GET", "/account/prices")
+        return data.get("data") or []
+
+    async def availability(self, domain: str, include_premium: bool = False) -> list:
+        data = await self._req("GET", "/domains/availability",
+                               params={"domain": domain,
+                                       "include_premium_domains": str(include_premium).lower()})
+        return data.get("data") or []
+
+    async def whois(self, domain: str) -> dict:
+        data = await self._req("GET", "/domains/whois", params={"domain": domain})
+        return data.get("data") or {}
+
+    async def domain_details(self, domain: str) -> dict:
+        data = await self._req("GET", "/domains/details", params={"domain": domain})
+        return data.get("data") or {}
+
+    async def register(self, name: str, period: int, customer_id: str = None,
+                       nameservers: list = None) -> dict:
+        form = {"name": name, "period": str(period),
+                "customer_id": str(customer_id or self.customer_id)}
+        for i, ns in enumerate((nameservers or self.default_ns)[:5]):
+            form[f"nameserver[{i}]"] = ns
+        data = await self._req("POST", "/domains", data=form)
+        return data.get("data") or {}
+
+    async def renew(self, domain_id: str, period: int, current_date: str) -> dict:
+        data = await self._req("POST", f"/domains/{domain_id}/renew",
+                               data={"period": str(period), "current_date": current_date})
+        return data.get("data") or {}
+
+    async def update_ns(self, domain_id: str, nameservers: list) -> dict:
+        form = {f"nameserver[{i}]": ns for i, ns in enumerate(nameservers[:5])}
+        data = await self._req("PUT", f"/domains/{domain_id}/ns", data=form)
+        return data.get("data") or {}
+
+    async def list_domains(self, **params) -> dict:
+        return await self._req("GET", "/domains", params=params or None)
+
+
 class MikrotikClient:
     """Wraps librouteros for BGP/interface/traffic reads.
 
@@ -1157,6 +1240,21 @@ INTEGRATION_SCHEMA = {
             {"key": "verify_action", "label": "Enforce action match (login/register/forgot)", "type": "checkbox", "default": True},
         ],
     },
+    "rna": {
+        "label": "RNA.id (RDASH) Domain Reseller",
+        "category": "domain",
+        "description": "Registrasi, perpanjangan, WHOIS, dan manajemen domain via API reseller RDASH (api.rdash.id). Basic Auth memakai Reseller ID + API Key; whitelist IP server saat generate API Key di dashboard RDASH.",
+        "credentials": [
+            {"key": "reseller_id", "label": "Reseller ID", "type": "text", "required": True,
+             "placeholder": "123"},
+            {"key": "api_key", "label": "API Key", "type": "password", "required": True},
+        ],
+        "options": [
+            {"key": "customer_id", "label": "Default customer ID (dipakai saat registrasi domain)", "type": "text"},
+            {"key": "default_ns", "label": "Default nameservers (pisahkan dengan koma)", "type": "text",
+             "default": "ns1.intercloud-digital.com,ns2.intercloud-digital.com"},
+        ],
+    },
     "telegram": {
         "label": "Telegram Bot",
         "category": "security",
@@ -1179,6 +1277,7 @@ CATEGORY_LABELS = {
     "virtualization": "Virtualization & Compute",
     "network": "Network",
     "provisioning": "Hosting Provisioning",
+    "domain": "Domain Registrar",
     "payment": "Payment Gateways",
     "mail": "Email (SMTP / IMAP)",
     "security": "Security & Anti-bot",

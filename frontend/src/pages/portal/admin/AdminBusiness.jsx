@@ -528,18 +528,82 @@ export const AdminDocuments = () => {
 
 const DocForm = ({ onClose, onDone }) => {
   const [f, setF] = useState({ title: "", category: "contract", customer_name: "", url: "", notes: "" });
-  const submit = async (e) => { e.preventDefault(); await api.post("/admin/documents", f); onDone(); };
+  const [file, setFile] = useState(null);
+  const [drag, setDrag] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const fileRef = React.useRef(null);
+
+  const pick = (fl) => {
+    if (!fl) return;
+    setFile(fl);
+    setErr("");
+    setF((p) => ({ ...p, title: p.title || fl.name.replace(/\.[^.]+$/, "") }));
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      if (file) {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("title", f.title);
+        fd.append("category", f.category);
+        fd.append("customer_name", f.customer_name);
+        fd.append("notes", f.notes);
+        await api.post("/admin/documents/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      } else {
+        await api.post("/admin/documents", f);
+      }
+      onDone();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Gagal menyimpan dokumen");
+    } finally { setBusy(false); }
+  };
+
   return (
     <Modal onClose={onClose} title="New document">
       <form onSubmit={submit} className="grid grid-cols-2 gap-3">
+        {err && <div className="col-span-2 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2" data-testid="doc-error">{err}</div>}
+        <div
+          className={`col-span-2 rounded-2xl border-2 border-dashed p-5 text-center cursor-pointer transition-colors ${drag ? "border-[#f5b120] bg-[#f5b120]/10" : "border-slate-300 hover:border-[#f5b120]/60 bg-slate-50"}`}
+          onClick={() => fileRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={(e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files?.[0]); }}
+          data-testid="doc-dropzone"
+        >
+          <input
+            ref={fileRef}
+            type="file"
+            className="hidden"
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.zip,.txt,.csv"
+            onChange={(e) => pick(e.target.files?.[0])}
+            data-testid="doc-file-input"
+          />
+          {file ? (
+            <div className="text-sm font-bold text-[#0a2350]" data-testid="doc-file-selected">
+              {file.name} <span className="font-normal text-slate-500">({(file.size / 1024 / 1024).toFixed(2)} MB)</span>
+              <button type="button" className="ml-2 text-xs text-red-600 font-bold" onClick={(e) => { e.stopPropagation(); setFile(null); }}>hapus</button>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500">
+              <b className="text-[#0a2350]">Drag & drop file di sini</b> atau klik untuk memilih
+              <div className="text-[11px] mt-1">PDF, Word, Excel, gambar, ZIP, teks · maks 15 MB</div>
+            </div>
+          )}
+        </div>
         <label className="col-span-2"><div className={labelClass}>Title *</div><input required value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} className={inputClass} /></label>
         <label><div className={labelClass}>Category</div><select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} className={inputClass}><option>contract</option><option>msa</option><option>proposal</option><option>diagram</option><option>invoice</option><option>legal</option><option>other</option></select></label>
         <label><div className={labelClass}>Customer</div><input value={f.customer_name} onChange={(e) => setF({ ...f, customer_name: e.target.value })} className={inputClass} /></label>
-        <label className="col-span-2"><div className={labelClass}>URL / link</div><input value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} className={inputClass} placeholder="Google Drive / Dropbox / GitHub link" /></label>
+        {!file && (
+          <label className="col-span-2"><div className={labelClass}>URL / link (opsional bila tanpa file)</div><input value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} className={inputClass} placeholder="Google Drive / Dropbox / GitHub link" /></label>
+        )}
         <label className="col-span-2"><div className={labelClass}>Notes</div><textarea rows={3} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} className={`${inputClass} h-auto py-2`} /></label>
         <div className="col-span-2 flex justify-end gap-2 mt-2">
           <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
-          <button type="submit" className={btnPrimary}>Save</button>
+          <button type="submit" className={btnPrimary} disabled={busy} data-testid="doc-save">{busy ? "Uploading..." : "Save"}</button>
         </div>
       </form>
     </Modal>

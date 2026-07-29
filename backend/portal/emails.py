@@ -78,7 +78,7 @@ _WRAPPER = _WRAPPER_TEMPLATE.replace("__LOGO__", LOGO_URL)
 
 # Bump this whenever the shipped default templates meaningfully change - startup
 # will then refresh any unedited system templates in place.
-_SEED_VERSION = 2
+_SEED_VERSION = 3
 
 
 DEFAULT_TEMPLATES: list[dict] = [
@@ -364,6 +364,61 @@ DEFAULT_TEMPLATES: list[dict] = [
         "is_system": True,
     },
     {
+        "event_key": "hosting_provisioned",
+        "name": "Hosting account ready - credentials",
+        "subject": "Your hosting account is ready - {{hosting.domain}}",
+        "body_html": (
+            "<p>Dear <b>{{user.name}}</b>,</p>"
+            "<p>Great news! Your hosting service <b>{{service.product_name}}</b> has been "
+            "<b>provisioned successfully</b> and is now active. Below are your account details:</p>"
+            "<table style='width:100%;border-collapse:collapse;margin:16px 0;background:#f8fafc;border-radius:10px;overflow:hidden'>"
+            "  <tr><td style='padding:10px 14px;color:#64748b;font-size:12px;width:32%'>Control panel</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{hosting.panel}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Domain</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{hosting.domain}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Username</td><td style='padding:10px 14px;font-family:monospace;color:#0f172a'>{{hosting.username}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Password</td><td style='padding:10px 14px;font-family:monospace;color:#0f172a'>{{hosting.password}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Panel URL</td><td style='padding:10px 14px'><a href='{{hosting.panel_url}}'>{{hosting.panel_url}}</a></td></tr>"
+            "</table>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{hosting.panel_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Log in to control panel &rarr;</a>"
+            "</p>"
+            "<p style='color:#64748b;font-size:12px'>For your security, we strongly recommend changing this password immediately after your first login. "
+            "Never share these credentials via unsecured channels.</p>"
+            "<p>You can also manage this service anytime from your "
+            "<a href='{{portal.login_url}}'>Intercloud Client Portal</a>. Should you need any assistance, "
+            "our support team is available at <a href='mailto:support@intercloud-digital.com'>support@intercloud-digital.com</a> "
+            "or WhatsApp +62 878-1239-7187.</p>"
+            "<p style='margin-top:24px'>Best regards,<br><b>Intercloud Provisioning Team</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
+        "event_key": "domain_expiry_reminder",
+        "name": "Domain expiry reminder",
+        "subject": "Action required - domain {{domain.name}} expires in {{domain.days_left}} day(s)",
+        "body_html": (
+            "<p>Dear <b>{{user.name}}</b>,</p>"
+            "<p>This is a friendly reminder that your domain <b>{{domain.name}}</b> is due to expire on "
+            "<b>{{domain.expires_at}}</b> (<b>{{domain.days_left}} day(s)</b> from now).</p>"
+            "<p>To avoid service interruption, DNS downtime, or losing the domain to the redemption period, "
+            "please renew it before the expiry date.</p>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Renew domain in portal &rarr;</a>"
+            "</p>"
+            "<p>If auto-renew is enabled and your balance or payment method is in order, no action is needed - "
+            "we will process the renewal automatically.</p>"
+            "<p>Questions? Contact <a href='mailto:support@intercloud-digital.com'>support@intercloud-digital.com</a> "
+            "or WhatsApp +62 878-1239-7187.</p>"
+            "<p style='margin-top:24px'>Best regards,<br><b>Intercloud Domain Team</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
         "event_key": "newsletter",
         "name": "Newsletter - monthly (default shell)",
         "subject": "Intercloud Insights - {{month.name}}",
@@ -626,6 +681,20 @@ async def on_invoice_generated(db, invoice_doc: dict, user_doc: dict,
 async def on_password_reset(db, user_doc: dict, reset_url: str) -> None:
     ctx = build_context(user=user_doc, extra={"reset_url": reset_url})
     await send_via_template(db, event_key="password_reset",
+                            to_email=user_doc["email"], ctx=ctx,
+                            user_id=str(user_doc.get("_id") or ""))
+
+
+async def on_hosting_provisioned(db, user_doc: dict, service_doc: dict, credentials: dict) -> None:
+    """Hosting account credentials email - fired after successful live panel provisioning."""
+    ctx = build_context(user=user_doc, extra={
+        "hosting": credentials,
+        "service": {
+            "product_name": service_doc.get("product_name", ""),
+            "next_renewal": service_doc.get("next_renewal", ""),
+        },
+    })
+    await send_via_template(db, event_key="hosting_provisioned",
                             to_email=user_doc["email"], ctx=ctx,
                             user_id=str(user_doc.get("_id") or ""))
 
@@ -1041,6 +1110,280 @@ async def run_noc_probe_retention(db) -> dict:
 _scheduler = None
 
 
+# ============================================================
+# Domain expiry reminders - D-30/D-14/D-7/D-1 + status transitions
+# ============================================================
+_DOMAIN_REMINDER_OFFSETS = {"d30": 30, "d14": 14, "d7": 7, "d1": 1}
+
+
+async def run_domain_expiry_sweep(db, *, now: Optional[datetime] = None) -> dict:
+    """Scan koleksi domains: kirim pengingat menjelang expiry dan geser status
+    active → expiring (≤30 hari) → expired. Idempotent per (domain, offset)
+    via marker `reminders_sent` pada dokumen domain."""
+    now = now or datetime.now(timezone.utc)
+    today = now.date()
+    fired = {k: 0 for k in _DOMAIN_REMINDER_OFFSETS}
+    marked_expiring = 0
+    marked_expired = 0
+    cursor = db.domains.find({"status": {"$in": ["active", "expiring"]},
+                              "expires_at": {"$nin": [None, ""]}})
+    async for dom in cursor:
+        try:
+            exp = datetime.strptime((dom.get("expires_at") or "")[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        days_left = (exp - today).days
+        if days_left < 0:
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": {"status": "expired"}})
+            marked_expired += 1
+            continue
+        if days_left <= 30 and dom.get("status") == "active":
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": {"status": "expiring"}})
+            marked_expiring += 1
+        for key, offset in _DOMAIN_REMINDER_OFFSETS.items():
+            if days_left != offset:
+                continue
+            if (dom.get("reminders_sent") or {}).get(key):
+                continue
+            user = await db.users.find_one({"_id": dom["user_id"]})
+            if not user:
+                continue
+            ctx = build_context(user=user, extra={"domain": {
+                "name": dom["domain"],
+                "expires_at": (dom.get("expires_at") or "")[:10],
+                "days_left": days_left,
+            }})
+            res = await send_via_template(db, event_key="domain_expiry_reminder",
+                                          to_email=user["email"], ctx=ctx,
+                                          user_id=str(user["_id"]))
+            if res.get("status") in ("sent", "skipped"):
+                await db.domains.update_one(
+                    {"_id": dom["_id"]},
+                    {"$set": {f"reminders_sent.{key}": today.isoformat()}})
+                fired[key] += 1
+    return {"date": today.isoformat(), "fired": fired,
+            "marked_expiring": marked_expiring, "marked_expired": marked_expired}
+
+
+# ============================================================
+# NOC - DDoS threshold evaluation + incident detection
+# ============================================================
+def _ddos_attack_type(flow: dict) -> str:
+    proto = (flow.get("protocol") or "").lower()
+    port = str(flow.get("src_port") or flow.get("dst_port") or "")
+    if port == "53":
+        return "DNS Amplification"
+    if port in ("80", "443"):
+        return "HTTP Flood"
+    if proto == "udp":
+        return "UDP Flood"
+    if proto in ("tcp", "tcp-syn"):
+        return "SYN Flood"
+    return "Traffic Anomaly"
+
+
+def _ddos_severity(ratio: float) -> str:
+    if ratio >= 4:
+        return "critical"
+    if ratio >= 2:
+        return "high"
+    return "medium"
+
+
+async def run_ddos_detection_sweep(db) -> dict:
+    """Evaluasi aturan ambang batas trafik terhadap sampel torch MikroTik live.
+    Membuka insiden DDoS (dedupe per target aktif), auto-blackhole bila rule
+    memintanya, dan auto-resolve insiden yang trafiknya sudah normal."""
+    from . import integrations_v2 as _iv2
+    import asyncio as _a
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rules = await db.ddos_threshold_rules.find({"enabled": True}).to_list(100)
+    if not rules:
+        return {"at": now_iso, "skipped": "no enabled rules"}
+    devices = await db.mikrotik_devices.find({}).to_list(100)
+
+    # ---- Sample per-target traffic via torch (aggregate dst_address) ----
+    targets: dict = {}   # ip -> {bps, pps, flow, device_name}
+    sampled_devices = 0
+    for d in devices:
+        iface = d.get("main_interface") or d.get("interface") or "ether1"
+        try:
+            client = _iv2.MikrotikClient(d)
+            res = await _a.get_event_loop().run_in_executor(
+                None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
+        except Exception:
+            continue
+        if not res.get("ok"):
+            continue
+        sampled_devices += 1
+        for f in res.get("rows", []):
+            ip = (f.get("dst_address") or "").split("/")[0]
+            if not ip or ip in ("0.0.0.0", "255.255.255.255"):
+                continue
+            t = targets.setdefault(ip, {"bps": 0, "pps": 0, "flow": f,
+                                        "device": d.get("name") or "unnamed",
+                                        "device_doc": d})
+            t["bps"] += f.get("rx_rate", 0) + f.get("tx_rate", 0)
+            t["pps"] += f.get("rx_packets", 0) + f.get("tx_packets", 0)
+
+    # ---- Evaluate rules against samples ----
+    opened, blackholed = 0, 0
+    breached_ips = set()
+    for ip, t in targets.items():
+        for rule in rules:
+            value = t["pps"] if rule.get("metric") == "pps" else t["bps"]
+            threshold = float(rule.get("threshold") or 0)
+            if threshold <= 0 or value <= threshold:
+                continue
+            breached_ips.add(ip)
+            existing = await db.ddos_incidents.find_one({"target": ip, "status": "active"})
+            if existing:
+                await db.ddos_incidents.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {"pps": t["pps"], "bps": t["bps"],
+                              "severity": _ddos_severity(value / threshold)}})
+                continue
+            incident = {
+                "target": ip,
+                "attack_type": _ddos_attack_type(t["flow"]),
+                "pps": t["pps"],
+                "bps": t["bps"],
+                "severity": _ddos_severity(value / threshold),
+                "status": "active",
+                "action": rule.get("action", "alert"),
+                "rule_id": str(rule["_id"]),
+                "rule_name": rule.get("name", ""),
+                "device": t["device"],
+                "started_at": now_iso,
+                "ended_at": None,
+                "notified": [],
+            }
+            r = await db.ddos_incidents.insert_one(incident)
+            incident["_id"] = r.inserted_id
+            opened += 1
+            if rule.get("action") == "alert_blackhole":
+                try:
+                    client = _iv2.MikrotikClient(t["device_doc"])
+                    bh = await _a.get_event_loop().run_in_executor(
+                        None, lambda c=client, p=f"{ip}/32", n=rule.get("name", ""):
+                        c.blackhole_add(p, comment=f"auto-mitigasi ({n})"))
+                    ok = not bh.get("error")
+                except Exception as e:
+                    ok, bh = False, {"error": str(e)}
+                await db.blackhole_log.insert_one({
+                    "prefix": f"{ip}/32", "action": "add",
+                    "by": f"auto-mitigasi ({rule.get('name', '')})",
+                    "source": "auto", "device": t["device"],
+                    "ok": ok, "detail": str(bh)[:300], "at": now_iso,
+                })
+                if ok:
+                    blackholed += 1
+                    await db.ddos_incidents.update_one(
+                        {"_id": r.inserted_id}, {"$set": {"status": "mitigated"}})
+            try:
+                await dispatch_ddos_notifications(db, incident)
+            except Exception:
+                log.exception("[ddos] notification dispatch failed")
+            break  # satu insiden per target per sweep
+
+    # ---- Auto-resolve incidents whose targets are back to normal ----
+    resolved = 0
+    if sampled_devices:
+        async for inc in db.ddos_incidents.find({"status": "active"}):
+            if inc["target"] not in breached_ips:
+                await db.ddos_incidents.update_one(
+                    {"_id": inc["_id"]},
+                    {"$set": {"status": "resolved", "ended_at": now_iso}})
+                resolved += 1
+
+    return {"at": now_iso, "devices_sampled": sampled_devices,
+            "targets_seen": len(targets), "incidents_opened": opened,
+            "auto_blackholed": blackholed, "auto_resolved": resolved}
+
+
+async def dispatch_ddos_notifications(db, incident: dict) -> list:
+    """Kirim alert insiden DDoS ke saluran notifikasi aktif (event 'ddos').
+    Email dikirim live via SMTP; whatsapp/telegram/webhook dicatat di
+    ddos_notify_log (dispatch live per channel menyusul sesuai kredensial)."""
+    channels = await db.notif_channels.find({"enabled": True, "events": "ddos"}).to_list(50)
+    notified = []
+    subject = (f"[DDoS] {incident.get('severity', '').upper()} - "
+               f"{incident.get('attack_type', '')} ke {incident.get('target', '')}")
+    body = (
+        f"<h2 style='color:#dc2626;margin:0 0 8px 0'>Insiden DDoS terdeteksi</h2>"
+        f"<table style='width:100%;border-collapse:collapse;font-size:13px'>"
+        f"<tr><td style='padding:6px 0;color:#64748b;width:130px'>Target</td><td><b>{incident.get('target', '')}</b></td></tr>"
+        f"<tr><td style='padding:6px 0;color:#64748b'>Jenis</td><td>{incident.get('attack_type', '')}</td></tr>"
+        f"<tr><td style='padding:6px 0;color:#64748b'>Severity</td><td>{incident.get('severity', '')}</td></tr>"
+        f"<tr><td style='padding:6px 0;color:#64748b'>Trafik</td><td>{incident.get('bps', 0):,} bps / {incident.get('pps', 0):,} pps</td></tr>"
+        f"<tr><td style='padding:6px 0;color:#64748b'>Rule</td><td>{incident.get('rule_name', '')}</td></tr>"
+        f"<tr><td style='padding:6px 0;color:#64748b'>Aksi</td><td>{incident.get('action', '')}</td></tr>"
+        f"<tr><td style='padding:6px 0;color:#64748b'>Waktu</td><td>{incident.get('started_at', '')}</td></tr>"
+        f"</table>"
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for ch in channels:
+        target = ch.get("target", "")
+        status = "queued"
+        if ch.get("type") == "email":
+            try:
+                r = await deliver(db, to_email=target, subject=subject,
+                                  body_html=wrap_html(body), event_key="ddos_alert")
+                status = r.get("status", "failed")
+            except Exception:
+                status = "failed"
+        elif ch.get("type") == "telegram":
+            try:
+                from . import integrations_v2 as _iv2
+                s = await _iv2.get_settings(db, "telegram")
+                if s and s.get("enabled"):
+                    text = (f"[DDoS {incident.get('severity', '').upper()}] "
+                            f"{incident.get('attack_type', '')} ke {incident.get('target', '')} - "
+                            f"{incident.get('bps', 0):,} bps / {incident.get('pps', 0):,} pps "
+                            f"(rule: {incident.get('rule_name', '')})")
+                    chat_id = target if target and not target.startswith("@") else None
+                    res = await _iv2.TelegramNotifier(s).send(text, chat_id=chat_id)
+                    status = "sent" if res.get("ok") else "failed"
+                else:
+                    status = "skipped"
+            except Exception:
+                status = "failed"
+        elif ch.get("type") == "webhook":
+            try:
+                import httpx as _hx
+                payload = {
+                    "text": subject,
+                    "incident": {
+                        "target": incident.get("target", ""),
+                        "attack_type": incident.get("attack_type", ""),
+                        "severity": incident.get("severity", ""),
+                        "bps": incident.get("bps", 0),
+                        "pps": incident.get("pps", 0),
+                        "rule": incident.get("rule_name", ""),
+                        "action": incident.get("action", ""),
+                        "started_at": incident.get("started_at", ""),
+                    },
+                }
+                async with _hx.AsyncClient(timeout=8.0) as c:
+                    r = await c.post(target, json=payload)
+                status = "sent" if r.status_code < 300 else f"failed ({r.status_code})"
+            except Exception:
+                status = "failed"
+        await db.ddos_notify_log.insert_one({
+            "incident_id": str(incident.get("_id") or ""),
+            "target": incident.get("target", ""),
+            "channel_type": ch.get("type", ""),
+            "channel_target": target,
+            "status": status,
+            "at": now_iso,
+        })
+        notified.append(f"{ch.get('type')}:{target}")
+    if notified:
+        await db.ddos_incidents.update_one(
+            {"_id": incident.get("_id")}, {"$set": {"notified": notified}})
+    return notified
+
+
 def start_scheduler(db):
     """Fire up an in-process APScheduler that runs the sweep hourly.
 
@@ -1079,6 +1422,20 @@ def start_scheduler(db):
         except Exception as e:  # noqa: BLE001
             log.exception(f"[noc-scheduler] tick failed: {e}")
 
+    async def _domain_tick():
+        try:
+            summary = await run_domain_expiry_sweep(db)
+            log.info(f"[domain-scheduler] sweep result: {summary}")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[domain-scheduler] tick failed: {e}")
+
+    async def _ddos_tick():
+        try:
+            summary = await run_ddos_detection_sweep(db)
+            log.info(f"[ddos-scheduler] sweep result: {summary}")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[ddos-scheduler] tick failed: {e}")
+
     # Run at :05 every hour (a small delay after the top of the hour so servers
     # coming back up don't collide with other jobs).
     sched.add_job(_tick, CronTrigger(minute=5))
@@ -1090,6 +1447,11 @@ def start_scheduler(db):
     # NOC probe sweep - every 5 minutes, on the SAME scheduler (PRD constraint).
     sched.add_job(_noc_tick, CronTrigger(minute="*/5"))
     sched.add_job(_noc_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=30))
+    # Domain expiry sweep - hourly at :35 on the SAME scheduler.
+    sched.add_job(_domain_tick, CronTrigger(minute=35))
+    sched.add_job(_domain_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=40))
+    # DDoS threshold evaluation - every 5 minutes (offset dari NOC probe) on the SAME scheduler.
+    sched.add_job(_ddos_tick, CronTrigger(minute="2-59/5"))
 
     async def _noc_retention_tick():
         try:

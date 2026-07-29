@@ -274,6 +274,135 @@ class ServiceCreateIn(BaseModel):
     config: dict = {}
 
 
+# ---------- DOMAINS (registrasi & manajemen domain) ----------
+class DomainCheckIn(BaseModel):
+    domain: str = Field(min_length=3, max_length=253)
+
+
+class DomainOrderIn(BaseModel):
+    domain: str = Field(min_length=3, max_length=253)
+    years: int = Field(default=1, ge=1, le=10)
+    auto_renew: bool = True
+
+
+class DomainRenewIn(BaseModel):
+    years: int = Field(default=1, ge=1, le=10)
+
+
+class DomainNameserversIn(BaseModel):
+    nameservers: List[str] = Field(min_length=2, max_length=4)
+
+
+class DomainOut(BaseModel):
+    id: str
+    user_id: str
+    user_name: str = ""
+    domain: str
+    tld: str
+    status: Literal["pending", "active", "expiring", "expired", "cancelled"] = "pending"
+    registrar: str = "rna"
+    years: int = 1
+    registered_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    auto_renew: bool = True
+    nameservers: List[str] = []
+    price: float = 0
+    invoice_id: Optional[str] = None
+    order_ref: Optional[str] = None
+    created_at: str = ""
+
+
+class TicketStatusIn(BaseModel):
+    status: Literal["open", "awaiting_client", "awaiting_staff", "resolved", "closed"]
+
+
+# ---------- LEADS (lead-capture form landing page) ----------
+class LeadIn(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    phone: str = Field(default="", max_length=32)
+    company: str = Field(default="", max_length=120)
+    need: str = Field(default="", max_length=120)          # layanan yang diminati
+    message: str = Field(default="", max_length=2000)
+    source: str = Field(default="landing", max_length=64)
+    recaptcha_token: Optional[str] = None
+
+
+class LeadStatusIn(BaseModel):
+    status: Literal["new", "contacted", "qualified", "converted", "spam"]
+
+
+class LeadOut(BaseModel):
+    id: str
+    name: str
+    email: str
+    phone: str = ""
+    company: str = ""
+    need: str = ""
+    message: str = ""
+    source: str = "landing"
+    status: Literal["new", "contacted", "qualified", "converted", "spam"] = "new"
+    crm_id: Optional[str] = None
+    created_at: str = ""
+
+
+# ---------- NOC: DDoS / Netflow ----------
+class ThresholdRuleIn(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    metric: Literal["pps", "bps"] = "pps"
+    threshold: float = Field(gt=0)
+    window_s: int = Field(default=60, ge=10, le=3600)
+    action: Literal["alert", "alert_blackhole"] = "alert"
+    enabled: bool = True
+
+
+class ThresholdRuleOut(ThresholdRuleIn):
+    id: str
+    created_at: str = ""
+
+
+class NotifChannelIn(BaseModel):
+    type: Literal["email", "whatsapp", "telegram", "webhook"]
+    target: str = Field(min_length=3, max_length=300)
+    events: List[str] = ["ddos"]
+    enabled: bool = True
+
+
+class NotifChannelOut(NotifChannelIn):
+    id: str
+    created_at: str = ""
+
+
+class DDoSIncidentOut(BaseModel):
+    id: str
+    target: str
+    attack_type: str = ""
+    pps: float = 0
+    bps: float = 0
+    severity: Literal["critical", "high", "medium", "low"] = "medium"
+    status: Literal["active", "mitigated", "resolved", "false_positive"] = "active"
+    action: str = "alert"
+    rule_id: Optional[str] = None
+    rule_name: str = ""
+    started_at: str = ""
+    ended_at: Optional[str] = None
+    notified: List[str] = []
+
+
+class DDoSIncidentStatusIn(BaseModel):
+    status: Literal["active", "mitigated", "resolved", "false_positive"]
+
+
+class BlackholeLogOut(BaseModel):
+    id: str
+    prefix: str
+    action: Literal["add", "remove"]
+    by: str = ""
+    source: Literal["auto", "manual"] = "manual"
+    device: str = ""
+    at: str = ""
+
+
 # ---------- ORDERS ----------
 class OrderConfigSelection(BaseModel):
     """User's choice for one option-group on the base product."""

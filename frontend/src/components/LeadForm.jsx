@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { Send, CheckCircle2, Loader2 } from "lucide-react";
 import { useLang } from "../i18n/LanguageContext";
+import { api } from "../portal/api";
+import { getRecaptchaToken } from "../portal/recaptcha";
 
 const TXT = {
   id: {
@@ -50,14 +52,24 @@ const LeadForm = () => {
   const [f, setF] = useState({ name: "", email: "", company: "", phone: "", need: "", message: "" });
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
+  const [err, setErr] = useState("");
 
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    setBusy(true);
-    // MOCK submit - akan tersambung ke CRM backend + reCAPTCHA v3 di fase backend.
-    setTimeout(() => { setBusy(false); setSent(true); }, 800);
+    setBusy(true); setErr("");
+    try {
+      let token = null;
+      try { token = await getRecaptchaToken("lead"); } catch { token = null; }
+      await api.post("/portal-public/leads", {
+        name: f.name, email: f.email, phone: f.phone, company: f.company,
+        need: f.need, message: f.message, source: "landing", recaptcha_token: token,
+      });
+      setSent(true);
+    } catch (er) {
+      setErr(er?.response?.data?.detail || (lang === "en" ? "Failed to send. Please retry." : "Gagal mengirim. Silakan coba lagi."));
+    } finally { setBusy(false); }
   };
 
   return (
@@ -90,6 +102,11 @@ const LeadForm = () => {
             </div>
           ) : (
             <form onSubmit={submit} className="rounded-3xl bg-white border border-slate-200 p-6 md:p-8 shadow-sm" data-testid="lead-form">
+              {err && (
+                <div className="mb-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3" data-testid="lead-error">
+                  {err}
+                </div>
+              )}
               <div className="grid sm:grid-cols-2 gap-4">
                 <label><span className={labelCls}>{t.name} *</span>
                   <input required className={inputCls} value={f.name} onChange={set("name")} data-testid="lead-name" /></label>

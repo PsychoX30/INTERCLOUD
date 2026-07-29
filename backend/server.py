@@ -172,6 +172,20 @@ async def startup_seed():
         await db.articles.create_index([("published", 1), ("published_at", -1)])
         # Assets: filter by category + status combo
         await db.assets.create_index([("category", 1), ("status", 1)])
+        # Domains: listing per user, unique nama domain, sweep pengingat expiry
+        await db.domains.create_index([("user_id", 1), ("status", 1)])
+        await db.domains.create_index("domain", unique=True)
+        await db.domains.create_index([("status", 1), ("expires_at", 1)])
+        # Leads: listing terbaru + dedupe per email
+        await db.leads.create_index([("created_at", -1)])
+        await db.leads.create_index("email")
+        # NOC DDoS: rules, insiden, log blackhole, saluran notifikasi
+        await db.ddos_threshold_rules.create_index("enabled")
+        await db.ddos_incidents.create_index([("status", 1), ("started_at", -1)])
+        await db.ddos_incidents.create_index([("started_at", -1)])
+        await db.blackhole_log.create_index([("at", -1)])
+        await db.blackhole_log.create_index("prefix")
+        await db.notif_channels.create_index("enabled")
         # Email queue / templates
         await db.email_queue.create_index([("status", 1), ("scheduled_at", 1)])
         # Audit logs: list newest-first + filter by actor

@@ -1,20 +1,14 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { api } from "../../../portal/api";
 import { Card, btnSecondary, inputClass, labelClass } from "../ui";
-import { BellRing, Mail, MessageCircle, Send, Webhook, Plus, Trash2, Check, X } from "lucide-react";
+import { BellRing, Mail, MessageCircle, Send, Webhook, Plus, Trash2, Check, X, Loader2 } from "lucide-react";
 
-// Konfigurasi saluran notifikasi (data tiruan / CRUD lokal) - dispatcher live menyusul di fase backend.
 const CHANNEL_META = {
   email: { label: "Email", icon: Mail, ph: "noc@perusahaan.com" },
   whatsapp: { label: "WhatsApp", icon: MessageCircle, ph: "0812xxxxxxx" },
   telegram: { label: "Telegram", icon: Send, ph: "@channel_atau_chat_id" },
   webhook: { label: "Webhook", icon: Webhook, ph: "https://hooks.contoh.com/..." },
 };
-
-const DEFAULT_CHANNELS = [
-  { id: "c1", type: "email", target: "noc@intercloud-digital.com", events: ["ddos", "device_down"], enabled: true },
-  { id: "c2", type: "whatsapp", target: "081310564242", events: ["ddos"], enabled: true },
-  { id: "c3", type: "telegram", target: "@intercloud_noc", events: ["device_down"], enabled: false },
-];
 
 const EVENTS = [
   { key: "ddos", label: "Insiden DDoS" },
@@ -23,18 +17,38 @@ const EVENTS = [
 ];
 
 export const NotifChannels = () => {
-  const [channels, setChannels] = useState(DEFAULT_CHANNELS);
+  const [channels, setChannels] = useState(null);
   const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const [form, setForm] = useState({ type: "email", target: "", events: ["ddos"] });
 
-  const add = () => {
+  const load = () => api.get("/admin/noc/notif-channels").then((r) => setChannels(r.data)).catch(() => setChannels([]));
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
     if (!form.target.trim()) return;
-    setChannels((cs) => [...cs, { ...form, id: `c${Date.now()}`, enabled: true }]);
-    setAdding(false);
-    setForm({ type: "email", target: "", events: ["ddos"] });
+    setBusy(true); setErr("");
+    try {
+      await api.post("/admin/noc/notif-channels", { ...form, enabled: true });
+      setAdding(false);
+      setForm({ type: "email", target: "", events: ["ddos"] });
+      load();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal menyimpan saluran");
+    } finally { setBusy(false); }
   };
-  const del = (id) => setChannels((cs) => cs.filter((c) => c.id !== id));
-  const toggle = (id) => setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c)));
+  const del = async (id) => {
+    if (!window.confirm("Hapus saluran ini?")) return;
+    await api.delete(`/admin/noc/notif-channels/${id}`);
+    load();
+  };
+  const toggle = async (c) => {
+    await api.put(`/admin/noc/notif-channels/${c.id}`, {
+      type: c.type, target: c.target, events: c.events, enabled: !c.enabled,
+    });
+    load();
+  };
   const toggleEvent = (k) => setForm((f) => ({
     ...f,
     events: f.events.includes(k) ? f.events.filter((e) => e !== k) : [...f.events, k],
@@ -47,7 +61,7 @@ export const NotifChannels = () => {
           <div className="text-xs font-bold uppercase tracking-widest text-slate-600 flex items-center gap-2">
             <BellRing className="h-3.5 w-3.5 text-[#f5b120]" /> Saluran Notifikasi
           </div>
-          <div className="text-xs text-slate-500 mt-0.5">Ke mana alert insiden dikirim (data tiruan / CRUD lokal). Dispatcher live menyusul di fase backend.</div>
+          <div className="text-xs text-slate-500 mt-0.5">Alert insiden DDoS dikirim live ke saluran aktif (email/telegram/webhook; WhatsApp masuk antrean log).</div>
         </div>
         <button className={btnSecondary} onClick={() => setAdding(!adding)} data-testid="channel-add-toggle">
           <Plus className="h-4 w-4" /> Tambah Saluran
@@ -56,6 +70,7 @@ export const NotifChannels = () => {
 
       {adding && (
         <div className="px-5 py-4 bg-[#f5b120]/5 border-b border-[#f5b120]/30" data-testid="channel-form">
+          {err && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
           <div className="grid sm:grid-cols-3 gap-3">
             <label><div className={labelClass}>Tipe</div>
               <select className={inputClass} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} data-testid="channel-type">
@@ -78,19 +93,25 @@ export const NotifChannels = () => {
             ))}
           </div>
           <div className="mt-3 flex gap-2">
-            <button className={btnSecondary} onClick={add} data-testid="channel-save"><Check className="h-4 w-4" /> Simpan</button>
+            <button className={btnSecondary} onClick={add} disabled={busy} data-testid="channel-save">
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Simpan
+            </button>
             <button className={btnSecondary} onClick={() => setAdding(false)}><X className="h-4 w-4" /> Batal</button>
           </div>
         </div>
       )}
 
       <div className="divide-y divide-slate-100">
-        {channels.map((c) => {
-          const m = CHANNEL_META[c.type];
+        {channels === null && <div className="px-5 py-6 text-sm text-slate-500">Memuat saluran...</div>}
+        {channels !== null && channels.length === 0 && (
+          <div className="px-5 py-6 text-sm text-slate-500" data-testid="channel-empty">Belum ada saluran. Tambahkan email/telegram/webhook untuk menerima alert.</div>
+        )}
+        {(channels || []).map((c) => {
+          const m = CHANNEL_META[c.type] || CHANNEL_META.email;
           return (
             <div key={c.id} className="px-5 py-3 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid={`channel-row-${c.id}`}>
               <button
-                onClick={() => toggle(c.id)}
+                onClick={() => toggle(c)}
                 className={`relative h-5 w-9 rounded-full transition-colors ${c.enabled ? "bg-emerald-500" : "bg-slate-300"}`}
                 data-testid={`channel-toggle-${c.id}`}
               >
@@ -101,7 +122,7 @@ export const NotifChannels = () => {
               </span>
               <span className={`font-mono text-xs ${c.enabled ? "text-slate-700" : "text-slate-400"}`}>{c.target}</span>
               <div className="flex flex-wrap gap-1">
-                {c.events.map((e) => (
+                {(c.events || []).map((e) => (
                   <span key={e} className="text-[10px] font-bold uppercase bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5 text-slate-500">
                     {EVENTS.find((x) => x.key === e)?.label || e}
                   </span>

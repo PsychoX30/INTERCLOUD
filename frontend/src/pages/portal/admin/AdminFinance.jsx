@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from "react";
 import { api, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Download, Plus, Trash2, Lock, TrendingUp, Wallet, HandCoins, Users, ShoppingCart, ReceiptText, Percent, Save, Loader2 } from "lucide-react";
+import { Download, Plus, Trash2, Lock, TrendingUp, Wallet, HandCoins, Users, ShoppingCart, ReceiptText, Percent, Save, Loader2, Activity, FileText } from "lucide-react";
+import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip as ReTooltip, CartesianGrid, ResponsiveContainer, Legend } from "recharts";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
 const BASE = process.env.REACT_APP_BACKEND_URL;
 
 const TABS = [
   { key: "summary",   label: "Summary",     icon: TrendingUp },
+  { key: "cashflow",  label: "Cash-flow",   icon: Activity },
   { key: "revenue",   label: "Revenue",     icon: ReceiptText },
   { key: "expenses",  label: "Expenses",    icon: Wallet },
   { key: "kas_kecil", label: "Kas Kecil",   icon: HandCoins },
@@ -67,10 +69,20 @@ const AdminFinance = () => {
       </div>
 
       {tab === "summary" && <SummaryPane t={t} d={d} />}
+      {tab === "cashflow" && <CashflowPane />}
       {tab === "revenue" && <RevenueList rows={d.revenue_rows} />}
       {tab === "expenses" && <LedgerPane rows={d.expenses_rows} onChange={load} kind="expenses" extras={["category","vendor","description"]} />}
       {tab === "kas_kecil" && <LedgerPane rows={d.kas_kecil_rows} onChange={load} kind="kas-kecil" extras={["category","vendor","notes"]} />}
-      {tab === "salaries" && <LedgerPane rows={d.salaries_rows} onChange={load} kind="salaries" extras={["employee","category","notes"]} />}
+      {tab === "salaries" && <LedgerPane rows={d.salaries_rows} onChange={load} kind="salaries" extras={["employee","category","notes"]} rowAction={(r) => (
+        <a
+          href={`${BASE}/api/portal/documents/salary-slip/${r.id}?format=pdf&token=${encodeURIComponent(getToken() || "")}`}
+          className="inline-flex items-center gap-1 text-xs font-bold text-[#0a2350] hover:text-[#f5b120]"
+          title="Unduh slip gaji PDF"
+          data-testid={`salary-slip-${r.id}`}
+        >
+          <FileText className="h-4 w-4" /> Slip
+        </a>
+      )} />}
       {tab === "sales_fees" && <LedgerPane rows={d.sales_fees_rows} onChange={load} kind="sales-fees" extras={["sales_person","invoice_number","notes"]} />}
       {tab === "assets" && <AssetsList rows={d.assets_rows} />}
       {tab === "billing" && <BillingDefaultsPane />}
@@ -236,7 +248,7 @@ const AssetsList = ({ rows }) => (
   </div>
 );
 
-const LedgerPane = ({ rows, onChange, kind, extras }) => {
+const LedgerPane = ({ rows, onChange, kind, extras, rowAction }) => {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ date: new Date().toISOString().slice(0, 10), amount: 0 });
   const [err, setErr] = useState("");
@@ -302,7 +314,10 @@ const LedgerPane = ({ rows, onChange, kind, extras }) => {
                 {extras.map((k) => <td key={k} className="px-4 py-3">{r[k] || "-"}</td>)}
                 <td className="px-4 py-3 text-right font-bold text-red-700">{idr(r.amount)}</td>
                 <td className="px-4 py-3 text-right">
-                  <button onClick={() => del(r.id, r.period_yyyy_mm)} className="text-slate-600 hover:text-red-600" title="Delete"><Trash2 className="h-4 w-4" /></button>
+                  <span className="inline-flex items-center gap-3">
+                    {rowAction && rowAction(r)}
+                    <button onClick={() => del(r.id, r.period_yyyy_mm)} className="text-slate-600 hover:text-red-600" title="Delete"><Trash2 className="h-4 w-4" /></button>
+                  </span>
                 </td>
               </tr>
             ))}
@@ -310,6 +325,79 @@ const LedgerPane = ({ rows, onChange, kind, extras }) => {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+};
+
+const fmtJt = (v) => {
+  const a = Math.abs(v);
+  if (a >= 1e9) return `${(v / 1e9).toFixed(1)}M`;
+  if (a >= 1e6) return `${(v / 1e6).toFixed(1)}jt`;
+  if (a >= 1e3) return `${(v / 1e3).toFixed(0)}rb`;
+  return `${v}`;
+};
+
+const CashflowPane = () => {
+  const [f, setF] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    api.get("/admin/finance/cashflow-forecast")
+      .then((r) => setF(r.data))
+      .catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat proyeksi"));
+  }, []);
+  if (err) return <Card className="p-6 text-sm text-red-700">{err}</Card>;
+  if (!f) return <Loading />;
+  const buckets = [
+    { key: "d30", label: "30 hari" },
+    { key: "d60", label: "60 hari" },
+    { key: "d90", label: "90 hari" },
+  ];
+  const chart = f.weekly.map((w) => ({ ...w, label: w.week_start.slice(5) }));
+  return (
+    <div data-testid="cashflow-pane">
+      <div className="grid sm:grid-cols-3 gap-4 mb-5">
+        {buckets.map((b) => {
+          const v = f.buckets[b.key];
+          return (
+            <Card key={b.key} className="p-5" data-testid={`cashflow-bucket-${b.key}`}>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Proyeksi {b.label}</div>
+              <div className={`mt-1 text-2xl font-extrabold ${v.net >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                {v.net >= 0 ? "+" : ""}{idr(v.net)}
+              </div>
+              <div className="mt-2 text-xs text-slate-500 space-y-0.5">
+                <div className="flex justify-between"><span>Perkiraan masuk</span><b className="text-emerald-700">{idr(v.inflow)}</b></div>
+                <div className="flex justify-between"><span>Perkiraan keluar</span><b className="text-red-700">{idr(v.outflow)}</b></div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+      <Card className="p-5" data-testid="cashflow-chart-card">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <div>
+            <div className="text-sm font-extrabold text-[#0a2350]">Proyeksi arus kas mingguan (90 hari ke depan)</div>
+            <div className="text-[11px] text-slate-500">
+              Masuk: invoice unpaid/overdue ({f.sources.unpaid_invoices}) + perpanjangan layanan ({f.sources.upcoming_renewals}) ·
+              Keluar: run-rate beban {idr(f.monthly_expense_run_rate)}/bulan (rata-rata 3 bulan terakhir)
+            </div>
+          </div>
+          <div className="text-[11px] text-slate-400">per {f.as_of}</div>
+        </div>
+        <div style={{ height: 330 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={chart} margin={{ top: 6, right: 12, bottom: 0, left: 6 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis tickFormatter={fmtJt} tick={{ fontSize: 11 }} width={54} />
+              <ReTooltip formatter={(v, name) => [idr(v), name]} labelFormatter={(l) => `Minggu ${l}`} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="inflow" name="Masuk" fill="#10b981" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="outflow" name="Keluar" fill="#ef4444" radius={[4, 4, 0, 0]} />
+              <Line type="monotone" dataKey="cumulative" name="Kumulatif (net)" stroke="#0a2350" strokeWidth={2.5} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
     </div>
   );
 };
