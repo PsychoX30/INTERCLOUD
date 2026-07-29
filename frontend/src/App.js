@@ -36,6 +36,7 @@ const ClientInvoices  = lazy(() => import("./pages/portal/client/ClientInvoices"
 const ClientTickets   = lazy(() => import("./pages/portal/client/ClientTickets"));
 const ClientOrder     = lazy(() => import("./pages/portal/client/ClientOrder"));
 const ClientTraffic   = lazy(() => import("./pages/portal/client/ClientTraffic"));
+const ClientDomains   = lazy(() => import("./pages/portal/client/ClientDomains"));
 
 // Admin
 const AdminDashboard    = lazy(() => import("./pages/portal/admin/AdminDashboard"));
@@ -124,6 +125,7 @@ function App() {
                   <Route path="tickets" element={<ClientTickets />} />
                   <Route path="order" element={<ClientOrder />} />
                   <Route path="traffic" element={<ClientTraffic />} />
+                  <Route path="domains" element={<ClientDomains />} />
                   <Route path="settings/password" element={<ChangePassword />} />
                 </Route>
 

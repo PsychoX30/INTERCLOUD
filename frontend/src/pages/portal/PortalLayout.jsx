@@ -6,13 +6,14 @@ import {
   Send, Puzzle, Cloud, Menu, X, ChevronDown, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
-  History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2,
+  History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 
 const CLIENT_NAV = [
   { to: "/portal/client/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
   { to: "/portal/client/services", label: "My Services", icon: ServerCog, testid: "nav-services" },
+  { to: "/portal/client/domains", label: "Domain", icon: Globe2, testid: "nav-domains" },
   { to: "/portal/client/invoices", label: "Invoices", icon: Receipt, testid: "nav-invoices" },
   { to: "/portal/client/tickets", label: "Tickets", icon: LifeBuoy, testid: "nav-tickets" },
   { to: "/portal/client/order", label: "Order Service", icon: ShoppingCart, testid: "nav-order" },

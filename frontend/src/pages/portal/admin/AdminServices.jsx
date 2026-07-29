@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { api, money, shortDate } from "../../../portal/api";
-import { PageHeader, StatusBadge } from "../ui";
+import { PageHeader, Card, StatusBadge } from "../ui";
 import { DataTable } from "../../../components/ui/data-table";
 
 const AdminServices = () => {
   const [rows, setRows] = useState(null);
   const [users, setUsers] = useState({});
+  const [active, setActive] = useState(null);
   useEffect(() => {
     api.get("/admin/services").then((r) => setRows(r.data));
-    // Fetch users so we can render human-readable client names instead of raw IDs.
     api.get("/admin/users").then((r) => {
       const map = {};
       for (const u of r.data) map[u.id] = u;
@@ -46,16 +46,142 @@ const AdminServices = () => {
 
   return (
     <div>
-      <PageHeader title="Active Services" subtitle="Every provisioned instance across your clients." />
+      <PageHeader title="Active Services" subtitle="Every provisioned instance across your clients. Klik baris untuk detail provisioning." />
       <DataTable
         rows={rows || []}
         loading={rows === null}
         columns={columns}
         searchKeys={["product_name", "name", "category", "status"]}
         rowKey={(r) => r.id}
+        onRowClick={(r) => setActive(r)}
         empty={{ title: "No services yet", hint: "Provisioned services will appear here once orders are verified." }}
         testid="admin-services-table"
       />
+      {active && <ServiceDetailModal serviceId={active.id} onClose={() => setActive(null)} />}
+    </div>
+  );
+};
+
+const CONFIG_LABELS = {
+  control_panel: "Control Panel",
+  hostname: "Hostname",
+  ip: "IP Address",
+  domain: "Domain",
+  os: "OS",
+  node: "Proxmox Node",
+  vmid: "VMID",
+  rack: "Rack",
+  cpu: "vCPU",
+  ram_gb: "RAM (GB)",
+  disk_gb: "Disk (GB)",
+};
+
+const ServiceDetailModal = ({ serviceId, onClose }) => {
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    api.get(`/admin/services/${serviceId}/detail`).then((r) => setD(r.data)).catch(() => setD(false));
+  }, [serviceId]);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-2xl bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col"
+        data-testid="admin-service-detail-modal"
+      >
+        <div className="p-6 bg-[#0a2350] text-white flex items-start justify-between">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">{d?.category || "service"}</div>
+            <div className="text-xl font-extrabold">{d?.product_name || "Loading..."}</div>
+            <div className="text-sm text-white/70 mt-0.5">{d?.name}</div>
+          </div>
+          <button className="text-white/70 hover:text-white text-2xl leading-none" onClick={onClose} data-testid="service-detail-close">×</button>
+        </div>
+        {d && (
+          <div className="p-6 overflow-y-auto space-y-4">
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                <div className="text-[10px] font-bold uppercase text-slate-500">Status</div>
+                <div className="mt-1"><StatusBadge status={d.status} /></div>
+              </div>
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                <div className="text-[10px] font-bold uppercase text-slate-500">Renewal</div>
+                <div className="mt-1 text-sm font-semibold">{shortDate(d.next_renewal)}</div>
+              </div>
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                <div className="text-[10px] font-bold uppercase text-slate-500">Monthly</div>
+                <div className="mt-1 text-sm font-extrabold text-[#0a2350]">{money(d.price_monthly)}</div>
+              </div>
+            </div>
+
+            <Card className="p-4">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-1">Client</div>
+              <div className="text-sm font-semibold text-[#0a2350]">{d.user?.name}</div>
+              <div className="text-xs text-slate-500">{d.user?.email}{d.user?.company ? ` - ${d.user.company}` : ""}</div>
+            </Card>
+
+            <Card className="p-4">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-2">Provisioning config</div>
+              {Object.keys(d.config || {}).length === 0 ? (
+                <p className="text-xs text-slate-500">Belum ada konfigurasi.</p>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {Object.entries(d.config).map(([k, v]) => (
+                    <div key={k} className="flex items-center justify-between py-1.5 text-sm">
+                      <span className="text-xs uppercase tracking-widest text-slate-500 font-semibold">{CONFIG_LABELS[k] || k}</span>
+                      <span className="font-mono text-[#0a2350]">{String(v ?? "-")}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            {d.pending_upgrade && (
+              <Card className="p-4 border-amber-200 bg-amber-50/50">
+                <div className="text-sm font-extrabold text-amber-800 mb-1">Upgrade menunggu pembayaran</div>
+                <p className="text-xs text-amber-700">
+                  +{d.pending_upgrade.cpu || 0} vCPU, +{d.pending_upgrade.ram_gb || 0} GB RAM, +{d.pending_upgrade.disk_gb || 0} GB Disk
+                  {" - "}{money(d.pending_upgrade.monthly_delta || 0)}/bln
+                </p>
+              </Card>
+            )}
+
+            <Card className="p-4">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-2">Provisioning log</div>
+              {(d.provision_log || []).length === 0 ? (
+                <p className="text-xs text-slate-500">Tidak ada log provisioning (service dibuat manual).</p>
+              ) : (
+                <ol className="space-y-2">
+                  {d.provision_log.map((l, i) => (
+                    <li key={i} className="flex gap-2.5 text-xs">
+                      <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[#f5b120] shrink-0" />
+                      <span>
+                        <span className="font-bold text-[#0a2350]">{l.step}</span>
+                        <span className="text-slate-600"> - {l.message}</span>
+                        <span className="block text-[10px] text-slate-400">{l.at}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </Card>
+
+            {(d.self_service_log || []).length > 0 && (
+              <Card className="p-4">
+                <div className="text-sm font-extrabold text-[#0a2350] mb-2">Aktivitas self-service klien</div>
+                <ol className="space-y-1.5">
+                  {d.self_service_log.map((l, i) => (
+                    <li key={i} className="text-xs text-slate-600">
+                      <span className="font-bold text-[#0a2350]">{l.action}</span> oleh {l.by}
+                      <span className="text-[10px] text-slate-400 ml-1">{l.at}</span>
+                    </li>
+                  ))}
+                </ol>
+              </Card>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

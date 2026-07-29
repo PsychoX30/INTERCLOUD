@@ -152,6 +152,18 @@ class ProxmoxClient:
         assert action in ("start", "stop", "reboot", "shutdown", "suspend", "resume")
         return await self._post(f"/nodes/{node}/qemu/{vmid}/status/{action}", {})
 
+    async def vm_status(self, node: str, vmid: int) -> dict:
+        return await self._get(f"/nodes/{node}/qemu/{vmid}/status/current") or {}
+
+    async def set_user_password(self, node: str, vmid: int, username: str, password: str) -> Any:
+        """Reset a guest OS user password via the QEMU guest agent (fail-fast timeout)."""
+        async with httpx.AsyncClient(timeout=15, verify=self.ssl_verify) as c:
+            r = await c.post(f"{self.host}/api2/json/nodes/{node}/qemu/{vmid}/agent/set-user-password",
+                             headers=self._headers(),
+                             data={"username": username, "password": password, "crypted": 0})
+            r.raise_for_status()
+            return r.json().get("data")
+
     async def vnc_ticket(self, node: str, vmid: int) -> dict:
         """Returns {ticket, port, cert} for VNC proxy."""
         return await self._post(f"/nodes/{node}/qemu/{vmid}/vncproxy", {"websocket": 1})

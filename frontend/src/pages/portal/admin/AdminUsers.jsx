@@ -9,6 +9,7 @@ const AdminUsers = () => {
   const [modal, setModal] = useState(false);
   const [accessUser, setAccessUser] = useState(null);
   const [resetUser, setResetUser] = useState(null);
+  const [profileUser, setProfileUser] = useState(null);
   const [clients, setClients] = useState([]);
   const [catalog, setCatalog] = useState(null);
 
@@ -94,9 +95,11 @@ const AdminUsers = () => {
         columns={columns}
         searchKeys={["name", "email", "company", "role"]}
         rowKey={(u) => u.id}
+        onRowClick={(u) => { if (u.role === "client") setProfileUser(u); }}
         empty={{ title: "No users yet", hint: "Click 'New user' to add the first staff member or client." }}
         testid="admin-users-table"
       />
+      {profileUser && <ClientProfileModal userId={profileUser.id} onClose={() => setProfileUser(null)} />}
       {modal && <NewUserModal onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
       {accessUser && catalog && (
         <UserAccessModal
@@ -118,8 +121,109 @@ const AdminUsers = () => {
   );
 };
 
-/* ==== Admin reset-password modal (sets a new password for another user) ==== */
-const AdminResetPasswordModal = ({ user, onClose, onDone }) => {
+/* ==== Client 360 profile modal - hosting accounts + billing summary ==== */
+const ClientProfileModal = ({ userId, onClose }) => {
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    api.get(`/admin/users/${userId}/profile`).then((r) => setD(r.data)).catch(() => setD(false));
+  }, [userId]);
+
+  const money = (v) => `Rp ${Number(v || 0).toLocaleString("id-ID")}`;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col" data-testid="client-profile-modal">
+        <div className="p-6 bg-[#0a2350] text-white flex items-start justify-between">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">Client Profile</div>
+            <div className="text-xl font-extrabold">{d?.user?.name || "Loading..."}</div>
+            <div className="text-sm text-white/70 mt-0.5">{d?.user?.email}{d?.user?.company ? ` - ${d.user.company}` : ""}</div>
+          </div>
+          <button className="text-white/70 hover:text-white text-2xl leading-none" onClick={onClose} data-testid="client-profile-close">×</button>
+        </div>
+        {d && (
+          <div className="p-6 overflow-y-auto space-y-4">
+            <div className="grid grid-cols-4 gap-3 text-center">
+              {[["Services", d.services.length], ["Orders", d.stats.orders], ["Invoices", d.stats.invoices], ["Tickets", d.stats.tickets]].map(([l, v]) => (
+                <div key={l} className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                  <div className="text-[10px] font-bold uppercase text-slate-500">{l}</div>
+                  <div className="mt-1 text-lg font-extrabold text-[#0a2350]">{v}</div>
+                </div>
+              ))}
+            </div>
+            {d.stats.outstanding > 0 && (
+              <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm flex justify-between items-center" data-testid="profile-outstanding">
+                <span className="font-bold text-red-700">Outstanding</span>
+                <span className="font-extrabold text-red-700">{money(d.stats.outstanding)}</span>
+              </div>
+            )}
+
+            <div className="rounded-2xl border border-slate-200 p-4" data-testid="profile-hosting-accounts">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-2">Akun Hosting</div>
+              {d.hosting_accounts.length === 0 ? (
+                <p className="text-xs text-slate-500">Klien ini belum punya akun hosting.</p>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {d.hosting_accounts.map((h) => (
+                    <div key={h.id} className="py-2.5 flex items-center gap-3 text-sm">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-[#0a2350] truncate">{h.product_name}</div>
+                        <div className="text-xs text-slate-500 truncate">
+                          {h.config?.control_panel || "Panel -"} · {h.config?.domain || h.config?.hostname || "-"} · {h.config?.ip || "-"}
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${h.status === "active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>{h.status}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-2">Layanan Lain</div>
+              {d.services.filter((s) => s.category !== "hosting").length === 0 ? (
+                <p className="text-xs text-slate-500">Tidak ada layanan lain.</p>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {d.services.filter((s) => s.category !== "hosting").slice(0, 8).map((s) => (
+                    <div key={s.id} className="py-2 flex items-center gap-3 text-sm">
+                      <span className="uppercase text-[10px] font-bold text-[#f5b120] w-20 shrink-0">{s.category}</span>
+                      <span className="font-semibold text-[#0a2350] truncate flex-1">{s.product_name}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${s.status === "active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>{s.status}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-2">Invoice Terakhir</div>
+              {d.recent_invoices.length === 0 ? (
+                <p className="text-xs text-slate-500">Belum ada invoice.</p>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {d.recent_invoices.map((i) => (
+                    <div key={i.id} className="py-2 flex items-center gap-3 text-sm">
+                      <span className="font-bold text-[#0a2350] shrink-0">{i.number}</span>
+                      <span className="text-xs text-slate-500">{shortDate(i.due_date)}</span>
+                      <span className="ml-auto font-semibold">{money(i.total)}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                        i.status === "paid" ? "bg-emerald-100 text-emerald-700"
+                        : i.status === "overdue" ? "bg-red-100 text-red-700"
+                        : "bg-amber-100 text-amber-800"}`}>{i.status}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/* ==== Admin reset-password modal (sets a new password for another user) ==== */const AdminResetPasswordModal = ({ user, onClose, onDone }) => {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [notify, setNotify] = useState(true);

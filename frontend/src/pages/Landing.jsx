@@ -9,6 +9,8 @@ import Pricing from "../components/Pricing";
 import PoP from "../components/PoP";
 import Partners from "../components/Partners";
 import FAQ from "../components/FAQ";
+import LeadForm from "../components/LeadForm";
+import Testimonials from "../components/Testimonials";
 import CTA from "../components/CTA";
 import Footer from "../components/Footer";
 import { MessageCircle } from "lucide-react";
@@ -100,7 +102,9 @@ const Landing = () => {
         <Pricing />
         <PoP />
         <Partners />
+        <Testimonials />
         <FAQ />
+        <LeadForm />
         <CTA />
       </main>
       <Footer />

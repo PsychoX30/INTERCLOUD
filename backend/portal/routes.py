@@ -679,6 +679,247 @@ async def client_service_detail(sid: str, user=Depends(get_current_user)):
     }
 
 
+# ---------------- Client self-service VM control ----------------
+_CLIENT_VM_ACTIONS = ("start", "stop", "reboot")
+_VM_CATEGORIES = ("vps", "cloud", "dedicated")
+
+
+@router.get("/client/services/{sid}/vm")
+async def client_vm_status(sid: str, user=Depends(get_current_user)):
+    """Live VM status for the client's own service (read-only)."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    cfg = svc.get("config") or {}
+    s = await iv2.get_settings(db, "proxmox")
+    if not (s and s.get("enabled") and cfg.get("node") and cfg.get("vmid")):
+        return {"configured": False, "status": "unknown"}
+    try:
+        st = await iv2.ProxmoxClient(s).vm_status(cfg["node"], int(cfg["vmid"]))
+        return {"configured": True, "status": st.get("status", "unknown"),
+                "uptime": st.get("uptime"), "cpu": st.get("cpu"),
+                "mem": st.get("mem"), "maxmem": st.get("maxmem"),
+                "node": cfg["node"], "vmid": int(cfg["vmid"])}
+    except Exception as e:
+        return {"configured": True, "status": "unreachable", "error": str(e)[:200]}
+
+
+@router.post("/client/services/{sid}/vm/reset-password")
+async def client_vm_reset_password(sid: str, payload: dict, request: Request, user=Depends(get_current_user)):
+    """Self-service guest OS password reset via QEMU guest agent (audited)."""
+    username = (payload.get("username") or "root").strip()
+    password = payload.get("password") or ""
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password minimal 8 karakter")
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("category") not in _VM_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Layanan ini bukan VM")
+    if svc.get("status") == "suspended":
+        raise HTTPException(status_code=403, detail="Layanan ditangguhkan. Lunasi tagihan untuk mengaktifkan kembali.")
+    cfg = svc.get("config") or {}
+    node, vmid = cfg.get("node"), cfg.get("vmid")
+    if not (node and vmid):
+        raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini. Hubungi support.")
+    s = await iv2.get_settings(db, "proxmox")
+    if not (s and s.get("enabled")):
+        raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif. Hubungi support.")
+    client = iv2.ProxmoxClient(s)
+    try:
+        st = await client.vm_status(node, int(vmid))
+        if st.get("status") != "running":
+            raise HTTPException(status_code=400, detail="VM harus dalam keadaan running untuk reset password.")
+        await client.set_user_password(node, int(vmid), username, password)
+    except HTTPException:
+        raise
+    except Exception as e:
+        detail = str(e)[:200]
+        if ("agent" in detail.lower() or "500" in detail or "timeout" in detail.lower()
+                or "timed out" in detail.lower()):
+            detail = "QEMU guest agent tidak aktif atau tidak merespons di VM ini. Hubungi support untuk reset manual."
+        raise HTTPException(status_code=502, detail=detail)
+    await log_audit(db, actor=user, action="client_vm.reset_password", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""),
+                    metadata={"node": node, "vmid": int(vmid), "os_username": username},
+                    severity="warning", request=request)
+    await db.services.update_one(
+        {"_id": svc["_id"]},
+        {"$push": {"self_service_log": {"at": _now(), "action": "reset_password", "by": user["email"]}}})
+    return {"ok": True, "username": username}
+
+
+@router.post("/client/services/{sid}/vm/{action}")
+async def client_vm_action(sid: str, action: str, request: Request, user=Depends(get_current_user)):
+    """Self-service start/stop/reboot on the client's own VM (audited)."""
+    if action not in _CLIENT_VM_ACTIONS:
+        raise HTTPException(status_code=400, detail="Aksi tidak didukung")
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("category") not in _VM_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Layanan ini bukan VM")
+    if svc.get("status") == "suspended":
+        raise HTTPException(status_code=403, detail="Layanan ditangguhkan. Lunasi tagihan untuk mengaktifkan kembali.")
+    cfg = svc.get("config") or {}
+    node, vmid = cfg.get("node"), cfg.get("vmid")
+    if not (node and vmid):
+        raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini. Hubungi support.")
+    s = await iv2.get_settings(db, "proxmox")
+    if not (s and s.get("enabled")):
+        raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif. Hubungi support.")
+    try:
+        result = await iv2.ProxmoxClient(s).vm_action(node, int(vmid), action)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Proxmox error: {str(e)[:200]}")
+    await log_audit(db, actor=user, action=f"client_vm.{action}", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""),
+                    metadata={"node": node, "vmid": int(vmid)}, request=request)
+    await db.services.update_one(
+        {"_id": svc["_id"]},
+        {"$push": {"self_service_log": {"at": _now(), "action": action, "by": user["email"]}}})
+    return {"ok": True, "action": action, "task": result}
+
+
+# ---------------- Client self-service resource upgrade ----------------
+_UPGRADE_PRICING_DEFAULT = {"cpu_per_core": 50000.0, "ram_per_gb": 25000.0, "disk_per_gb": 2000.0}
+
+
+def _upgrade_quote(svc: dict, pricing: dict, cpu: int, ram_gb: int, disk_gb: int, tax_percent: float) -> dict:
+    monthly_delta = (cpu * float(pricing["cpu_per_core"])
+                     + ram_gb * float(pricing["ram_per_gb"])
+                     + disk_gb * float(pricing["disk_per_gb"]))
+    today = datetime.now(timezone.utc).date()
+    try:
+        renewal = datetime.fromisoformat(svc.get("next_renewal", "")).date()
+        days_left = max(0, min(31, (renewal - today).days))
+    except Exception:
+        days_left = 30
+    factor = days_left / 30.0
+    prorated = round(monthly_delta * factor, 2)
+    tax = round(prorated * tax_percent / 100.0, 2)
+    return {
+        "cpu": cpu, "ram_gb": ram_gb, "disk_gb": disk_gb,
+        "monthly_delta": round(monthly_delta, 2),
+        "days_left": days_left,
+        "prorated_charge": prorated,
+        "tax_percent": tax_percent,
+        "tax_amount": tax,
+        "total": round(prorated + tax, 2),
+    }
+
+
+async def _upgrade_ctx(db, sid: str, user):
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("category") not in _VM_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Upgrade resource hanya tersedia untuk layanan VM")
+    if svc.get("status") not in ("active",):
+        raise HTTPException(status_code=403, detail="Layanan harus aktif untuk melakukan upgrade")
+    pricing = await _get_setting_value(db, "upgrade_pricing", _UPGRADE_PRICING_DEFAULT)
+    pricing = {**_UPGRADE_PRICING_DEFAULT, **(pricing or {})}
+    tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
+    return svc, pricing, tax_percent
+
+
+def _upgrade_units(payload: dict) -> tuple:
+    try:
+        cpu = max(0, min(64, int(payload.get("cpu") or 0)))
+        ram_gb = max(0, min(256, int(payload.get("ram_gb") or 0)))
+        disk_gb = max(0, min(2000, int(payload.get("disk_gb") or 0)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Nilai upgrade tidak valid")
+    if cpu + ram_gb + disk_gb == 0:
+        raise HTTPException(status_code=400, detail="Pilih minimal satu resource untuk di-upgrade")
+    return cpu, ram_gb, disk_gb
+
+
+@router.get("/client/services/{sid}/upgrade/options")
+async def client_upgrade_options(sid: str, user=Depends(get_current_user)):
+    db = await _get_db()
+    svc, pricing, tax_percent = await _upgrade_ctx(db, sid, user)
+    cfg = svc.get("config") or {}
+    return {
+        "pricing": pricing,
+        "tax_percent": tax_percent,
+        "current": {"cpu": cfg.get("cpu"), "ram_gb": cfg.get("ram_gb"), "disk_gb": cfg.get("disk_gb")},
+        "pending_upgrade": bool(svc.get("pending_upgrade")),
+    }
+
+
+@router.post("/client/services/{sid}/upgrade/preview")
+async def client_upgrade_preview(sid: str, payload: dict, user=Depends(get_current_user)):
+    db = await _get_db()
+    svc, pricing, tax_percent = await _upgrade_ctx(db, sid, user)
+    cpu, ram_gb, disk_gb = _upgrade_units(payload)
+    return _upgrade_quote(svc, pricing, cpu, ram_gb, disk_gb, tax_percent)
+
+
+@router.post("/client/services/{sid}/upgrade")
+async def client_upgrade_request(sid: str, payload: dict, request: Request, user=Depends(get_current_user)):
+    """Create the prorated difference invoice for a self-service resource upgrade."""
+    db = await _get_db()
+    svc, pricing, tax_percent = await _upgrade_ctx(db, sid, user)
+    if svc.get("pending_upgrade"):
+        raise HTTPException(status_code=400, detail="Masih ada upgrade yang menunggu pembayaran untuk layanan ini")
+    cpu, ram_gb, disk_gb = _upgrade_units(payload)
+    q = _upgrade_quote(svc, pricing, cpu, ram_gb, disk_gb, tax_percent)
+    items = []
+    if cpu:
+        items.append({"description": f"Upgrade +{cpu} vCPU - {svc.get('product_name','')} (prorata {q['days_left']} hari)",
+                      "qty": 1, "price": round(cpu * pricing["cpu_per_core"] * q["days_left"] / 30.0, 2)})
+    if ram_gb:
+        items.append({"description": f"Upgrade +{ram_gb} GB RAM - {svc.get('product_name','')} (prorata {q['days_left']} hari)",
+                      "qty": 1, "price": round(ram_gb * pricing["ram_per_gb"] * q["days_left"] / 30.0, 2)})
+    if disk_gb:
+        items.append({"description": f"Upgrade +{disk_gb} GB Disk - {svc.get('product_name','')} (prorata {q['days_left']} hari)",
+                      "qty": 1, "price": round(disk_gb * pricing["disk_per_gb"] * q["days_left"] / 30.0, 2)})
+    for it in items:
+        it["total"] = round(it["qty"] * it["price"], 2)
+    subtotal = round(sum(i["total"] for i in items), 2)
+    tax = round(subtotal * tax_percent / 100.0, 2)
+    due = (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
+    inv = {
+        "user_id": ObjectId(user["id"]),
+        "items": items,
+        "subtotal": subtotal,
+        "tax_percent": tax_percent,
+        "tax_amount": tax,
+        "total": round(subtotal + tax, 2),
+        "due_date": due,
+        "status": "unpaid",
+        "payment_method": None,
+        "paid_at": None,
+        "notes": f"Upgrade resource {svc.get('name','')} - berlaku setelah pembayaran.",
+        "service_id": str(svc["_id"]),
+        "upgrade": {"cpu": cpu, "ram_gb": ram_gb, "disk_gb": disk_gb,
+                    "monthly_delta": q["monthly_delta"]},
+        "created_at": _now(),
+    }
+    inv = await _insert_numbered(db, "invoices", "INV", inv)
+    await db.services.update_one(
+        {"_id": svc["_id"]},
+        {"$set": {"pending_upgrade": {
+            "cpu": cpu, "ram_gb": ram_gb, "disk_gb": disk_gb,
+            "monthly_delta": q["monthly_delta"],
+            "invoice_id": str(inv["_id"]),
+            "requested_at": _now(),
+        }}})
+    await log_audit(db, actor=user, action="client_service.upgrade_requested", category="services",
+                    target_type="service", target_id=str(svc["_id"]), target_label=svc.get("name", ""),
+                    metadata={"cpu": cpu, "ram_gb": ram_gb, "disk_gb": disk_gb,
+                              "invoice": inv["number"], "total": inv["total"]},
+                    request=request)
+    return {"ok": True, "invoice_id": str(inv["_id"]), "number": inv["number"],
+            "total": inv["total"], "due_date": due, "quote": q}
+
+
 async def _serialize_invoice(db, d: dict) -> dict:
     u = await db.users.find_one({"_id": d["user_id"]}) or {}
     return {
@@ -1101,7 +1342,88 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
             "overdue_total": overdue_total,
         })
 
-    return {"stats": stats, "role": staff["role"]}
+    # ---- Tagihan terbaru (Ringkasan Umum) + Pusat Notifikasi ----
+    recent_invoices = []
+    alerts = []
+    if staff["role"] in FINANCE_ROLES or staff["role"] == "sales":
+        inv_q_base = {} if scope_user_ids is None else {"user_id": {"$in": scope_user_ids}}
+        recent_docs = await db.invoices.find(inv_q_base).sort("created_at", -1).to_list(5)
+        uid_set = {d["user_id"] for d in recent_docs}
+        user_map = {u["_id"]: u.get("name", "") async for u in db.users.find({"_id": {"$in": list(uid_set)}})}
+        recent_invoices = [{
+            "id": str(d["_id"]),
+            "number": d.get("number", ""),
+            "user_name": user_map.get(d["user_id"], ""),
+            "total": d.get("total", 0),
+            "status": d.get("status", "unpaid"),
+            "due_date": d.get("due_date", ""),
+        } for d in recent_docs]
+
+        overdue_alert_docs = await db.invoices.find(
+            {**inv_q_base, "status": "overdue"}
+        ).sort("due_date", 1).to_list(5)
+        for d in overdue_alert_docs:
+            alerts.append({
+                "type": "invoice_overdue",
+                "severity": "danger",
+                "title": f"Invoice {d.get('number', '')} jatuh tempo",
+                "detail": f"Jatuh tempo {d.get('due_date', '')}",
+                "link": "/portal/admin/invoices",
+            })
+
+    down_states = await db.noc_device_state.find({"status": "down"}).to_list(20)
+    dev_map = {m["_id"]: m.get("name", "unnamed") async for m in db.mikrotik_devices.find(
+        {"_id": {"$in": [s["device_id"] for s in down_states]}})} if down_states else {}
+    down_states = [s for s in down_states if s["device_id"] in dev_map]
+    for s in down_states:
+        alerts.append({
+            "type": "device_down",
+            "severity": "danger",
+            "title": f"Perangkat {dev_map[s['device_id']]} DOWN",
+            "detail": s.get("last_message") or "Tidak merespons probe",
+            "link": "/portal/admin/noc",
+        })
+
+    # ---- System health: status real dari registry integrations ----
+    health = [
+        {"name": "API Backend", "status": "ok", "detail": "Online"},
+        {"name": "MongoDB", "status": "ok", "detail": "Connected"},
+    ]
+    mikrotik_count = await db.mikrotik_devices.count_documents({})
+    down_count = len(down_states)
+    if mikrotik_count:
+        health.append({
+            "name": "MikroTik Ops",
+            "status": "warn" if down_count else "ok",
+            "detail": f"{mikrotik_count} device ({down_count} down)" if down_count else f"{mikrotik_count} device",
+        })
+    else:
+        health.append({"name": "MikroTik Ops", "status": "off", "detail": "Not configured"})
+    allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
+    integ_docs = await db.integrations.find({}).sort("created_at", -1).to_list(100)
+    for idoc in integ_docs:
+        if not allow_extra and idoc.get("module") in _EXTRA_PAYMENT_MODULES:
+            continue
+        schema = module_schema(idoc.get("module", ""))
+        enabled = idoc.get("status") == "enabled"
+        last = idoc.get("last_test_result") or {}
+        test_ok = last.get("ok") if isinstance(last, dict) else None
+        health.append({
+            "name": idoc.get("name") or (schema["label"] if schema else idoc.get("module", "")),
+            "status": ("warn" if test_ok is False else "ok") if enabled else "off",
+            "detail": ("Test failed" if test_ok is False else "Enabled") if enabled else "Disabled",
+        })
+    me_doc = await db.users.find_one({"_id": ObjectId(staff["id"])}) or {}
+    es = me_doc.get("email_settings") or {}
+    smtp_ok = bool(((es.get("smtp") or {}).get("credentials") or {}).get("host"))
+    health.append({
+        "name": "SMTP (personal)",
+        "status": "ok" if smtp_ok else "off",
+        "detail": "Configured" if smtp_ok else "Not configured",
+    })
+
+    return {"stats": stats, "role": staff["role"],
+            "recent_invoices": recent_invoices, "alerts": alerts, "health": health}
 
 
 # ============================================================
@@ -2031,6 +2353,58 @@ async def admin_list_services(admin=Depends(get_current_admin)):
     db = await _get_db()
     docs = await db.services.find({}).sort("created_at", -1).to_list(2000)
     return [_serialize_service(d) for d in docs]
+
+
+@router.get("/admin/services/{sid}/detail")
+async def admin_service_detail(sid: str, admin=Depends(get_current_admin)):
+    """Service + client + provisioning trail for the admin detail modal."""
+    db = await _get_db()
+    d = await db.services.find_one({"_id": _oid(sid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Service not found")
+    out = _serialize_service(d)
+    u = await db.users.find_one({"_id": d["user_id"]}) or {}
+    out["user"] = {"name": u.get("name", ""), "email": u.get("email", ""), "company": u.get("company", "")}
+    order = None
+    if d.get("order_id"):
+        try:
+            order = await db.orders.find_one({"_id": ObjectId(d["order_id"])})
+        except Exception:
+            order = None
+    out["provision_log"] = (order or {}).get("provision_log", [])
+    out["self_service_log"] = (d.get("self_service_log") or [])[-10:]
+    out["pending_upgrade"] = d.get("pending_upgrade")
+    return out
+
+
+@router.get("/admin/users/{uid}/profile")
+async def admin_user_profile(uid: str, admin=Depends(get_current_admin)):
+    """Client 360 profile: services (hosting accounts highlighted), billing summary."""
+    db = await _get_db()
+    u = await db.users.find_one({"_id": _oid(uid)})
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    svc_docs = await db.services.find({"user_id": u["_id"]}).sort("created_at", -1).to_list(200)
+    services = [_serialize_service(s) for s in svc_docs]
+    inv_docs = await db.invoices.find({"user_id": u["_id"]}).sort("created_at", -1).to_list(500)
+    outstanding = sum(i.get("total", 0) for i in inv_docs if i.get("status") in ("unpaid", "overdue"))
+    return {
+        "user": {"id": str(u["_id"]), "name": u.get("name", ""), "email": u.get("email", ""),
+                 "company": u.get("company", ""), "phone": u.get("phone", ""),
+                 "role": u.get("role", "client"), "created_at": _iso(u.get("created_at", ""))},
+        "services": services,
+        "hosting_accounts": [s for s in services if s.get("category") == "hosting"],
+        "stats": {
+            "orders": await db.orders.count_documents({"user_id": u["_id"]}),
+            "tickets": await db.tickets.count_documents({"user_id": u["_id"]}),
+            "invoices": len(inv_docs),
+            "outstanding": round(outstanding, 2),
+        },
+        "recent_invoices": [{
+            "id": str(i["_id"]), "number": i.get("number", ""), "total": i.get("total", 0),
+            "status": i.get("status", "unpaid"), "due_date": i.get("due_date", ""),
+        } for i in inv_docs[:5]],
+    }
 
 
 @router.post("/admin/services")
@@ -3301,6 +3675,8 @@ def _serialize_asset(d):
         "months_elapsed": dep["months_elapsed"],
         "total_months": dep["total_months"],
         "is_fully_depreciated": dep["is_fully_depreciated"],
+        "status": d.get("status", "active"),
+        "disposed_at": d.get("disposed_at", ""),
         "notes": d.get("notes", ""),
         "created_at": _iso(d.get("created_at", "")),
     }
@@ -3361,9 +3737,12 @@ async def assets_create(payload: dict, admin=Depends(get_current_admin)):
         "depreciation_percent": float(payload.get("depreciation_percent", 0) or 0),
         "useful_life_months": int(payload.get("useful_life_months", 0) or 0),
         "purchase_date": payload.get("purchase_date", ""),
+        "status": payload.get("status") if payload.get("status") in ("active", "disposed") else "active",
         "notes": payload.get("notes", ""),
         "created_at": _now(),
     }
+    if doc["status"] == "disposed":
+        doc["disposed_at"] = payload.get("disposed_at") or datetime.now(timezone.utc).date().isoformat()
     r = await db.assets.insert_one(doc)
     doc["_id"] = r.inserted_id
     return _serialize_asset(doc)
@@ -3376,9 +3755,16 @@ async def assets_update(aid: str, payload: dict, admin=Depends(get_current_admin
         "name", "category", "serial_number", "location", "vendor", "value",
         "salvage_value", "useful_life_years",
         "depreciation_percent", "useful_life_months",
-        "purchase_date", "notes",
+        "purchase_date", "notes", "status", "disposed_at",
     }
     upd = {k: v for k, v in payload.items() if k in allowed}
+    if "status" in upd:
+        if upd["status"] not in ("active", "disposed"):
+            upd.pop("status")
+        elif upd["status"] == "disposed" and not upd.get("disposed_at"):
+            upd["disposed_at"] = datetime.now(timezone.utc).date().isoformat()
+        elif upd["status"] == "active":
+            upd["disposed_at"] = ""
     coerced = _coerce_asset_payload({**upd})
     upd["salvage_value"] = coerced["salvage_value"]
     if coerced["useful_life_years"] > 0:

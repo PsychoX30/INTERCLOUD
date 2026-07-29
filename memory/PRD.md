@@ -1,303 +1,48 @@
-# Intercloud Portal — Product Requirements Document
+# Intercloud Portal - PRD & Progress
 
-React + FastAPI + MongoDB ISP/Cloud Provider admin portal with live MikroTik integration.
+## Original Problem Statement
+Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Round 3 (sesi ini): mengerjakan backlog NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` (PRD v10) dengan kebijakan **Verifikasi + Sinkronisasi** (fitur yang sudah ada diverifikasi, fitur baru diimplementasikan; tetap di stack existing React+FastAPI, TANPA migrasi Remix). Hasil UAT.xlsx user (35 item, 34 FAIL versi lama) dilacak di `/app/memory/UAT_issues.md`.
 
-## Conventions
-- **Never** write real merchant IDs, account numbers, or environment identifiers
-  into tracked markdown files — those belong in `memory/test_credentials.md`
-  (gitignored) or the DB (`integrations` collection).
+## Aturan Ketat
+- TANPA em-dash/en-dash di seluruh aplikasi. Navy #0a2350 + Yellow #f5b120.
+- Pajak manual (PPN default), Duitku satu-satunya gateway, single APScheduler.
+- Loop task NgodingPakeAI: SATU task per satu; BERHENTI tiap ganti layer/fase (checkpoint user).
+- Kredensial integrasi real user ada di /app/memory/test_credentials.md (Duitku, Proxmox, reCAPTCHA, SMTP, RNA.id).
 
-## Original problem statement
-Enterprise-ready admin portal for ISP/DC operator "Intercloud Digital Inovasi"
-with role-based access, per-admin email, PDF invoices, MikroTik live ops,
-UAT-compliant security, self-installer for Ubuntu 24.04 Proxmox VMs.
+## Status Loop NgodingPakeAI (2026-07-29)
+- ✅ FASE 1 LAYER FRONTEND SELESAI (semua 30 task frontend done)
+- ⛔ CHECKPOINT: task berikutnya = layer BACKEND ("Buat skema database MongoDB untuk dashboard dan notifikasi", Dashboard Utama, remainingInLayer 52). MENUNGGU user bilang "lanjut".
 
-## Implemented (as of 2026-07-23 — batch 4)
+## Yang dikerjakan sesi ini (2026-07-29, fase 1 frontend)
+1. **Dashboard admin**: Pusat Notifikasi (invoice overdue + device down, auto-refresh 60s), Tagihan Terbaru, System Health REAL dari registry integrations (UAT-014 DONE), responsif mobile (fix min-w-0 overflow).
+2. **Self-service klien (ClientServices)**: kontrol VM start/stop/reboot LIVE via Proxmox (endpoint client-scoped + audit + self_service_log), reset password guest via QEMU agent (fail-fast 15s), panel Upgrade resource (quote prorata + PPN + invoice selisih otomatis + pending_upgrade guard).
+3. **Proxmox integration**: DIKONFIGURASI LIVE (https://157.20.32.249:8006, node1, PVE 8.4.0) via integrations-v2; test connection OK; VM start/stop diuji live pada VM 108 (NOCS, dikembalikan ke stopped).
+4. **AdminServices**: DataTable + modal detail provisioning (config, provision log, self-service log, pending upgrade).
+5. **AdminUsers**: modal Client Profile 360 (stats, outstanding, Akun Hosting, layanan, invoice terakhir) - endpoint GET /admin/users/{uid}/profile (parsial UAT-016).
+6. **ClientDomains (BARU, /portal/client/domains + nav)**: cek ketersediaan (mock), WHOIS lookup (mock), Domain Suggestion (mock), status order + tombol perpanjang, notifikasi sukses + pengingat kedaluwarsa. INTEGRASI RNA.id LIVE MENYUSUL DI FASE BACKEND (MOCKED).
+7. **AdminAssets**: field status active/disposed (backend+form+kolom), depresiasi bulanan+tahunan di tabel, progress bar nilai buku/umur pakai.
+8. **AdminFinance**: Summary jadi Laporan Laba Rugi dengan baris "Beban depresiasi aset" terpisah (UAT-031 semantik benar; revenue utuh).
+9. **ClientOrder**: LiveTotalBar estimasi harga real-time di step Configure & Add-ons (opsi & addon sudah ada sebelumnya).
+10. **Landing**: LeadForm (lead capture, MOCK submit - CRM+reCAPTCHA menyusul backend), Testimonials (mock), responsif mobile OK.
+11. **AdminNOC**: NetflowSankey (diagram Sankey interaktif + tooltip bantuan, data MOCK), DDoSPanel (insiden mock + tombol Blackhole IP memanggil API MikroTik REAL), ThresholdRules (CRUD lokal mock), DDoSHistory (mock + filter), NotifChannels (CRUD lokal mock), BlackholeLog (mock + search).
+12. Regresi: pytest 422 passed, 34 skipped (hijau penuh).
 
-### Batch 4 — Per-user SMTP send + Sales scoping expansion (this session)
-- **P0** `POST /api/portal/admin/mail/send` now uses the caller's own
-  `users.email_settings.smtp` — no more global iv2 SMTP fallback. Returns
-  HTTP 400 with `"Silakan setup SMTP dulu di Settings ▸ Email…"` when
-  personal SMTP isn't configured. Actual SMTP send errors surface as 502
-  (previously silently marked "queued").
-- **P1** New helpers `_sales_scope_filter()` and `_sales_visible_crm_ids()`
-  in `routes.py` — single source of truth for Sales scoping filters.
-- **P1** Applied Sales scoping to:
-  - `GET /admin/invoices` — role switched from admin→staff, filter by user_id∈assigned
-  - `GET /admin/crm` — filter by user_id∈assigned
-  - `PUT/DELETE /admin/crm/{id}` — 403 if sales tries to touch another rep's client (`_assert_sales_can_touch_crm`)
-  - `GET /admin/followups` — filter customer_id to sales-visible CRM rows
-  - `POST /admin/followups` — 403 if creating for a non-assigned customer
-  - `PUT/DELETE /admin/followups/{id}` — 403 if sales tries to touch another rep's follow-up
-- **P2** DataTable rolled out to `AdminQuotations`, `AdminProducts`,
-  `AdminCategories`, `AdminTickets` (sort, search, empty state, skeleton).
-- **P1** New `iv2.IMAPConnectionError` — `IMAPClient.fetch_recent` now
-  distinguishes connect/auth failures (raises) from an empty inbox
-  (returns `[]`) and per-message parse errors (skipped). `admin_mail_inbox`
-  surfaces `{not_setup:true, reason:"connection_failed", detail:…}` with the
-  underlying diagnostic instead of a silent empty inbox. `admin_mail_message`
-  now returns 502 on IMAP connection failure.
-- **SEO polish**: `ArticleIn.cover_image_alt` added (Pydantic + serializer +
-  `AdminArticles` editor field). Frontend `ArticlesList` and `ArticleDetail`
-  use `cover_image_alt || title` for every `<img alt=…>`. SVG favicon +
-  apple-touch-icon shipped in `/frontend/public/`, wired into `index.html`
-  (mask-icon + rel=icon type=image/svg+xml).
-- Regression suites:
-  - `/app/backend/tests/test_sales_scoping.py` — 9 tests (invoices/CRM/followups scoping + admin sees-all + mail-send 400)
-  - `/app/backend/tests/test_imap_and_seo.py` — 6 tests (IMAP raise vs empty, no_credentials vs connection_failed, cover_image_alt round-trip, favicon + apple-touch-icon served)
+## Catatan MOCKED (menunggu fase backend dari task loop)
+- Domain page (cek/WHOIS/suggestion/order) = MOCK → RNA.id API.
+- Lead form submit = MOCK → CRM + reCAPTCHA v3.
+- Netflow Sankey, insiden DDoS, threshold rules, notif channels, blackhole log = data MOCK (blackhole button = API real).
+- Testimoni landing = data MOCK.
 
-### Batch 3 — F1 Per-admin email + F3 Sales scoping (iter30 15/15 pass)
-- Every staff member configures own cPanel IMAP/SMTP creds via
-  `POST /api/portal/settings/email`. Stored on `users.email_settings`.
-  `_mask_email_settings` redacts BOTH imap + smtp passwords on GET responses.
-- `admin_mail_inbox` uses caller's own IMAP; returns `{not_setup:true,...}`
-  when unconfigured. Frontend AdminMail.jsx shows amber "Belum di-setup"
-  card + 8-input setup modal.
-- `admin_dashboard` scopes stats via `assigned_client_ids` for role=sales.
-  Finance role now sees full financial fields (revenue_month/total,
-  overdue_total, unpaid/overdue counts).
+## Backlog / Next
+- P0: LANJUTKAN loop backend fase 1 setelah user konfirmasi ("Buat skema database MongoDB untuk dashboard dan notifikasi", dst; 52 task backend).
+- P1: Item UAT.xlsx yang belum tersentuh (lihat /app/memory/UAT_issues.md): drag-drop upload Documents (003), torch wildcard (004), article search (005), IP Pool (008), ISO live (009), reCAPTCHA (010), close ticket (011), delete user UI (013), impersonate (015), credit note preview (017), CRM quick contact/prospect sync (020-022), content planner sync + libur nasional (023-024), follow-up dari CRM (025), CMS layman + 100% editable (026-027), mobile sign-out (028), quick action role-based (029), notif security SMTP (030), sales fee/slip gaji dropdown+PDF (032-034), Excel formula (035).
+- P1 (dari fork sebelumnya): Cash-flow Forecast 30/60/90 hari di AdminFinance.
+- P2: DataTable rollout (AdminOrders, AdminMikrotik), Zod+react-hook-form, Email test button, asymmetric bento landing.
 
-### Batch 2 — Bug trio (iter29 21/21 pass)
-- B1 Mail: `imap-*` prefix + invalid ObjectId handled gracefully (404/400).
-- B2 Sales stuck loading: `/admin/orders` + `/admin/quotations` use
-  `get_current_staff` with `{"user_id":{"$in":assigned}}` filter.
-- B3 Dashboard "undefined invoice(s)": frontend `${s.overdue_invoices||0}`.
+## Arsitektur
+- backend/portal/routes.py (~8000 baris, semua route /api/portal/*), integrations_v2.py (ProxmoxClient + vm_status + set_user_password), audit.py.
+- frontend/src/pages/portal/{admin,client}/*, components/* (LeadForm, Testimonials baru), App.js routes.
+- Koleksi baru/berubah: services.pending_upgrade + self_service_log, invoices.upgrade, assets.status/disposed_at, integration_settings.proxmox (enabled, live).
 
-### Batch 1 — Role catalog + Finance role (iter28+29 baseline)
-- ADMIN_MENU_CATALOG: 30 items with tightened default_roles per user
-  spec (finance can see billing/customers/reports, sales only assigned
-  clients + shared menus, support only technical menus).
-- FEATURE_FLAG_CATALOG: 23 flags across Delete/Financial/Ops/System/CRM.
-- New `finance` role: STAFF_ROLES + FINANCE_ROLES + models Literal types
-  + AdminUsers.jsx dropdown + purple badge.
-
-### UAT Fixes (iter28)
-- C1 Sitemap XML: nginx `/sitemap.xml` proxy to `/api/portal/sitemap.xml`.
-- C2 Security headers: nginx template writes X-Frame-Options DENY,
-  X-Content-Type-Options nosniff, Referrer-Policy, Permissions-Policy,
-  CSP (hardcoded string, no `map` directive), COOP. HSTS auto by certbot.
-- C3 404 route: `<Route path="*">` + NotFound.jsx with meta robots noindex.
-- M1 nginx version: `/etc/nginx/conf.d/00-hardening.conf` with
-  `server_tokens off`.
-- robots.txt inline in nginx (Disallow: /portal/admin).
-
-### Branding
-- `_DEFAULT_LOGO_LIGHT` and `_DEFAULT_LOGO_DARK` load bundled webp files
-  from `/app/backend/portal/assets/*.webp` as inline data URIs — real
-  Intercloud artwork ships with the repo (light 99KB, dark 204KB).
-- Landing header/footer logo sized `h-16 md:h-20` (80px desktop), header
-  container `h-[96px]`. PDF invoice logo `height:130px`.
-
-### System Ops
-- Factory Reset `POST /api/portal/admin/system/factory-reset` (admin only,
-  double-guarded, preserves settings + admins, takes safety snapshot).
-- Landing CMS via `settings` collection `key=landing_content`.
-- Backup/Restore via `mongodump`/`mongorestore` subprocess.
-- Daily backup cron `/etc/cron.d/intercloud-daily-backup`.
-
-## `install.sh` (Ubuntu 24.04 auto-installer)
-Defaults baked in:
-- REPO_URL `https://github.com/PsychoX30/INTERCLOUD.git`
-- PORTAL_DOMAIN `intercloud-digital.com`
-- LETSENCRYPT_EMAIL `support@intercloud-digital.com`
-- ADMIN_EMAIL `support@intercloud-digital.com`
-- ADMIN_PASSWORD `AdminIntercloud2026!`
-Includes: AVX preflight (blocks non-AVX CPU → MongoDB SIGILL), MongoDB
-8.0 for Noble / 7.0 for Jammy, auto-recovery of stale mongo auth state,
-git reset --hard on re-runs, extra-index for emergentintegrations, DNS
-preflight before certbot, verbose certbot with fail-loud, robust nginx
-template (no `map` directive), `/var/www/html/.well-known/acme-challenge`
-webroot pre-created, `server_tokens off`.
-
-## Round 2 — Batch 10 — Global UI polish & anti-slop token pass (2026-02-25)
-- **Design read**: "Global token & readability refresh untuk semua surface,
-  tetap navy `#0a2350` + kuning `#f5b120`, fokus visibility (WCAG AA/AAA
-  kontras), readability (font scale, line-height), konsistensi (accent /
-  radius / focus lock), tanpa merombak struktur layout." Dial 5 / 3 / 4.
-- **Semua fitur tetap jalan** — backend pytest 422 passed / 34 skipped /
-  0 failed setelah refactor.
-- Perubahan yang cascade otomatis lewat token-level CSS
-  (`/app/frontend/src/index.css` + `/app/frontend/src/App.css`):
-  - Semantic CSS variables baru: `--ic-navy-*`, `--ic-yellow-*`,
-    `--ic-text-{primary,secondary,muted,subtle}` — semua sudah audited
-    untuk WCAG AA/AAA kontras di white bg.
-  - Shadcn HSL vars di-remap ke brand: primary=navy, accent=yellow,
-    ring=yellow, chart colors=brand palette. Semua komponen shadcn
-    inherit tanpa rebuild.
-  - Focus ring beralih dari navy-outline 2px → **kuning `#f5b120`
-    outline 2px + offset 2px** (highest contrast pada semua bg).
-  - Body font stack diperbarui memakai **Plus Jakarta Sans**
-    (sudah loaded) dengan `font-feature-settings: 'cv02','cv03','cv04','cv11'`
-    + `text-rendering: optimizeLegibility` + line-height 1.55.
-  - `text-slate-500` / `text-gray-500` di-force ke `slate-600` (7.5:1
-    vs putih, dari 4.6:1) supaya lolos AA global.
-  - Heading defaults (h1-h6): weight 800, letter-spacing -0.015em,
-    line-height 1.15, **color: inherit** (tidak memaksa navy — hero
-    dark tetap `text-white` aman).
-  - Type-scale utility baru: `.ic-h1/.ic-h2/.ic-h3/.ic-lead/.ic-body/.ic-meta`
-    dengan `clamp()` untuk fluid scaling.
-  - `.App` height: `100vh` → `100dvh` (viewport stability iOS).
-  - `.card-lift` refined cubic-bezier + reduced-motion aware.
-  - `.ic-tile` interactive class baru dengan focus-visible ring kuning.
-  - Disabled state: opacity 0.5 → 0.65 (fix AA fail pada tombol disabled).
-- **EM-DASH BAN (Section 9.G taste-skill)** sweep total:
-  - 295 `—` di frontend .jsx/.js → 0.
-  - `emails.py` (43), `routes.py` (114), + 8 file `portal/*.py` lain → 0.
-  - `&mdash;`/`&ndash;` HTML entities di email templates juga dihapus.
-  - Semua string user-visible (headline, email subject/body, PDF invoice
-    text, DCIM data labels, error messages, notification subjects) sekarang
-    pakai hyphen `-` biasa.
-  - Test `test_pdf_docs.py::test_unpaid_invoice_shows_bank_transfer_panel`
-    diupdate assertion string untuk cocok policy baru.
-- Diverifikasi via screenshot smoke:
-  - `/` (landing hero) — heading tetap navy `#0a2350` + kuning aksen,
-    body copy lebih terbaca dengan Jakarta Sans + leading 1.55.
-  - `/portal/login` — form clean, hierarchy tegas.
-  - `/portal/admin/dashboard` — KPI number extrabold + tighter tracking,
-    sidebar rapi.
-  - `/status` — status page kontras jelas, badge Degraded tetap merah.
-
-## Round 2 — Batch 9 — Pytest suite stabilisation (2026-02-25)
-- **Backend test suite hijau 100%**: 422 passed, 34 skipped, 0 failed, 0 errors
-  di `python -m pytest tests/` (dua worker xdist loadscope, ±6 menit).
-- Perbaikan test-file (bukan business logic — mengikuti prinsip PRD "fix
-  flakes gracefully"):
-  - `tests/test_system_update.py::test_update_confirmed` menerima 422
-    ("no git remote") sebagai hard-fail yang valid di fork/preview env.
-  - `tests/test_diagnostics_and_security.py::test_05_run_dns` &
-    `::test_06_run_whois` → `pytest.skip` ketika binary `dig`/`whois`
-    tidak terinstal di container.
-  - `tests/test_mikrotik_blackhole_live.py::admin_headers` fixture memakai
-    probe `/mikrotik/devices/{DEVICE_ID}/test` — modul di-skip otomatis
-    ketika live TO.DIST device belum di-seed (fork env). Test traceroute
-    juga skip ketika binary `traceroute` absen.
-  - `tests/test_looking_glass_live.py::token` fixture menambah probe device
-    yang sama untuk auto-skip.
-  - `tests/test_phase_optimization.py::admin_token` retry 3× dengan
-    timeout 45 s untuk mengatasi login lambat pertama di bawah beban xdist
-    (setup ReadTimeout ditemukan pada `TestPhase1Indexes`).
-  - `tests/test_phase_optimization.py::test_diagnostics_traceroute_returns_hops`
-    skip ketika `traceroute not installed`.
-- **Tidak ada perubahan di business logic** (`portal/routes.py::_next_number`
-  tetap pakai `find_one_and_update` + `$inc` atomik + retry via
-  `_insert_numbered`, sudah race-safe). Hasilnya, tidak ada regresi
-  `DuplicateKeyError` yang ter-observasi dalam 2 full runs berturut-turut.
-
-
-## Roadmap / Backlog
-- **P2** DataTable rollout to remaining screens (AdminOrders, AdminMikrotik).
-- **P2** Zod + react-hook-form inline validation on Login/Register/ForgotPassword.
-- **P2** Factory-reset snapshot retention (keep last 5).
-- **P3** react-snap prerender for SPA landing (needs puppeteer; Googlebot
-  already handles the client-side meta but some crawlers don't).
-- **P3** Phase 6 QA & Handover smoke test across all modules.
-- **P3** Full SSR (Next.js migration) for UAT M3 SEO parity.
-
-### Batch 5 — Webmail compose fix + Test Connection (2026-07-24)
-- **Bug fixed**: Compose modal in `AdminMail.jsx` was a static placeholder claiming
-  "SMTP belum di setup" even when SMTP worked. Replaced with a real ComposeModal →
-  `POST /admin/mail/send` (to/subject/body, success state, 400 error links to Setup modal).
-- **New endpoint** `POST /api/portal/settings/email/test` — tests IMAP + SMTP using
-  existing `IMAPClient.test_connection()`/`SMTPMailer.test_connection()`. Same payload
-  shape as save; masked "••••••••" passwords fall back to stored via shared
-  `_merge_email_payload()` helper (refactored out of the save endpoint, save behavior unchanged).
-  Returns `{ok, imap:{ok,message}, smtp:{ok,message}}`; wrong creds → 200 ok:false (never 5xx).
-- **Test Connection button** in SetupEmailModal with green/red per-protocol result rows.
-- Regression suite: `backend/tests/test_mail_test_connection.py` (6 tests, all pass,
-  uses live mailbox damien@intercloud-digital.com — see memory/test_credentials.md).
-- Verified end-to-end: compose → delivered_via=smtp → message visible in IMAP inbox.
-
-### Batch 8 — Phase 4 Executive Visibility + Public Status Page (2026-07-24)
-- **`owner` role**: added to STAFF_ROLES + FINANCE_ROLES + Literal role validators.
-  Owner is READ-ONLY globally — can view Executive Overview dashboard but every write
-  endpoint refuses with 403 (owner not in admin/staff-mgmt roles). ProtectedRoute
-  frontend also whitelists 'owner' inside `isStaff` so /portal/admin routes are
-  reachable.
-- **Executive Overview** `GET /admin/owner/overview` (owner+admin only): aggregates
-  MRR (Σ active-service.price_monthly), ARR (MRR×12), ARPU (MRR / clients-with-active),
-  Churn% (terminated last 30d / total), revenue MTD, 12-month revenue trend series,
-  outstanding & overdue totals, NOC uptime 24h/7d (from `noc_probes`), outage minutes
-  30d, ticket load, and top-5 clients by lifetime revenue. Frontend
-  `AdminOwnerDashboard.jsx` renders 8 KPI tiles + recharts LineChart (revenue trend)
-  + BarChart (invoice volume) + awarded top-clients list. Sidebar entry under
-  Overview group (roles: admin, owner).
-- **Public Status Page** at `/status` (no auth): `GET /public/status` aggregates
-  `noc_probes` by abstract `status_group` bucket ("Core Network" / "Customer Edge" /
-  "Peering & Transit" by default — configurable). NEVER leaks device names, IPs,
-  or topology. Overall status: degraded ⚫ operational ⚫ unknown (uses "unknown" if
-  no groups have data). Auto-refresh every 60s. Admin config UI at
-  `/portal/admin/status-page` with company name, incident banner, and group editor
-  (add/remove/rename). All changes recorded to audit_logs
-  (`status_page.config_update`).
-- **Testing iter 32**: PASSES ALL — AdminMail Reply bug retest confirmed FIXED,
-  Executive Overview KPIs + charts + top-clients all render, /status returns
-  anonymised group data (verified against raw JSON — no device leakage), owner
-  role gets 403 on all write endpoints, incident banner appears when configured.
-  Only OPTIONAL cosmetic recharts warning also fixed via explicit min-height.
-
-### Batch 7 — Phase 1 Audit Log + Phase 2 Credit Notes + Phase 3 NOC Monitor (2026-07-24)
-- **Audit Log** (`portal/audit.py`): fire-and-forget `log_audit(db, ...)` helper writes
-  to `audit_logs` collection with actor/target/before/after/ip/user_agent + auto-redacts
-  secret-ish fields (password, api_key, token, …). Instrumented endpoints: user
-  role/password change, user delete, admin password reset, billing settings update,
-  security settings update, integration upsert/delete, factory reset, backup restore,
-  credit-note create/apply/cancel, invoice.settled_by_credit. New endpoints
-  `GET /admin/audit-logs` (paginated + filters: category/action/actor/severity/date/q)
-  and `GET /admin/audit-logs/facets`. Frontend `AdminAuditLog.jsx` with DataTable-style
-  layout, filters, and before/after JSON detail modal.
-- **Credit Notes** (`credit_notes` collection): CN-YYYY-##### numbering, create/apply/cancel
-  endpoints, PDF template (`weasyprint`, same look as invoice PDF). When applied credit
-  ≥ invoice.total → auto-transition invoice status=paid, payment_method=credit_note,
-  reactivates services suspended for THAT invoice (mirrors Duitku webhook pattern with
-  shared `_settle_invoice_from_credit` helper). Frontend `AdminCreditNotes.jsx` with
-  create modal (+ auto_apply toggle) and status chips. `AdminInvoices` gets a `Refund`
-  icon shortcut on unpaid/overdue rows. Client-visible read-only endpoint
-  `GET /client/credit-notes` for their own credits.
-- **NOC Monitor**: `run_noc_probe_sweep()` polls every MikroTik device every 5 min via the
-  SAME `AsyncIOScheduler` (PRD constraint — no second scheduler). Writes `noc_probes`
-  samples (24h uptime %), `noc_device_state` (current up/down), `noc_events` on real
-  UP↔DOWN transitions only (no flap-storm). Alerts to `settings.noc_alert_recipients`
-  (fallback to all role=admin users). New endpoints `GET /admin/noc/devices`,
-  `GET /admin/noc/events`, `POST /admin/noc/run-poll`. Frontend `AdminNOC.jsx` with
-  live KPI grid + device cards + transition event feed + auto-refresh (30s).
-  Billing Defaults panel (AdminFinance) gets a `NOC alert recipients` textarea.
-- **Menu registrations**: 3 new admin routes — `audit-log`/`noc`/`credit-notes` — with
-  ADMIN_MENU_CATALOG entries (default_roles reflect finance/support/admin scope).
-- **Tests**: `test_audit_credit_noc.py` (9 tests, all pass) covering audit filter shape,
-  credit note partial→full settlement, exceeds-total rejection, cancel guard, PDF bytes,
-  NOC idempotent poll.
-- **Frontend testing agent iteration 31**: 7/8 review items pass; 1 HIGH regression noted
-  in AdminMail (double-fetch inside open() caused stale-list race) — FIXED by using
-  optimistic setSelected + patching row in-place instead of re-fetching inbox. Minor
-  React <span-in-option> warning also cleaned up in AdminCreditNotes.
-
-### Batch 6 — Duitku round-trip + Renewal automation + Reply + Installer hardening (2026-07-24)
-- **DuitkuGateway per POP docs terkini** (`integrations_v2.py`): create signature
-  HMAC_SHA256(merchantCode+timestamp, apiKey); callback verify HMAC_SHA256 primary +
-  legacy MD5 fallback + merchantCode match; createInvoice mengirim returnUrl (wajib) +
-  expiryPeriod, raise saat statusCode != 00. LIVE-verified di PRODUCTION (merchant <merchant-code-redacted, see integrations collection>,
-  env terdeteksi production — sandbox menolak "Merchant Not Found"). Kredensial di
-  collection `integrations` (module duitku, enabled), TIDAK pernah hardcoded.
-- **Webhook /webhooks/duitku idempotent**: transisi paid sekali saja (filter status!=paid);
-  fire email `payment_received` (template baru + on_invoice_paid); auto-provision order;
-  reaktivasi service suspended karena non-payment invoice tsb (set reactivated_at/reason).
-  Duplicate callback → {duplicate:true} tanpa efek ganda; signature invalid → 400.
-- **Duitku-only policy**: flag settings `enable_extra_payment_gateways` (default false)
-  menyembunyikan midtrans/xendit dari /admin/integrations/modules, /admin/integrations,
-  iv2 schema+list, dan memblokir pay-online/iv2-upsert. Class gateway TIDAK dihapus.
-- **Renewal automation** (`emails.py`): run_renewal_invoice_sweep di scheduler yang sama
-  (hourly :20 + startup). Guard duplikat: invoice.service_id+renewal_period; next_renewal
-  maju satu siklus HANYA setelah insert sukses; nomor invoice max-based + retry duplikat.
-  Settings: default_tax_percent, renewal_lead_days (GET/PUT /admin/billing/settings,
-  manual trigger POST /admin/billing/run-renewal-sweep). PPN 11% hardcoded DIHAPUS dari
-  order auto-invoice + preview (kini prefill dari settings, tetap manual per dokumen).
-- **must_change_password chain**: install.sh generate password acak (openssl rand) bila
-  ADMIN_PASSWORD tidak diberikan + tulis ADMIN_MUST_CHANGE_PASSWORD + REACT_APP_BACKEND_URL
-  ke backend/.env; seed set flag; login/auth-me expose; change-password unset;
-  PortalLogin redirect paksa ke settings/password.
-- **Frontend**: AdminMail Reply button (prefill Re: + quoted body); ClientInvoices Pay with
-  Duitku CTA nyata (pay-online → buka payment_url); AdminFinance tab "Billing Defaults".
-- **Tests**: test_duitku_payment_flow.py (6), test_renewal_billing.py (6) — all pass;
-  testing agent 39 sub-test green. Catatan: suite lama test_portal.py dkk gagal karena
-  mengharapkan user staff demo yang tidak lagi di-seed (pre-existing, bukan regresi).
-- Kredensial Duitku: merchant <merchant-code-redacted, see integrations collection> (production), API key tersimpan di DB integrations.
+## Kredensial
+Lihat /app/memory/test_credentials.md (admin, demo client, integrasi real).

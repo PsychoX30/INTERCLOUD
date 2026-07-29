@@ -3,6 +3,12 @@ import { api } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary } from "../ui";
 import { RefreshCw, PlayCircle, Loader2, CheckCircle2, XCircle, Wifi, WifiOff, Activity, AlertTriangle, ExternalLink, Ticket as TicketIcon } from "lucide-react";
 import { Link } from "react-router-dom";
+import { NetflowSankey } from "./NetflowSankey";
+import { DDoSPanel } from "./DDoSPanel";
+import { ThresholdRules } from "./ThresholdRules";
+import { DDoSHistory } from "./DDoSHistory";
+import { NotifChannels } from "./NotifChannels";
+import { BlackholeLog } from "./BlackholeLog";
 
 const AdminNOC = () => {
   const [devices, setDevices] = useState([]);
@@ -92,6 +98,18 @@ const AdminNOC = () => {
                           tickets={tickets.filter((t) => t.related_device_id === d.id)} />
             ))}
           </div>
+
+          <NetflowSankey />
+
+          <DDoSPanel devices={devices} />
+
+          <ThresholdRules />
+
+          <DDoSHistory />
+
+          <NotifChannels />
+
+          <BlackholeLog />
 
           <Card className="overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-200 bg-slate-50">

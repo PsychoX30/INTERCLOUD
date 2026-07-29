@@ -44,14 +44,35 @@ const AdminAssets = () => {
       render: (v) => <span className="text-xs text-slate-500">{money(v || 0)}</span> },
     { key: "useful_life_years", label: "Life", sortable: true, align: "right",
       render: (v) => <span className="text-xs">{v ? `${v} yr` : "-"}</span> },
-    { key: "annual_depreciation", label: "Annual Dep.", sortable: true, align: "right",
-      render: (v) => <span className="text-amber-700">{money(v || 0)}</span> },
-    { key: "book_value", label: "Book Value", sortable: true, align: "right",
-      render: (_v, a) => (
+    { key: "annual_depreciation", label: "Depreciation", sortable: true, align: "right",
+      render: (v, a) => (
         <>
-          <div className="font-extrabold text-[#0a2350] tabular-nums">{money(a.book_value)}</div>
-          <div className="text-[10px] text-red-500 tabular-nums">-{money(a.accumulated_depreciation)}</div>
+          <div className="text-amber-700 tabular-nums">{money(v || 0)}<span className="text-[10px] text-slate-400">/thn</span></div>
+          <div className="text-[10px] text-slate-500 tabular-nums">{money(a.monthly_depreciation || 0)}/bln</div>
         </>
+      ) },
+    { key: "book_value", label: "Book Value", sortable: true, align: "right",
+      render: (_v, a) => {
+        const pct = a.total_months > 0 ? Math.min(100, Math.round((a.months_elapsed / a.total_months) * 100)) : 0;
+        const barColor = pct >= 100 ? "bg-red-400" : pct >= 75 ? "bg-amber-400" : "bg-emerald-400";
+        return (
+          <div className="min-w-[110px]">
+            <div className="font-extrabold text-[#0a2350] tabular-nums">{money(a.book_value)}</div>
+            <div className="text-[10px] text-red-500 tabular-nums">-{money(a.accumulated_depreciation)}</div>
+            <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden" title={`${pct}% umur terpakai (${a.months_elapsed}/${a.total_months} bulan)`}>
+              <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+            </div>
+            <div className="text-[9px] text-slate-400 mt-0.5 tabular-nums">
+              {a.is_fully_depreciated ? "Habis disusutkan" : `${pct}% umur terpakai`}
+            </div>
+          </div>
+        );
+      } },
+    { key: "status", label: "Status", sortable: true,
+      render: (v, a) => (
+        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${v === "disposed" ? "bg-slate-200 text-slate-600" : "bg-emerald-100 text-emerald-700"}`} title={a.disposed_at ? `Disposed ${a.disposed_at}` : undefined}>
+          {v || "active"}
+        </span>
       ) },
     { key: "_actions", label: "", sortable: false, align: "right",
       render: (_v, a) => (
@@ -104,6 +125,7 @@ const AssetForm = ({ a, onClose, onDone }) => {
     salvage_value: a?.salvage_value ?? 0,
     useful_life_years: a?.useful_life_years || 5,
     purchase_date: a?.purchase_date || new Date().toISOString().slice(0, 10),
+    status: a?.status || "active",
     notes: a?.notes || "",
   });
 
@@ -151,6 +173,12 @@ const AssetForm = ({ a, onClose, onDone }) => {
           <label><div className={labelClass}>Acquisition Cost / Harga Perolehan (IDR) *</div><input required type="number" min="0" step="0.01" value={f.value} onChange={(e) => setF({ ...f, value: e.target.value })} className={`${inputClass} text-right tabular-nums`} data-testid="asset-value" /></label>
           <label><div className={labelClass}>Salvage / Nilai Sisa (IDR)</div><input type="number" min="0" step="0.01" value={f.salvage_value} onChange={(e) => setF({ ...f, salvage_value: e.target.value })} className={`${inputClass} text-right tabular-nums`} data-testid="asset-salvage" /></label>
           <label className="col-span-2"><div className={labelClass}>Useful Life / Umur Ekonomis (tahun) *</div><input required type="number" min="1" max="100" value={f.useful_life_years} onChange={(e) => setF({ ...f, useful_life_years: e.target.value })} className={`${inputClass} text-right tabular-nums`} data-testid="asset-life-years" /></label>
+          <label className="col-span-2"><div className={labelClass}>Status</div>
+            <select value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })} className={inputClass} data-testid="asset-status">
+              <option value="active">active - masih dipakai</option>
+              <option value="disposed">disposed - sudah dilepas/dijual</option>
+            </select>
+          </label>
           <label className="col-span-2"><div className={labelClass}>Notes</div><textarea rows={2} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} className={`${inputClass} h-auto py-2`} /></label>
         </div>
 

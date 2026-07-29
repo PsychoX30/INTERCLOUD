@@ -169,19 +169,41 @@ const KPI = ({ label, value, tone = "navy", testid }) => {
 };
 
 const SummaryPane = ({ t, d }) => (
-  <Card className="p-5">
-    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-      <div><div className="text-slate-500 text-xs">Revenue</div><div className="font-extrabold text-emerald-700">{idr(t.revenue)}</div></div>
-      <div><div className="text-slate-500 text-xs">Recurring expenses</div><div className="font-extrabold">{idr(t.expenses_recurring)}</div></div>
-      <div><div className="text-slate-500 text-xs">Kas Kecil</div><div className="font-extrabold">{idr(t.kas_kecil)}</div></div>
-      <div><div className="text-slate-500 text-xs">Salaries</div><div className="font-extrabold">{idr(t.salaries)}</div></div>
-      <div><div className="text-slate-500 text-xs">Sales fees</div><div className="font-extrabold">{idr(t.sales_fees)}</div></div>
-      <div><div className="text-slate-500 text-xs">Total expenses</div><div className="font-extrabold text-red-700">{idr(t.expenses_all)}</div></div>
-      <div><div className="text-slate-500 text-xs">Accumulated depreciation</div><div className="font-extrabold">{idr(t.depreciation_accumulated)}</div></div>
-      <div className="col-span-2"><div className="text-slate-500 text-xs">Net profit (rev − exp − depreciation)</div><div className={`text-2xl font-extrabold ${t.net_profit >= 0 ? "text-emerald-700" : "text-red-700"}`}>{idr(t.net_profit)}</div></div>
+  <Card className="p-5" data-testid="finance-pnl">
+    <div className="text-sm font-extrabold text-[#0a2350] mb-3">Laporan Laba Rugi (ringkas)</div>
+    <div className="max-w-xl text-sm">
+      <PnlRow label="Pendapatan (invoice paid)" value={t.revenue} strong tone="emerald" testid="pnl-revenue" />
+      <div className="mt-2 mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">Beban</div>
+      <PnlRow label="Beban operasional (recurring)" value={-t.expenses_recurring} />
+      <PnlRow label="Kas kecil" value={-t.kas_kecil} />
+      <PnlRow label="Gaji (salaries)" value={-t.salaries} />
+      <PnlRow label="Fee sales" value={-t.sales_fees} />
+      <PnlRow label="Beban depresiasi aset" value={-t.depreciation_accumulated} testid="pnl-depreciation" />
+      <div className="border-t border-slate-200 mt-2 pt-2">
+        <PnlRow label="Total beban + depresiasi" value={-(t.expenses_all + t.depreciation_accumulated)} strong tone="red" testid="pnl-total-expenses" />
+      </div>
+      <div className="border-t-2 border-[#0a2350]/20 mt-2 pt-2">
+        <div className="flex items-baseline justify-between">
+          <span className="font-extrabold text-[#0a2350]">{t.net_profit >= 0 ? "Laba bersih" : "Rugi bersih"}</span>
+          <span className={`text-2xl font-extrabold tabular-nums ${t.net_profit >= 0 ? "text-emerald-700" : "text-red-700"}`} data-testid="pnl-net">{idr(t.net_profit)}</span>
+        </div>
+        <p className="text-[11px] text-slate-500 mt-1">Depresiasi dicatat sebagai beban terpisah dan tidak mengurangi angka pendapatan.</p>
+      </div>
     </div>
   </Card>
 );
+
+const PnlRow = ({ label, value, strong, tone, testid }) => {
+  const toneCls = tone === "emerald" ? "text-emerald-700" : tone === "red" ? "text-red-700" : value < 0 ? "text-slate-700" : "text-[#0a2350]";
+  return (
+    <div className="flex items-baseline justify-between py-1">
+      <span className={strong ? "font-bold text-[#0a2350]" : "text-slate-600"}>{label}</span>
+      <span className={`tabular-nums ${strong ? "font-extrabold" : "font-semibold"} ${toneCls}`} data-testid={testid}>
+        {value < 0 ? `(${idr(Math.abs(value))})` : idr(value)}
+      </span>
+    </div>
+  );
+};
 
 const RevenueList = ({ rows }) => (
   <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">

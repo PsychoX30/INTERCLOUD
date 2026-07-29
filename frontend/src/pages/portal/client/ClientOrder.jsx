@@ -339,6 +339,59 @@ const StepAddons = ({ product, allAddons, addonIds, setAddonIds, onNext, onBack 
   );
 };
 
+/* ============ Live running total - updates real-time while configuring ============ */
+const computeLiveTotal = (product, selections, addonIds, addons) => {
+  let monthly = Number(product.price_monthly || 0);
+  let setup = Number(product.setup_fee || 0);
+  for (const g of product.option_groups || []) {
+    const sel = selections.find((s) => s.group_key === g.key) || {};
+    if (g.type === "quantity") {
+      const qty = Number(sel.quantity ?? (g.min_qty || 0));
+      monthly += qty * Number(g.unit_price_monthly || 0);
+      setup += qty * Number(g.unit_price_setup || 0);
+    } else {
+      for (const label of sel.option_labels || []) {
+        const opt = (g.options || []).find((o) => o.label === label);
+        if (opt) {
+          monthly += Number(opt.price_monthly_delta || 0);
+          setup += Number(opt.price_setup_delta || 0);
+        }
+      }
+    }
+  }
+  for (const id of addonIds) {
+    const a = addons.find((x) => x.id === id);
+    if (a) {
+      monthly += Number(a.price_monthly || 0);
+      setup += Number(a.setup_fee || 0);
+    }
+  }
+  return { monthly, setup };
+};
+
+const LiveTotalBar = ({ product, selections, addonIds, addons }) => {
+  const { monthly, setup } = computeLiveTotal(product, selections, addonIds, addons);
+  return (
+    <div className="sticky bottom-4 z-30 mt-6" data-testid="live-total-bar">
+      <div className="rounded-2xl bg-[#0a2350] text-white shadow-xl px-5 py-3.5 flex flex-wrap items-center gap-x-6 gap-y-1">
+        <span className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">Estimasi real-time</span>
+        <span className="text-sm">
+          <span className="text-white/60">Bulanan</span>{" "}
+          <b className="text-lg tabular-nums" data-testid="live-total-monthly">{idr(monthly)}</b>
+          <span className="text-white/60">/bln</span>
+        </span>
+        {setup > 0 && (
+          <span className="text-sm">
+            <span className="text-white/60">Setup</span>{" "}
+            <b className="tabular-nums" data-testid="live-total-setup">{idr(setup)}</b>
+          </span>
+        )}
+        <span className="ml-auto text-[11px] text-white/50">Belum termasuk pajak - final di langkah Review</span>
+      </div>
+    </div>
+  );
+};
+
 /* ============ Step 4 - review cart, confirm, generate invoice ============ */
 const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, onConfirmed }) => {
   const [preview, setPreview] = useState(null);
@@ -573,24 +626,30 @@ const ClientOrder = () => {
       )}
 
       {step === 1 && chosen && (
-        <StepConfigure
-          product={chosen}
-          selections={selections}
-          setSelections={setSelections}
-          onBack={() => setStep(0)}
-          onNext={() => setStep(2)}
-        />
+        <>
+          <StepConfigure
+            product={chosen}
+            selections={selections}
+            setSelections={setSelections}
+            onBack={() => setStep(0)}
+            onNext={() => setStep(2)}
+          />
+          <LiveTotalBar product={chosen} selections={selections} addonIds={addonIds} addons={addons} />
+        </>
       )}
 
       {step === 2 && chosen && (
-        <StepAddons
-          product={chosen}
-          allAddons={addons}
-          addonIds={addonIds}
-          setAddonIds={setAddonIds}
-          onBack={() => setStep(1)}
-          onNext={() => setStep(3)}
-        />
+        <>
+          <StepAddons
+            product={chosen}
+            allAddons={addons}
+            addonIds={addonIds}
+            setAddonIds={setAddonIds}
+            onBack={() => setStep(1)}
+            onNext={() => setStep(3)}
+          />
+          <LiveTotalBar product={chosen} selections={selections} addonIds={addonIds} addons={addons} />
+        </>
       )}
 
       {step === 3 && chosen && (
