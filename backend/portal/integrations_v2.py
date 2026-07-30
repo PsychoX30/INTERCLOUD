@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -89,11 +90,16 @@ class ProxmoxClient:
     def __init__(self, settings: dict):
         c = settings.get("credentials") or {}
         o = settings.get("options") or {}
-        self.host = (c.get("host") or "").rstrip("/")
-        self.token_id = c.get("token_id")
-        self.token_secret = c.get("token_secret")
-        self.username = c.get("username")
-        self.password = c.get("password")
+        host = (c.get("host") or "").strip().rstrip("/")
+        if host and not host.startswith("http"):
+            host = f"https://{host}"
+        if host and not re.search(r":\d+$", host.split("://", 1)[-1]):
+            host = f"{host}:8006"
+        self.host = host
+        self.token_id = (c.get("token_id") or "").strip()
+        self.token_secret = (c.get("token_secret") or "").strip()
+        self.username = (c.get("username") or "").strip()
+        self.password = c.get("password") or ""
         self.default_node = o.get("default_node") or ""
         self.default_storage = o.get("default_storage") or "local-lvm"
         self.default_bridge = o.get("default_bridge") or "vmbr0"
@@ -105,17 +111,42 @@ class ProxmoxClient:
             return {"Authorization": f"PVEAPIToken={self.token_id}={self.token_secret}"}
         return {}
 
-    async def _get(self, path: str) -> Any:
-        async with httpx.AsyncClient(timeout=30, verify=self.ssl_verify) as c:
-            r = await c.get(f"{self.host}/api2/json{path}", headers=self._headers())
-            r.raise_for_status()
+    async def _request(self, method: str, path: str, payload: Optional[dict] = None) -> Any:
+        if not self.host:
+            raise RuntimeError("Proxmox: Host URL belum diisi di Admin - Integrations.")
+        async with httpx.AsyncClient(timeout=60, verify=self.ssl_verify) as c:
+            headers = self._headers()
+            cookies = {}
+            if not headers:
+                if not (self.username and self.password):
+                    raise RuntimeError("Proxmox: kredensial belum lengkap - isi API Token ID+Secret "
+                                       "atau username (root@pam) + password.")
+                tr = await c.post(f"{self.host}/api2/json/access/ticket",
+                                  data={"username": self.username, "password": self.password})
+                if tr.status_code >= 400:
+                    raise RuntimeError(f"Proxmox login gagal ({tr.status_code}): {(tr.text or '')[:180]}")
+                td = tr.json().get("data") or {}
+                ticket = td.get("ticket", "")
+                if ticket.startswith("PVE:!tfa!"):
+                    raise RuntimeError("Proxmox: akun ini memakai 2FA/TOTP sehingga login password "
+                                       "tidak bisa dipakai lewat API. Gunakan API Token ID + Secret.")
+                cookies = {"PVEAuthCookie": ticket}
+                headers = {"CSRFPreventionToken": td.get("CSRFPreventionToken", "")}
+            if method == "GET":
+                r = await c.get(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies)
+            else:
+                r = await c.post(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies,
+                                 data=payload or {})
+            if r.status_code >= 400:
+                detail = (r.text or "").strip()[:220] or r.reason_phrase
+                raise RuntimeError(f"Proxmox API {r.status_code} pada {method} {path}: {detail}")
             return r.json().get("data")
 
+    async def _get(self, path: str) -> Any:
+        return await self._request("GET", path)
+
     async def _post(self, path: str, payload: dict) -> Any:
-        async with httpx.AsyncClient(timeout=60, verify=self.ssl_verify) as c:
-            r = await c.post(f"{self.host}/api2/json{path}", headers=self._headers(), data=payload)
-            r.raise_for_status()
-            return r.json().get("data")
+        return await self._request("POST", path, payload)
 
     async def test_connection(self) -> dict:
         try:
@@ -161,6 +192,10 @@ class ProxmoxClient:
         elif templates:
             tpl = templates[0]
             template_vmid = tpl["vmid"]
+        if template_vmid and templates and not tpl:
+            avail = ", ".join(f"{t['vmid']} ({t['name']})" for t in templates)
+            raise ValueError(f"Proxmox: template VMID {template_vmid} tidak ditemukan di cluster. "
+                             f"Template tersedia: {avail}")
         if not template_vmid:
             raise ValueError("Proxmox: tidak ada template VM (template=1) di cluster. "
                              "Buat template atau set 'Clone template VMID' di Integrations.")
@@ -872,12 +907,25 @@ class MikrotikClient:
 # ============================================================
 # Payment gateways
 # ============================================================
+def resolve_sandbox(settings: dict) -> bool:
+    """Payment gateway environment resolution.
+
+    `environment` di options/credentials menang ("production"/"sandbox");
+    tanpa setting eksplisit default-nya PRODUCTION (sandbox hanya bila dipilih)."""
+    o = settings.get("options") or {}
+    c = settings.get("credentials") or {}
+    env = str(o.get("environment") or c.get("environment") or "").strip().lower()
+    if env:
+        return env not in ("production", "prod", "live")
+    return False
+
+
 class MidtransGateway:
     """Midtrans Snap + notification signature verification."""
 
     def __init__(self, settings: dict):
         c = settings.get("credentials") or {}
-        self.sandbox = bool(settings.get("sandbox", True))
+        self.sandbox = resolve_sandbox(settings)
         self.server_key = c.get("server_key") or ""
         self.client_key = c.get("client_key") or ""
         self.base = "https://app.sandbox.midtrans.com" if self.sandbox else "https://app.midtrans.com"
@@ -1003,7 +1051,7 @@ class XenditGateway:
 class DuitkuGateway:
     def __init__(self, settings: dict):
         c = settings.get("credentials") or {}
-        self.sandbox = bool(settings.get("sandbox", True))
+        self.sandbox = resolve_sandbox(settings)
         self.merchant_code = c.get("merchant_code") or ""
         self.api_key = c.get("api_key") or ""
         self.base = "https://api-sandbox.duitku.com" if self.sandbox else "https://api-prod.duitku.com"
@@ -1194,7 +1242,8 @@ INTEGRATION_SCHEMA = {
             {"key": "server_key", "label": "Server Key", "type": "password", "required": True},
             {"key": "client_key", "label": "Client Key", "type": "text", "required": True},
         ],
-        "options": [{"key": "sandbox", "label": "Sandbox mode", "type": "checkbox", "default": True}],
+        "options": [{"key": "environment", "label": "Environment", "type": "select",
+                     "options": ["production", "sandbox"], "default": "production"}],
     },
     "xendit": {
         "label": "Xendit",
@@ -1218,7 +1267,10 @@ INTEGRATION_SCHEMA = {
             {"key": "merchant_code", "label": "Merchant Code", "type": "text", "required": True},
             {"key": "api_key", "label": "API Key", "type": "password", "required": True},
         ],
-        "options": [{"key": "sandbox", "label": "Sandbox mode", "type": "checkbox", "default": True}],
+        "options": [{"key": "environment", "label": "Environment", "type": "select",
+                     "options": ["production", "sandbox"], "default": "production"},
+                    {"key": "callback_url", "label": "Callback URL (opsional - default otomatis)", "type": "text"},
+                    {"key": "return_url", "label": "Return URL (opsional)", "type": "text"}],
     },
     "smtp": {
         "label": "SMTP (Outgoing Email)",

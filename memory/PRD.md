@@ -68,6 +68,11 @@ LEARNING: JANGAN pakai pip freeze mentah utk requirements produksi - selalu cek 
 
 ## STATUS NGODINGPAKEAI: SEMUA 209+ TASK SELESAI (2026-07-30). "No open tasks" di CLI.
 
+## Sesi 2026-07-30 (lanjutan 5): 3 BUG P0 GO-LIVE - SELESAI & DITES E2E DENGAN SERVER ASLI
+1. **Freeze "Confirm & Generate Invoice" FIXED**: akar masalah = SMTPMailer.send() blocking event loop (email order+invoice dikirim sinkron dalam request POST /client/orders; SMTP lambat/timeout membekukan SELURUH backend). Fix: (a) emails.deliver() kini `await asyncio.to_thread(...)`; (b) create_order kirim email via `asyncio.create_task` background (respons instan); (c) to_thread juga di webmail compose (~L4230) & _send_password_notice (~L6620). BUKTI: order dgn SMTP blackhole (10.255.255.1) selesai 150ms, API lain tetap responsif.
+2. **Duitku sandbox -> production FIXED**: akar masalah = UI menyimpan options.sandbox tapi DuitkuGateway membaca settings["sandbox"] top-level (default True) -> selalu api-sandbox. Fix: `resolve_sandbox()` di integrations_v2.py - `environment` (options/credentials) menang, DEFAULT PRODUCTION bila tak diset (flag sandbox legacy diabaikan karena tak pernah dipilih user secara sadar). Schema duitku+midtrans: select Environment [production|sandbox] default production (+ callback_url/return_url opsional di kartu Duitku). Mapping module-hub & _iv2_settings_for_module dipetakan ke options.environment. Upsert iv2 tak lagi default sandbox=True. BUKTI: pay-online invoice real -> paymentUrl https://app-prod.duitku.com statusCode 00 SUCCESS (merchant D15021).
+3. **Auto-provision Proxmox VM FIXED**: perbaikan ProxmoxClient: normalisasi host (auto https:// + :8006), strip token, error detail body Proxmox (bukan cuma status line), ticket auth username/password (deteksi 2FA/TOTP -> pesan jelas "gunakan API Token"), clone_vm error jelas bila template VMID salah (list template tersedia). routes.py: helper `_proxmox_settings(db)` (iv2 -> fallback module-hub row) dipakai di SEMUA 12 titik (client vms/status/reset-pw/action, _auto_provision, _apply_pending_upgrade, admin proxmox nodes/vms/action/vnc/provision/templates). BUKTI E2E: order VPS -> invoice paid -> VM 112 ter-clone LIVE di node1 (157.20.32.249, template TES1/111 auto-discovered), IP pool teralokasi, service active, provision_log lengkap; VM uji sudah DIHAPUS dari server user. CATATAN: root@pam punya 2FA -> HANYA API Token yang bisa dipakai; template TES1 belum punya cloud-init disk -> cipassword pending (log jelas, NOC manual).
+
 ## Sesi 2026-07-30 (lanjutan 4): 3 FITUR OTOMASI - SELESAI & DITES (self-test: curl + pytest 54 pass + screenshot bell)
 1. **Email Handover VM**: template `vm_provisioned` (Indonesia; hostname, IP, OS, VMID/node, username, password awal, perintah SSH). Saat clone Proxmox sukses di _auto_provision: generate root password (secrets), simpan di service config (root_username/root_password), best-effort set via cloud-init (ProxmoxClient.set_cloudinit_credentials -> ciuser/cipassword), lalu email via on_vm_provisioned + provision_log. _SEED_VERSION bump 4->5.
 2. **Notifikasi Provisioning (lonceng admin)**: alert baru `provision_pending` di _build_admin_alerts (services config.provision_status=pending). Komponen NotificationsBell di header PortalLayout (staff only, polling /admin/notifications tiap 60 dtk, badge count, dropdown severity + link). data-testid: admin-notif-bell/count/dropdown/item-{type}. Diverifikasi via screenshot (badge 9+, item provision_pending tampil).
@@ -97,8 +102,8 @@ LEARNING: JANGAN pakai pip freeze mentah utk requirements produksi - selalu cek 
 ## PENTING: reCAPTCHA & testing otomatis
 - reCAPTCHA v3 AKTIF KEMBALI (di-disable sementara saat testing, sudah di-enable lagi). Login otomatis (curl/bot) DITOLAK by design.
 - Untuk testing agent/browser automation: disable dulu via Mongo integration_settings (provider recaptcha) lalu AKTIFKAN kembali.
-- 2FA: demo@client.com totp_enabled=false (diverifikasi).
-- Proxmox integration_settings enabled dgn kredensial REAL (157.20.32.249) tapi tanpa clone_template_vmid -> clone gagal jujur. Untuk auto-provision VPS live, set options.clone_template_vmid.
+- 2FA: demo@client.com totp_enabled=false (diverifikasi). Password demo di-reset ke DemoClient2026! (lihat test_credentials.md).
+- Proxmox integration_settings enabled dgn kredensial REAL (157.20.32.249). Cluster kini PUNYA template (TES1 vmid 111) -> auto-provision VPS live TERBUKTI jalan end-to-end (sesi lanjutan 5). AWAS: mark-paid invoice VPS di preview meng-clone VM ASLI - selalu hapus VM uji.
 
 ## LEARNING (untuk agent berikutnya)
 - JANGAN paralel search_replace pada FILE YANG SAMA - saling menimpa (edit menu catalog sempat hilang). Serialisasi edit pada file yang sama.
@@ -111,8 +116,11 @@ LEARNING: JANGAN pakai pip freeze mentah utk requirements produksi - selalu cek 
 - Frontend: PortalLayout.jsx (mobile-logout-btn, site_content), AdminUsers.jsx (delete + confirm), ClientTraffic.jsx (empty state), AdminMockedScreens.jsx (provisioning real).
 
 ## Backlog / Next (P1-P2)
-- P1 (butuh aksi USER di Proxmox): buat VM template (template=1) di cluster agar auto-provision VPS live jalan end-to-end; opsional set 'Clone template VMID' + 'Default node' di Integrations untuk mengunci.
+- P1 Ekspor Klien Excel: tombol ekspor daftar klien + layanan aktif ke Excel untuk tim sales (AdminClients.jsx / routes.py).
 - P1 (butuh aksi USER): tambah router MikroTik real di Admin - MikroTik Devices lalu petakan service via TrafficSourceCard agar Traffic Report live terisi.
+- P1 (opsional, USER di Proxmox): tambah cloud-init disk ke template TES1 agar password root otomatis tertanam saat clone (saat ini pending -> NOC manual).
+- P2 Payment Link Publik: URL pembayaran invoice tanpa login.
+- P2 Alert scheduler (disk/SSL) juga dipush ke lonceng notifikasi admin (bukan hanya email).
 - P2 UAT sisa: torch wildcard UI polish (004), ISO live dari Proxmox real (009), CMS layman (026-027), quick action role-based (029), notif security SMTP (030).
 - P2: DataTable rollout AdminMikrotik, Zod+react-hook-form, bento landing.
 

@@ -1,5 +1,7 @@
 """All portal routes (auth + client + admin) under /api/portal."""
 import os
+import asyncio
+import logging
 import secrets
 import re
 from urllib.parse import quote
@@ -867,8 +869,8 @@ async def client_vms(user=Depends(get_current_user)):
     svcs = await db.services.find(
         {"user_id": ObjectId(user["id"]), "category": {"$in": list(_VM_CATEGORIES)}}
     ).sort("created_at", -1).to_list(100)
-    s = await iv2.get_settings(db, "proxmox")
-    client = iv2.ProxmoxClient(s) if (s and s.get("enabled")) else None
+    s = await _proxmox_settings(db)
+    client = iv2.ProxmoxClient(s) if s else None
     out = []
     for svc in svcs:
         cfg = svc.get("config") or {}
@@ -904,8 +906,8 @@ async def client_vm_status(sid: str, user=Depends(get_current_user)):
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
     cfg = svc.get("config") or {}
-    s = await iv2.get_settings(db, "proxmox")
-    if not (s and s.get("enabled") and cfg.get("node") and cfg.get("vmid")):
+    s = await _proxmox_settings(db)
+    if not (s and cfg.get("node") and cfg.get("vmid")):
         return {"configured": False, "status": "unknown"}
     try:
         st = await iv2.ProxmoxClient(s).vm_status(cfg["node"], int(cfg["vmid"]))
@@ -941,8 +943,8 @@ async def client_vm_reset_password(sid: str, payload: dict, request: Request, us
     node, vmid = cfg.get("node"), cfg.get("vmid")
     if not (node and vmid):
         raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini. Hubungi support.")
-    s = await iv2.get_settings(db, "proxmox")
-    if not (s and s.get("enabled")):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif. Hubungi support.")
     client = iv2.ProxmoxClient(s)
     try:
@@ -989,8 +991,8 @@ async def client_vm_action(sid: str, action: str, request: Request, user=Depends
     node, vmid = cfg.get("node"), cfg.get("vmid")
     if not (node and vmid):
         raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini. Hubungi support.")
-    s = await iv2.get_settings(db, "proxmox")
-    if not (s and s.get("enabled")):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif. Hubungi support.")
     try:
         result = await iv2.ProxmoxClient(s).vm_action(node, int(vmid), action)
@@ -1304,17 +1306,23 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
         doc["invoice_id"] = ir.inserted_id
         doc["provision_log"].append({"at": _now(), "step": "invoice_created", "message": f"Invoice {number} generated ({total:,.0f} IDR)."})
 
-    # Fire order + invoice notification emails (best-effort - never blocks the order)
-    try:
-        from portal import emails as _em
-        user_doc = await db.users.find_one({"_id": ObjectId(user["id"])}) or {"email": user["email"], "name": user["name"]}
-        await _em.on_order_created(db, doc, user_doc)
-        if doc.get("invoice_id"):
-            inv_doc = await db.invoices.find_one({"_id": doc["invoice_id"]})
-            if inv_doc:
-                await _em.on_invoice_generated(db, inv_doc, user_doc, order_doc=doc)
-    except Exception:
-        pass
+    # Fire order + invoice notification emails in the BACKGROUND - SMTP yang
+    # lambat/tidak terjangkau tidak boleh membekukan tombol "Confirm & Generate Invoice".
+    order_snapshot = dict(doc)
+
+    async def _order_emails():
+        try:
+            from portal import emails as _em
+            user_doc = await db.users.find_one({"_id": ObjectId(user["id"])}) or {"email": user["email"], "name": user["name"]}
+            await _em.on_order_created(db, order_snapshot, user_doc)
+            if order_snapshot.get("invoice_id"):
+                inv_doc = await db.invoices.find_one({"_id": order_snapshot["invoice_id"]})
+                if inv_doc:
+                    await _em.on_invoice_generated(db, inv_doc, user_doc, order_doc=order_snapshot)
+        except Exception:
+            logging.getLogger("portal.orders").exception("order/invoice email dispatch failed")
+
+    asyncio.create_task(_order_emails())
 
     return _serialize_order(doc)
 
@@ -1336,6 +1344,30 @@ def _serialize_order(d: dict) -> dict:
         "provision_log": d.get("provision_log", []),
         "created_at": _iso(d.get("created_at", "")),
     }
+
+
+async def _proxmox_settings(db) -> Optional[dict]:
+    """Resolve Proxmox settings dari `integration_settings` (iv2) atau fallback
+    baris module-hub `integrations` (module=proxmox, status=enabled)."""
+    s = await iv2.get_settings(db, "proxmox")
+    if s and s.get("enabled") and (s.get("credentials") or {}).get("host"):
+        return s
+    row = await db.integrations.find_one({"module": "proxmox", "status": "enabled"})
+    cfg = (row or {}).get("config") or {}
+    if cfg.get("hostname"):
+        proto = cfg.get("protocol") or "https"
+        port = cfg.get("port") or 8006
+        return {
+            "provider": "proxmox",
+            "enabled": True,
+            "credentials": {"host": f"{proto}://{cfg['hostname']}:{port}",
+                            "token_id": cfg.get("api_token_id"),
+                            "token_secret": cfg.get("api_token_secret"),
+                            "username": cfg.get("username"),
+                            "password": cfg.get("password")},
+            "options": {"default_node": cfg.get("default_node") or "", "ssl_verify": False},
+        }
+    return None
 
 
 async def _notify_admin_manual_provision(db, order: dict, note: str) -> None:
@@ -1467,8 +1499,8 @@ async def _auto_provision(db, order: dict) -> dict:
         if pool_ip:
             cfg.setdefault("ip", pool_ip)
             await _log("ip_allocated", f"IP {pool_ip} dialokasikan otomatis dari IP pool (DCIM).")
-        pxs = await iv2.get_settings(db, "proxmox")
-        if pxs and pxs.get("enabled"):
+        pxs = await _proxmox_settings(db)
+        if pxs:
             try:
                 vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", cfg["hostname"]).strip("-")[:60]
                 vm = await iv2.ProxmoxClient(pxs).clone_vm(hostname=vm_name)
@@ -3325,8 +3357,8 @@ async def _apply_pending_upgrade(db, inv: dict) -> bool:
          "$push": {"self_service_log": {"at": _now(), "action": "upgrade_applied",
                                          "by": f"billing (invoice {inv.get('number', '')})"}}})
     try:
-        s = await iv2.get_settings(db, "proxmox")
-        if s and s.get("enabled") and cfg.get("node") and cfg.get("vmid"):
+        s = await _proxmox_settings(db)
+        if s and cfg.get("node") and cfg.get("vmid"):
             body = {}
             if up.get("cpu"):
                 body["cores"] = new_cpu
@@ -3873,11 +3905,11 @@ def _iv2_settings_for_module(module: str, cfg: dict) -> dict:
     if module == "duitku":
         return {"credentials": {"merchant_code": cfg.get("merchant_code"),
                                 "api_key": cfg.get("api_key")},
-                "sandbox": (cfg.get("environment") or "sandbox") != "production"}
+                "options": {"environment": cfg.get("environment") or "production"}}
     if module == "midtrans":
         return {"credentials": {"server_key": cfg.get("server_key"),
                                 "client_key": cfg.get("client_key")},
-                "sandbox": (cfg.get("environment") or "sandbox") != "production"}
+                "options": {"environment": cfg.get("environment") or "production"}}
     if module == "xendit":
         return {"credentials": {"secret_key": cfg.get("secret_key"),
                                 "webhook_token": cfg.get("callback_token")}}
@@ -4212,7 +4244,8 @@ async def admin_mail_send(payload: dict, staff=Depends(get_current_staff)):
     from_email = smtp_settings["options"]["from_email"]
     from_name  = smtp_settings["options"]["from_name"]
     try:
-        iv2.SMTPMailer(smtp_settings).send(to=to, subject=subject, html=body or "")
+        await asyncio.to_thread(iv2.SMTPMailer(smtp_settings).send,
+                                to=to, subject=subject, html=body or "")
         delivered = True
         delivered_via = "smtp"
     except Exception as e:
@@ -6591,7 +6624,8 @@ async def _send_password_notice(db, user: dict, *, kind: str, reset_url: str = "
             f"Please contact your account manager for the new password, "
             f"or use the &lsquo;Forgot password&rsquo; link on the portal login page.</p>"
         )
-    _iv2.SMTPMailer(smtp).send(to=user["email"], subject=subject, html=html)
+    await asyncio.to_thread(_iv2.SMTPMailer(smtp).send,
+                            to=user["email"], subject=subject, html=html)
 
 
 
@@ -6636,7 +6670,7 @@ async def integrations_v2_upsert(provider: str, payload: dict, request: Request,
             merged_creds[k] = v
     doc = {
         "enabled": bool(payload.get("enabled")),
-        "sandbox": payload.get("sandbox", existing.get("sandbox", True)),
+        "sandbox": payload.get("sandbox", existing.get("sandbox")),
         "channel": payload.get("channel", existing.get("channel")),
         "credentials": merged_creds,
         "options": payload.get("options", existing.get("options") or {}),
@@ -6817,7 +6851,6 @@ async def _dns_domain_taken(name: str) -> bool:
 
 async def _check_domains_availability(db, names: list) -> list:
     """Availability via RNA.id bila aktif; fallback live DNS check."""
-    import asyncio
     rna = await _rna_client(db)
 
     async def _one(n: str) -> dict:
@@ -7094,8 +7127,8 @@ async def client_domain_check(domain: str, user=Depends(get_current_user)):
 @router.get("/admin/proxmox/nodes")
 async def proxmox_nodes(admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
-    s = await iv2.get_settings(db, "proxmox")
-    if not s or not s.get("enabled"):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400, detail="Proxmox not configured")
     return await iv2.ProxmoxClient(s).list_nodes()
 
@@ -7103,8 +7136,8 @@ async def proxmox_nodes(admin=Depends(require_roles("admin", "support"))):
 @router.get("/admin/proxmox/vms")
 async def proxmox_vms(node: Optional[str] = None, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
-    s = await iv2.get_settings(db, "proxmox")
-    if not s or not s.get("enabled"):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400, detail="Proxmox not configured")
     return await iv2.ProxmoxClient(s).list_vms(node)
 
@@ -7114,8 +7147,8 @@ async def proxmox_vm_action(node: str, vmid: int, action: str, admin=Depends(get
     if action not in ("start", "stop", "reboot", "shutdown", "suspend", "resume"):
         raise HTTPException(status_code=400, detail="Unsupported action")
     db = await _get_db()
-    s = await iv2.get_settings(db, "proxmox")
-    if not s or not s.get("enabled"):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400, detail="Proxmox not configured")
     return await iv2.ProxmoxClient(s).vm_action(node, vmid, action)
 
@@ -7123,8 +7156,8 @@ async def proxmox_vm_action(node: str, vmid: int, action: str, admin=Depends(get
 @router.get("/admin/proxmox/vnc/{node}/{vmid}")
 async def proxmox_vnc(node: str, vmid: int, admin=Depends(get_current_admin)):
     db = await _get_db()
-    s = await iv2.get_settings(db, "proxmox")
-    if not s or not s.get("enabled"):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400, detail="Proxmox not configured")
     ticket = await iv2.ProxmoxClient(s).vnc_ticket(node, vmid)
     return {"ticket": ticket, "wss": f"{iv2.ProxmoxClient(s).host}/?console=kvm&novnc=1&vmid={vmid}&node={node}"}
@@ -7135,8 +7168,8 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles(
     """Manually clone a VM on the LIVE Proxmox cluster. Fails clearly when the
     integration is not configured - never fakes success."""
     db = await _get_db()
-    s = await iv2.get_settings(db, "proxmox")
-    if not s or not s.get("enabled"):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400,
                             detail="Integrasi Proxmox belum aktif. Konfigurasi kredensial di Admin - Integrations terlebih dahulu.")
     hostname = (payload.get("hostname") or "").strip()
@@ -7184,8 +7217,8 @@ async def admin_provision_hosting_account(payload: dict, admin=Depends(require_r
 async def admin_proxmox_templates(admin=Depends(require_roles("admin", "support"))):
     """LIVE list of clone templates on the Proxmox cluster + the configured VMID."""
     db = await _get_db()
-    s = await iv2.get_settings(db, "proxmox")
-    if not s or not s.get("enabled"):
+    s = await _proxmox_settings(db)
+    if not s:
         raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif.")
     try:
         templates = await iv2.ProxmoxClient(s).list_templates()
@@ -7757,11 +7790,11 @@ async def _payment_settings(db, provider: str) -> Optional[dict]:
             return {
                 "provider": "duitku",
                 "enabled": True,
-                "sandbox": (cfg.get("environment") or "sandbox") != "production",
                 "credentials": {"merchant_code": cfg["merchant_code"],
                                  "api_key": cfg["api_key"]},
                 "options": {"callback_url": cfg.get("callback_url") or "",
-                            "return_url": cfg.get("return_url") or ""},
+                            "return_url": cfg.get("return_url") or "",
+                            "environment": cfg.get("environment") or "production"},
             }
     return None
 

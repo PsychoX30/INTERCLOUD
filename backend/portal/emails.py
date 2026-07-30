@@ -659,7 +659,8 @@ async def deliver(db, *, to_email: str, subject: str, body_html: str,
                         invoice_id=invoice_id, order_id=order_id, user_id=user_id)
         return {"status": "skipped", "delivered_via": "log", "error": "SMTP integration disabled"}
     try:
-        iv2.SMTPMailer(smtp).send(to=to_email, subject=subject, html=body_html)
+        await asyncio.to_thread(iv2.SMTPMailer(smtp).send,
+                                to=to_email, subject=subject, html=body_html)
         await _log_send(db, event_key=event_key, template_id=template_id, to_email=to_email,
                         subject=subject, status="sent", delivered_via="smtp",
                         invoice_id=invoice_id, order_id=order_id, user_id=user_id)

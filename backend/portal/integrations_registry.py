@@ -82,8 +82,7 @@ MODULE_SCHEMAS = {
         "fields": [
             FIELD("merchant_code", "Merchant Code", required=True),
             FIELD("api_key", "API Key", "password", required=True),
-            FIELD("environment", "Environment", "select", options=["sandbox", "production"], default="sandbox"),
-            FIELD("callback_url", "Callback URL", placeholder="https://your-domain/api/portal/webhooks/duitku"),
+            FIELD("environment", "Environment", "select", options=["production", "sandbox"], default="production"),
             FIELD("return_url", "Return URL"),
         ],
     },
