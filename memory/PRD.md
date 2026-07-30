@@ -3,6 +3,11 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-07-30 (lanjutan 5): 3 FITUR - SELESAI & DITES (self-test curl + screenshot + pytest 33 pass)
+1. **Arsip Laporan Bulanan**: run_monthly_report kini meng-upsert koleksi `monthly_reports` (1 dok/bulan: summary, body_html, to_email, last_delivery). Endpoint: GET /admin/reports/monthly (list), GET /admin/reports/monthly/{month}/pdf (WeasyPrint, auth via ?token= didukung auth.py). UI: MonthlyArchivePane di tab Reports halaman Finance (tabel arsip + tombol "Generate & kirim bulan lalu" + unduh PDF). Diverifikasi: generate 2026-07, list, PDF %PDF.
+2. **Notifikasi Baca (lonceng)**: alert diberi `key` (sha1 type|title|detail) + flag `read` per staf (koleksi notification_reads, retensi 30 hari). Endpoint POST /admin/notifications/mark-read {keys}. Response GET /admin/notifications kini +unread. Bell UI: badge = unread, item read tampil pudar tanpa dot, tombol "Tandai semua dibaca" (admin-notif-mark-all). Diverifikasi: unread 11->8 setelah mark-read 3 keys + screenshot.
+3. **Uji SMTP Sekali Klik**: POST /admin/integrations-v2/smtp/send-test {to?} -> kirim email percobaan via deliver() (event smtp_test); 400 jelas bila SMTP belum aktif. Tombol "Kirim email percobaan" (smtp-send-test-btn) di kartu SMTP halaman Integrations. Jalur sukses aktual menunggu SMTP produksi diaktifkan user.
+
 ## Aturan Ketat
 - TANPA em-dash/en-dash. Navy #0a2350 + Yellow #f5b120.
 - Pajak manual (PPN default dari billing settings), Duitku satu-satunya gateway, single APScheduler.

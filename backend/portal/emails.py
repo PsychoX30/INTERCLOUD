@@ -1607,10 +1607,19 @@ async def run_monthly_report(db, *, month: Optional[str] = None) -> dict:
     to_email = (await get_setting(db, "monthly_report_email", None)
                 or os.environ.get("ADMIN_EMAIL")
                 or "support@intercloud-digital.com")
+    # Arsipkan laporan (1 dokumen per bulan) agar PDF bisa diunduh ulang dari Finance.
+    await db.monthly_reports.update_one(
+        {"month": month},
+        {"$set": {"month": month, "summary": summary, "body_html": inner,
+                  "to_email": to_email,
+                  "generated_at": now.isoformat()}},
+        upsert=True)
     delivery = await deliver(
         db, to_email=to_email,
         subject=f"[Laporan Bulanan] {month} - ringkasan tagihan & trafik Intercloud",
         body_html=wrap_html(inner), event_key="monthly_report")
+    await db.monthly_reports.update_one(
+        {"month": month}, {"$set": {"last_delivery": delivery}})
     return {"month": month, "to_email": to_email,
             "delivery": delivery, "summary": summary}
 

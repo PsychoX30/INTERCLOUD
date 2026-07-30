@@ -293,18 +293,33 @@ const SEVERITY_STYLES = {
 
 const NotificationsBell = () => {
   const [alerts, setAlerts] = useState([]);
+  const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
     const load = () =>
       api.get("/admin/notifications")
-        .then((r) => { if (alive) setAlerts(r.data?.alerts || []); })
+        .then((r) => {
+          if (!alive) return;
+          setAlerts(r.data?.alerts || []);
+          setUnread(r.data?.unread ?? (r.data?.alerts || []).length);
+        })
         .catch(() => {});
     load();
     const t = setInterval(load, 60000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  const markRead = async (keys) => {
+    const ks = keys.filter(Boolean);
+    if (!ks.length) return;
+    setAlerts((prev) => prev.map((a) => (ks.includes(a.key) ? { ...a, read: true } : a)));
+    setUnread((u) => Math.max(0, u - ks.length));
+    try { await api.post("/admin/notifications/mark-read", { keys: ks }); } catch (e) { /* best-effort */ }
+  };
+
+  const unreadKeys = alerts.filter((a) => !a.read).map((a) => a.key);
 
   return (
     <div className="relative">
@@ -315,12 +330,12 @@ const NotificationsBell = () => {
         className="relative h-9 w-9 rounded-lg flex items-center justify-center text-slate-500 hover:text-[#0a2350] hover:bg-slate-100 transition-colors"
       >
         <Bell className="h-4 w-4" />
-        {alerts.length > 0 && (
+        {unread > 0 && (
           <span
             data-testid="admin-notif-count"
             className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center"
           >
-            {alerts.length > 9 ? "9+" : alerts.length}
+            {unread > 9 ? "9+" : unread}
           </span>
         )}
       </button>
@@ -331,21 +346,39 @@ const NotificationsBell = () => {
             className="absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto bg-white rounded-xl shadow-2xl border border-slate-200 z-50 p-2"
             data-testid="admin-notif-dropdown"
           >
-            <div className="px-2 py-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-              Notifikasi ({alerts.length})
+            <div className="px-2 py-1.5 flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500">
+                Notifikasi ({unread} baru)
+              </span>
+              {unreadKeys.length > 0 && (
+                <button
+                  onClick={() => markRead(unreadKeys)}
+                  className="text-[11px] font-bold text-[#0a2350] hover:text-[#f5b120]"
+                  data-testid="admin-notif-mark-all"
+                >
+                  Tandai semua dibaca
+                </button>
+              )}
             </div>
             {alerts.length === 0 ? (
               <div className="px-2 py-4 text-sm text-slate-500 text-center">Tidak ada notifikasi.</div>
             ) : (
               alerts.map((a, i) => (
                 <Link
-                  key={i}
+                  key={a.key || i}
                   to={a.link || "#"}
-                  onClick={() => setOpen(false)}
-                  className={`block rounded-lg border px-3 py-2 mb-1.5 text-xs hover:opacity-80 transition-opacity ${SEVERITY_STYLES[a.severity] || SEVERITY_STYLES.info}`}
+                  onClick={() => { if (!a.read) markRead([a.key]); setOpen(false); }}
+                  className={`block rounded-lg border px-3 py-2 mb-1.5 text-xs hover:opacity-80 transition-opacity ${
+                    a.read
+                      ? "bg-white border-slate-200 text-slate-500"
+                      : SEVERITY_STYLES[a.severity] || SEVERITY_STYLES.info
+                  }`}
                   data-testid={`admin-notif-item-${a.type}`}
                 >
-                  <div className="font-bold">{a.title}</div>
+                  <div className="font-bold flex items-center gap-1.5">
+                    {!a.read && <span className="h-1.5 w-1.5 rounded-full bg-current shrink-0" data-testid="admin-notif-unread-dot" />}
+                    {a.title}
+                  </div>
                   <div className="mt-0.5 opacity-80">{a.detail}</div>
                 </Link>
               ))

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Download, Plus, Trash2, Lock, TrendingUp, Wallet, HandCoins, Users, ShoppingCart, ReceiptText, Percent, Save, Loader2, Activity, FileText } from "lucide-react";
+import { Download, Plus, Trash2, Lock, TrendingUp, Wallet, HandCoins, Users, ShoppingCart, ReceiptText, Percent, Save, Loader2, Activity, FileText, Send, Mail } from "lucide-react";
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip as ReTooltip, CartesianGrid, ResponsiveContainer, Legend } from "recharts";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
@@ -434,6 +434,7 @@ const ReportsPane = ({ dlUrl }) => {
 
   return (
     <div className="space-y-4">
+      <MonthlyArchivePane />
       <Card className="p-5">
         <div className="font-bold text-[#0a2350] mb-3">Download by month (last 12 months)</div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -489,6 +490,85 @@ const ReportsPane = ({ dlUrl }) => {
         </Card>
       )}
     </div>
+  );
+};
+
+const MonthlyArchivePane = () => {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = () => api.get("/admin/reports/monthly").then((r) => setRows(r.data)).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+
+  const generate = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const { data } = await api.post("/admin/reports/monthly/send", {});
+      setMsg({ ok: true, text: `Laporan ${data.month} dibuat & dikirim ke ${data.to_email} (${data.delivery?.status}).` });
+      load();
+    } catch (e) {
+      setMsg({ ok: false, text: e?.response?.data?.detail || "Gagal membuat laporan" });
+    } finally { setBusy(false); }
+  };
+
+  const pdfUrl = (month) => `${BASE}/api/portal/admin/reports/monthly/${month}/pdf?token=${encodeURIComponent(getToken() || "")}`;
+
+  return (
+    <Card className="p-5" data-testid="monthly-archive-pane">
+      <div className="flex items-center justify-between mb-1">
+        <div className="font-bold text-[#0a2350]">Arsip Laporan Bulanan (tagihan + trafik)</div>
+        <button onClick={generate} disabled={busy} className={btnSecondary} data-testid="monthly-archive-generate">
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+          {busy ? "Memproses…" : "Generate & kirim bulan lalu"}
+        </button>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">Dikirim otomatis ke email support setiap tanggal 1 pukul 06:30 WIB dan diarsipkan di sini sebagai PDF.</p>
+      {msg && (
+        <div className={`mb-3 text-xs rounded-lg px-2.5 py-1.5 border ${msg.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`} data-testid="monthly-archive-msg">
+          {msg.text}
+        </div>
+      )}
+      {rows === null ? <Loading /> : rows.length === 0 ? (
+        <p className="text-sm text-slate-500">Belum ada arsip. Klik "Generate &amp; kirim bulan lalu" untuk membuat laporan pertama.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-sm" data-testid="monthly-archive-table">
+            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+              <tr>
+                <th className="px-4 py-3 text-left">Periode</th>
+                <th className="px-4 py-3 text-right">Invoice terbit</th>
+                <th className="px-4 py-3 text-right">Dibayar</th>
+                <th className="px-4 py-3 text-right">Trafik (GB in/out)</th>
+                <th className="px-4 py-3 text-left">Dikirim ke</th>
+                <th className="px-4 py-3 text-left">Status</th>
+                <th className="px-4 py-3 text-right">PDF</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-slate-100" data-testid={`monthly-archive-row-${r.month}`}>
+                  <td className="px-4 py-3 font-bold text-[#0a2350]">{r.month}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{r.summary?.invoices_issued ?? 0} · {idr(r.summary?.invoices_issued_total)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-emerald-700">{r.summary?.invoices_paid ?? 0} · {idr(r.summary?.invoices_paid_total)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{r.summary?.traffic_in_gb ?? 0} / {r.summary?.traffic_out_gb ?? 0}</td>
+                  <td className="px-4 py-3 text-xs text-slate-500">{r.to_email}</td>
+                  <td className="px-4 py-3">
+                    <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${r.delivery_status === "sent" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                      {r.delivery_status || "-"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <a href={pdfUrl(r.month)} className="inline-flex items-center gap-1 text-[#0a2350] hover:text-[#f5b120] font-bold text-xs" data-testid={`monthly-archive-pdf-${r.month}`}>
+                      <Download className="h-3.5 w-3.5" /> Unduh
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
   );
 };
 

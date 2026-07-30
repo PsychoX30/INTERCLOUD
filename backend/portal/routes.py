@@ -1777,19 +1777,50 @@ async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
     return alerts
 
 
+def _alert_key(a: dict) -> str:
+    import hashlib
+    raw = f"{a.get('type', '')}|{a.get('title', '')}|{a.get('detail', '')}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
 @router.get("/admin/notifications")
 async def admin_notifications(severity: str | None = None, staff=Depends(get_current_staff)):
-    """Pusat Notifikasi dengan filter prioritas (?severity=danger|warning)."""
+    """Pusat Notifikasi dengan filter prioritas (?severity=danger|warning) +
+    status baca per staf (koleksi notification_reads)."""
     db = await _get_db()
     scope_user_ids = None
     if staff["role"] == "sales":
         scope_user_ids = [ObjectId(cid) for cid in staff.get("assigned_client_ids") or []]
     alerts = await _build_admin_alerts(db, staff, scope_user_ids)
+    for a in alerts:
+        a["key"] = _alert_key(a)
+    read_set = {r["key"] for r in await db.notification_reads.find(
+        {"staff_id": staff["id"]}, {"key": 1}).to_list(2000)}
+    for a in alerts:
+        a["read"] = a["key"] in read_set
     if severity:
         if severity not in ("danger", "warning", "info"):
             raise HTTPException(status_code=400, detail="severity harus danger, warning, atau info")
         alerts = [a for a in alerts if a["severity"] == severity]
-    return {"alerts": alerts, "count": len(alerts)}
+    return {"alerts": alerts, "count": len(alerts),
+            "unread": sum(1 for a in alerts if not a["read"])}
+
+
+@router.post("/admin/notifications/mark-read")
+async def admin_notifications_mark_read(payload: dict, staff=Depends(get_current_staff)):
+    """Tandai notifikasi sudah dibaca. Body: {keys: [..]}"""
+    keys = payload.get("keys") or []
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=400, detail="keys (list) wajib diisi")
+    db = await _get_db()
+    now = _now()
+    for k in keys[:200]:
+        await db.notification_reads.update_one(
+            {"staff_id": staff["id"], "key": str(k)},
+            {"$set": {"read_at": now}}, upsert=True)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    await db.notification_reads.delete_many({"read_at": {"$lt": cutoff}})
+    return {"ok": True, "marked": len(keys[:200])}
 
 
 @router.post("/admin/reports/monthly/send")
@@ -1800,6 +1831,52 @@ async def admin_send_monthly_report(payload: dict = None, admin=Depends(get_curr
     from portal import emails as _em
     month = ((payload or {}).get("month") or "").strip() or None
     return await _em.run_monthly_report(db, month=month)
+
+
+@router.get("/admin/reports/monthly")
+async def admin_list_monthly_reports(admin=Depends(get_current_admin)):
+    """Arsip laporan bulanan (terbaru dulu) untuk menu Finance."""
+    db = await _get_db()
+    docs = await db.monthly_reports.find({}).sort("month", -1).to_list(60)
+    return [{"id": str(d["_id"]),
+             "month": d.get("month", ""),
+             "generated_at": d.get("generated_at", ""),
+             "to_email": d.get("to_email", ""),
+             "delivery_status": (d.get("last_delivery") or {}).get("status", ""),
+             "summary": d.get("summary", {})} for d in docs]
+
+
+@router.get("/admin/reports/monthly/{month}/pdf")
+async def admin_monthly_report_pdf(month: str, admin=Depends(get_current_admin)):
+    """Unduh ulang arsip laporan bulanan sebagai PDF."""
+    db = await _get_db()
+    d = await db.monthly_reports.find_one({"month": month})
+    if not d:
+        raise HTTPException(status_code=404, detail="Arsip laporan tidak ditemukan")
+    from portal import emails as _em
+    html = _em.wrap_html(d.get("body_html", ""))
+    return Response(content=_render_pdf_bytes(html),
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="Laporan-Bulanan-{month}.pdf"'})
+
+
+@router.post("/admin/integrations-v2/smtp/send-test")
+async def integrations_v2_smtp_send_test(payload: dict = None, admin=Depends(get_current_admin)):
+    """Kirim email percobaan via SMTP tersimpan - verifikasi cepat produksi."""
+    db = await _get_db()
+    smtp = await iv2.get_settings(db, "smtp")
+    if not smtp or not smtp.get("enabled"):
+        raise HTTPException(status_code=400,
+                            detail="Integrasi SMTP belum aktif. Simpan & aktifkan konfigurasi SMTP terlebih dahulu.")
+    to_email = ((payload or {}).get("to") or "").strip() or admin.get("email", "")
+    from portal import emails as _em
+    inner = ("<p>Email percobaan dari <b>Intercloud Portal</b>.</p>"
+             f"<p>Dikirim oleh <b>{admin.get('name', '')}</b> ({admin.get('email', '')}) pada "
+             f"{datetime.now(timezone.utc).isoformat()[:19]} UTC.</p>"
+             "<p>Jika Anda menerima email ini, konfigurasi SMTP produksi Anda bekerja dengan baik.</p>")
+    result = await _em.deliver(db, to_email=to_email, subject="Uji SMTP - Intercloud Portal",
+                               body_html=_em.wrap_html(inner), event_key="smtp_test")
+    return {"ok": result.get("status") == "sent", "to": to_email, **result}
 
 
 @router.get("/admin/dashboard")

@@ -5,7 +5,7 @@ import {
 } from "../ui";
 import {
   Save, Zap, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp,
-  Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck,
+  Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck, Send,
 } from "lucide-react";
 
 /* Unified Integrations page - replaces the old split "Integrations" + "Real APIs".
@@ -162,6 +162,21 @@ const IntegrationCard = ({ provider, spec, initial, onSaved }) => {
     } finally { setBusy(false); }
   };
 
+  const sendTestEmail = async () => {
+    setBusy(true); setTestResult(null);
+    try {
+      const { data } = await api.post("/admin/integrations-v2/smtp/send-test", {});
+      setTestResult({
+        ok: data.ok,
+        message: data.ok
+          ? `Email percobaan terkirim ke ${data.to}. Cek inbox untuk memastikan.`
+          : (data.error || data.status || "Gagal mengirim email percobaan"),
+      });
+    } catch (e) {
+      setTestResult({ ok: false, message: e?.response?.data?.detail || "Gagal mengirim email percobaan" });
+    } finally { setBusy(false); }
+  };
+
   return (
     <Card className="p-0 overflow-hidden" data-testid={`integration-${provider}`}>
       <button
@@ -221,6 +236,12 @@ const IntegrationCard = ({ provider, spec, initial, onSaved }) => {
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
               Test connection
             </button>
+            {provider === "smtp" && (
+              <button onClick={sendTestEmail} disabled={busy} className={btnSecondary} data-testid="smtp-send-test-btn">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                Kirim email percobaan
+              </button>
+            )}
             <button onClick={save} disabled={busy} className={btnPrimary} data-testid={`${provider}-save-btn`}>
               <Save className="h-4 w-4" /> Save
             </button>
