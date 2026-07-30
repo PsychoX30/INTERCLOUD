@@ -331,22 +331,38 @@ fi
 # ------------------------------------------------------------------
 # 3. Node.js 20 LTS + Yarn (classic)
 # ------------------------------------------------------------------
-# Always rebuild the NodeSource repo from scratch: older installers
-# (setup_20.x) leave a duplicate .list pointing at /usr/share/keyrings with a
-# stale key, which causes both "Conflicting values set for option Signed-By"
-# and "NO_PUBKEY 2F59B5F99B1BE0B4". Clean slate, then write ONE definition.
-log "Configuring NodeSource repo (Node.js 20 LTS)"
-grep -RlsE "deb\.nodesource\.com" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f
+# Best practice: PURGE every trace of old NodeSource configs first (any file
+# format, BOTH keyring locations, legacy apt-key entries), then let the
+# OFFICIAL NodeSource setup script write the single canonical repo definition.
+# This kills both failure modes seen in the field:
+#   - "Conflicting values set for option Signed-By ..." (two repo files
+#     pointing at different keyrings: /etc/apt/keyrings vs /usr/share/keyrings)
+#   - "NO_PUBKEY 2F59B5F99B1BE0B4" (stale or missing keyring)
+log "Purging any stale NodeSource apt configuration"
+grep -RilsE "deb\.nodesource\.com" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f
+rm -f /etc/apt/sources.list.d/nodesource.list \
+      /etc/apt/sources.list.d/nodesource.sources \
+      /etc/apt/sources.list.d/nodejs.list
 sed -i '/deb\.nodesource\.com/d' /etc/apt/sources.list 2>/dev/null || true
-rm -f /usr/share/keyrings/nodesource.gpg /etc/apt/keyrings/nodesource.gpg
-install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-  | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
-chmod 644 /etc/apt/keyrings/nodesource.gpg
-gpg --show-keys --with-colons /etc/apt/keyrings/nodesource.gpg 2>/dev/null \
-  | grep -q "2F59B5F99B1BE0B4" || die "NodeSource GPG key download looks wrong - aborting"
-echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
-  > /etc/apt/sources.list.d/nodesource.list
+rm -f /usr/share/keyrings/nodesource.gpg \
+      /usr/share/keyrings/nodesource-repo.gpg \
+      /etc/apt/keyrings/nodesource.gpg \
+      /etc/apt/keyrings/nodesource-repo.gpg.key \
+      /etc/apt/trusted.gpg.d/nodesource.gpg \
+      /etc/apt/trusted.gpg.d/nodesource.asc
+if command -v apt-key >/dev/null 2>&1; then
+  # Legacy apt-key entries from very old installs (pre signed-by era)
+  apt-key del 1655A0AB68576280 >/dev/null 2>&1 || true
+  apt-key del 2F59B5F99B1BE0B4 >/dev/null 2>&1 || true
+fi
+
+log "Adding NodeSource repo via official setup script (Node.js 20 LTS)"
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+  || die "NodeSource setup script failed. Check network access to deb.nodesource.com then re-run this installer."
+
+# Sanity: exactly ONE repo definition must exist after the setup script ran.
+NS_COUNT=$(grep -RlsE "deb\.nodesource\.com" /etc/apt/sources.list.d/ 2>/dev/null | wc -l)
+[[ "$NS_COUNT" -eq 1 ]] || die "Expected exactly 1 NodeSource repo file, found $NS_COUNT. Inspect /etc/apt/sources.list.d/ then re-run."
 apt-get update -y
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | cut -c2-3)" -lt 20 ]]; then
   log "Installing Node.js 20"
@@ -784,18 +800,22 @@ for i in {1..40}; do
 done
 
 log "Verifying admin login"
+HC_LOGIN="fail"; HC_LOGIN_DETAIL="login gagal"
 if LOGIN_HTTP=$(curl -sf -o /tmp/ic_login.json -w "%{http_code}" \
      -X POST "http://127.0.0.1:8001/api/portal/auth/login" \
      -H "Content-Type: application/json" \
      -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}" 2>/dev/null); then
   if command -v jq >/dev/null 2>&1 && jq -e '.token' /tmp/ic_login.json >/dev/null 2>&1; then
     log "Admin login OK (HTTP $LOGIN_HTTP)"
+    HC_LOGIN="ok"; HC_LOGIN_DETAIL="login admin OK (HTTP $LOGIN_HTTP, token diterima)"
   else
     warn "Login returned $LOGIN_HTTP but no token — seed may have failed. Check logs."
+    HC_LOGIN="warn"; HC_LOGIN_DETAIL="HTTP $LOGIN_HTTP tanpa token - cek seed admin di log backend"
   fi
 else
   warn "Admin login attempt failed. The admin seeder runs on the FIRST backend boot only;"
   warn "if this is a re-install with a pre-existing DB, use the password that was set originally."
+  HC_LOGIN="warn"; HC_LOGIN_DETAIL="login gagal - bila re-install dgn DB lama, pakai password asli"
 fi
 rm -f /tmp/ic_login.json
 
@@ -814,7 +834,106 @@ else
 fi
 
 # ------------------------------------------------------------------
-# 11. Done
+# 11. Post-install health check - ringkasan kesehatan sistem
+# ------------------------------------------------------------------
+HC_PASS=0; HC_WARN=0; HC_FAIL=0; HC_ROWS=""
+hc_add() {  # $1=OK|WARN|FAIL  $2=nama  $3=detail
+  local mark color
+  case "$1" in
+    OK)   mark="[ OK ]"; color="$GREEN";  HC_PASS=$((HC_PASS+1)) ;;
+    WARN) mark="[WARN]"; color="$YELLOW"; HC_WARN=$((HC_WARN+1)) ;;
+    *)    mark="[FAIL]"; color="$RED";    HC_FAIL=$((HC_FAIL+1)) ;;
+  esac
+  HC_ROWS+="  ${color}${mark}${RESET} $(printf '%-16s' "$2") $3\n"
+}
+
+log "Menjalankan cek kesehatan pasca-install"
+
+# MongoDB
+if wait_for_mongod 5; then
+  hc_add OK "MongoDB" "service aktif + ping OK (127.0.0.1:27017)"
+else
+  hc_add FAIL "MongoDB" "tidak merespons - cek: journalctl -u mongod -n 40"
+fi
+
+# Backend API
+if curl -fsS --max-time 8 "http://127.0.0.1:8001/api/" >/dev/null 2>&1; then
+  hc_add OK "Backend API" "merespons di 127.0.0.1:8001 (/api/)"
+else
+  hc_add FAIL "Backend API" "tidak merespons - cek: tail -50 /var/log/intercloud-backend.err.log"
+fi
+
+# Supervisor
+if supervisorctl status intercloud-backend 2>/dev/null | grep -q RUNNING; then
+  hc_add OK "Supervisor" "proses intercloud-backend RUNNING"
+else
+  hc_add FAIL "Supervisor" "backend tidak RUNNING - cek: supervisorctl status"
+fi
+
+# Login admin (hasil verifikasi step 10)
+case "$HC_LOGIN" in
+  ok)   hc_add OK   "Login Admin" "$HC_LOGIN_DETAIL" ;;
+  warn) hc_add WARN "Login Admin" "$HC_LOGIN_DETAIL" ;;
+  *)    hc_add FAIL "Login Admin" "$HC_LOGIN_DETAIL" ;;
+esac
+
+# Nginx + frontend statis
+if systemctl is-active --quiet nginx && curl -fsS --max-time 8 "http://127.0.0.1/" 2>/dev/null | grep -qi "<html"; then
+  hc_add OK "Nginx/Frontend" "aktif + SPA tersaji di port 80"
+elif systemctl is-active --quiet nginx; then
+  hc_add WARN "Nginx/Frontend" "nginx aktif tapi respons SPA tidak terdeteksi"
+else
+  hc_add FAIL "Nginx/Frontend" "nginx tidak aktif - cek: systemctl status nginx"
+fi
+
+# SSL / HTTPS
+SSL_CERT="/etc/letsencrypt/live/${PORTAL_DOMAIN}/cert.pem"
+if [[ -n "$PORTAL_DOMAIN" && -f "$SSL_CERT" ]]; then
+  SSL_EXP="$(openssl x509 -enddate -noout -in "$SSL_CERT" 2>/dev/null | cut -d= -f2)"
+  SSL_DAYS=$(( ( $(date -d "$SSL_EXP" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+  if (( SSL_DAYS > 21 )); then
+    hc_add OK "SSL/HTTPS" "cert Let's Encrypt valid, sisa ${SSL_DAYS} hari (auto-renew via certbot.timer)"
+  elif (( SSL_DAYS > 0 )); then
+    hc_add WARN "SSL/HTTPS" "cert kedaluwarsa dalam ${SSL_DAYS} hari - cek: systemctl status certbot.timer"
+  else
+    hc_add FAIL "SSL/HTTPS" "cert sudah kedaluwarsa - jalankan: certbot renew"
+  fi
+else
+  hc_add WARN "SSL/HTTPS" "belum ada cert - portal berjalan HTTP only (lihat langkah certbot di atas)"
+fi
+
+# Disk
+DISK_PCT=$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
+DISK_FREE=$(df -hP / | awk 'NR==2 {print $4}')
+if (( DISK_PCT < 80 )); then
+  hc_add OK "Disk" "terpakai ${DISK_PCT}% - ${DISK_FREE} bebas"
+elif (( DISK_PCT < 90 )); then
+  hc_add WARN "Disk" "terpakai ${DISK_PCT}% - ${DISK_FREE} bebas"
+else
+  hc_add FAIL "Disk" "hampir penuh (${DISK_PCT}%) - bersihkan segera"
+fi
+
+# PDF engine (step 10b memakai die, jadi bila sampai sini pasti lolos)
+hc_add OK "PDF Engine" "WeasyPrint render OK (invoice/credit note siap)"
+
+echo
+echo "${BOLD}============================================================"
+echo " CEK KESEHATAN PASCA-INSTALL"
+echo "============================================================${RESET}"
+echo -e "$HC_ROWS"
+if (( HC_FAIL > 0 )); then
+  echo "  ${BOLD}${RED}Hasil: ${HC_FAIL} GAGAL, ${HC_WARN} perhatian, ${HC_PASS} OK${RESET}"
+  echo "  Perbaiki item FAIL di atas, lalu jalankan ulang installer bila perlu."
+elif (( HC_WARN > 0 )); then
+  echo "  ${BOLD}${YELLOW}Hasil: SEHAT dengan ${HC_WARN} catatan (${HC_PASS} OK)${RESET}"
+else
+  echo "  ${BOLD}${GREEN}Hasil: SEMUA CEK LULUS (${HC_PASS}/${HC_PASS})${RESET}"
+fi
+echo "  Status yang sama bisa dipantau kapan saja lewat portal:"
+echo "  ${BOLD}Admin > Diagnostics > System Health${RESET}"
+
+# ------------------------------------------------------------------
+# 12. Done
 # ------------------------------------------------------------------
 IP=$(hostname -I | awk '{print $1}')
 PROTO="http"
@@ -850,6 +969,7 @@ Automated in this run:
   ✓ Daily backup cron (03:15 UTC, 14-day retention → /var/backups/intercloud)
   ✓ fail2ban jails (SSH + portal auth brute-force)
   ✓ UFW firewall (22 / 80 / 443)
+  ✓ Post-install health check (ringkasan di atas + Admin > Diagnostics > System Health)
 $(if [[ "$PROTO" == "https" ]]; then echo "  ✓ Let's Encrypt HTTPS + auto-renewal via certbot.timer"; fi)
 
 Next steps:

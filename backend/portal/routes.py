@@ -10788,3 +10788,166 @@ async def ticket_device_options(user=Depends(get_current_user)):
     db = await _get_db()
     docs = await db.mikrotik_devices.find({}, {"name": 1}).sort("name", 1).to_list(500)
     return [{"id": str(d["_id"]), "name": d.get("name") or "unnamed"} for d in docs]
+
+
+# ---------- System Health (Diagnostics - System Health + verifikasi pasca-install) ----------
+import time as _hc_time  # noqa: E402
+import shutil as _hc_shutil  # noqa: E402
+import ssl as _hc_ssl  # noqa: E402
+import socket as _hc_socket  # noqa: E402
+import subprocess as _hc_subprocess  # noqa: E402
+import asyncio as _hc_asyncio  # noqa: E402
+
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+
+
+def _hc_row(key, name, status, detail, **metrics):
+    return {"key": key, "name": name, "status": status, "detail": detail, "metrics": metrics}
+
+
+def _hc_ssl_days_left(host: str, port: int = 443, timeout: float = 6.0):
+    ctx = _hc_ssl.create_default_context()
+    with _hc_socket.create_connection((host, port), timeout=timeout) as sock:
+        with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+            cert = ssock.getpeercert()
+    expires = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    return (expires - datetime.now(timezone.utc)).days, expires.date().isoformat()
+
+
+def _hc_systemd_state(unit: str) -> str:
+    try:
+        r = _hc_subprocess.run(["systemctl", "is-active", unit],
+                               capture_output=True, text=True, timeout=5)
+        state = (r.stdout or "").strip()
+        if not state or "not been booted" in (r.stderr or ""):
+            return "unavailable"
+        return state
+    except Exception:
+        return "unavailable"
+
+
+@router.get("/admin/system/health")
+async def admin_system_health(admin=Depends(get_current_admin)):
+    """Kesehatan live host + aplikasi: DB, disk, memori, CPU, SSL, scheduler,
+    service systemd. Dipakai di Admin - Diagnostics - System Health dan untuk
+    verifikasi setelah scripts/install.sh selesai."""
+    db = await _get_db()
+    checks = []
+
+    try:
+        t0 = _hc_time.perf_counter()
+        await db.command("ping")
+        latency_ms = round((_hc_time.perf_counter() - t0) * 1000, 1)
+        data_mb = None
+        try:
+            stats = await db.command("dbStats")
+            data_mb = round((stats.get("dataSize") or 0) / (1024 * 1024), 1)
+        except Exception:  # noqa: BLE001
+            pass
+        detail = f"Ping {latency_ms} ms"
+        if data_mb is not None:
+            detail += f" - data {data_mb} MB"
+        checks.append(_hc_row("database", "MongoDB", "ok" if latency_ms < 250 else "warn",
+                              detail, latency_ms=latency_ms, data_mb=data_mb))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_hc_row("database", "MongoDB", "fail", f"Ping gagal: {e}"))
+
+    try:
+        du = _hc_shutil.disk_usage("/")
+        pct = round(du.used / du.total * 100, 1)
+        free_gb = round(du.free / 1024 ** 3, 1)
+        total_gb = round(du.total / 1024 ** 3, 1)
+        status = "ok" if pct < 80 else ("warn" if pct < 90 else "fail")
+        checks.append(_hc_row("disk", "Disk", status,
+                              f"{pct}% terpakai - {free_gb} GB bebas dari {total_gb} GB",
+                              used_percent=pct, free_gb=free_gb, total_gb=total_gb))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_hc_row("disk", "Disk", "fail", str(e)))
+
+    try:
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                if v.strip():
+                    mem[k.strip()] = int(v.strip().split()[0])
+        total_mb = round(mem["MemTotal"] / 1024)
+        avail_mb = round(mem.get("MemAvailable", 0) / 1024)
+        pct = round((total_mb - avail_mb) / total_mb * 100, 1) if total_mb else 0
+        status = "ok" if pct < 85 else ("warn" if pct < 95 else "fail")
+        checks.append(_hc_row("memory", "Memori", status,
+                              f"{pct}% terpakai - {avail_mb} MB tersedia dari {total_mb} MB",
+                              used_percent=pct, available_mb=avail_mb, total_mb=total_mb))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_hc_row("memory", "Memori", "warn", f"Tidak terbaca: {e}"))
+
+    try:
+        load1, load5, load15 = os.getloadavg()
+        cores = os.cpu_count() or 1
+        ratio = load5 / cores
+        status = "ok" if ratio < 0.8 else ("warn" if ratio < 1.5 else "fail")
+        checks.append(_hc_row("cpu", "CPU Load", status,
+                              f"load {load1:.2f} / {load5:.2f} / {load15:.2f} ({cores} core)",
+                              load1=round(load1, 2), load5=round(load5, 2),
+                              load15=round(load15, 2), cores=cores))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_hc_row("cpu", "CPU Load", "warn", f"Tidak terbaca: {e}"))
+
+    origin = (os.environ.get("REACT_APP_BACKEND_URL") or "").strip().rstrip("/")
+    if origin.startswith("https://"):
+        host = origin[8:].split("/")[0].split(":")[0]
+        try:
+            days, exp = await _hc_asyncio.wait_for(
+                _hc_asyncio.to_thread(_hc_ssl_days_left, host), timeout=10)
+            status = "ok" if days > 21 else ("warn" if days > 7 else "fail")
+            checks.append(_hc_row("ssl", "SSL / HTTPS", status,
+                                  f"{host} - sisa {days} hari (exp {exp})",
+                                  days_left=days, host=host, expires=exp))
+        except Exception as e:  # noqa: BLE001
+            checks.append(_hc_row("ssl", "SSL / HTTPS", "warn",
+                                  f"{host} - cek gagal: {type(e).__name__}", host=host))
+    else:
+        checks.append(_hc_row("ssl", "SSL / HTTPS", "off",
+                              "Portal berjalan tanpa HTTPS (HTTP only)"))
+
+    try:
+        from portal import emails as _hc_emails
+        sched = getattr(_hc_emails, "_scheduler", None)
+        if sched is not None and getattr(sched, "running", False):
+            jobs = len(sched.get_jobs())
+            checks.append(_hc_row("scheduler", "Scheduler", "ok",
+                                  f"Aktif - {jobs} job terjadwal (reminder, laporan, backup)",
+                                  jobs=jobs))
+        else:
+            checks.append(_hc_row("scheduler", "Scheduler", "warn",
+                                  "Tidak berjalan di proses ini"))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_hc_row("scheduler", "Scheduler", "warn", str(e)))
+
+    up = datetime.now(timezone.utc) - _PROCESS_STARTED_AT
+    days_u, rem = divmod(int(up.total_seconds()), 86400)
+    hrs, rem = divmod(rem, 3600)
+    mins = rem // 60
+    if days_u:
+        uptxt = f"{days_u} hari {hrs} jam"
+    elif hrs:
+        uptxt = f"{hrs} jam {mins} menit"
+    else:
+        uptxt = f"{mins} menit"
+    checks.append(_hc_row("uptime", "Backend Uptime", "ok",
+                          f"Berjalan {uptxt} (sejak {_PROCESS_STARTED_AT.strftime('%Y-%m-%d %H:%M UTC')})",
+                          seconds=int(up.total_seconds())))
+
+    for unit, label in (("mongod", "Service mongod"), ("nginx", "Service nginx")):
+        state = await _hc_asyncio.to_thread(_hc_systemd_state, unit)
+        if state == "unavailable":
+            continue
+        checks.append(_hc_row(f"svc_{unit}", label,
+                              "ok" if state == "active" else "fail",
+                              f"systemd: {state}", state=state))
+
+    overall = ("fail" if any(c["status"] == "fail" for c in checks)
+               else "warn" if any(c["status"] == "warn" for c in checks) else "ok")
+    return {"generated_at": datetime.now(timezone.utc).isoformat(),
+            "overall": overall, "checks": checks}
+

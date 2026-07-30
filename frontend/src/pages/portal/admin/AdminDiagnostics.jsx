@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, Card, btnPrimary, inputClass, labelClass } from "../ui";
+import { SystemHealthPane } from "./SystemHealthPane";
 import {
   TerminalSquare, Loader2, PlayCircle, Copy, Signal, Route, Search,
-  Info, Globe2, Radar, Shield, AlertTriangle, Activity,
+  Info, Globe2, Radar, Shield, AlertTriangle, Activity, HeartPulse,
 } from "lucide-react";
 
 const TOOLS = [
@@ -21,6 +22,7 @@ const RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "NS", "TXT", "SOA", "PTR", "AN
 const PROTOCOLS = ["any", "tcp", "udp", "icmp", "gre", "esp", "ah", "ospf"];
 
 const AdminDiagnostics = () => {
+  const [view, setView] = useState("tools");
   const [tool, setTool] = useState("ping");
   const [target, setTarget] = useState("google.com");
   const [record, setRecord] = useState("A");
@@ -111,10 +113,36 @@ const AdminDiagnostics = () => {
   return (
     <div>
       <PageHeader
-        title="Diagnostic Tools"
-        subtitle="Real network diagnostics executed from the portal host + MikroTik Torch via the configured RouterOS integration."
+        title="Diagnostics"
+        subtitle="Network diagnostics dari host portal + status kesehatan sistem (DB, disk, SSL, service)."
       />
 
+      {/* View toggle: Diagnostic Tools | System Health */}
+      <div className="flex gap-2 mb-5" data-testid="diag-view-toggle">
+        {[
+          { key: "tools", label: "Diagnostic Tools", Icon: TerminalSquare },
+          { key: "health", label: "System Health", Icon: HeartPulse },
+        ].map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setView(key)}
+            data-testid={`diag-view-${key}`}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border text-sm font-bold transition-colors ${
+              view === key
+                ? "border-[#0a2350] bg-[#0a2350] text-white shadow-sm"
+                : "border-slate-200 bg-white text-[#0a2350] hover:border-[#f5b120]"
+            }`}
+          >
+            <Icon className="h-4 w-4" /> {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "health" ? (
+        <SystemHealthPane />
+      ) : (
+        <>
       {/* Tool picker */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-5" data-testid="diag-tool-picker">
         {TOOLS.map((t) => {
@@ -301,6 +329,8 @@ const AdminDiagnostics = () => {
 {busy ? "Running…\n" : (out || "// Output will appear here after running a tool")}
         </pre>
       </Card>
+        </>
+      )}
     </div>
   );
 };
