@@ -3,6 +3,7 @@ import { api } from "../../portal/api";
 import { PageHeader, Card, btnPrimary, inputClass, labelClass } from "./ui";
 import { Lock, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
+import { TwoFactorPanel } from "./TwoFactorPanel";
 
 /**
  * Change-password screen - available to every logged-in role (client and staff).
@@ -77,6 +78,7 @@ const ChangePassword = () => {
             </button>
           </form>
         </Card>
+        <TwoFactorPanel />
       </div>
     </div>
   );

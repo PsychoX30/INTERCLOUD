@@ -545,7 +545,21 @@ const PrefixesTab = () => {
               </td>
               <td className="px-4 py-3 font-mono text-xs text-slate-500">{p.vlan}</td>
               <td className="px-4 py-3">{p.site}</td>
-              <td className="px-4 py-3 text-right">
+              <td className="px-4 py-3 text-right whitespace-nowrap">
+                {p.family === 4 && (
+                  <button className="text-emerald-700 hover:text-emerald-900 font-bold text-xs mr-3" data-testid={`prefix-allocate-${p.id}`}
+                    onClick={async () => {
+                      const hostname = window.prompt("Hostname untuk IP yang dialokasikan (opsional):", "");
+                      if (hostname === null) return;
+                      try {
+                        const r = await api.post(`/admin/dcim/prefixes/${p.id}/allocate`, { hostname });
+                        window.alert(`IP ${r.data.address} berhasil dialokasikan dari ${r.data.prefix}`);
+                        load();
+                      } catch (e) { window.alert(e?.response?.data?.detail || "Gagal alokasi IP"); }
+                    }}>
+                    Allocate IP
+                  </button>
+                )}
                 <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(p)}>Edit</button>
                 <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => del(p.id)}>×</button>
               </td>

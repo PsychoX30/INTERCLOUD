@@ -31,6 +31,21 @@ export const AuthProvider = ({ children }) => {
     try {
       const recaptcha_token = await getRecaptchaToken("login").catch(() => null);
       const { data } = await api.post("/auth/login", { email, password, recaptcha_token });
+      if (data.require_2fa) return { require_2fa: true, mfa_token: data.mfa_token };
+      setToken(data.token);
+      setUser(data.user);
+      return data.user;
+    } catch (e) {
+      const msg = formatApiError(e);
+      setError(msg);
+      throw new Error(msg);
+    }
+  }, []);
+
+  const loginTwoFA = useCallback(async (mfaToken, code) => {
+    setError(null);
+    try {
+      const { data } = await api.post("/auth/login/2fa", { mfa_token: mfaToken, code });
       setToken(data.token);
       setUser(data.user);
       return data.user;
@@ -63,7 +78,7 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, error, login, register, logout, refresh }}>
+    <AuthContext.Provider value={{ user, error, login, loginTwoFA, register, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   );

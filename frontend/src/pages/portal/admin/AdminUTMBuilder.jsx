@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from "react";
-import { PageHeader, Card, inputClass, labelClass, btnPrimary } from "../ui";
-import { Copy, CheckCircle2, Link2 } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { api } from "../../../portal/api";
+import { PageHeader, Card, inputClass, labelClass, btnPrimary, btnSecondary } from "../ui";
+import { Copy, CheckCircle2, Link2, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 const FIELDS = [
@@ -15,6 +16,9 @@ const AdminUTMBuilder = () => {
   const [base, setBase] = useState("https://intercloud-digital.com/");
   const [p, setP] = useState({ utm_source: "", utm_medium: "", utm_campaign: "", utm_term: "", utm_content: "" });
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState([]);
+  const loadSaved = () => api.get("/admin/utm-links").then((r) => setSaved(r.data)).catch(() => {});
+  useEffect(() => { loadSaved(); }, []);
 
   const result = useMemo(() => {
     let url;
@@ -35,6 +39,14 @@ const AdminUTMBuilder = () => {
     toast.success("Tagged URL copied to clipboard");
     setTimeout(() => setCopied(false), 1800);
   };
+
+  const saveLink = async () => {
+    if (!valid) return;
+    await api.post("/admin/utm-links", { url: result, base, params: p, label: p.utm_campaign });
+    toast.success("UTM link disimpan");
+    loadSaved();
+  };
+  const delLink = async (id) => { await api.delete(`/admin/utm-links/${id}`); loadSaved(); };
 
   return (
     <div data-testid="utm-builder-page">
@@ -71,14 +83,31 @@ const AdminUTMBuilder = () => {
             {copied ? <CheckCircle2 className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
             {copied ? "Copied!" : "Copy tagged URL"}
           </button>
+          <button onClick={saveLink} disabled={!valid} className={`${btnSecondary} mt-2 justify-center disabled:opacity-40`} data-testid="utm-save-btn">
+            <Save className="h-4 w-4" /> Simpan link
+          </button>
           <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 p-3 text-[11px] text-slate-500 leading-relaxed">
             <Link2 className="h-3.5 w-3.5 inline mr-1 text-[#f5b120]" />
             Convention: lowercase kebab-case values, consistent naming per channel
             (e.g. <code className="bg-white px-1 rounded">instagram / social / promo-colo-q3</code>).
-            No data is stored - this tool runs entirely in your browser.
           </div>
         </Card>
       </div>
+      {saved.length > 0 && (
+        <Card className="p-5 mt-4" data-testid="utm-saved-list">
+          <div className="text-sm font-extrabold text-[#0a2350] mb-3">Link tersimpan ({saved.length})</div>
+          <div className="divide-y divide-slate-100">
+            {saved.map((l) => (
+              <div key={l.id} className="py-2 flex items-center gap-3 text-sm">
+                <span className="font-mono text-xs text-[#0a2350] break-all flex-1">{l.url}</span>
+                <span className="text-[10px] text-slate-400 whitespace-nowrap">{l.created_by}</span>
+                <button onClick={() => { navigator.clipboard.writeText(l.url); toast.success("Disalin"); }} className="text-slate-500 hover:text-[#f5b120]" data-testid={`utm-copy-${l.id}`}><Copy className="h-4 w-4" /></button>
+                <button onClick={() => delLink(l.id)} className="text-slate-500 hover:text-red-600" data-testid={`utm-del-${l.id}`}><Trash2 className="h-4 w-4" /></button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 };

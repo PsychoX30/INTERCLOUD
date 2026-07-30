@@ -6,7 +6,7 @@ import {
   Send, Puzzle, Cloud, Menu, X, ChevronDown, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
-  History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2,
+  History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 
@@ -85,6 +85,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "media_library",    to: "/portal/admin/media-library",    label: "Media Library",    icon: Images,       testid: "nav-media-library",    roles: ["admin", "creative"] },
       { key: "content_calendar", to: "/portal/admin/content-calendar", label: "Content Calendar", icon: CalendarDays, testid: "nav-content-calendar", roles: ["admin", "creative"] },
       { key: "utm_builder",      to: "/portal/admin/utm-builder",      label: "UTM Builder",      icon: Link2,        testid: "nav-utm-builder",      roles: ["admin", "creative", "sales"] },
+      { key: "form_builder",     to: "/portal/admin/form-builder",     label: "Form Builder",     icon: FormInput,    testid: "nav-form-builder",     roles: ["admin", "creative", "sales"] },
     ],
   },
   {
@@ -130,9 +131,27 @@ const PortalLayout = ({ variant = "client" }) => {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const isAdmin = variant === "admin";
+  const impersonating = typeof window !== "undefined" && localStorage.getItem("ic_admin_return");
+
+  const returnToAdmin = () => {
+    const t = localStorage.getItem("ic_admin_return");
+    localStorage.removeItem("ic_admin_return");
+    localStorage.removeItem("ic_impersonating");
+    if (t) localStorage.setItem("ic_portal_token", t);
+    window.location.href = "/portal/admin/users";
+  };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-[#0a2350] ic-font flex">
+    <div className="min-h-screen bg-slate-50 text-[#0a2350] ic-font flex flex-col">
+      {impersonating && !isAdmin && (
+        <div className="sticky top-0 z-[60] bg-indigo-700 text-white px-4 py-2 flex items-center justify-center gap-3 text-sm" data-testid="impersonation-banner">
+          <span>Mode impersonasi: Anda melihat portal sebagai <b>{localStorage.getItem("ic_impersonating")}</b></span>
+          <button onClick={returnToAdmin} className="bg-white text-indigo-700 font-bold text-xs rounded-full px-3 py-1 hover:bg-indigo-50" data-testid="impersonation-return-btn">
+            Kembali ke Admin
+          </button>
+        </div>
+      )}
+      <div className="flex flex-1">
       {/* Sidebar */}
       <aside
         className={`fixed lg:sticky top-0 left-0 h-screen lg:self-start w-72 bg-[#0a2350] text-white z-50 transform transition-transform lg:transform-none ${
@@ -249,6 +268,7 @@ const PortalLayout = ({ variant = "client" }) => {
         <main className="flex-1 p-4 md:p-8 min-w-0">
           <Outlet />
         </main>
+      </div>
       </div>
     </div>
   );

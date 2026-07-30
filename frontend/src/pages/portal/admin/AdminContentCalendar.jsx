@@ -18,6 +18,7 @@ const STATUS_DOT = { draft: "bg-slate-400", scheduled: "bg-amber-500", published
 const AdminContentCalendar = () => {
   const [month, setMonth] = useState(() => startOfMonth(new Date()));
   const [rows, setRows] = useState(null);
+  const [holidays, setHolidays] = useState({});
   const [editing, setEditing] = useState(null); // null | "new" | entry
 
   const load = async () => {
@@ -25,6 +26,12 @@ const AdminContentCalendar = () => {
     const to = format(endOfWeek(endOfMonth(month), { weekStartsOn: 1 }), "yyyy-MM-dd");
     const r = await api.get(`/admin/content-calendar?date_from=${from}&date_to=${to}`);
     setRows(r.data || []);
+    try {
+      const h = await api.get(`/admin/content-calendar/holidays?year=${month.getFullYear()}`);
+      const map = {};
+      (h.data.holidays || []).forEach((x) => { map[x.date] = x.name; });
+      setHolidays(map);
+    } catch {}
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [month]);
 
@@ -83,10 +90,15 @@ const AdminContentCalendar = () => {
             const entries = byDay[k] || [];
             const today = isSameDay(d, new Date());
             return (
-              <div key={k} className={`bg-white min-h-[92px] p-1.5 ${!isSameMonth(d, month) ? "opacity-40" : ""}`} data-testid={`calendar-day-${k}`}>
-                <div className={`text-[11px] font-bold mb-1 ${today ? "inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#f5b120] text-[#0a2350]" : "text-slate-500"}`}>
+              <div key={k} className={`min-h-[92px] p-1.5 ${holidays[k] ? "bg-red-50/70" : "bg-white"} ${!isSameMonth(d, month) ? "opacity-40" : ""}`} data-testid={`calendar-day-${k}`}>
+                <div className={`text-[11px] font-bold mb-1 ${today ? "inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#f5b120] text-[#0a2350]" : holidays[k] ? "text-red-600" : "text-slate-500"}`}>
                   {format(d, "d")}
                 </div>
+                {holidays[k] && (
+                  <div className="mb-1 px-1.5 py-0.5 rounded-md bg-red-100 border border-red-200 text-red-700 text-[9px] font-bold truncate" title={holidays[k]} data-testid={`calendar-holiday-${k}`}>
+                    {holidays[k]}
+                  </div>
+                )}
                 <div className="space-y-1">
                   {entries.map((e) => {
                     const meta = TYPE_META[e.type] || TYPE_META.article;

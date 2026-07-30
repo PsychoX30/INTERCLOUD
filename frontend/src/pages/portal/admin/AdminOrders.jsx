@@ -86,7 +86,14 @@ const AdminOrders = () => {
   );
 };
 
-const OrderDetail = ({ order: o, onClose }) => (
+const OrderDetail = ({ order: o, onClose }) => {
+  const [notes, setNotes] = useState(o.notes || "");
+  const [saving, setSaving] = useState(false);
+  const saveNotes = async () => {
+    setSaving(true);
+    try { await api.put(`/admin/orders/${o.id}`, { notes }); o.notes = notes; } finally { setSaving(false); }
+  };
+  return (
   <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
     <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col" data-testid="order-detail-modal">
       <div className="p-6 bg-[#0a2350] text-white flex items-start justify-between">
@@ -129,7 +136,15 @@ const OrderDetail = ({ order: o, onClose }) => (
             </div>
           </div>
         )}
-        {o.notes && <div className="text-sm text-slate-600 rounded-xl bg-slate-50 border border-slate-100 p-3">Catatan: {o.notes}</div>}
+        <div className="rounded-xl bg-slate-50 border border-slate-100 p-3" data-testid="order-edit-notes">
+          <div className="text-[10px] font-bold uppercase text-slate-500 mb-1">Catatan pesanan (bisa diubah)</div>
+          <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#f5b120]" data-testid="order-notes-input" />
+          <button onClick={saveNotes} disabled={saving || notes === (o.notes || "")}
+            className="mt-1 text-xs font-bold text-[#0a2350] bg-[#f5b120]/30 hover:bg-[#f5b120]/60 rounded-full px-3 py-1 disabled:opacity-40" data-testid="order-notes-save">
+            {saving ? "Menyimpan..." : "Simpan catatan"}
+          </button>
+        </div>
         <div className="rounded-2xl border border-slate-200 p-4" data-testid="order-detail-log">
           <div className="text-sm font-extrabold text-[#0a2350] mb-2">Provision log</div>
           {(o.provision_log || []).length === 0 ? <p className="text-xs text-slate-500">Belum ada log.</p> : (
@@ -147,6 +162,7 @@ const OrderDetail = ({ order: o, onClose }) => (
       </div>
     </div>
   </div>
-);
+  );
+};
 
 export default AdminOrders;

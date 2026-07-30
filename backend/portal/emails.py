@@ -1463,6 +1463,34 @@ def start_scheduler(db):
 
     # NOC probe retention/rollup - daily at 03:40 (same scheduler, alongside backup cron slot).
     sched.add_job(_noc_retention_tick, CronTrigger(hour=3, minute=40))
+
+    async def _backup_tick():
+        try:
+            import pathlib
+            from .backups import run_mongodump
+            blob, filename = await run_mongodump()
+            pathlib.Path("/app/backups").mkdir(parents=True, exist_ok=True)
+            with open(f"/app/backups/{filename}", "wb") as f:
+                f.write(blob)
+            await db.backup_history.insert_one({
+                "filename": filename, "path": f"/app/backups/{filename}",
+                "size_bytes": len(blob), "kind": "scheduled", "by": "scheduler",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            # Retensi: simpan 14 backup terjadwal terakhir
+            old = await db.backup_history.find({"kind": "scheduled"}).sort("created_at", -1).skip(14).to_list(50)
+            for o in old:
+                try:
+                    os.remove(o.get("path", ""))
+                except OSError:
+                    pass
+                await db.backup_history.delete_one({"_id": o["_id"]})
+            log.info(f"[backup-scheduler] daily backup ok: {filename} ({len(blob)} bytes)")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[backup-scheduler] tick failed: {e}")
+
+    # Backup database harian - 03:30 (same scheduler).
+    sched.add_job(_backup_tick, CronTrigger(hour=3, minute=30))
     sched.start()
     _scheduler = sched
     log.info("[email-scheduler] started (hourly reminder + renewal sweeps + NOC 5-min probes)")

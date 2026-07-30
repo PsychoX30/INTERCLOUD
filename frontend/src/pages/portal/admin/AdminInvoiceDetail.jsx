@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { api, money, shortDate, docUrl } from "../../../portal/api";
 import { StatusBadge, btnPrimary, btnSecondary } from "../ui";
-import { ArrowLeft, FileDown, Download, CheckCircle2, Trash2, ReceiptText, Copy } from "lucide-react";
+import { ArrowLeft, FileDown, Download, CheckCircle2, Trash2, ReceiptText, Copy, Send } from "lucide-react";
 import { toast } from "sonner";
 
 const CreditDeduction = ({ inv, credits, onChanged }) => {
@@ -60,7 +60,19 @@ export default function AdminInvoiceDetail() {
   const navigate = useNavigate();
   const [inv, setInv] = useState(null);
   const [credits, setCredits] = useState([]);
+  const [sending, setSending] = useState(false);
   const [err, setErr] = useState("");
+
+  const sendToClient = async () => {
+    setSending(true);
+    try {
+      const r = await api.post(`/admin/invoices/${id}/send`);
+      if (r.data.email_sent) toast.success(`Invoice terkirim via email ke ${r.data.email}`);
+      else toast.warning("Email gagal terkirim (cek konfigurasi SMTP)");
+      if (r.data.wa_link) window.open(r.data.wa_link, "_blank");
+    } catch (e) { toast.error(e?.response?.data?.detail || "Gagal mengirim invoice"); }
+    finally { setSending(false); }
+  };
 
   const load = () => {
     api.get(`/admin/invoices/${id}`)
@@ -148,6 +160,12 @@ export default function AdminInvoiceDetail() {
             <div className="text-xl font-extrabold text-[#0a2350]" data-testid="invoice-detail-total">Total: {money(inv.total)}</div>
           </div>
           <CreditDeduction inv={inv} credits={credits} onChanged={load} />
+          <div className="mt-3 flex justify-end gap-2">
+            <a href={docUrl("invoice", inv.id)} target="_blank" rel="noreferrer" className={btnSecondary}><FileDown className="h-4 w-4" /> Lihat invoice</a>
+            <button className={btnPrimary} onClick={sendToClient} disabled={sending} data-testid="invoice-detail-send">
+              <Send className="h-4 w-4" /> {sending ? "Mengirim..." : "Kirim ke Klien"}
+            </button>
+          </div>
         </div>
 
         <div className="space-y-4">

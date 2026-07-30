@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { api, shortDate } from "../../../portal/api";
+import { api, shortDate, setToken, getToken } from "../../../portal/api";
 import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { UserPlus, ShieldCheck, KeyRound } from "lucide-react";
+import { UserPlus, ShieldCheck, KeyRound, LogIn } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
 
 const AdminUsers = () => {
@@ -11,6 +11,15 @@ const AdminUsers = () => {
   const [resetUser, setResetUser] = useState(null);
   const [profileUser, setProfileUser] = useState(null);
   const [clients, setClients] = useState([]);
+
+  const impersonate = async (u) => {
+    if (!window.confirm(`Masuk sebagai ${u.name || u.email}? Aksi ini tercatat di audit log.`)) return;
+    const r = await api.post(`/admin/users/${u.id}/impersonate`);
+    localStorage.setItem("ic_admin_return", getToken() || "");
+    localStorage.setItem("ic_impersonating", u.email);
+    setToken(r.data.token);
+    window.location.href = "/portal/client/dashboard";
+  };
   const [catalog, setCatalog] = useState(null);
 
   const load = () => api.get("/admin/users").then((r) => {
@@ -61,6 +70,30 @@ const AdminUsers = () => {
     { key: "_actions", label: "Actions", sortable: false, align: "right",
       render: (_v, u) => (
         <span onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
+          {u.role === "client" && (
+            <button
+              onClick={() => impersonate(u)}
+              className="text-indigo-600 hover:text-indigo-800 font-bold text-xs inline-flex items-center gap-1 mr-3"
+              data-testid={`impersonate-${u.email}`}
+              title="Masuk sebagai klien ini"
+            >
+              <LogIn className="h-3.5 w-3.5" /> Impersonate
+            </button>
+          )}
+          {u.twofa_enabled && (
+            <button
+              onClick={async () => {
+                if (!window.confirm(`Reset 2FA untuk ${u.email}? User bisa login tanpa kode setelah ini.`)) return;
+                await api.post(`/admin/users/${u.id}/reset-2fa`);
+                load();
+              }}
+              className="text-emerald-700 hover:text-red-600 font-bold text-xs inline-flex items-center gap-1 mr-3"
+              data-testid={`reset-2fa-${u.email}`}
+              title="2FA aktif - klik untuk reset"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" /> 2FA
+            </button>
+          )}
           <button
             onClick={() => setResetUser(u)}
             className="text-slate-600 hover:text-red-600 font-bold text-xs inline-flex items-center gap-1 mr-3"

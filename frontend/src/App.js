@@ -45,6 +45,8 @@ const AdminUsers        = lazy(() => import("./pages/portal/admin/AdminUsers"));
 const AdminProducts     = lazy(() => import("./pages/portal/admin/AdminProducts"));
 const AdminOrders       = lazy(() => import("./pages/portal/admin/AdminOrders"));
 const AdminInvoices     = lazy(() => import("./pages/portal/admin/AdminInvoices"));
+const AdminFormBuilder  = lazy(() => import("./pages/portal/admin/AdminFormBuilder"));
+const PublicForm        = lazy(() => import("./pages/PublicForm"));
 const AdminInvoiceDetail = lazy(() => import("./pages/portal/admin/AdminInvoiceDetail"));
 const AdminQuotations   = lazy(() => import("./pages/portal/admin/AdminQuotations"));
 const AdminTickets      = lazy(() => import("./pages/portal/admin/AdminTickets"));
@@ -109,6 +111,7 @@ function App() {
                 <Route path="/legal/aup" element={<AcceptableUsePolicy />} />
                 <Route path="/legal/sla" element={<ServiceLevelAgreement />} />
                 <Route path="/status" element={<PublicStatusPage />} />
+                <Route path="/form/:slug" element={<PublicForm />} />
 
                 {/* Portal */}
                 <Route path="/portal/login" element={<PortalLogin />} />
@@ -172,6 +175,7 @@ function App() {
                   <Route path="media-library" element={<AdminMediaLibrary />} />
                   <Route path="content-calendar" element={<AdminContentCalendar />} />
                   <Route path="utm-builder" element={<AdminUTMBuilder />} />
+                  <Route path="form-builder" element={<AdminFormBuilder />} />
                   <Route path="branding" element={<AdminBranding />} />
                   <Route path="site-content" element={<AdminSiteContent />} />
                   <Route path="backup" element={<AdminBackup />} />

@@ -125,6 +125,8 @@ const AdminBackup = () => {
         </div>
       )}
 
+      <BackupHistory />
+
       {/* System update */}
       <div className="rounded-2xl border border-slate-200 bg-white p-6 mb-6 shadow-sm" data-testid="admin-update-card">
         <div className="flex items-start gap-4">
@@ -327,6 +329,50 @@ const AdminBackup = () => {
           <li>Updates auto-snapshot the DB into <span className="font-mono">/var/backups/intercloud/pre-update-*.archive.gz</span> (30-day retention).</li>
         </ul>
       </div>
+    </div>
+  );
+};
+
+const BackupHistory = () => {
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const load = () => api.get("/admin/backup/history").then((r) => setRows(r.data)).catch(() => {});
+  useEffect(() => { load(); }, []);
+  const trigger = async () => {
+    setBusy(true);
+    try { await api.post("/admin/backup/trigger"); load(); } finally { setBusy(false); }
+  };
+  const dl = (b) => {
+    const token = localStorage.getItem(TOKEN_KEY) || "";
+    window.open(`${API_BASE}/api/portal/admin/backup/history/${b.id}/download?token=${encodeURIComponent(token)}`, "_blank");
+  };
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-6 mb-6 shadow-sm" data-testid="backup-history-card">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-lg font-bold text-[#0a2350]">Riwayat backup</div>
+          <div className="text-sm text-slate-500">Backup otomatis harian 03:30 + backup manual. 14 snapshot terjadwal terakhir disimpan.</div>
+        </div>
+        <button onClick={trigger} disabled={busy}
+          className="px-4 py-2 rounded-xl bg-[#0a2350] text-white text-sm font-semibold inline-flex items-center gap-2 hover:bg-[#1a355c] disabled:opacity-50"
+          data-testid="backup-trigger-btn">
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} Backup sekarang
+        </button>
+      </div>
+      {rows.length > 0 && (
+        <div className="mt-4 divide-y divide-slate-100 text-sm" data-testid="backup-history-list">
+          {rows.slice(0, 10).map((b) => (
+            <div key={b.id} className="py-2 flex items-center gap-3">
+              <span className="font-mono text-xs text-[#0a2350] flex-1 truncate">{b.filename}</span>
+              <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${b.kind === "scheduled" ? "bg-sky-100 text-sky-700" : "bg-amber-100 text-amber-700"}`}>{b.kind}</span>
+              <span className="text-xs text-slate-400 whitespace-nowrap">{(b.size_bytes / 1024).toFixed(0)} KB</span>
+              <span className="text-xs text-slate-400 whitespace-nowrap hidden sm:inline">{(b.created_at || "").slice(0, 16).replace("T", " ")}</span>
+              <button onClick={() => dl(b)} className="text-slate-500 hover:text-[#f5b120]" title="Download" data-testid={`backup-dl-${b.id}`}><Download className="h-4 w-4" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      {rows.length === 0 && <div className="mt-3 text-xs text-slate-400">Belum ada riwayat backup. Klik "Backup sekarang" untuk membuat snapshot pertama.</div>}
     </div>
   );
 };

@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 35: Regression tested all new Intercloud Portal features. Backend 14/14 pass (pytest), frontend 5/5 e2e flows pass via Playwright. No blocking issues found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_results": {
+    "backend": {
+      "test_2fa_full_flow_client": "PASS - setup, verify-enable (10 recovery codes), login require_2fa, invalid 000000 -> 401, valid TOTP -> full token, recovery code single-use (replay rejected 401), disable via TOTP, admin reset-2fa 200",
+      "test_admin_impersonate": "PASS - target=client returns valid token, /auth/me returns client email; target=staff rejected 400",
+      "test_form_builder_and_public_submit": "PASS - GET/PUT form-builder OK, added 'budget' field persists; portal-public/forms/kontak returns config; invalid submit -> 422 with detail.errors per field (email + name); valid submit creates lead with source=form:kontak",
+      "test_public_leads_creates_followup": "PASS - /portal-public/leads creates matching followup task 'Follow up lead baru: ...'",
+      "test_dcim_ip_pool_allocate": "PASS - two consecutive allocations produce distinct IPs; utilization endpoint returns utilization_pct",
+      "test_ticket_internal_note_visibility": "PASS - internal reply not returned to client via /client/tickets; /admin/tickets/{tid}/timeline contains kinds {created, internal_note}; view=active excludes closed; view=archive only closed",
+      "test_pagination_backward_compat": "PASS - /admin/invoices returns list without ?page; with ?page=1&limit=5 returns dict {items,total,page,pages,limit}",
+      "test_quotation_convert_idempotent": "PASS - first convert creates invoice; second convert rejected 400; GET /admin/invoices/{iid} 200",
+      "test_invoice_send": "PASS - returns {ok:true, email_sent, wa_link}",
+      "test_backup_trigger_and_download": "PASS - trigger creates entry in /admin/backup/history, download returns application/gzip",
+      "test_utm_links_crud": "PASS - URL without http rejected 400, create/list/delete OK",
+      "test_finance_reports_have_formulas": "PASS - monthly/2026-07 and annual/2026 xlsx both contain =SUM formulas",
+      "test_auto_renew_toggle": "PASS - PUT auto_renew:false persists and GET service confirms; restored to true",
+      "test_admin_order_edit_provision_log": "PASS - PUT /admin/orders/{oid} with notes appends provision_log entry step=order_updated"
+    },
+    "frontend": {
+      "a_form_builder_edit_kontak": "PASS - fb-edit-kontak -> fb-add-field -> fb-save saved successfully",
+      "b_public_form_kontak_submit": "PASS - /form/kontak accepts pf-name + pf-email, pf-submit yields public-form-success",
+      "c_ticket_archive_and_internal_note": "PASS - ticket-tab-archive shows 2 closed tickets; opening ticket + admin-ticket-internal-toggle + admin-ticket-reply + admin-ticket-send stores note and Internal badge is rendered",
+      "d_impersonation": "PASS - impersonate-demo@client.com switches to client portal with impersonation-banner; impersonation-return-btn restores admin session",
+      "e_twofa_panel_visible": "PASS - /portal/client/settings/password renders twofa-panel with twofa-enable-btn (NONAKTIF badge shown)"
+    }
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter35_new_features.py",
+    "/app/test_reports/pytest/iter35.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "portal/routes.py is ~10195 lines (>>700). Should be split into feature-scoped modules (auth, twofa, tickets, dcim, form_builder, billing, backup, utm) for maintainability - non-blocking but strongly recommended.",
+    "public form submit path enforces recaptcha via iv2.enforce_recaptcha (currently disabled in DB per instructions) - once re-enabled, ensure the same 422/detail.errors contract still holds.",
+    "_paginate returning either list OR dict depending on presence of ?page is convenient for BC but hurts OpenAPI typing and forces defensive frontend code. Consider a dedicated /admin/invoices/paginated route long-term.",
+    "public_form_submit swallows followup insertion errors silently (try/except pass) - acceptable but log at warn level for observability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter35_new_features.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (5/5)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! and demo@client.com / ClientDemo2026! both working. reCAPTCHA disabled in DB as instructed.",
+  "seed_data_creation": "Created ~4 TEST-prefixed leads via public form + /portal-public/leads, 1 TEST utm link (deleted), 2 dcim IP allocations on first IPv4 prefix (TEST hostnames), 1 backup file, 1 quotation converted to invoice, 1 order edited (TEST edit note), 1 internal reply on a client ticket, 1 'budget' field added to form 'kontak'. 2FA fully enabled+disabled+reset for demo@client.com so no residual 2FA state.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter35 test file /app/backend/tests/test_iter35_new_features.py covers all 14 new endpoints and is idempotent (cleans up 2FA, restores auto_renew, uses TEST_ prefix). Form 'kontak' now contains an extra 'budget' field appended during the test run - non-blocking. Prefix used in dcim test may have a couple of TEST IPs allocated; utilization stays low. reCAPTCHA remains disabled in DB - do NOT re-enable.",
+  "rca_of_the_issue": "N/A - no issues detected"
+}

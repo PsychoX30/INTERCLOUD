@@ -5,7 +5,7 @@ import { useAuth } from "../../portal/AuthContext";
 import { isRecaptchaEnabled } from "../../portal/recaptcha";
 
 const PortalLogin = () => {
-  const { user, login } = useAuth();
+  const { user, login, loginTwoFA } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const expired = new URLSearchParams(location.search).get("expired");
@@ -15,6 +15,8 @@ const PortalLogin = () => {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(expired ? "Session expired. Please sign in again." : "");
   const [captchaOn, setCaptchaOn] = useState(false);
+  const [mfaToken, setMfaToken] = useState(null);
+  const [code, setCode] = useState("");
 
   useEffect(() => {
     isRecaptchaEnabled().then(setCaptchaOn);
@@ -30,19 +32,43 @@ const PortalLogin = () => {
     }
   }, [user, navigate]);
 
+  const goAfterLogin = (u) => {
+    const area = u.role === "client" ? "client" : "admin";
+    const target = u.must_change_password
+      ? `/portal/${area}/settings/password`
+      : `/portal/${area}/dashboard`;
+    navigate(target, { replace: true });
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
     setErr("");
     try {
-      const u = await login(email.trim(), password);
-      const area = u.role === "client" ? "client" : "admin";
-      const target = u.must_change_password
-        ? `/portal/${area}/settings/password`
-        : `/portal/${area}/dashboard`;
-      navigate(target, { replace: true });
+      const res = await login(email.trim(), password);
+      if (res && res.require_2fa) {
+        setMfaToken(res.mfa_token);
+        setBusy(false);
+        return;
+      }
+      goAfterLogin(res);
     } catch (e2) {
       setErr(e2.message || "Login failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitCode = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    try {
+      const u = await loginTwoFA(mfaToken, code.trim());
+      goAfterLogin(u);
+    } catch (e2) {
+      setErr(e2.message || "Kode 2FA tidak valid");
+      setCode("");
     } finally {
       setBusy(false);
     }
@@ -98,6 +124,51 @@ const PortalLogin = () => {
 
       {/* Right form panel */}
       <div className="flex items-center justify-center p-6 md:p-12 bg-slate-50 text-[#0a2350]">
+        {mfaToken ? (
+        <form
+          onSubmit={submitCode}
+          className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200 p-8 md:p-10"
+          data-testid="portal-2fa-form"
+        >
+          <div className="text-[#f5b120] text-xs font-bold tracking-widest uppercase">Verifikasi Dua Langkah</div>
+          <h2 className="text-2xl md:text-3xl font-extrabold mt-2">Masukkan kode 2FA</h2>
+          <p className="text-sm text-slate-500 mt-2">Buka aplikasi authenticator Anda (Google Authenticator, Authy) dan masukkan kode 6 digit, atau gunakan salah satu recovery code.</p>
+          {err && (
+            <div className="mt-5 flex items-start gap-2 text-sm bg-red-50 border border-red-200 text-red-700 rounded-xl px-3 py-2.5" data-testid="twofa-error">
+              <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>{err}</span>
+            </div>
+          )}
+          <input
+            autoFocus
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            inputMode="numeric"
+            maxLength={12}
+            required
+            data-testid="twofa-code-input"
+            className="mt-6 w-full h-14 rounded-xl border border-slate-300 px-3 text-center text-2xl font-mono tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120]"
+            placeholder="000000"
+          />
+          <button
+            type="submit"
+            disabled={busy || code.trim().length < 6}
+            data-testid="twofa-submit"
+            className="mt-6 w-full h-11 rounded-xl bg-[#0a2350] hover:bg-[#f5b120] hover:text-[#0a2350] text-white font-semibold text-sm inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-70"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+            {busy ? "Memverifikasi…" : "Verifikasi"}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setMfaToken(null); setCode(""); setErr(""); }}
+            className="mt-3 w-full text-xs text-slate-500 hover:text-[#f5b120] font-semibold"
+            data-testid="twofa-back"
+          >
+            ← Kembali ke login
+          </button>
+        </form>
+        ) : (
         <form
           onSubmit={submit}
           className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200 p-8 md:p-10"
@@ -178,6 +249,7 @@ const PortalLogin = () => {
             </div>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

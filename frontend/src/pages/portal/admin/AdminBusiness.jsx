@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, shortDate, fullDateTime } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame } from "lucide-react";
+import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame, MessageCircle, Phone, Mail } from "lucide-react";
 
 /* ============ Small generic modal ============ */
 const Modal = ({ children, onClose, title }) => (
@@ -185,8 +185,24 @@ export const AdminCRM = () => {
                     )}
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={c.status} /></td>
-                  <td className="px-4 py-3 text-right">
-                    <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(c)}><Edit className="h-4 w-4 inline" /></button>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {c.phone && (
+                      <a href={`https://wa.me/${String(c.phone).replace(/[^0-9]/g, "").replace(/^0/, "62")}`} target="_blank" rel="noreferrer"
+                        className="text-emerald-600 hover:text-emerald-800" title="Chat WhatsApp" data-testid={`crm-wa-${c.id}`}>
+                        <MessageCircle className="h-4 w-4 inline" />
+                      </a>
+                    )}
+                    {c.phone && (
+                      <a href={`tel:${c.phone}`} className="ml-3 text-sky-600 hover:text-sky-800" title="Telepon" data-testid={`crm-call-${c.id}`}>
+                        <Phone className="h-4 w-4 inline" />
+                      </a>
+                    )}
+                    {c.email && (
+                      <a href={`mailto:${c.email}`} className="ml-3 text-[#0a2350] hover:text-[#f5b120]" title="Kirim email" data-testid={`crm-email-${c.id}`}>
+                        <Mail className="h-4 w-4 inline" />
+                      </a>
+                    )}
+                    <button className="ml-3 text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(c)}><Edit className="h-4 w-4 inline" /></button>
                     <button className="ml-3 text-slate-600 hover:text-red-600" onClick={() => del(c.id)}><Trash2 className="h-4 w-4 inline" /></button>
                   </td>
                 </tr>

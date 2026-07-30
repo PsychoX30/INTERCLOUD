@@ -2,6 +2,7 @@
 import os
 import secrets
 import re
+from urllib.parse import quote
 
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -43,6 +44,7 @@ def _user_public(u: dict) -> dict:
         "phone": u.get("phone"),
         "created_at": _iso(u.get("created_at", _now())),
         "assigned_client_ids": [str(x) for x in (u.get("assigned_client_ids") or [])],
+        "twofa_enabled": bool(u.get("totp_enabled")),
         "billing_emails": list(u.get("billing_emails") or []),
         "attention": u.get("attention"),
         "address_line1": u.get("address_line1"),
@@ -499,11 +501,132 @@ async def login(payload: m.LoginIn, request: Request):
                                  reason="invalid_credentials", ip=ip, user_agent=ua,
                                  recaptcha_enabled=bool(recap_doc), recaptcha_score=recap_score)
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if u.get("totp_enabled"):
+        from portal import twofa as _tf
+        await _log_login_attempt(db, email=email, action="login", success=True, reason="mfa_challenge",
+                                 ip=ip, user_agent=ua, recaptcha_enabled=bool(recap_doc),
+                                 recaptcha_score=recap_score)
+        return {"require_2fa": True, "mfa_token": _tf.make_mfa_token(str(u["_id"]))}
     token = create_access_token(str(u["_id"]), u["email"], u["role"])
     await _log_login_attempt(db, email=email, action="login", success=True, reason="ok",
                              ip=ip, user_agent=ua, recaptcha_enabled=bool(recap_doc),
                              recaptcha_score=recap_score)
     return {"token": token, "user": _user_public(u)}
+
+
+@router.post("/auth/login/2fa", response_model=m.LoginOut)
+@_rl_limiter.limit(AUTH_LOGIN_LIMIT)
+async def login_2fa(payload: dict, request: Request):
+    """Langkah kedua login: verifikasi kode TOTP atau recovery code."""
+    from portal import twofa as _tf
+    from portal.security import _client_ip as _rl_client_ip
+    db = await _get_db()
+    ip = _rl_client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    try:
+        uid = _tf.decode_mfa_token(payload.get("mfa_token", ""))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Sesi 2FA kedaluwarsa, silakan login ulang")
+    u = await db.users.find_one({"_id": _oid(uid)})
+    if not u or not u.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA tidak aktif untuk akun ini")
+    code = str(payload.get("code", "")).strip()
+    ok = _tf.verify_totp(_tf.decrypt_secret(u["totp_secret"]), code)
+    if not ok:
+        idx = _tf.check_recovery_code(code, u.get("recovery_codes") or [])
+        if idx >= 0:
+            rcs = u["recovery_codes"]
+            rcs[idx]["used"] = True
+            await db.users.update_one({"_id": u["_id"]}, {"$set": {"recovery_codes": rcs}})
+            ok = True
+    if not ok:
+        await db.users.update_one({"_id": u["_id"]}, {"$inc": {"failed_2fa": 1}})
+        await _log_login_attempt(db, email=u["email"], action="login_2fa", success=False,
+                                 reason="invalid_2fa_code", ip=ip, user_agent=ua)
+        raise HTTPException(status_code=401, detail="Kode 2FA tidak valid")
+    await db.users.update_one({"_id": u["_id"]}, {"$set": {"failed_2fa": 0}})
+    await _log_login_attempt(db, email=u["email"], action="login_2fa", success=True, reason="ok",
+                             ip=ip, user_agent=ua)
+    token = create_access_token(str(u["_id"]), u["email"], u["role"])
+    return {"token": token, "user": _user_public(u)}
+
+
+@router.get("/auth/2fa/status")
+async def twofa_status(user=Depends(get_current_user)):
+    db = await _get_db()
+    u = await db.users.find_one({"_id": ObjectId(user["id"])})
+    codes = u.get("recovery_codes") or []
+    return {"enabled": bool(u.get("totp_enabled")),
+            "recovery_codes_left": sum(1 for c in codes if not c.get("used"))}
+
+
+@router.post("/auth/2fa/setup")
+async def twofa_setup(user=Depends(get_current_user)):
+    """Mulai aktivasi 2FA: buat secret pending + QR (belum aktif sampai diverifikasi)."""
+    from portal import twofa as _tf
+    db = await _get_db()
+    secret = _tf.new_totp_secret()
+    await db.users.update_one({"_id": ObjectId(user["id"])},
+                              {"$set": {"pending_totp_secret": _tf.encrypt_secret(secret)}})
+    uri = _tf.provisioning_uri(secret, user["email"])
+    return {"otpauth_uri": uri, "qr": _tf.qr_data_url(uri), "secret": secret}
+
+
+@router.post("/auth/2fa/verify-enable")
+async def twofa_verify_enable(payload: dict, request: Request, user=Depends(get_current_user)):
+    from portal import twofa as _tf
+    db = await _get_db()
+    u = await db.users.find_one({"_id": ObjectId(user["id"])})
+    pend = u.get("pending_totp_secret")
+    if not pend:
+        raise HTTPException(status_code=400, detail="Belum ada setup 2FA yang berjalan")
+    if not _tf.verify_totp(_tf.decrypt_secret(pend), payload.get("code", "")):
+        raise HTTPException(status_code=400, detail="Kode tidak valid, coba lagi")
+    plaintext, docs = _tf.new_recovery_codes(10)
+    await db.users.update_one({"_id": u["_id"]}, {
+        "$set": {"totp_secret": pend, "totp_enabled": True,
+                 "recovery_codes": docs, "failed_2fa": 0},
+        "$unset": {"pending_totp_secret": ""}})
+    await log_audit(db, actor=user, action="user.2fa_enabled", category="security",
+                    target_type="user", target_id=user["id"], target_label=user["email"],
+                    request=request)
+    return {"ok": True, "recovery_codes": plaintext}
+
+
+@router.post("/auth/2fa/disable")
+async def twofa_disable(payload: dict, request: Request, user=Depends(get_current_user)):
+    from portal import twofa as _tf
+    db = await _get_db()
+    u = await db.users.find_one({"_id": ObjectId(user["id"])})
+    if not u.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA belum aktif")
+    code = str(payload.get("code", "")).strip()
+    ok = _tf.verify_totp(_tf.decrypt_secret(u["totp_secret"]), code)
+    if not ok and _tf.check_recovery_code(code, u.get("recovery_codes") or []) < 0:
+        raise HTTPException(status_code=401, detail="Kode 2FA tidak valid")
+    await db.users.update_one({"_id": u["_id"]}, {
+        "$set": {"totp_enabled": False, "recovery_codes": [], "failed_2fa": 0},
+        "$unset": {"totp_secret": "", "pending_totp_secret": ""}})
+    await log_audit(db, actor=user, action="user.2fa_disabled", category="security",
+                    target_type="user", target_id=user["id"], target_label=user["email"],
+                    severity="warning", request=request)
+    return {"ok": True}
+
+
+@router.post("/admin/users/{uid}/reset-2fa")
+async def admin_reset_2fa(uid: str, request: Request, admin=Depends(get_current_admin)):
+    """Admin mereset 2FA staf yang kehilangan authenticator."""
+    db = await _get_db()
+    target = await db.users.find_one({"_id": _oid(uid)})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one({"_id": target["_id"]}, {
+        "$set": {"totp_enabled": False, "recovery_codes": [], "failed_2fa": 0},
+        "$unset": {"totp_secret": "", "pending_totp_secret": ""}})
+    await log_audit(db, actor=admin, action="user.2fa_reset_by_admin", category="security",
+                    target_type="user", target_id=str(target["_id"]),
+                    target_label=target.get("email", ""), severity="warning", request=request)
+    return {"ok": True, "message": f"2FA direset untuk {target.get('email','')}"}
 
 
 async def _upsert_crm_from_user(db, u: dict, *, status: str = "prospect", extra_notes: str = "") -> None:
@@ -1301,7 +1424,12 @@ async def _auto_provision(db, order: dict) -> dict:
             provider = module["module"] if module else "cpanel"
             cfg.setdefault("control_panel", {"cpanel": "cPanel/WHM", "plesk": "Plesk", "directadmin": "DirectAdmin"}.get(provider, "cPanel/WHM"))
             cfg.setdefault("hostname", f"{order['user_email'].split('@')[0]}.icd-cust.net")
-            cfg.setdefault("ip", "103.28.14." + str((hash(str(order["_id"])) % 240) + 10))
+            pool_ip = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
+                                                       customer=order.get("user_email", ""),
+                                                       ref=f"order {str(order['_id'])[-6:]}")
+            cfg.setdefault("ip", pool_ip or ("103.28.14." + str((hash(str(order["_id"])) % 240) + 10)))
+            if pool_ip:
+                await _log("ip_allocated", f"IP {pool_ip} dialokasikan otomatis dari IP pool (DCIM).")
             cfg.setdefault("provision_status", "manual")
             await _log("panel_account_created", f"{provider.upper()} account provisioned (mock).")
     elif cat in ("vps", "cloud"):
@@ -1309,7 +1437,12 @@ async def _auto_provision(db, order: dict) -> dict:
         cfg.setdefault("node", (module or {}).get("config", {}).get("default_node") or "prox-jkt-05")
         cfg.setdefault("os", cfg.get("os") or "Ubuntu 22.04 LTS Server")
         cfg.setdefault("hostname", f"vm-{str(order['_id'])[-6:]}.icd-cust.net")
-        cfg.setdefault("ip", "103.28.14." + str((hash(str(order["_id"])) % 240) + 10))
+        pool_ip = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
+                                                   customer=order.get("user_email", ""),
+                                                   ref=f"order {str(order['_id'])[-6:]}")
+        cfg.setdefault("ip", pool_ip or ("103.28.14." + str((hash(str(order["_id"])) % 240) + 10)))
+        if pool_ip:
+            await _log("ip_allocated", f"IP {pool_ip} dialokasikan otomatis dari IP pool (DCIM).")
         await _log("vm_created", f"Proxmox VM created on {cfg['node']} with {cfg['os']} (mock).")
     elif cat in ("dedicated", "colocation", "interconnect", "firewall", "lease"):
         # These need manual DC/network setup - mark the service as provisioning
@@ -1365,7 +1498,7 @@ def _deny_creative(user: dict) -> None:
         raise HTTPException(status_code=403, detail="Content team only - no billing/CRM access")
 
 
-async def _serialize_ticket(db, d: dict) -> dict:
+async def _serialize_ticket(db, d: dict, include_internal: bool = True) -> dict:
     u = await db.users.find_one({"_id": d["user_id"]}) or {}
     dev_name = None
     if d.get("related_device_id"):
@@ -1374,6 +1507,9 @@ async def _serialize_ticket(db, d: dict) -> dict:
             dev_name = (dev or {}).get("name")
         except Exception:
             dev_name = None
+    replies = d.get("replies", [])
+    if not include_internal:
+        replies = [r for r in replies if not r.get("internal")]
     return {
         "id": str(d["_id"]),
         "number": d.get("number", ""),
@@ -1384,7 +1520,7 @@ async def _serialize_ticket(db, d: dict) -> dict:
         "department": d.get("department", "technical"),
         "priority": d.get("priority", "medium"),
         "status": d.get("status", "open"),
-        "replies": d.get("replies", []),
+        "replies": replies,
         "related_device_id": d.get("related_device_id"),
         "related_device_name": dev_name,
         "created_at": _iso(d.get("created_at", "")),
@@ -1396,7 +1532,7 @@ async def _serialize_ticket(db, d: dict) -> dict:
 async def client_tickets(user=Depends(get_current_user)):
     db = await _get_db()
     docs = await db.tickets.find({"user_id": ObjectId(user["id"])}).sort("updated_at", -1).to_list(500)
-    return [await _serialize_ticket(db, d) for d in docs]
+    return [await _serialize_ticket(db, d, include_internal=False) for d in docs]
 
 
 @router.post("/client/tickets")
@@ -1445,7 +1581,7 @@ async def client_reply_ticket(tid: str, payload: m.TicketReplyIn, user=Depends(g
         {"$push": {"replies": reply}, "$set": {"status": "awaiting_staff", "updated_at": _now()}},
     )
     d = await db.tickets.find_one({"_id": d["_id"]})
-    return await _serialize_ticket(db, d)
+    return await _serialize_ticket(db, d, include_internal=False)
 
 
 @router.put("/client/tickets/{tid}/close")
@@ -1465,7 +1601,7 @@ async def client_close_ticket(tid: str, user=Depends(get_current_user)):
                               "message": "Tiket ditutup oleh klien.", "created_at": now}},
     })
     d = await db.tickets.find_one({"_id": d["_id"]})
-    return await _serialize_ticket(db, d)
+    return await _serialize_ticket(db, d, include_internal=False)
 
 
 @router.put("/admin/tickets/{tid}/status")
@@ -1923,8 +2059,21 @@ async def admin_user_access_catalog(admin=Depends(get_current_admin)):
     }
 
 
+def _paginate(items: list, page: Optional[int], limit: int):
+    """Server-side pagination opsional: tanpa `page` kembalikan list penuh (kompatibel lama)."""
+    if page is None:
+        return items
+    limit = max(1, min(int(limit or 25), 200))
+    page = max(1, int(page))
+    total = len(items)
+    start = (page - 1) * limit
+    return {"items": items[start:start + limit], "total": total, "page": page,
+            "limit": limit, "pages": max(1, (total + limit - 1) // limit)}
+
+
 @router.get("/admin/users")
-async def admin_list_users(staff=Depends(get_current_staff)):
+async def admin_list_users(staff=Depends(get_current_staff),
+                           page: Optional[int] = None, limit: int = 25):
     """Sales sees only their assigned clients; other staff see all."""
     db = await _get_db()
     if staff["role"] == "sales":
@@ -1932,7 +2081,7 @@ async def admin_list_users(staff=Depends(get_current_staff)):
         docs = await db.users.find({"_id": {"$in": ids}}).to_list(500) if ids else []
     else:
         docs = await db.users.find({}).sort("created_at", -1).to_list(1000)
-    return [_user_public(u) for u in docs]
+    return _paginate([_user_public(u) for u in docs], page, limit)
 
 
 @router.get("/admin/users/{uid}")
@@ -2284,7 +2433,188 @@ async def public_submit_lead(payload: m.LeadIn, request: Request):
         "created_at": _now(),
     }
     r = await db.leads.insert_one(doc)
+    # Auto follow-up: buat tugas follow-up H+1 agar lead cepat dihubungi
+    try:
+        due = (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
+        await db.followups.insert_one({
+            "customer_id": crm_id, "customer_name": payload.name,
+            "task": f"Follow up lead baru: {payload.name} ({payload.need or 'umum'})",
+            "channel": "whatsapp", "due_date": due, "done": False,
+            "owner": "auto", "created_at": _now(),
+        })
+    except Exception:
+        pass
     return {"ok": True, "lead_id": str(r.inserted_id), "duplicate": False}
+
+
+# ---------- Lead Form Builder ----------
+
+_FB_FIELD_TYPES = {"text", "email", "phone", "textarea", "select", "checkbox", "number"}
+
+
+def _fb_serialize(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]), "name": d.get("name", ""), "slug": d.get("slug", ""),
+        "title": d.get("title", ""), "description": d.get("description", ""),
+        "submit_label": d.get("submit_label", "Kirim"),
+        "success_message": d.get("success_message", "Terima kasih, kami akan segera menghubungi Anda."),
+        "fields": d.get("fields", []), "active": d.get("active", True),
+        "submissions": d.get("submissions", 0),
+        "created_at": _iso(d.get("created_at", "")), "updated_at": _iso(d.get("updated_at", "")),
+    }
+
+
+def _fb_clean_fields(fields) -> list:
+    out = []
+    for i, f in enumerate(fields or []):
+        ftype = str(f.get("type", "text")).lower()
+        if ftype not in _FB_FIELD_TYPES:
+            raise HTTPException(status_code=400, detail=f"Tipe field tidak dikenal: {ftype}")
+        key = re.sub(r"[^a-z0-9_]+", "_", str(f.get("key") or f.get("label", f"field_{i}")).lower()).strip("_")
+        if not key:
+            raise HTTPException(status_code=400, detail="Field key kosong")
+        out.append({
+            "key": key, "label": str(f.get("label", key)), "type": ftype,
+            "required": bool(f.get("required")), "placeholder": str(f.get("placeholder", "")),
+            "options": [str(o) for o in (f.get("options") or [])],
+            "order": int(f.get("order", i)),
+        })
+    out.sort(key=lambda x: x["order"])
+    return out
+
+
+@router.get("/admin/form-builder")
+async def form_builder_list(staff=Depends(get_current_staff)):
+    db = await _get_db()
+    docs = await db.form_configs.find({}).sort("created_at", -1).to_list(100)
+    return [_fb_serialize(d) for d in docs]
+
+
+@router.post("/admin/form-builder")
+async def form_builder_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nama form wajib diisi")
+    slug = re.sub(r"[^a-z0-9-]+", "-", str(payload.get("slug") or name).lower()).strip("-")
+    if await db.form_configs.find_one({"slug": slug}):
+        raise HTTPException(status_code=409, detail=f"Slug '{slug}' sudah dipakai")
+    doc = {
+        "name": name, "slug": slug,
+        "title": payload.get("title", name), "description": payload.get("description", ""),
+        "submit_label": payload.get("submit_label", "Kirim"),
+        "success_message": payload.get("success_message", "Terima kasih, kami akan segera menghubungi Anda."),
+        "fields": _fb_clean_fields(payload.get("fields") or [
+            {"key": "name", "label": "Nama lengkap", "type": "text", "required": True},
+            {"key": "email", "label": "Email", "type": "email", "required": True},
+            {"key": "phone", "label": "No. WhatsApp", "type": "phone", "required": False},
+            {"key": "message", "label": "Pesan", "type": "textarea", "required": False},
+        ]),
+        "active": bool(payload.get("active", True)), "submissions": 0,
+        "created_at": _now(), "updated_at": _now(),
+    }
+    r = await db.form_configs.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _fb_serialize(doc)
+
+
+@router.put("/admin/form-builder/{fid}")
+async def form_builder_update(fid: str, payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    d = await db.form_configs.find_one({"_id": _oid(fid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form not found")
+    upd = {"updated_at": _now()}
+    for k in ("name", "title", "description", "submit_label", "success_message"):
+        if k in payload:
+            upd[k] = str(payload[k])
+    if "active" in payload:
+        upd["active"] = bool(payload["active"])
+    if "fields" in payload:
+        upd["fields"] = _fb_clean_fields(payload["fields"])
+    await db.form_configs.update_one({"_id": d["_id"]}, {"$set": upd})
+    d = await db.form_configs.find_one({"_id": d["_id"]})
+    return _fb_serialize(d)
+
+
+@router.delete("/admin/form-builder/{fid}")
+async def form_builder_delete(fid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    await db.form_configs.delete_one({"_id": _oid(fid)})
+    return {"ok": True}
+
+
+@router.get("/portal-public/forms/{slug}")
+async def public_form_config(slug: str):
+    """Konfigurasi form publik untuk dirender di landing page."""
+    db = await _get_db()
+    d = await db.form_configs.find_one({"slug": slug, "active": True})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form tidak ditemukan atau nonaktif")
+    out = _fb_serialize(d)
+    out.pop("submissions", None)
+    return out
+
+
+@router.post("/portal-public/forms/{slug}/submit")
+async def public_form_submit(slug: str, payload: dict, request: Request):
+    """Terima kiriman form dinamis: validasi server-side per field, simpan sebagai lead + CRM prospect."""
+    db = await _get_db()
+    d = await db.form_configs.find_one({"slug": slug, "active": True})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form tidak ditemukan atau nonaktif")
+    remote_ip = request.client.host if request.client else None
+    await iv2.enforce_recaptcha(db, payload.get("recaptcha_token"), "lead", remote_ip)
+    values, errors = {}, {}
+    for f in d.get("fields", []):
+        raw = payload.get(f["key"])
+        val = ("" if raw is None else str(raw)).strip() if f["type"] != "checkbox" else bool(raw)
+        if f["required"] and (val == "" or val is False):
+            errors[f["key"]] = f"{f['label']} wajib diisi"
+            continue
+        if val == "" or val is None:
+            values[f["key"]] = val
+            continue
+        if f["type"] == "email" and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(val)):
+            errors[f["key"]] = "Format email tidak valid"
+        elif f["type"] == "phone" and not re.match(r"^[0-9+()\-\s]{7,20}$", str(val)):
+            errors[f["key"]] = "Format nomor telepon tidak valid"
+        elif f["type"] == "number":
+            try:
+                float(val)
+            except ValueError:
+                errors[f["key"]] = "Harus berupa angka"
+        elif f["type"] == "select" and f.get("options") and val not in f["options"]:
+            errors[f["key"]] = "Pilihan tidak valid"
+        values[f["key"]] = val
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+    email = str(values.get("email", "")).lower()
+    name = str(values.get("name") or values.get("nama") or email or "Anonim")
+    crm_id = None
+    if email:
+        crm = await db.crm_customers.find_one({"email": email})
+        if crm:
+            crm_id = crm["_id"]
+        else:
+            r = await db.crm_customers.insert_one({
+                "name": name, "email": email, "phone": str(values.get("phone", "")),
+                "company": str(values.get("company", "")), "position": "", "industry": "",
+                "status": "prospect", "notes": f"Lead dari form '{d.get('name','')}'",
+                "created_at": _now(), "updated_at": _now(),
+            })
+            crm_id = r.inserted_id
+    lead = {
+        "name": name, "email": email, "phone": str(values.get("phone", "")),
+        "company": str(values.get("company", "")), "need": d.get("name", ""),
+        "message": str(values.get("message", "")), "source": f"form:{slug}",
+        "form_slug": slug, "form_values": values, "status": "new",
+        "crm_id": crm_id, "ip": remote_ip, "created_at": _now(),
+    }
+    r = await db.leads.insert_one(lead)
+    await db.form_configs.update_one({"_id": d["_id"]}, {"$inc": {"submissions": 1}})
+    return {"ok": True, "lead_id": str(r.inserted_id),
+            "message": d.get("success_message", "Terima kasih!")}
 
 
 @router.get("/admin/leads")
@@ -2443,7 +2773,8 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
 
 # Orders
 @router.get("/admin/orders")
-async def admin_list_orders(staff=Depends(get_current_staff)):
+async def admin_list_orders(staff=Depends(get_current_staff),
+                            page: Optional[int] = None, limit: int = 25):
     _deny_creative(staff)
     db = await _get_db()
     q = {}
@@ -2452,7 +2783,7 @@ async def admin_list_orders(staff=Depends(get_current_staff)):
         assigned = [ObjectId(cid) for cid in (staff.get("assigned_client_ids") or [])]
         q = {"user_id": {"$in": assigned}} if assigned else {"_id": None}  # empty result if unassigned
     docs = await db.orders.find(q).sort("created_at", -1).to_list(1000)
-    return [_serialize_order(d) for d in docs]
+    return _paginate([_serialize_order(d) for d in docs], page, limit)
 
 
 @router.put("/admin/orders/{oid}/status")
@@ -2495,13 +2826,14 @@ async def client_confirm_transfer(oid: str, payload: dict, user=Depends(get_curr
 
 # Invoices (staff - Sales sees only invoices of their assigned clients)
 @router.get("/admin/invoices")
-async def admin_list_invoices(staff=Depends(get_current_staff)):
+async def admin_list_invoices(staff=Depends(get_current_staff),
+                              page: Optional[int] = None, limit: int = 25):
     _deny_creative(staff)
     db = await _get_db()
     await _mark_overdue(db)
     q = _sales_scope_filter(staff, key="user_id")
     docs = await db.invoices.find(q).sort("created_at", -1).to_list(2000)
-    return [await _serialize_invoice(db, d) for d in docs]
+    return _paginate([await _serialize_invoice(db, d) for d in docs], page, limit)
 
 
 @router.get("/admin/invoices/{iid}")
@@ -2514,6 +2846,59 @@ async def admin_get_invoice(iid: str, staff=Depends(get_current_staff)):
     if not d:
         raise HTTPException(status_code=404, detail="Invoice not found")
     return await _serialize_invoice(db, d)
+
+
+@router.post("/admin/invoices/{iid}/send")
+async def admin_send_invoice(iid: str, staff=Depends(get_current_staff)):
+    """Kirim invoice ke klien via email + siapkan link WhatsApp."""
+    from portal import emails as _em
+    db = await _get_db()
+    d = await db.invoices.find_one({"_id": _oid(iid), **_sales_scope_filter(staff, key="user_id")})
+    if not d:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    u = await db.users.find_one({"_id": d["user_id"]}) or {}
+    email_sent = False
+    try:
+        await _em.on_invoice_generated(db, d, u)
+        email_sent = True
+    except Exception:
+        email_sent = False
+    total_str = "Rp " + f"{float(d.get('total') or 0):,.0f}".replace(",", ".")
+    text = (f"Halo {u.get('name','')}, invoice {d.get('number','')} sebesar {total_str} "
+            f"jatuh tempo {d.get('due_date','')}. Silakan login ke portal untuk membayar: "
+            f"{os.environ.get('PORTAL_PUBLIC_URL', '')}/portal/login")
+    phone = re.sub(r"[^0-9]", "", u.get("phone") or "")
+    if phone.startswith("0"):
+        phone = "62" + phone[1:]
+    wa_link = f"https://wa.me/{phone}?text={quote(text)}" if phone else None
+    return {"ok": True, "email_sent": email_sent, "email": u.get("email", ""),
+            "wa_link": wa_link, "message": text}
+
+
+@router.put("/admin/orders/{oid}")
+async def admin_update_order(oid: str, payload: dict, staff=Depends(get_current_staff)):
+    """Ubah detail pesanan (catatan + konfigurasi) sebelum/di tengah provisioning."""
+    db = await _get_db()
+    d = await db.orders.find_one({"_id": _oid(oid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    upd = {}
+    if "notes" in payload:
+        upd["notes"] = str(payload["notes"])
+    if isinstance(payload.get("config"), dict):
+        cfg = d.get("config") or {}
+        cfg.update({k: v for k, v in payload["config"].items() if isinstance(k, str)})
+        upd["config"] = cfg
+    if not upd:
+        raise HTTPException(status_code=400, detail="Tidak ada perubahan")
+    upd["updated_at"] = _now()
+    await db.orders.update_one({"_id": d["_id"]}, {
+        "$set": upd,
+        "$push": {"provision_log": {"at": _now(), "step": "order_updated",
+                                    "message": f"Pesanan diubah oleh {staff.get('name','staff')}."}},
+    })
+    d = await db.orders.find_one({"_id": d["_id"]})
+    return _serialize_order(d)
 
 
 @router.post("/admin/invoices", response_model=m.InvoiceOut)
@@ -2749,13 +3134,19 @@ async def admin_convert_quotation_to_invoice(qid: str, payload: m.QuotationConve
 # Tickets (staff - any staff role can view/reply)
 @router.get("/admin/tickets")
 async def admin_list_tickets(staff=Depends(get_current_staff),
-                             device_id: Optional[str] = None):
+                             device_id: Optional[str] = None,
+                             view: Optional[str] = None,
+                             page: Optional[int] = None, limit: int = 25):
     db = await _get_db()
     query: dict = {}
     if device_id:
         query["related_device_id"] = device_id
+    if view == "active":
+        query["status"] = {"$ne": "closed"}
+    elif view == "archive":
+        query["status"] = "closed"
     docs = await db.tickets.find(query).sort("updated_at", -1).to_list(2000)
-    return [await _serialize_ticket(db, d) for d in docs]
+    return _paginate([await _serialize_ticket(db, d) for d in docs], page, limit)
 
 
 @router.post("/admin/tickets/{tid}/replies")
@@ -2769,14 +3160,49 @@ async def admin_reply_ticket(tid: str, payload: m.TicketReplyIn, staff=Depends(g
         "author_name": staff["name"],
         "author_role": staff["role"],
         "message": payload.message,
+        "internal": bool(payload.internal),
         "created_at": _now(),
     }
+    upd = {"updated_at": _now()}
+    if not payload.internal:
+        upd["status"] = "awaiting_client"
     await db.tickets.update_one(
         {"_id": d["_id"]},
-        {"$push": {"replies": reply}, "$set": {"status": "awaiting_client", "updated_at": _now()}},
+        {"$push": {"replies": reply}, "$set": upd},
     )
     d = await db.tickets.find_one({"_id": d["_id"]})
     return await _serialize_ticket(db, d)
+
+
+@router.get("/admin/tickets/{tid}/timeline")
+async def admin_ticket_timeline(tid: str, staff=Depends(get_current_staff)):
+    """Timeline gabungan: pembuatan tiket, balasan (internal + publik), dan perubahan status."""
+    db = await _get_db()
+    d = await db.tickets.find_one({"_id": _oid(tid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    events = [{"kind": "created", "at": _iso(d.get("created_at", "")),
+               "actor": d.get("user_name", ""), "message": f"Tiket {d.get('number','')} dibuat."}]
+    for r in d.get("replies", []):
+        events.append({
+            "kind": "status" if r.get("author_role") == "system" else ("internal_note" if r.get("internal") else "reply"),
+            "at": _iso(r.get("created_at", "")), "actor": r.get("author_name", ""),
+            "role": r.get("author_role", ""), "message": r.get("message", ""),
+            "internal": bool(r.get("internal")),
+        })
+    if d.get("closed_at"):
+        events.append({"kind": "closed", "at": _iso(d["closed_at"]),
+                       "actor": d.get("closed_by", ""), "message": "Tiket ditutup."})
+    events.sort(key=lambda e: e["at"])
+    return {"ticket_id": str(d["_id"]), "number": d.get("number", ""), "events": events}
+
+
+@router.get("/admin/noc/devices/{did}/tickets")
+async def admin_tickets_by_device(did: str, staff=Depends(get_current_staff)):
+    """Daftar tiket yang terkait dengan sebuah perangkat NOC."""
+    db = await _get_db()
+    docs = await db.tickets.find({"related_device_id": did}).sort("updated_at", -1).to_list(200)
+    return [await _serialize_ticket(db, d) for d in docs]
 
 
 # Finance
@@ -2852,6 +3278,27 @@ async def admin_service_detail(sid: str, admin=Depends(get_current_admin)):
     out["self_service_log"] = (d.get("self_service_log") or [])[-10:]
     out["pending_upgrade"] = d.get("pending_upgrade")
     return out
+
+
+@router.post("/admin/users/{uid}/impersonate")
+async def admin_impersonate_client(uid: str, request: Request, admin=Depends(get_current_admin)):
+    """Login-as-client untuk troubleshooting. Hanya klien aktif, tercatat di audit log."""
+    db = await _get_db()
+    target = await db.users.find_one({"_id": _oid(uid)})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") != "client":
+        raise HTTPException(status_code=400, detail="Hanya akun klien yang bisa diimpersonasi")
+    if target.get("status") == "suspended":
+        raise HTTPException(status_code=400, detail="Akun klien sedang disuspensi")
+    token = create_access_token(str(target["_id"]), target["email"], "client")
+    await log_audit(db, actor=admin, action="user.impersonate", category="security",
+                    target_type="user", target_id=str(target["_id"]),
+                    target_label=target.get("email", ""), severity="warning",
+                    metadata={"admin_email": admin.get("email", "")}, request=request)
+    return {"token": token,
+            "user": {"id": str(target["_id"]), "name": target.get("name", ""),
+                     "email": target.get("email", ""), "role": "client"}}
 
 
 @router.get("/admin/users/{uid}/profile")
@@ -3825,6 +4272,73 @@ async def docs_file(did: str):
 # ============================================================
 # DCIM / IPAM (native, not via NetBox)
 # ============================================================
+async def _allocate_ip_from_pool(db, prefix_doc: dict, *, hostname: str = "",
+                                 customer: str = "", description: str = "") -> str | None:
+    """Ambil IP bebas berikutnya dari sebuah prefix DCIM dan catat di dcim_ips."""
+    import ipaddress as _ip
+    try:
+        net = _ip.ip_network(prefix_doc.get("prefix", ""), strict=False)
+    except ValueError:
+        return None
+    used_docs = await db.dcim_ips.find({"prefix_id": prefix_doc["_id"]}).to_list(5000)
+    used = {d.get("address", "").split("/")[0] for d in used_docs}
+    for host in net.hosts():
+        a = str(host)
+        if a.endswith(".0") or a.endswith(".1") or a in used:
+            continue
+        await db.dcim_ips.insert_one({
+            "address": a, "prefix_id": prefix_doc["_id"], "status": "allocated",
+            "role": "customer", "hostname": hostname, "customer": customer,
+            "description": description, "created_at": _now(),
+        })
+        await db.dcim_prefixes.update_one({"_id": prefix_doc["_id"]}, {"$inc": {"usage": 1}})
+        return a
+    return None
+
+
+async def _auto_allocate_customer_ip(db, *, hostname: str, customer: str, ref: str) -> str | None:
+    """Pilih prefix IPv4 customer dengan slot tersisa, lalu alokasikan IP."""
+    prefixes = await db.dcim_prefixes.find({"family": 4}).to_list(100)
+    for p in prefixes:
+        if str(p.get("site", "")).lower() == "internal":
+            continue
+        if int(p.get("usage", 0)) >= int(p.get("capacity", 0)):
+            continue
+        ip = await _allocate_ip_from_pool(db, p, hostname=hostname, customer=customer,
+                                          description=f"Auto-allocated for {ref}")
+        if ip:
+            return ip
+    return None
+
+
+@router.post("/admin/dcim/prefixes/{pid}/allocate")
+async def dcim_prefix_allocate(pid: str, payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    p = await db.dcim_prefixes.find_one({"_id": _oid(pid)})
+    if not p:
+        raise HTTPException(status_code=404, detail="Prefix not found")
+    ip = await _allocate_ip_from_pool(db, p, hostname=payload.get("hostname", ""),
+                                      customer=payload.get("customer", ""),
+                                      description=payload.get("description", ""))
+    if not ip:
+        raise HTTPException(status_code=409, detail="Tidak ada IP bebas tersisa di prefix ini")
+    return {"ok": True, "address": ip, "prefix": p.get("prefix", "")}
+
+
+@router.get("/admin/dcim/prefixes/{pid}/utilization")
+async def dcim_prefix_utilization(pid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    p = await db.dcim_prefixes.find_one({"_id": _oid(pid)})
+    if not p:
+        raise HTTPException(status_code=404, detail="Prefix not found")
+    allocated = await db.dcim_ips.count_documents({"prefix_id": p["_id"]})
+    capacity = int(p.get("capacity", 0)) or 1
+    usage = int(p.get("usage", 0))
+    return {"prefix": p.get("prefix", ""), "capacity": capacity, "usage": usage,
+            "allocated_records": allocated,
+            "utilization_pct": round(min(100.0, usage / capacity * 100), 2)}
+
+
 @router.get("/admin/dcim/racks")
 async def dcim_racks(staff=Depends(get_current_staff)):
     db = await _get_db()
@@ -4709,6 +5223,113 @@ async def landing_content_reset(admin=Depends(get_current_admin)):
 # ============================================================
 # Backup / Restore
 # ============================================================
+# ---------- UTM link persistence ----------
+
+@router.get("/admin/utm-links")
+async def utm_links_list(staff=Depends(get_current_staff)):
+    db = await _get_db()
+    docs = await db.utm_links.find({}).sort("created_at", -1).to_list(200)
+    return [{"id": str(d["_id"]), "url": d.get("url", ""), "base": d.get("base", ""),
+             "params": d.get("params", {}), "label": d.get("label", ""),
+             "created_by": d.get("created_by", ""), "created_at": _iso(d.get("created_at", ""))}
+            for d in docs]
+
+
+@router.post("/admin/utm-links")
+async def utm_links_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    url = str(payload.get("url", "")).strip()
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="URL tidak valid")
+    doc = {"url": url, "base": payload.get("base", ""), "params": payload.get("params", {}),
+           "label": payload.get("label", ""), "created_by": staff.get("email", ""),
+           "created_at": _now()}
+    res = await db.utm_links.insert_one(doc)
+    return {"ok": True, "id": str(res.inserted_id)}
+
+
+@router.delete("/admin/utm-links/{lid}")
+async def utm_links_delete(lid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    await db.utm_links.delete_one({"_id": _oid(lid)})
+    return {"ok": True}
+
+
+# ---------- Content calendar: hari libur nasional ----------
+
+ID_HOLIDAYS_2026 = [
+    {"date": "2026-01-01", "name": "Tahun Baru Masehi"},
+    {"date": "2026-01-16", "name": "Isra Mikraj Nabi Muhammad SAW"},
+    {"date": "2026-02-17", "name": "Tahun Baru Imlek 2577"},
+    {"date": "2026-03-19", "name": "Hari Suci Nyepi"},
+    {"date": "2026-03-20", "name": "Idul Fitri 1447 H (perkiraan)"},
+    {"date": "2026-03-21", "name": "Idul Fitri 1447 H (hari kedua)"},
+    {"date": "2026-04-03", "name": "Wafat Isa Almasih"},
+    {"date": "2026-05-01", "name": "Hari Buruh Internasional"},
+    {"date": "2026-05-14", "name": "Kenaikan Isa Almasih"},
+    {"date": "2026-05-27", "name": "Idul Adha 1447 H (perkiraan)"},
+    {"date": "2026-05-31", "name": "Hari Raya Waisak"},
+    {"date": "2026-06-01", "name": "Hari Lahir Pancasila"},
+    {"date": "2026-06-16", "name": "Tahun Baru Islam 1448 H"},
+    {"date": "2026-08-17", "name": "Hari Kemerdekaan RI"},
+    {"date": "2026-08-25", "name": "Maulid Nabi Muhammad SAW"},
+    {"date": "2026-12-25", "name": "Hari Raya Natal"},
+]
+
+
+@router.get("/admin/content-calendar/holidays")
+async def content_calendar_holidays(year: int = 2026, staff=Depends(get_current_staff)):
+    return {"year": year, "holidays": [h for h in ID_HOLIDAYS_2026 if h["date"].startswith(str(year))]}
+
+
+# ---------- Backup history ----------
+
+BACKUP_DIR = "/app/backups"
+
+
+@router.post("/admin/backup/trigger")
+async def backup_trigger(request: Request, admin=Depends(get_current_admin)):
+    """Backup manual: mongodump ke file + catat di riwayat."""
+    import pathlib
+    blob, filename = await _run_mongodump()
+    pathlib.Path(BACKUP_DIR).mkdir(parents=True, exist_ok=True)
+    path = f"{BACKUP_DIR}/{filename}"
+    with open(path, "wb") as f:
+        f.write(blob)
+    db = await _get_db()
+    res = await db.backup_history.insert_one({
+        "filename": filename, "path": path, "size_bytes": len(blob),
+        "kind": "manual", "by": admin.get("email", ""), "created_at": _now(),
+    })
+    return {"ok": True, "id": str(res.inserted_id), "filename": filename, "size_bytes": len(blob)}
+
+
+@router.get("/admin/backup/history")
+async def backup_history_list(admin=Depends(get_current_admin)):
+    db = await _get_db()
+    docs = await db.backup_history.find({}).sort("created_at", -1).to_list(100)
+    return [{"id": str(d["_id"]), "filename": d.get("filename", ""),
+             "size_bytes": d.get("size_bytes", 0), "kind": d.get("kind", "manual"),
+             "by": d.get("by", ""), "created_at": _iso(d.get("created_at", ""))}
+            for d in docs]
+
+
+@router.get("/admin/backup/history/{bid}/download")
+async def backup_history_download(bid: str, admin=Depends(get_current_admin)):
+    from fastapi.responses import Response as _R
+    db = await _get_db()
+    d = await db.backup_history.find_one({"_id": _oid(bid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    try:
+        with open(d["path"], "rb") as f:
+            blob = f.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=410, detail="File backup sudah tidak tersedia di disk")
+    return _R(content=blob, media_type="application/gzip",
+              headers={"Content-Disposition": f'attachment; filename="{d["filename"]}"'})
+
+
 @router.get("/admin/backup/download")
 async def backup_download(admin=Depends(get_current_admin)):
     """Download a full gzipped BSON archive of every collection.
@@ -7396,6 +8017,8 @@ def _write_xlsx(sheets: list) -> bytes:
         for r_idx, row in enumerate(rows, start=1):
             for c_idx, cell in enumerate(row, start=1):
                 c = ws.cell(row=r_idx, column=c_idx, value=cell)
+                if isinstance(cell, (int, float)) or (isinstance(cell, str) and cell.startswith("=")):
+                    c.number_format = "#,##0"
                 if r_idx == 1:
                     c.font = header_font
                     c.fill = header_fill
@@ -7456,34 +8079,34 @@ async def finance_monthly_xlsx(period: str, admin=Depends(get_current_admin)):
     net_profit = rev_total - all_exp
     summary = [
         ["Line", "Amount (IDR)"],
-        ["Revenue (paid invoices)", _idr_fmt(rev_total)],
-        ["Expenses (recurring)", _idr_fmt(exp_total)],
-        ["Kas Kecil (petty cash)", _idr_fmt(kk_total)],
-        ["Salaries", _idr_fmt(sal_total)],
-        ["Sales Fees", _idr_fmt(sf_total)],
-        ["Total expenses", _idr_fmt(all_exp)],
-        ["Net profit (before depreciation)", _idr_fmt(net_profit)],
+        ["Revenue (paid invoices)", float(rev_total)],
+        ["Expenses (recurring)", float(exp_total)],
+        ["Kas Kecil (petty cash)", float(kk_total)],
+        ["Salaries", float(sal_total)],
+        ["Sales Fees", float(sf_total)],
+        ["Total expenses", "=SUM(B3:B6)"],
+        ["Net profit (before depreciation)", "=B2-B7"],
     ]
     rev_rows = [["Paid at", "Invoice #", "Customer", "Amount"]] + [
         [i.get("paid_at", "")[:10], i.get("number", ""), i.get("customer_name") or "",
-         _idr_fmt(i.get("total"))] for i in d["revenue"]
-    ] + [["TOTAL", "", "", _idr_fmt(rev_total)]]
+         float(i.get("total") or 0)] for i in d["revenue"]
+    ] + [["TOTAL", "", "", f"=SUM(D2:D{len(d['revenue']) + 1})"]]
     exp_rows = [["Date", "Category", "Vendor", "Description", "Amount"]] + [
         [e.get("date", ""), e.get("category", ""), e.get("vendor", ""),
-         e.get("description", ""), _idr_fmt(e.get("amount"))] for e in d["expenses"]
-    ] + [["TOTAL", "", "", "", _idr_fmt(exp_total)]]
+         e.get("description", ""), float(e.get("amount") or 0)] for e in d["expenses"]
+    ] + [["TOTAL", "", "", "", f"=SUM(E2:E{len(d['expenses']) + 1})"]]
     kk_rows = [["Date", "Category", "Vendor", "Notes", "Amount"]] + [
         [e.get("date", ""), e.get("category", ""), e.get("vendor", ""),
-         e.get("notes", ""), _idr_fmt(e.get("amount"))] for e in d["kk"]
-    ] + [["TOTAL", "", "", "", _idr_fmt(kk_total)]]
+         e.get("notes", ""), float(e.get("amount") or 0)] for e in d["kk"]
+    ] + [["TOTAL", "", "", "", f"=SUM(E2:E{len(d['kk']) + 1})"]]
     sal_rows = [["Date", "Employee", "Category", "Notes", "Amount"]] + [
         [e.get("date", ""), e.get("employee", ""), e.get("category", ""),
-         e.get("notes", ""), _idr_fmt(e.get("amount"))] for e in d["sal"]
-    ] + [["TOTAL", "", "", "", _idr_fmt(sal_total)]]
+         e.get("notes", ""), float(e.get("amount") or 0)] for e in d["sal"]
+    ] + [["TOTAL", "", "", "", f"=SUM(E2:E{len(d['sal']) + 1})"]]
     sf_rows = [["Date", "Sales person", "Invoice #", "Notes", "Amount"]] + [
         [e.get("date", ""), e.get("sales_person", ""), e.get("invoice_number", ""),
-         e.get("notes", ""), _idr_fmt(e.get("amount"))] for e in d["sf"]
-    ] + [["TOTAL", "", "", "", _idr_fmt(sf_total)]]
+         e.get("notes", ""), float(e.get("amount") or 0)] for e in d["sf"]
+    ] + [["TOTAL", "", "", "", f"=SUM(E2:E{len(d['sf']) + 1})"]]
 
     xlsx = _write_xlsx([
         (f"Summary {period}", summary),
@@ -7540,19 +8163,21 @@ async def finance_annual_xlsx(year: int, admin=Depends(get_current_admin)):
                      "Sales Fees", "Total expenses", "Net profit",
                      "Cumulative revenue", "Cumulative net"]]
     cum_rev = cum_net = 0.0
-    for mm in months:
+    for idx, mm in enumerate(months):
         b = buckets[mm]
         exps = b["exp"] + b["kk"] + b["sal"] + b["sf"]
         net = b["rev"] - exps
         cum_rev += b["rev"]; cum_net += net
-        monthly_rows.append([mm, _idr_fmt(b["rev"]), _idr_fmt(b["exp"]), _idr_fmt(b["kk"]),
-                             _idr_fmt(b["sal"]), _idr_fmt(b["sf"]), _idr_fmt(exps),
-                             _idr_fmt(net), _idr_fmt(cum_rev), _idr_fmt(cum_net)])
+        rn = idx + 2
+        monthly_rows.append([mm, float(b["rev"]), float(b["exp"]), float(b["kk"]),
+                             float(b["sal"]), float(b["sf"]),
+                             f"=SUM(C{rn}:F{rn})", f"=B{rn}-G{rn}",
+                             float(cum_rev), float(cum_net)])
     total_rev = sum(b["rev"] for b in buckets.values())
     total_exp_all = sum(b["exp"] + b["kk"] + b["sal"] + b["sf"] for b in buckets.values())
-    monthly_rows.append(["TOTAL", _idr_fmt(total_rev), "", "", "", "",
-                         _idr_fmt(total_exp_all), _idr_fmt(total_rev - total_exp_all),
-                         _idr_fmt(total_rev), _idr_fmt(total_rev - total_exp_all)])
+    monthly_rows.append(["TOTAL", "=SUM(B2:B13)", "", "", "", "",
+                         "=SUM(G2:G13)", "=B14-G14",
+                         float(total_rev), float(total_rev - total_exp_all)])
 
     # Assets sheet (straight-line depreciation)
     asset_rows = [["Asset", "Category", "Purchased", "Cost", "Salvage",

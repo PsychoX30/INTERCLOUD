@@ -71,6 +71,7 @@ class UserOut(BaseModel):
     phone: Optional[str] = None
     created_at: str
     assigned_client_ids: List[str] = []
+    twofa_enabled: bool = False
     billing_emails: List[str] = []
     # Billing address (used on invoice/quotation PDFs)
     attention: Optional[str] = None
@@ -89,8 +90,10 @@ class UserOut(BaseModel):
 
 
 class LoginOut(BaseModel):
-    token: str
-    user: UserOut
+    token: Optional[str] = None
+    user: Optional[UserOut] = None
+    require_2fa: bool = False
+    mfa_token: Optional[str] = None
 
 
 # ---------- ADMIN: user mgmt ----------
@@ -649,6 +652,7 @@ class ArticleOut(ArticleIn):
 # ---------- TICKETS ----------
 class TicketReplyIn(BaseModel):
     message: str
+    internal: bool = False
 
 
 class TicketReply(BaseModel):
