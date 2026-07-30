@@ -201,7 +201,7 @@ const AdminSiteContent = () => {
         <div>
           <div className="mb-3 flex items-center justify-between">
             <div className="text-xs text-slate-500 flex items-center gap-1.5">
-              <HelpCircle className="h-3.5 w-3.5" /> Empty list falls back to the shipped FAQs from <span className="font-mono">mock/data.js</span>.
+              <HelpCircle className="h-3.5 w-3.5" /> Empty list falls back to the shipped default FAQs.
             </div>
             <button onClick={addFaq} className="px-3 py-1.5 rounded-lg bg-[#0a2350] text-white text-xs font-semibold inline-flex items-center gap-1.5"
                     data-testid="cms-faq-add">

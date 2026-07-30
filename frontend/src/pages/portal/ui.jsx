@@ -102,7 +102,7 @@ export const ComingSoon = ({ title, description, features = [] }) => (
       </div>
       <h3 className="mt-4 text-xl font-extrabold text-[#0a2350]">Module ready - awaiting real credentials</h3>
       <p className="mt-2 text-sm text-slate-500 max-w-lg mx-auto">
-        The UI screens are mocked. Add the credentials in <span className="font-semibold">Integrations</span> and this module will go live.
+        Modul ini siap dipakai. Tambahkan kredensial di <span className="font-semibold">Integrations</span> dan modul akan langsung aktif dengan data real.
       </p>
       {features.length > 0 && (
         <ul className="mt-6 grid sm:grid-cols-2 gap-2 text-left max-w-lg mx-auto">

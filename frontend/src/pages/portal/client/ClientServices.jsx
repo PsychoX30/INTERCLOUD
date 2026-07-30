@@ -427,15 +427,7 @@ const ServiceDetail = ({ service, onClose }) => {
           {isHosting && (
             <Card className="p-5">
               <div className="text-sm font-extrabold text-[#0a2350] mb-3">Hosting management</div>
-              <div className="grid grid-cols-2 gap-2">
-                <button className={btnSecondary}>Login to cPanel <ArrowRight className="h-3.5 w-3.5" /></button>
-                <button className={btnSecondary}>File Manager</button>
-                <button className={btnSecondary}>Databases</button>
-                <button className={btnSecondary}>Email Accounts</button>
-                <button className={btnSecondary}>Change Password</button>
-                <button className={btnSecondary}>Restore Backup</button>
-              </div>
-              <p className="mt-3 text-[11px] text-slate-500">cPanel/Plesk integration mocked - will go live once credentials are added under Integrations.</p>
+              <p className="mt-3 text-[11px] text-slate-500">Manajemen hosting (cPanel/Plesk) tampil di sini setelah admin mengaktifkan integrasi panel di portal.</p>
             </Card>
           )}
         </div>

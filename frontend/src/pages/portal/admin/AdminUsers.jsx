@@ -7,6 +7,7 @@ import { useAuth } from "../../../portal/AuthContext";
 
 const AdminUsers = () => {
   const { user: me } = useAuth();
+  const isAdmin = me?.role === "admin";
   const [rows, setRows] = useState(null);
   const [modal, setModal] = useState(false);
   const [accessUser, setAccessUser] = useState(null);
@@ -40,7 +41,10 @@ const AdminUsers = () => {
   });
   useEffect(() => {
     load();
-    api.get("/admin/user-access-catalog").then((r) => setCatalog(r.data)).catch(() => {});
+    if (isAdmin) {
+      api.get("/admin/user-access-catalog").then((r) => setCatalog(r.data)).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const columns = [
@@ -81,6 +85,9 @@ const AdminUsers = () => {
       render: (v) => <span className="text-slate-500 text-xs">{shortDate(v)}</span> },
     { key: "_actions", label: "Actions", sortable: false, align: "right",
       render: (_v, u) => (
+        !isAdmin ? (
+          <span className="text-slate-400 text-xs" data-testid={`actions-restricted-${u.email}`} title="Kelola user hanya untuk role admin">Admin only</span>
+        ) : (
         <span onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
           {u.role === "client" && (
             <button
@@ -134,6 +141,7 @@ const AdminUsers = () => {
             </button>
           )}
         </span>
+        )
       ) },
   ];
 
@@ -142,7 +150,7 @@ const AdminUsers = () => {
       <PageHeader
         title="Users & Clients"
         subtitle="Register new users, assign roles & menu access, and pick which clients each staff member handles."
-        actions={<button className={btnPrimary} onClick={() => setModal(true)} data-testid="new-user-btn"><UserPlus className="h-4 w-4" /> New user</button>}
+        actions={isAdmin ? <button className={btnPrimary} onClick={() => setModal(true)} data-testid="new-user-btn"><UserPlus className="h-4 w-4" /> New user</button> : undefined}
       />
       <DataTable
         rows={rows || []}

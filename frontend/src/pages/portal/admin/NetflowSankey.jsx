@@ -4,18 +4,8 @@ import { api } from "../../../portal/api";
 import { Card } from "../ui";
 import { Network, HelpCircle } from "lucide-react";
 
-// Fallback sample flows - dipakai bila belum ada perangkat MikroTik yang bisa disampling.
-const FLOWS = [
-  { src: "203.0.113.10", dst: "VM Web Cluster", gbps: 4.2 },
-  { src: "203.0.113.10", dst: "VM Database", gbps: 1.1 },
-  { src: "198.51.100.24", dst: "VM Web Cluster", gbps: 2.6 },
-  { src: "198.51.100.24", dst: "Mail Server", gbps: 0.8 },
-  { src: "IX Peering (IIX)", dst: "VM Web Cluster", gbps: 3.4 },
-  { src: "IX Peering (IIX)", dst: "CDN Cache", gbps: 5.1 },
-  { src: "Transit Tier-1", dst: "CDN Cache", gbps: 2.2 },
-  { src: "Transit Tier-1", dst: "VM Database", gbps: 0.6 },
-  { src: "Transit Tier-1", dst: "Mail Server", gbps: 0.4 },
-];
+// Data flows dimuat HANYA dari endpoint live (torch MikroTik). Tanpa perangkat
+// yang bisa disampling, komponen menampilkan empty state - tidak ada data sampel.
 
 const buildSankey = (flows) => {
   const names = [];
@@ -58,7 +48,7 @@ const SankeyNode = ({ x, y, width, height, payload }) => (
 
 export const NetflowSankey = () => {
   const [hover, setHover] = useState(null);
-  const [flows, setFlows] = useState(FLOWS);
+  const [flows, setFlows] = useState(null);
   const [live, setLive] = useState(false);
   useEffect(() => {
     api.get("/admin/noc/netflow/sankey")
@@ -66,11 +56,13 @@ export const NetflowSankey = () => {
         if (r.data?.live && (r.data.flows || []).length > 0) {
           setFlows(r.data.flows);
           setLive(true);
+        } else {
+          setFlows([]);
         }
       })
-      .catch(() => {});
+      .catch(() => setFlows([]));
   }, []);
-  const data = useMemo(() => buildSankey(flows), [flows]);
+  const data = useMemo(() => buildSankey(flows || []), [flows]);
   return (
     <Card className="overflow-hidden mb-6" data-testid="netflow-sankey">
       <div className="px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
@@ -95,7 +87,7 @@ export const NetflowSankey = () => {
             Visualisasi arah trafik{" "}
             {live
               ? <span className="text-emerald-600 font-bold" data-testid="sankey-live-badge">(live dari MikroTik)</span>
-              : <span data-testid="sankey-sample-badge">(data sampel - menampilkan live otomatis saat perangkat MikroTik tersambung)</span>}
+              : <span data-testid="sankey-waiting-badge">(menunggu data live dari perangkat MikroTik)</span>}
           </div>
         </div>
         {hover && (
@@ -105,6 +97,21 @@ export const NetflowSankey = () => {
         )}
       </div>
       <div className="p-4" style={{ height: 360 }}>
+        {flows === null ? (
+          <div className="h-full flex items-center justify-center text-sm text-slate-400" data-testid="sankey-loading">
+            Mengambil sampel trafik live…
+          </div>
+        ) : !live || flows.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-center px-6" data-testid="sankey-empty">
+            <Network className="h-10 w-10 text-slate-300 mb-3" />
+            <div className="font-bold text-[#0a2350] text-sm">Belum ada data trafik live</div>
+            <p className="mt-1 text-xs text-slate-500 max-w-md leading-relaxed">
+              Diagram ini dibangun dari sampel torch RouterOS. Tambahkan router di
+              <b> Admin &gt; MikroTik Ops &gt; Devices</b> (host + kredensial API), lalu diagram
+              akan otomatis menampilkan arus trafik source → destination secara real-time.
+            </p>
+          </div>
+        ) : (
         <ResponsiveContainer width="100%" height="100%">
           <Sankey
             data={data}
@@ -125,6 +132,7 @@ export const NetflowSankey = () => {
             />
           </Sankey>
         </ResponsiveContainer>
+        )}
       </div>
     </Card>
   );

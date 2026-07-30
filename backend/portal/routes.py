@@ -1829,7 +1829,7 @@ async def admin_notifications_mark_read(payload: dict, staff=Depends(get_current
 
 
 @router.post("/admin/reports/monthly/send")
-async def admin_send_monthly_report(payload: dict = None, admin=Depends(get_current_admin)):
+async def admin_send_monthly_report(payload: dict = None, admin=Depends(require_roles("admin", "finance"))):
     """Kirim laporan bulanan (tagihan + trafik) ke email support untuk dokumentasi.
     Body opsional: {month: 'YYYY-MM'} - default bulan lalu."""
     db = await _get_db()
@@ -1839,7 +1839,7 @@ async def admin_send_monthly_report(payload: dict = None, admin=Depends(get_curr
 
 
 @router.get("/admin/reports/monthly")
-async def admin_list_monthly_reports(admin=Depends(get_current_admin)):
+async def admin_list_monthly_reports(admin=Depends(require_roles("admin", "finance"))):
     """Arsip laporan bulanan (terbaru dulu) untuk menu Finance."""
     db = await _get_db()
     docs = await db.monthly_reports.find({}).sort("month", -1).to_list(60)
@@ -1852,7 +1852,7 @@ async def admin_list_monthly_reports(admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/reports/monthly/{month}/pdf")
-async def admin_monthly_report_pdf(month: str, admin=Depends(get_current_admin)):
+async def admin_monthly_report_pdf(month: str, admin=Depends(require_roles("admin", "finance"))):
     """Unduh ulang arsip laporan bulanan sebagai PDF."""
     db = await _get_db()
     d = await db.monthly_reports.find_one({"month": month})
@@ -2009,7 +2009,7 @@ def _monthly_report_workbook(month: str, summary: dict, invoices: list,
 
 
 @router.get("/admin/reports/monthly/{month}/xlsx")
-async def admin_monthly_report_xlsx(month: str, admin=Depends(get_current_admin)):
+async def admin_monthly_report_xlsx(month: str, admin=Depends(require_roles("admin", "finance"))):
     """Arsip laporan bulanan sebagai Excel (formula, format Rupiah/persen,
     penomoran) untuk diolah tim finance."""
     db = await _get_db()
@@ -2043,7 +2043,7 @@ async def admin_monthly_report_xlsx(month: str, admin=Depends(get_current_admin)
 
 
 @router.post("/admin/reports/weekly/send")
-async def admin_send_weekly_summary(admin=Depends(get_current_admin)):
+async def admin_send_weekly_summary(admin=Depends(require_roles("admin", "finance"))):
     """Kirim ringkasan mingguan (order baru, tiket terbuka, invoice jatuh tempo) sekarang."""
     db = await _get_db()
     from portal import emails as _em
@@ -2404,7 +2404,7 @@ FEATURE_FLAG_CATALOG = [
 
 
 @router.get("/admin/user-access-catalog")
-async def admin_user_access_catalog(admin=Depends(get_current_admin)):
+async def admin_user_access_catalog(admin=Depends(require_roles("admin", "sales", "finance", "support"))):
     """Returns everything the User Access UI needs to render checkboxes.
 
     - `menu_catalog`: list of menu keys with human labels & the default roles that
@@ -2698,7 +2698,7 @@ async def admin_delete_category(cid: str, admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/products")
-async def admin_list_products(admin=Depends(get_current_admin)):
+async def admin_list_products(admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     docs = await db.products.find({}).sort([("sort_order", 1), ("created_at", -1)]).to_list(500)
     return [_serialize_product(d) for d in docs]
@@ -2996,7 +2996,7 @@ async def admin_update_lead_status(lid: str, payload: m.LeadStatusIn, staff=Depe
 
 
 @router.post("/admin/products", response_model=m.ProductOut)
-async def admin_create_product(payload: m.ProductIn, admin=Depends(get_current_admin)):
+async def admin_create_product(payload: m.ProductIn, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     doc = payload.model_dump()
     doc["created_at"] = _now()
@@ -3006,7 +3006,7 @@ async def admin_create_product(payload: m.ProductIn, admin=Depends(get_current_a
 
 
 @router.put("/admin/products/{pid}", response_model=m.ProductOut)
-async def admin_update_product(pid: str, payload: m.ProductIn, admin=Depends(get_current_admin)):
+async def admin_update_product(pid: str, payload: m.ProductIn, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     await db.products.update_one({"_id": _oid(pid)}, {"$set": payload.model_dump()})
     d = await db.products.find_one({"_id": _oid(pid)})
@@ -3016,7 +3016,7 @@ async def admin_update_product(pid: str, payload: m.ProductIn, admin=Depends(get
 
 
 @router.delete("/admin/products/{pid}")
-async def admin_delete_product(pid: str, admin=Depends(get_current_admin)):
+async def admin_delete_product(pid: str, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     r = await db.products.delete_one({"_id": _oid(pid)})
     return {"deleted": r.deleted_count}
@@ -3565,7 +3565,7 @@ async def admin_tickets_by_device(did: str, staff=Depends(get_current_staff)):
 
 # Finance
 @router.get("/admin/finance/summary")
-async def admin_finance_summary(admin=Depends(get_current_admin)):
+async def admin_finance_summary(admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     # Aggregate by month for last 12 months
     paid = await db.invoices.find({"status": "paid"}).to_list(5000)
@@ -3610,14 +3610,14 @@ def _serialize_service(d: dict) -> dict:
 
 
 @router.get("/admin/services")
-async def admin_list_services(admin=Depends(get_current_admin)):
+async def admin_list_services(admin=Depends(require_roles("admin", "finance", "support"))):
     db = await _get_db()
     docs = await db.services.find({}).sort("created_at", -1).to_list(2000)
     return [_serialize_service(d) for d in docs]
 
 
 @router.get("/admin/services/{sid}/detail")
-async def admin_service_detail(sid: str, admin=Depends(get_current_admin)):
+async def admin_service_detail(sid: str, admin=Depends(require_roles("admin", "finance", "support"))):
     """Service + client + provisioning trail for the admin detail modal."""
     db = await _get_db()
     d = await db.services.find_one({"_id": _oid(sid)})
@@ -3660,7 +3660,7 @@ async def admin_impersonate_client(uid: str, request: Request, admin=Depends(get
 
 
 @router.get("/admin/users/{uid}/profile")
-async def admin_user_profile(uid: str, admin=Depends(get_current_admin)):
+async def admin_user_profile(uid: str, admin=Depends(require_roles("admin", "sales", "finance", "support"))):
     """Client 360 profile: services (hosting accounts highlighted), billing summary."""
     db = await _get_db()
     u = await db.users.find_one({"_id": _oid(uid)})
@@ -4049,7 +4049,7 @@ async def test_integration_draft(payload: dict, admin=Depends(get_current_admin)
 
 # Bank accounts admin CRUD (simple)
 @router.get("/admin/bank-accounts")
-async def get_bank_accounts(admin=Depends(get_current_admin)):
+async def get_bank_accounts(admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     doc = await db.settings.find_one({"key": "bank_accounts"}) or {}
     return doc.get("value") or [
@@ -5200,14 +5200,14 @@ def _serialize_asset(d):
 
 
 @router.get("/admin/assets")
-async def assets_list(admin=Depends(get_current_admin)):
+async def assets_list(admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     docs = await db.assets.find({}).sort("created_at", -1).to_list(2000)
     return [_serialize_asset(d) for d in docs]
 
 
 @router.get("/admin/assets/{aid}")
-async def assets_get(aid: str, admin=Depends(get_current_admin)):
+async def assets_get(aid: str, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     d = await db.assets.find_one({"_id": _oid(aid)})
     if not d:
@@ -5238,7 +5238,7 @@ def _coerce_asset_payload(payload: dict) -> dict:
 
 
 @router.post("/admin/assets")
-async def assets_create(payload: dict, admin=Depends(get_current_admin)):
+async def assets_create(payload: dict, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     coerced = _coerce_asset_payload(payload)
     doc = {
@@ -5266,7 +5266,7 @@ async def assets_create(payload: dict, admin=Depends(get_current_admin)):
 
 
 @router.put("/admin/assets/{aid}")
-async def assets_update(aid: str, payload: dict, admin=Depends(get_current_admin)):
+async def assets_update(aid: str, payload: dict, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     allowed = {
         "name", "category", "serial_number", "location", "vendor", "value",
@@ -5299,7 +5299,7 @@ async def assets_update(aid: str, payload: dict, admin=Depends(get_current_admin
 
 
 @router.delete("/admin/assets/{aid}")
-async def assets_delete(aid: str, admin=Depends(get_current_admin)):
+async def assets_delete(aid: str, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     r = await db.assets.delete_one({"_id": _oid(aid)})
     return {"deleted": r.deleted_count}
@@ -5321,14 +5321,14 @@ def _serialize_expense(d):
 
 
 @router.get("/admin/expenses")
-async def expenses_list(admin=Depends(get_current_admin)):
+async def expenses_list(admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     docs = await db.expenses.find({}).sort("date", -1).to_list(5000)
     return [_serialize_expense(d) for d in docs]
 
 
 @router.post("/admin/expenses")
-async def expenses_create(payload: dict, admin=Depends(get_current_admin)):
+async def expenses_create(payload: dict, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     doc = {
         "date": payload.get("date", datetime.now(timezone.utc).date().isoformat()),
@@ -5344,7 +5344,7 @@ async def expenses_create(payload: dict, admin=Depends(get_current_admin)):
 
 
 @router.delete("/admin/expenses/{eid}")
-async def expenses_delete(eid: str, admin=Depends(get_current_admin)):
+async def expenses_delete(eid: str, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     r = await db.expenses.delete_one({"_id": _oid(eid)})
     return {"deleted": r.deleted_count}
@@ -5352,7 +5352,7 @@ async def expenses_delete(eid: str, admin=Depends(get_current_admin)):
 
 # Extended finance report (revenue + expenses + assets)
 @router.get("/admin/assets/report/depreciation")
-async def assets_depreciation_report(months: int = 12, admin=Depends(get_current_admin)):
+async def assets_depreciation_report(months: int = 12, admin=Depends(require_roles("admin", "finance"))):
     """Laporan total beban depresiasi aset aktif per periode (bulanan, N bulan terakhir)."""
     db = await _get_db()
     months = max(1, min(months, 60))
@@ -5391,7 +5391,7 @@ async def assets_depreciation_report(months: int = 12, admin=Depends(get_current
 
 
 @router.get("/admin/finance/report")
-async def admin_finance_report(admin=Depends(get_current_admin)):
+async def admin_finance_report(admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     paid = await db.invoices.find({"status": "paid"}).to_list(5000)
     total_revenue = sum(d.get("total", 0) for d in paid)
@@ -7089,7 +7089,7 @@ async def client_domain_check(domain: str, user=Depends(get_current_user)):
 
 # ---------------- Proxmox live actions ----------------
 @router.get("/admin/proxmox/nodes")
-async def proxmox_nodes(admin=Depends(get_current_admin)):
+async def proxmox_nodes(admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     s = await iv2.get_settings(db, "proxmox")
     if not s or not s.get("enabled"):
@@ -7098,7 +7098,7 @@ async def proxmox_nodes(admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/proxmox/vms")
-async def proxmox_vms(node: Optional[str] = None, admin=Depends(get_current_admin)):
+async def proxmox_vms(node: Optional[str] = None, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     s = await iv2.get_settings(db, "proxmox")
     if not s or not s.get("enabled"):
@@ -7128,7 +7128,7 @@ async def proxmox_vnc(node: str, vmid: int, admin=Depends(get_current_admin)):
 
 
 @router.post("/admin/provisioning/proxmox/create")
-async def admin_provision_proxmox_vm(payload: dict, admin=Depends(get_current_admin)):
+async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles("admin", "support"))):
     """Manually clone a VM on the LIVE Proxmox cluster. Fails clearly when the
     integration is not configured - never fakes success."""
     db = await _get_db()
@@ -7149,7 +7149,7 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(get_current_ad
 
 
 @router.post("/admin/provisioning/hosting/create")
-async def admin_provision_hosting_account(payload: dict, admin=Depends(get_current_admin)):
+async def admin_provision_hosting_account(payload: dict, admin=Depends(require_roles("admin", "support"))):
     """Manually create a hosting account on the LIVE control panel (cPanel/
     Plesk/DirectAdmin). Fails clearly when no integration is enabled."""
     db = await _get_db()
@@ -7178,7 +7178,7 @@ async def admin_provision_hosting_account(payload: dict, admin=Depends(get_curre
 
 
 @router.get("/admin/proxmox/templates")
-async def admin_proxmox_templates(admin=Depends(get_current_admin)):
+async def admin_proxmox_templates(admin=Depends(require_roles("admin", "support"))):
     """LIVE list of clone templates on the Proxmox cluster + the configured VMID."""
     db = await _get_db()
     s = await iv2.get_settings(db, "proxmox")
@@ -7228,7 +7228,7 @@ async def admin_set_service_traffic_source(sid: str, payload: dict, admin=Depend
 
 
 @router.post("/admin/credit-notes/preview")
-async def credit_notes_preview(payload: dict, admin=Depends(get_current_admin)):
+async def credit_notes_preview(payload: dict, admin=Depends(require_roles("admin", "finance"))):
     """Render a DRAFT credit note as an inline PDF without saving anything."""
     db = await _get_db()
     try:
@@ -7295,7 +7295,7 @@ def _serialize_device(d: dict) -> dict:
 
 
 @router.get("/admin/mikrotik/devices")
-async def mikrotik_devices_list(admin=Depends(get_current_admin)):
+async def mikrotik_devices_list(admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     docs = await db.mikrotik_devices.find({}).sort("created_at", 1).to_list(500)
     out = [_serialize_device(d) for d in docs]
@@ -7377,25 +7377,25 @@ async def _run_mikrotik(db, device_id: str | None, fn_name: str, *args, **kwargs
 
 # ---------------- Mikrotik live views ----------------
 @router.get("/admin/mikrotik/interfaces")
-async def mikrotik_interfaces(admin=Depends(get_current_admin), device_id: str | None = None):
+async def mikrotik_interfaces(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "list_interfaces")
 
 
 @router.get("/admin/mikrotik/bgp")
-async def mikrotik_bgp(admin=Depends(get_current_admin), device_id: str | None = None):
+async def mikrotik_bgp(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "list_bgp_peers")
 
 
 @router.get("/admin/mikrotik/traffic")
-async def mikrotik_traffic(interface: str, admin=Depends(get_current_admin), device_id: str | None = None):
+async def mikrotik_traffic(interface: str, admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "traffic_monitor", interface)
 
 
 @router.get("/admin/mikrotik/system")
-async def mikrotik_system(admin=Depends(get_current_admin), device_id: str | None = None):
+async def mikrotik_system(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "system_resource")
 
@@ -7420,7 +7420,7 @@ async def mikrotik_looking_glass(payload: dict, admin=Depends(get_current_admin)
 
 # ---------- Blackhole ----------
 @router.get("/admin/mikrotik/blackhole")
-async def mikrotik_blackhole_list(admin=Depends(get_current_admin),
+async def mikrotik_blackhole_list(admin=Depends(require_roles("admin", "support")),
                                   device_id: str | None = None,
                                   prefix_filter: str | None = None):
     db = await _get_db()
@@ -7464,7 +7464,7 @@ async def mikrotik_blackhole_remove(route_id: str, admin=Depends(get_current_adm
 
 @router.get("/admin/noc/blackhole-log")
 async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100,
-                            admin=Depends(get_current_admin)):
+                            admin=Depends(require_roles("admin", "support"))):
     """Riwayat announce/remove blackhole (auto + manual) dengan pencarian prefix/aktor."""
     db = await _get_db()
     limit = max(1, min(limit, 500))
@@ -7487,7 +7487,7 @@ async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100,
 
 @router.get("/admin/noc/netflow/sankey")
 async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
-                             admin=Depends(get_current_admin)):
+                             admin=Depends(require_roles("admin", "support"))):
     """Data agregat arus trafik (torch MikroTik live) untuk Diagram Sankey:
     flows = [{src, dst, gbps}] top-N berdasarkan rate."""
     db = await _get_db()
@@ -7525,7 +7525,7 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
 
 # ---------- Backup ----------
 @router.get("/admin/mikrotik/backups")
-async def mikrotik_backups_list(admin=Depends(get_current_admin), device_id: str | None = None):
+async def mikrotik_backups_list(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "backup_list")
 
@@ -7569,7 +7569,7 @@ def _serialize_threshold_rule(d: dict) -> dict:
 
 
 @router.get("/admin/noc/threshold-rules")
-async def noc_threshold_rules_list(admin=Depends(get_current_admin)):
+async def noc_threshold_rules_list(admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     docs = await db.ddos_threshold_rules.find({}).sort("created_at", -1).to_list(200)
     return [_serialize_threshold_rule(d) for d in docs]
@@ -7577,7 +7577,7 @@ async def noc_threshold_rules_list(admin=Depends(get_current_admin)):
 
 @router.post("/admin/noc/threshold-rules")
 async def noc_threshold_rules_create(payload: m.ThresholdRuleIn, request: Request,
-                                     admin=Depends(get_current_admin)):
+                                     admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     doc = payload.model_dump()
     doc["created_at"] = _now()
@@ -7591,7 +7591,7 @@ async def noc_threshold_rules_create(payload: m.ThresholdRuleIn, request: Reques
 
 @router.put("/admin/noc/threshold-rules/{rid}")
 async def noc_threshold_rules_update(rid: str, payload: m.ThresholdRuleIn, request: Request,
-                                     admin=Depends(get_current_admin)):
+                                     admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     upd = payload.model_dump()
     res = await db.ddos_threshold_rules.update_one({"_id": _oid(rid)}, {"$set": upd})
@@ -7605,7 +7605,7 @@ async def noc_threshold_rules_update(rid: str, payload: m.ThresholdRuleIn, reque
 
 
 @router.delete("/admin/noc/threshold-rules/{rid}")
-async def noc_threshold_rules_delete(rid: str, request: Request, admin=Depends(get_current_admin)):
+async def noc_threshold_rules_delete(rid: str, request: Request, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     d = await db.ddos_threshold_rules.find_one({"_id": _oid(rid)})
     r = await db.ddos_threshold_rules.delete_one({"_id": _oid(rid)})
@@ -7617,7 +7617,7 @@ async def noc_threshold_rules_delete(rid: str, request: Request, admin=Depends(g
 
 
 @router.post("/admin/noc/ddos/run-detect")
-async def noc_ddos_run_detect(admin=Depends(get_current_admin)):
+async def noc_ddos_run_detect(admin=Depends(require_roles("admin", "support"))):
     """Jalankan evaluasi threshold + deteksi insiden DDoS sekarang (manual trigger)."""
     db = await _get_db()
     from portal import emails as _em
@@ -7645,7 +7645,7 @@ def _serialize_ddos_incident(d: dict) -> dict:
 
 @router.get("/admin/noc/ddos/incidents")
 async def noc_ddos_incidents(status: Optional[str] = None, limit: int = 100,
-                             admin=Depends(get_current_admin)):
+                             admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     q = {"status": status} if status else {}
     limit = max(1, min(limit, 500))
@@ -7655,7 +7655,7 @@ async def noc_ddos_incidents(status: Optional[str] = None, limit: int = 100,
 
 @router.put("/admin/noc/ddos/incidents/{iid}/status")
 async def noc_ddos_incident_status(iid: str, payload: m.DDoSIncidentStatusIn, request: Request,
-                                   admin=Depends(get_current_admin)):
+                                   admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     upd = {"status": payload.status}
     if payload.status in ("resolved", "false_positive"):
@@ -7683,7 +7683,7 @@ def _serialize_notif_channel(d: dict) -> dict:
 
 
 @router.get("/admin/noc/notif-channels")
-async def noc_notif_channels_list(admin=Depends(get_current_admin)):
+async def noc_notif_channels_list(admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     docs = await db.notif_channels.find({}).sort("created_at", -1).to_list(100)
     return [_serialize_notif_channel(d) for d in docs]
@@ -7691,7 +7691,7 @@ async def noc_notif_channels_list(admin=Depends(get_current_admin)):
 
 @router.post("/admin/noc/notif-channels")
 async def noc_notif_channels_create(payload: m.NotifChannelIn, request: Request,
-                                    admin=Depends(get_current_admin)):
+                                    admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     doc = payload.model_dump()
     doc["created_at"] = _now()
@@ -7705,7 +7705,7 @@ async def noc_notif_channels_create(payload: m.NotifChannelIn, request: Request,
 
 @router.put("/admin/noc/notif-channels/{cid}")
 async def noc_notif_channels_update(cid: str, payload: m.NotifChannelIn, request: Request,
-                                    admin=Depends(get_current_admin)):
+                                    admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     res = await db.notif_channels.update_one({"_id": _oid(cid)}, {"$set": payload.model_dump()})
     if not res.matched_count:
@@ -7715,14 +7715,14 @@ async def noc_notif_channels_update(cid: str, payload: m.NotifChannelIn, request
 
 
 @router.delete("/admin/noc/notif-channels/{cid}")
-async def noc_notif_channels_delete(cid: str, admin=Depends(get_current_admin)):
+async def noc_notif_channels_delete(cid: str, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     r = await db.notif_channels.delete_one({"_id": _oid(cid)})
     return {"deleted": r.deleted_count}
 
 
 @router.get("/admin/noc/ddos/notify-log")
-async def noc_ddos_notify_log(limit: int = 100, admin=Depends(get_current_admin)):
+async def noc_ddos_notify_log(limit: int = 100, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
     limit = max(1, min(limit, 500))
     docs = await db.ddos_notify_log.find({}).sort("at", -1).to_list(limit)
@@ -8233,7 +8233,7 @@ async def security_notifications_test(payload: dict, admin=Depends(get_current_a
 
 # ---------- Real Diagnostic Tools ----------
 @router.post("/admin/diagnostics/run")
-async def diagnostics_run(payload: dict, admin=Depends(get_current_admin)):
+async def diagnostics_run(payload: dict, admin=Depends(require_roles("admin", "support"))):
     from portal import diagnostics as _diag
     tool = (payload.get("tool") or "").strip().lower()
     target = (payload.get("target") or "").strip()
@@ -8254,7 +8254,7 @@ async def diagnostics_run(payload: dict, admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/diagnostics/tools")
-async def diagnostics_tools_list(admin=Depends(get_current_admin)):
+async def diagnostics_tools_list(admin=Depends(require_roles("admin", "support"))):
     """Advertise which tools are available on this host so the UI can grey out
     any missing binaries (e.g. traceroute) without a round-trip."""
     from portal import diagnostics as _diag
@@ -8514,7 +8514,7 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
 
 # ---------------- Finance detailed report ----------------
 @router.get("/admin/finance/detailed")
-async def finance_detailed(admin=Depends(get_current_admin)):
+async def finance_detailed(admin=Depends(require_roles("admin", "finance"))):
     """Returns paid-invoice detail + all four expense ledgers + assets + depreciation.
 
     The frontend Finance page uses this to render tabbed detailed tables.
@@ -8655,7 +8655,7 @@ async def _gather_period_data(db, *, year: int, month: Optional[int] = None) -> 
 
 
 @router.get("/admin/finance/report/monthly/{period}")
-async def finance_monthly_xlsx(period: str, admin=Depends(get_current_admin)):
+async def finance_monthly_xlsx(period: str, admin=Depends(require_roles("admin", "finance"))):
     """`period` is YYYY-MM. Returns an .xlsx with 6 sheets:
     Summary / Revenue / Expenses / Kas Kecil / Salaries / Sales Fees.
     Also freezes the month into `finalized_reports` so it becomes read-only.
@@ -8730,7 +8730,7 @@ async def finance_monthly_xlsx(period: str, admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/finance/report/annual/{year}")
-async def finance_annual_xlsx(year: int, admin=Depends(get_current_admin)):
+async def finance_annual_xlsx(year: int, admin=Depends(require_roles("admin", "finance"))):
     """One workbook with per-month AND cumulative Jan-Dec P&L + assets."""
     db = await _get_db()
     d = await _gather_period_data(db, year=year)
@@ -8821,7 +8821,7 @@ async def finance_annual_xlsx(year: int, admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/finance/cashflow-forecast")
-async def finance_cashflow_forecast(admin=Depends(get_current_admin)):
+async def finance_cashflow_forecast(admin=Depends(require_roles("admin", "finance"))):
     """Proyeksi arus kas 30/60/90 hari: inflow dari invoice unpaid/overdue + renewal
     layanan aktif; outflow dari run-rate 3 bulan terakhir keempat buku beban."""
     db = await _get_db()
@@ -8896,7 +8896,7 @@ def _rp(v) -> str:
 
 @router.get("/admin/finance/cashflow-forecast/export")
 async def finance_cashflow_export(format: str = "pdf", token: str = "",
-                                  admin=Depends(get_current_admin)):
+                                  admin=Depends(require_roles("admin", "finance"))):
     """Unduh proyeksi arus kas 30/60/90 hari sebagai PDF atau Excel (xlsx)."""
     db = await _get_db()
     f = await _compute_cashflow_forecast(db)
@@ -8994,7 +8994,7 @@ async def finance_cashflow_export(format: str = "pdf", token: str = "",
 
 
 @router.get("/admin/finance/reports")
-async def finance_finalized_reports(admin=Depends(get_current_admin)):
+async def finance_finalized_reports(admin=Depends(require_roles("admin", "finance"))):
     """List all previously-generated monthly/annual reports (audit trail)."""
     db = await _get_db()
     docs = await db.finalized_reports.find({}).sort("period", -1).to_list(500)
@@ -9749,7 +9749,7 @@ async def _noc_uptime_window(db, dev_ids, days: int):
 
 
 @router.get("/admin/noc/devices")
-async def noc_devices_list(admin=Depends(get_current_admin)):
+async def noc_devices_list(admin=Depends(require_roles("admin", "support"))):
     """Current uptime state for every MikroTik device.
 
     Aggregates `noc_device_state` (last known status) so the frontend can
@@ -9786,7 +9786,7 @@ async def noc_devices_list(admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/noc/events")
-async def noc_events_list(admin=Depends(get_current_admin),
+async def noc_events_list(admin=Depends(require_roles("admin", "support")),
                           limit: int = 200,
                           device_id: Optional[str] = None,
                           type: Optional[str] = None):
@@ -9816,7 +9816,7 @@ async def noc_events_list(admin=Depends(get_current_admin),
 
 
 @router.post("/admin/noc/run-poll")
-async def noc_run_poll_now(admin=Depends(get_current_admin)):
+async def noc_run_poll_now(admin=Depends(require_roles("admin", "support"))):
     """Manually trigger a single NOC probe sweep (same code the scheduler runs)."""
     db = await _get_db()
     from portal import emails as _em
@@ -9914,7 +9914,7 @@ async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
 
 
 @router.get("/admin/credit-notes")
-async def credit_notes_list(admin=Depends(get_current_admin),
+async def credit_notes_list(admin=Depends(require_roles("admin", "finance")),
                             invoice_id: Optional[str] = None,
                             user_id: Optional[str] = None,
                             status: Optional[str] = None):
@@ -9939,7 +9939,7 @@ async def credit_notes_list(admin=Depends(get_current_admin),
 
 
 @router.post("/admin/credit-notes")
-async def credit_notes_create(payload: dict, request: Request, admin=Depends(get_current_admin)):
+async def credit_notes_create(payload: dict, request: Request, admin=Depends(require_roles("admin", "finance"))):
     """Issue a credit note against an invoice.
 
     Body: `{invoice_id, amount, reason, notes?, auto_apply?: bool}`.
@@ -10019,7 +10019,7 @@ async def _apply_credit_note_inner(db, cn: dict, admin, request):
 
 
 @router.post("/admin/credit-notes/{cid}/apply")
-async def credit_notes_apply(cid: str, request: Request, admin=Depends(get_current_admin)):
+async def credit_notes_apply(cid: str, request: Request, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     cn = await db.credit_notes.find_one({"_id": _oid(cid)})
     if not cn:
@@ -10028,7 +10028,7 @@ async def credit_notes_apply(cid: str, request: Request, admin=Depends(get_curre
 
 
 @router.post("/admin/credit-notes/{cid}/cancel")
-async def credit_notes_cancel(cid: str, request: Request, admin=Depends(get_current_admin)):
+async def credit_notes_cancel(cid: str, request: Request, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     cn = await db.credit_notes.find_one({"_id": _oid(cid)})
     if not cn:
@@ -10047,7 +10047,7 @@ async def credit_notes_cancel(cid: str, request: Request, admin=Depends(get_curr
 
 
 @router.get("/admin/credit-notes/{cid}")
-async def credit_notes_detail(cid: str, admin=Depends(get_current_admin)):
+async def credit_notes_detail(cid: str, admin=Depends(require_roles("admin", "finance"))):
     db = await _get_db()
     cn = await db.credit_notes.find_one({"_id": _oid(cid)})
     if not cn:
@@ -10827,7 +10827,7 @@ def _hc_systemd_state(unit: str) -> str:
 
 
 @router.get("/admin/system/health")
-async def admin_system_health(admin=Depends(get_current_admin)):
+async def admin_system_health(admin=Depends(require_roles("admin", "support"))):
     """Kesehatan live host + aplikasi: DB, disk, memori, CPU, SSL, scheduler,
     service systemd. Dipakai di Admin - Diagnostics - System Health dan untuk
     verifikasi setelah scripts/install.sh selesai."""
