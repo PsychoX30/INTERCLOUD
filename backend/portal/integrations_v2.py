@@ -175,6 +175,11 @@ class ProxmoxClient:
         await self._post(f"/nodes/{src_node}/qemu/{int(template_vmid)}/clone", payload)
         return {"vmid": newid, "node": target or src_node, "name": hostname}
 
+    async def set_cloudinit_credentials(self, node: str, vmid: int, username: str, password: str) -> None:
+        """Set ciuser/cipassword on the VM config - applied by cloud-init on first boot."""
+        await self._post(f"/nodes/{node}/qemu/{vmid}/config",
+                         {"ciuser": username, "cipassword": password})
+
     async def vm_action(self, node: str, vmid: int, action: str) -> Any:
         assert action in ("start", "stop", "reboot", "shutdown", "suspend", "resume")
         return await self._post(f"/nodes/{node}/qemu/{vmid}/status/{action}", {})

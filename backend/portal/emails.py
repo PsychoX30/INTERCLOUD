@@ -78,7 +78,7 @@ _WRAPPER = _WRAPPER_TEMPLATE.replace("__LOGO__", LOGO_URL)
 
 # Bump this whenever the shipped default templates meaningfully change - startup
 # will then refresh any unedited system templates in place.
-_SEED_VERSION = 4
+_SEED_VERSION = 5
 
 
 DEFAULT_TEMPLATES: list[dict] = [
@@ -397,6 +397,35 @@ DEFAULT_TEMPLATES: list[dict] = [
         "is_system": True,
     },
     {
+        "event_key": "vm_provisioned",
+        "name": "VM ready - handover VPS/Cloud",
+        "subject": "VPS Anda siap digunakan - {{vm.hostname}}",
+        "body_html": (
+            "<p>Halo <b>{{user.name}}</b>,</p>"
+            "<p>Kabar baik! Layanan <b>{{service.product_name}}</b> Anda telah "
+            "<b>selesai diprovisioning</b> dan siap digunakan. Berikut detail server Anda:</p>"
+            "<table style='width:100%;border-collapse:collapse;margin:16px 0;background:#f8fafc;border-radius:10px;overflow:hidden'>"
+            "  <tr><td style='padding:10px 14px;color:#64748b;font-size:12px;width:32%'>Hostname</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{vm.hostname}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>IP Address</td><td style='padding:10px 14px;font-family:monospace;color:#0f172a'>{{vm.ip}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Sistem Operasi</td><td style='padding:10px 14px;color:#0f172a'>{{vm.os}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>VMID / Node</td><td style='padding:10px 14px;font-family:monospace;color:#0f172a'>{{vm.vmid}} @ {{vm.node}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Username</td><td style='padding:10px 14px;font-family:monospace;color:#0f172a'>{{vm.username}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Password awal</td><td style='padding:10px 14px;font-family:monospace;color:#0f172a'>{{vm.password}}</td></tr>"
+            "</table>"
+            "<p>Akses server via SSH: <code style='background:#f1f5f9;padding:2px 8px;border-radius:6px'>ssh {{vm.username}}@{{vm.ip}}</code></p>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Kelola VM di Client Portal &rarr;</a>"
+            "</p>"
+            "<p style='color:#64748b;font-size:12px'>Demi keamanan, segera ganti password ini setelah login pertama. "
+            "Jangan bagikan kredensial melalui saluran yang tidak aman.</p>"
+            "<p style='margin-top:24px'>Salam,<br><b>Tim Provisioning Intercloud</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
         "event_key": "domain_expiry_reminder",
         "name": "Domain expiry reminder",
         "subject": "Action required - domain {{domain.name}} expires in {{domain.days_left}} day(s)",
@@ -697,6 +726,20 @@ async def on_hosting_provisioned(db, user_doc: dict, service_doc: dict, credenti
         },
     })
     await send_via_template(db, event_key="hosting_provisioned",
+                            to_email=user_doc["email"], ctx=ctx,
+                            user_id=str(user_doc.get("_id") or ""))
+
+
+async def on_vm_provisioned(db, user_doc: dict, service_doc: dict, vm: dict) -> None:
+    """VPS/Cloud VM handover email - fired after successful live Proxmox provisioning."""
+    ctx = build_context(user=user_doc, extra={
+        "vm": vm,
+        "service": {
+            "product_name": service_doc.get("product_name", ""),
+            "next_renewal": service_doc.get("next_renewal", ""),
+        },
+    })
+    await send_via_template(db, event_key="vm_provisioned",
                             to_email=user_doc["email"], ctx=ctx,
                             user_id=str(user_doc.get("_id") or ""))
 
@@ -1415,6 +1458,15 @@ async def sample_service_traffic(db, service_id: str, device: dict, interface: s
         "out_mbps": round(_num(res.get("tx-bits-per-second")) / 1_000_000, 2),
     }
     await db.traffic_samples.insert_one(dict(doc))
+    try:
+        await db.traffic_monthly.update_one(
+            {"service_id": service_id, "month": now.strftime("%Y-%m")},
+            {"$inc": {"in_gb": round(doc["in_mbps"] * 3600 / 8 / 1024, 3),
+                      "out_gb": round(doc["out_mbps"] * 3600 / 8 / 1024, 3),
+                      "samples": 1}},
+            upsert=True)
+    except Exception:
+        pass
     doc.pop("_id", None)
     return doc
 
@@ -1461,6 +1513,106 @@ async def run_traffic_sample_sweep(db, *, now: Optional[datetime] = None) -> dic
     except Exception:
         pass
     return {"services": len(svcs), "sampled": sampled, "errors": errors}
+
+
+# ------------------------------------------------------------------
+# Laporan bulanan (tagihan + trafik) ke email support - dokumentasi
+# ------------------------------------------------------------------
+async def run_monthly_report(db, *, month: Optional[str] = None) -> dict:
+    """Build + email a monthly billing & traffic summary. `month` = 'YYYY-MM'
+    (default: previous month). Sent to settings key `monthly_report_email`,
+    falling back to ADMIN_EMAIL env, then support@intercloud-digital.com."""
+    from bson import ObjectId
+    now = datetime.now(timezone.utc)
+    if not month:
+        month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    q_month = {"$regex": f"^{month}"}
+
+    issued = await db.invoices.find({"created_at": q_month}).to_list(3000)
+    paid = await db.invoices.find({"status": "paid", "paid_at": q_month}).to_list(3000)
+    outstanding = await db.invoices.find({"status": {"$in": ["unpaid", "overdue"]}}).to_list(3000)
+    credits = await db.credit_notes.find({"status": "applied", "applied_at": q_month}).to_list(1000)
+    new_clients = await db.users.count_documents({"role": "client", "created_at": q_month})
+    new_orders = await db.orders.count_documents({"created_at": q_month})
+
+    tm = await db.traffic_monthly.find({"month": month}).sort("in_gb", -1).to_list(500)
+    svc_ids = []
+    for t in tm:
+        try:
+            svc_ids.append(ObjectId(t["service_id"]))
+        except Exception:
+            pass
+    svc_map = {}
+    if svc_ids:
+        async for s in db.services.find({"_id": {"$in": svc_ids}}):
+            svc_map[str(s["_id"])] = s.get("name") or s.get("product_name", "")
+
+    summary = {
+        "invoices_issued": len(issued),
+        "invoices_issued_total": round(sum(i.get("total", 0) for i in issued), 2),
+        "invoices_paid": len(paid),
+        "invoices_paid_total": round(sum(i.get("total", 0) for i in paid), 2),
+        "outstanding_total": round(sum(i.get("total", 0) for i in outstanding), 2),
+        "credit_notes_applied": len(credits),
+        "credit_notes_total": round(sum(c.get("amount", 0) for c in credits), 2),
+        "new_clients": new_clients,
+        "new_orders": new_orders,
+        "traffic_services": len(tm),
+        "traffic_in_gb": round(sum(t.get("in_gb", 0) for t in tm), 2),
+        "traffic_out_gb": round(sum(t.get("out_gb", 0) for t in tm), 2),
+    }
+
+    def _row(label, value):
+        return (f"<tr style='border-top:1px solid #e2e8f0'>"
+                f"<td style='padding:9px 14px;color:#64748b;font-size:12px'>{label}</td>"
+                f"<td style='padding:9px 14px;font-weight:700;color:#0a2350;text-align:right'>{value}</td></tr>")
+
+    billing_rows = "".join([
+        _row("Invoice diterbitkan", f"{summary['invoices_issued']} · {_fmt_idr(summary['invoices_issued_total'])}"),
+        _row("Invoice dibayar", f"{summary['invoices_paid']} · {_fmt_idr(summary['invoices_paid_total'])}"),
+        _row("Outstanding saat ini (unpaid + overdue)", _fmt_idr(summary["outstanding_total"])),
+        _row("Credit note diterapkan", f"{summary['credit_notes_applied']} · {_fmt_idr(summary['credit_notes_total'])}"),
+        _row("Klien baru", str(summary["new_clients"])),
+        _row("Order baru", str(summary["new_orders"])),
+    ])
+    if tm:
+        traffic_rows = "".join(
+            f"<tr style='border-top:1px solid #e2e8f0'>"
+            f"<td style='padding:8px 14px;font-size:12px;color:#0a2350'>{svc_map.get(t['service_id'], t['service_id'])}</td>"
+            f"<td style='padding:8px 14px;font-size:12px;text-align:right'>{round(t.get('in_gb', 0), 2)} GB</td>"
+            f"<td style='padding:8px 14px;font-size:12px;text-align:right'>{round(t.get('out_gb', 0), 2)} GB</td></tr>"
+            for t in tm[:25])
+        traffic_html = (
+            "<h3 style='color:#0a2350;margin:24px 0 8px'>Trafik per layanan</h3>"
+            "<table style='width:100%;border-collapse:collapse;background:#f8fafc;border-radius:10px;overflow:hidden'>"
+            "<tr><th style='padding:9px 14px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase'>Layanan</th>"
+            "<th style='padding:9px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Inbound</th>"
+            "<th style='padding:9px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Outbound</th></tr>"
+            f"{traffic_rows}</table>"
+            f"<p style='font-size:12px;color:#64748b'>Total: {summary['traffic_in_gb']} GB in / {summary['traffic_out_gb']} GB out "
+            f"dari {summary['traffic_services']} layanan terpantau.</p>")
+    else:
+        traffic_html = ("<h3 style='color:#0a2350;margin:24px 0 8px'>Trafik per layanan</h3>"
+                        "<p style='font-size:13px;color:#64748b'>Belum ada data trafik untuk bulan ini - "
+                        "petakan layanan ke interface MikroTik di Admin - Services.</p>")
+
+    inner = (
+        f"<p>Laporan bulanan otomatis periode <b>{month}</b> untuk dokumentasi internal.</p>"
+        "<h3 style='color:#0a2350;margin:16px 0 8px'>Ringkasan tagihan</h3>"
+        "<table style='width:100%;border-collapse:collapse;background:#f8fafc;border-radius:10px;overflow:hidden'>"
+        f"{billing_rows}</table>"
+        f"{traffic_html}"
+        "<p style='margin-top:20px;font-size:12px;color:#64748b'>Email ini dikirim otomatis oleh Intercloud Portal setiap tanggal 1.</p>"
+    )
+    to_email = (await get_setting(db, "monthly_report_email", None)
+                or os.environ.get("ADMIN_EMAIL")
+                or "support@intercloud-digital.com")
+    delivery = await deliver(
+        db, to_email=to_email,
+        subject=f"[Laporan Bulanan] {month} - ringkasan tagihan & trafik Intercloud",
+        body_html=wrap_html(inner), event_key="monthly_report")
+    return {"month": month, "to_email": to_email,
+            "delivery": delivery, "summary": summary}
 
 
 def start_scheduler(db):
@@ -1544,6 +1696,17 @@ def start_scheduler(db):
     sched.add_job(_traffic_tick, CronTrigger(minute=50))
     sched.add_job(_traffic_tick, "date",
                   run_date=datetime.now(timezone.utc) + timedelta(seconds=50))
+
+    # Laporan bulanan ke email support - tanggal 1 pukul 06:30 WIB.
+    async def _monthly_report_tick():
+        try:
+            result = await run_monthly_report(db)
+            log.info(f"[monthly-report] {result.get('month')} -> {result.get('to_email')} "
+                     f"({(result.get('delivery') or {}).get('status')})")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[monthly-report] tick failed: {e}")
+
+    sched.add_job(_monthly_report_tick, CronTrigger(day=1, hour=6, minute=30))
 
     async def _noc_retention_tick():
         try:

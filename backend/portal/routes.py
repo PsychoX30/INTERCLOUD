@@ -1469,10 +1469,21 @@ async def _auto_provision(db, order: dict) -> dict:
             try:
                 vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", cfg["hostname"]).strip("-")[:60]
                 vm = await iv2.ProxmoxClient(pxs).clone_vm(hostname=vm_name)
+                import secrets as _secrets
+                root_pw = _secrets.token_urlsafe(12)
                 cfg.update({"node": vm["node"], "vmid": vm["vmid"],
+                            "root_username": "root", "root_password": root_pw,
                             "provision_status": "provisioned", "provisioned_at": _now()})
                 await _log("vm_created",
                            f"Proxmox VM {vm['vmid']} ({cfg['os']}) dibuat di node {vm['node']} (live).")
+                try:
+                    await iv2.ProxmoxClient(pxs).set_cloudinit_credentials(
+                        vm["node"], vm["vmid"], "root", root_pw)
+                    await _log("vm_credentials_set",
+                               "Kredensial root diterapkan via cloud-init (aktif saat boot pertama).")
+                except Exception as e2:
+                    await _log("vm_credentials_pending",
+                               f"Cloud-init credential belum diterapkan ({str(e2)[:80]}) - NOC perlu set password manual.")
             except Exception as e:
                 cfg["provision_status"] = "pending"
                 await _log("vm_create_failed",
@@ -1522,6 +1533,24 @@ async def _auto_provision(db, order: dict) -> dict:
                            f"Detail akun hosting dikirim via email ke {u.get('email', '')}.")
             except Exception as e:
                 await _log("credentials_email_failed", f"Gagal mengirim email detail akun: {str(e)[:120]}")
+    if cat in ("vps", "cloud") and cfg.get("provision_status") == "provisioned":
+        u = await db.users.find_one({"_id": order["user_id"]})
+        if u:
+            from portal import emails as _em
+            try:
+                await _em.on_vm_provisioned(db, u, svc, {
+                    "hostname": cfg.get("hostname", ""),
+                    "ip": cfg.get("ip") or "-",
+                    "os": cfg.get("os", ""),
+                    "vmid": cfg.get("vmid", ""),
+                    "node": cfg.get("node", ""),
+                    "username": cfg.get("root_username", "root"),
+                    "password": cfg.get("root_password", ""),
+                })
+                await _log("credentials_emailed",
+                           f"Detail VM (IP, hostname, kredensial) dikirim via email ke {u.get('email', '')}.")
+            except Exception as e:
+                await _log("credentials_email_failed", f"Gagal mengirim email detail VM: {str(e)[:120]}")
     return svc
 
 
@@ -1733,6 +1762,16 @@ async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
             "detail": detail,
             "link": "/portal/admin/services",
         })
+    pending_provision = await db.services.find(
+        {"config.provision_status": "pending"}).sort("created_at", -1).to_list(5)
+    for s in pending_provision:
+        alerts.append({
+            "type": "provision_pending",
+            "severity": "warning",
+            "title": f"Menunggu provisioning manual: {s.get('product_name') or s.get('name', '')}",
+            "detail": "Integrasi tidak aktif saat order dibayar - selesaikan provisioning lalu aktifkan layanan",
+            "link": "/portal/admin/services",
+        })
     order = {"danger": 0, "warning": 1, "info": 2}
     alerts.sort(key=lambda a: order.get(a["severity"], 9))
     return alerts
@@ -1751,6 +1790,16 @@ async def admin_notifications(severity: str | None = None, staff=Depends(get_cur
             raise HTTPException(status_code=400, detail="severity harus danger, warning, atau info")
         alerts = [a for a in alerts if a["severity"] == severity]
     return {"alerts": alerts, "count": len(alerts)}
+
+
+@router.post("/admin/reports/monthly/send")
+async def admin_send_monthly_report(payload: dict = None, admin=Depends(get_current_admin)):
+    """Kirim laporan bulanan (tagihan + trafik) ke email support untuk dokumentasi.
+    Body opsional: {month: 'YYYY-MM'} - default bulan lalu."""
+    db = await _get_db()
+    from portal import emails as _em
+    month = ((payload or {}).get("month") or "").strip() or None
+    return await _em.run_monthly_report(db, month=month)
 
 
 @router.get("/admin/dashboard")
