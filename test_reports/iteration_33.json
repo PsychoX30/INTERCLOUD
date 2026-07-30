@@ -1,0 +1,28 @@
+{
+  "summary": "Frontend regression after PUBLIC_URL=/ fix. CRITICAL requirement (no infinite loading) is fully resolved: /portal/login, /portal/admin/dashboard, /portal/admin/finance, /portal/admin/noc, /portal/admin/documents, /portal/admin/tickets all hard-load and refresh (F5) successfully with no chunk 404s and no stuck 'LOADING' fallback. Admin login works and admin dashboard renders stats/alerts. All new backend-wired features verified in UI: Cash-flow tab with d30/d60/d90 buckets + weekly projection chart, salary-slip link on Salaries tab, drag & drop document upload modal (doc-dropzone + doc-file-input), admin ticket status change to 'closed' persists with system audit message, and NOC panels (threshold-rules, ddos-panel, ddos-run-detect, notif-channels, blackhole-log, ddos-history, netflow sankey) all render without errors. Public landing lead form submits successfully (POST /api/portal/portal-public/leads => 200, 'Permintaan terkirim / Terima kasih' shown).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Route /portal/admin/business", "issue": "Path in task spec does not exist as a route – hard-loading /portal/admin/business shows the public 404 page. Actual admin business surfaces are /portal/admin/documents (Documents), /portal/admin/crm, /portal/admin/projects, /portal/admin/content, /portal/admin/followups. Recommend either adding a redirect from /portal/admin/business -> /portal/admin/documents (default tab) OR updating the task spec.", "selector": "n/a", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "OPTIONAL: Add redirect route /portal/admin/business -> /portal/admin/documents so the URL referenced in requirements does not 404.",
+    "OPTIONAL for full QA coverage: seed a demo client user (e.g. demo@client.com) so client-side routes (/portal/client/domains WHOIS/search/register, /portal/client/tickets close button) can be exercised via UI end-to-end. They could not be tested in this pass because admin role is (correctly) redirected out of /portal/client/* to /portal/admin/dashboard, and only the admin credential is seeded in /app/memory/test_credentials.md."
+  ],
+  "critical_code_review_comments": [
+    "publicPath fix via PUBLIC_URL=/ is correct and verified – all lazy chunks now load from /static/js/*. No further action needed for the infinite-loading class of bug.",
+    "Client-side route guards redirect admin users to admin dashboard for /portal/client/* – behaviour is correct but blocks automated client-flow testing without a seeded client account."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "~95% (10/11 admin/public tasks verified; client-only routes not exercisable without client credentials)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (only admin available; no client seeded)",
+  "seed_data_creation": "None. One TEST_ticket (TCK-2026-00051) was closed by the ticket-status test but original demo-generated ticket data remained otherwise unchanged.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Infinite-loading bug confirmed fixed by PUBLIC_URL=/. Login, admin routes, finance cashflow, NOC panels, documents dropzone, admin ticket close, and public lead form are all working. Client portal WHOIS/search/register on /portal/client/domains and client ticket-close on /portal/client/tickets were NOT exercised because no client user is seeded (admin gets redirected to /portal/admin/dashboard). Ask main agent to seed a demo client (or reuse Demo Client account) if these need UI verification. /portal/admin/business URL returns the public 404 – documents live at /portal/admin/documents.",
+  "rca of the issue": "Prior infinite-loading root cause was webpack publicPath being relative under CRA when app is hosted at /portal/* – chunk requests resolved to /portal/static/js/*.chunk.js which the ingress served as index.html. Adding PUBLIC_URL=/ in /app/frontend/.env forces absolute /static/js/*.chunk.js paths. Verified this iteration: no *.chunk.js 404s in the network log, Suspense fallback never stays visible on any hard-loaded nested route, and F5 refresh on /portal/admin/finance and /portal/client/domains no longer hangs."
+}
