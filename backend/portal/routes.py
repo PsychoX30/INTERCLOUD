@@ -732,7 +732,10 @@ async def register(payload: m.RegisterIn, request: Request):
 
 @router.get("/auth/me", response_model=m.UserOut)
 async def me(user=Depends(get_current_user)):
-    return user
+    # Route through _user_public so legacy/directly-inserted user docs that
+    # lack created_at (or store it as a datetime) don't trip the UserOut
+    # response validator with a 500. _user_public defaults + coerces to ISO.
+    return _user_public(user)
 
 
 # ============================================================
