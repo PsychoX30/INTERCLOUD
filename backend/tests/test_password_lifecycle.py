@@ -141,14 +141,15 @@ class TestForgotAndResetFlow:
         assert r.json()["message"] == r2.json()["message"]
 
     def test_reset_link_token_works_once(self, user):
+        stale = _pluck_last_token_from_logs()
         # Trigger a fresh reset
         r = requests.post(f"{API}/auth/forgot-password", json={"email": user["email"]})
         assert r.status_code == 200
         # Give backend a moment to flush the log
         time.sleep(0.5)
         token = _pluck_last_token_from_logs()
-        if not token:
-            pytest.skip("could not grep reset token from backend log")
+        if not token or token == stale:
+            pytest.skip("no fresh reset token in backend log (SMTP enabled - link sent by email)")
         new_pw = "ResetFlowPw2026!"
         r2 = requests.post(f"{API}/auth/reset-password",
                            json={"token": token, "new_password": new_pw})

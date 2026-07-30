@@ -320,6 +320,10 @@ def pytest_sessionstart(session):
             docs = list(db.integration_settings.find({}))
             with open("/tmp/ic_integration_settings.snapshot", "wb") as f:
                 pickle.dump(docs, f)
+            # reCAPTCHA guards live logins; disable for the suite (sessionfinish
+            # restores the snapshot, bringing `enabled` back to its real value).
+            db.integration_settings.update_one({"provider": "recaptcha"},
+                                               {"$set": {"enabled": False}})
         except Exception:
             pass
     # xdist: only the first worker (or a non-distributed run) seeds fixtures;
