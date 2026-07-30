@@ -83,7 +83,16 @@ const AdminFinance = () => {
           <FileText className="h-4 w-4" /> Slip
         </a>
       )} />}
-      {tab === "sales_fees" && <LedgerPane rows={d.sales_fees_rows} onChange={load} kind="sales-fees" extras={["sales_person","invoice_number","notes"]} />}
+      {tab === "sales_fees" && <LedgerPane rows={d.sales_fees_rows} onChange={load} kind="sales-fees" extras={["sales_person","invoice_number","notes"]} rowAction={(r) => (
+        <a
+          href={`${BASE}/api/portal/documents/sales-fee-slip/${r.id}?format=pdf&token=${encodeURIComponent(getToken() || "")}`}
+          className="inline-flex items-center gap-1 text-xs font-bold text-[#0a2350] hover:text-[#f5b120]"
+          title="Unduh slip fee sales PDF"
+          data-testid={`sales-fee-slip-${r.id}`}
+        >
+          <FileText className="h-4 w-4" /> Slip
+        </a>
+      )} />}
       {tab === "assets" && <AssetsList rows={d.assets_rows} />}
       {tab === "billing" && <BillingDefaultsPane />}
       {tab === "reports" && <ReportsPane dlUrl={dlUrl} />}
@@ -353,8 +362,17 @@ const CashflowPane = () => {
     { key: "d90", label: "90 hari" },
   ];
   const chart = f.weekly.map((w) => ({ ...w, label: w.week_start.slice(5) }));
+  const dl = (fmt) => `${BASE}/api/portal/admin/finance/cashflow-forecast/export?format=${fmt}&token=${encodeURIComponent(getToken() || "")}`;
   return (
     <div data-testid="cashflow-pane">
+      <div className="flex justify-end gap-2 mb-4">
+        <a href={dl("pdf")} className={btnSecondary} data-testid="cashflow-export-pdf">
+          <Download className="h-4 w-4" /> PDF
+        </a>
+        <a href={dl("xlsx")} className={btnSecondary} data-testid="cashflow-export-xlsx">
+          <Download className="h-4 w-4" /> Excel
+        </a>
+      </div>
       <div className="grid sm:grid-cols-3 gap-4 mb-5">
         {buckets.map((b) => {
           const v = f.buckets[b.key];

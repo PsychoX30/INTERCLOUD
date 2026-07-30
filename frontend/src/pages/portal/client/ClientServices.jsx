@@ -340,6 +340,42 @@ const CopyRow = ({ label, value }) => {
   );
 };
 
+const AutoRenewToggle = ({ service }) => {
+  const [on, setOn] = useState(service.auto_renew !== false);
+  const [busy, setBusy] = useState(false);
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      const r = await api.put(`/client/services/${service.id}/auto-renew`, { auto_renew: !on });
+      setOn(r.data.auto_renew);
+      service.auto_renew = r.data.auto_renew;
+    } finally { setBusy(false); }
+  };
+  return (
+    <Card className="p-5" data-testid="auto-renew-panel">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <div className="text-sm font-extrabold text-[#0a2350]">Auto-renewal</div>
+          <p className="mt-1 text-xs text-slate-500">
+            {on
+              ? "Invoice perpanjangan dibuat otomatis sebelum jatuh tempo. Layanan tetap aktif tanpa perlu order ulang."
+              : "Auto-renewal mati. Layanan TIDAK akan diperpanjang otomatis dan bisa nonaktif setelah tanggal renewal."}
+          </p>
+        </div>
+        <button
+          onClick={toggle}
+          disabled={busy}
+          aria-pressed={on}
+          data-testid="auto-renew-toggle"
+          className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${on ? "bg-emerald-500" : "bg-slate-300"} ${busy ? "opacity-60" : ""}`}
+        >
+          <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${on ? "left-6" : "left-1"}`} />
+        </button>
+      </div>
+    </Card>
+  );
+};
+
 const ServiceDetail = ({ service, onClose }) => {
   const s = service;
   const isVPS = s.category === "vps" || s.category === "dedicated" || s.category === "cloud";
@@ -386,6 +422,7 @@ const ServiceDetail = ({ service, onClose }) => {
 
           {isVPS && <VMControls serviceId={s.id} />}
           {isVPS && s.status === "active" && <UpgradePanel serviceId={s.id} />}
+          <AutoRenewToggle service={s} />
 
           {isHosting && (
             <Card className="p-5">

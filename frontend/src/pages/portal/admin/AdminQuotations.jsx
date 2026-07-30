@@ -2,12 +2,15 @@ import React, { useEffect, useState } from "react";
 import { api, money, shortDate } from "../../../portal/api";
 import { docUrl } from "../../../portal/api";
 import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Plus, Trash2, FileDown, Download } from "lucide-react";
+import { Plus, Trash2, FileDown, Download, Receipt } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+import { TaxPercentField } from "./TaxPercentField";
+import { toast } from "sonner";
 
 const AdminQuotations = () => {
   const [rows, setRows] = useState(null);
   const [modal, setModal] = useState(false);
+  const [convertQ, setConvertQ] = useState(null);
   const load = () => api.get("/admin/quotations").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
 
@@ -38,13 +41,22 @@ const AdminQuotations = () => {
           <a href={docUrl("quotation", q.id, "pdf")} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120] mr-3" title="Download PDF" data-testid={`qtn-download-${q.number}`}>
             <Download className="h-4 w-4 inline" />
           </a>
-          <select value={q.status} onChange={(e) => setStatus(q.id, e.target.value)} className="text-xs h-8 rounded border border-slate-300 px-1.5" data-testid={`qtn-status-${q.number}`}>
+          <select value={q.status} onChange={(e) => setStatus(q.id, e.target.value)} className="text-xs h-8 rounded border border-slate-300 px-1.5 mr-2" data-testid={`qtn-status-${q.number}`}>
             <option value="draft">draft</option>
             <option value="sent">sent</option>
             <option value="accepted">accepted</option>
             <option value="rejected">rejected</option>
             <option value="expired">expired</option>
           </select>
+          {q.converted_invoice_number ? (
+            <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-1" title={`Sudah dikonversi ke ${q.converted_invoice_number}`} data-testid={`qtn-converted-${q.number}`}>
+              <Receipt className="h-3 w-3" /> {q.converted_invoice_number}
+            </span>
+          ) : (
+            <button onClick={() => setConvertQ(q)} className="inline-flex items-center gap-1 text-xs font-bold text-[#0a2350] bg-[#f5b120]/20 hover:bg-[#f5b120]/40 border border-[#f5b120] rounded-full px-2.5 py-1 transition-colors" title="Buat invoice dari quotation ini" data-testid={`qtn-convert-${q.number}`}>
+              <Receipt className="h-3 w-3" /> Buat Invoice
+            </button>
+          )}
         </span>
       ) },
   ];
@@ -66,6 +78,49 @@ const AdminQuotations = () => {
         testid="admin-quotations-table"
       />
       {modal && <NewQuotation onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
+      {convertQ && <ConvertToInvoice q={convertQ} onClose={() => setConvertQ(null)} onDone={() => { setConvertQ(null); load(); }} />}
+    </div>
+  );
+};
+
+const ConvertToInvoice = ({ q, onClose, onDone }) => {
+  const [dueDate, setDueDate] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() + 7);
+    return d.toISOString().slice(0, 10);
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true); setErr("");
+    try {
+      const r = await api.post(`/admin/quotations/${q.id}/convert-to-invoice`, { due_date: dueDate });
+      toast.success(`Invoice ${r.data.number} berhasil dibuat dari ${q.number}`);
+      onDone();
+    } catch (er) { setErr(er?.response?.data?.detail || "Gagal membuat invoice"); setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="w-full max-w-md bg-white rounded-3xl p-6" data-testid="convert-invoice-form">
+        <h3 className="text-xl font-extrabold text-[#0a2350]">Buat invoice dari quotation</h3>
+        <p className="mt-1 text-sm text-slate-500">Item dan pajak akan disalin dari <span className="font-mono font-bold text-[#0a2350]">{q.number}</span>. Status quotation menjadi accepted.</p>
+        {err && <div className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2" data-testid="convert-invoice-error">{err}</div>}
+        <div className="mt-4 rounded-xl bg-slate-50 border border-slate-100 p-4 text-sm space-y-1">
+          <div className="flex justify-between"><span className="text-slate-500">Klien</span><span className="font-semibold text-[#0a2350]">{q.user_name}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Subtotal</span><span className="font-semibold text-[#0a2350]">{money(q.subtotal)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Pajak</span><span className="font-semibold text-[#0a2350]">{money(q.tax_amount)}</span></div>
+          <div className="flex justify-between text-base"><span className="text-slate-500">Total</span><span className="font-extrabold text-[#0a2350]">{money(q.total)}</span></div>
+        </div>
+        <label className="block mt-4">
+          <div className={labelClass}>Jatuh tempo invoice</div>
+          <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputClass} required data-testid="convert-invoice-due-date" />
+        </label>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className={btnSecondary} onClick={onClose} data-testid="convert-invoice-cancel">Batal</button>
+          <button type="submit" disabled={busy} className={btnPrimary} data-testid="convert-invoice-submit">{busy ? "Memproses..." : "Buat Invoice"}</button>
+        </div>
+      </form>
     </div>
   );
 };
@@ -123,8 +178,8 @@ const NewQuotation = ({ onClose, onDone }) => {
               {users.map((u) => <option key={u.id} value={u.id}>{u.name} · {u.email}</option>)}
             </select>
           </label>
-          <label><div className={labelClass}>Tax %</div><input type="number" value={taxPercent} onChange={(e) => setTaxPercent(e.target.value)} className={inputClass} /></label>
           <label><div className={labelClass}>Valid until</div><input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} className={inputClass} required /></label>
+          <TaxPercentField value={taxPercent} onChange={setTaxPercent} testid="qtn-tax-percent" />
         </div>
         <div className="mt-5">
           <div className="flex items-center justify-between mb-2">

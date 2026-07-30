@@ -15,6 +15,7 @@ const CLIENT_NAV = [
   { to: "/portal/client/services", label: "My Services", icon: ServerCog, testid: "nav-services" },
   { to: "/portal/client/domains", label: "Domain", icon: Globe2, testid: "nav-domains" },
   { to: "/portal/client/invoices", label: "Invoices", icon: Receipt, testid: "nav-invoices" },
+  { to: "/portal/client/credit-notes", label: "Credit Notes", icon: ReceiptText, testid: "nav-client-credit-notes" },
   { to: "/portal/client/tickets", label: "Tickets", icon: LifeBuoy, testid: "nav-tickets" },
   { to: "/portal/client/order", label: "Order Service", icon: ShoppingCart, testid: "nav-order" },
   { to: "/portal/client/traffic", label: "Traffic Report", icon: Activity, testid: "nav-traffic" },

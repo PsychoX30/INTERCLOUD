@@ -657,6 +657,7 @@ async def client_services(user=Depends(get_current_user)):
             "start_date": d.get("start_date", ""),
             "next_renewal": d.get("next_renewal", ""),
             "price_monthly": d.get("price_monthly", 0),
+            "auto_renew": d.get("auto_renew", True),
             "config": d.get("config", {}),
         })
     return result
@@ -705,10 +706,27 @@ async def client_service_detail(sid: str, user=Depends(get_current_user)):
         "start_date": d.get("start_date", ""),
         "next_renewal": d.get("next_renewal", ""),
         "price_monthly": d.get("price_monthly", 0),
+        "auto_renew": d.get("auto_renew", True),
         "config": d.get("config", {}),
         "self_service_log": (d.get("self_service_log") or [])[-10:],
         "pending_upgrade": bool(d.get("pending_upgrade")),
     }
+
+
+@router.put("/client/services/{sid}/auto-renew")
+async def client_service_auto_renew(sid: str, payload: dict, user=Depends(get_current_user)):
+    """Klien mengatur auto-renewal per layanan. False = sweep tidak membuat invoice perpanjangan."""
+    db = await _get_db()
+    d = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not d:
+        raise HTTPException(status_code=404, detail="Service not found")
+    val = bool(payload.get("auto_renew", True))
+    await db.services.update_one({"_id": d["_id"]}, {
+        "$set": {"auto_renew": val},
+        "$push": {"self_service_log": {"at": _now(), "action": "auto_renew",
+                                       "message": f"Auto-renewal {'diaktifkan' if val else 'dimatikan'} oleh klien."}},
+    })
+    return {"ok": True, "auto_renew": val}
 
 
 # ---------------- Client self-service VM control ----------------
@@ -1020,6 +1038,8 @@ async def _serialize_invoice(db, d: dict) -> dict:
         "renewal_period": d.get("renewal_period"),
         "created_at": _iso(d.get("created_at", "")),
         "notes": d.get("notes", ""),
+        "source_quotation_id": d.get("source_quotation_id"),
+        "source_quotation_number": d.get("source_quotation_number"),
     }
 
 
@@ -2484,6 +2504,18 @@ async def admin_list_invoices(staff=Depends(get_current_staff)):
     return [await _serialize_invoice(db, d) for d in docs]
 
 
+@router.get("/admin/invoices/{iid}")
+async def admin_get_invoice(iid: str, staff=Depends(get_current_staff)):
+    _deny_creative(staff)
+    db = await _get_db()
+    await _mark_overdue(db)
+    q = {"_id": _oid(iid), **_sales_scope_filter(staff, key="user_id")}
+    d = await db.invoices.find_one(q)
+    if not d:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return await _serialize_invoice(db, d)
+
+
 @router.post("/admin/invoices", response_model=m.InvoiceOut)
 async def admin_create_invoice(payload: m.InvoiceIn, admin=Depends(get_current_admin)):
     db = await _get_db()
@@ -2615,6 +2647,8 @@ async def _serialize_quotation(db, d: dict) -> dict:
         "status": d.get("status", "draft"),
         "created_at": _iso(d.get("created_at", "")),
         "notes": d.get("notes", ""),
+        "converted_invoice_id": d.get("converted_invoice_id"),
+        "converted_invoice_number": d.get("converted_invoice_number"),
     }
 
 
@@ -2666,6 +2700,50 @@ async def admin_update_quotation_status(
     if not d:
         raise HTTPException(status_code=404, detail="Quotation not found")
     return await _serialize_quotation(db, d)
+
+
+@router.post("/admin/quotations/{qid}/convert-to-invoice", response_model=m.InvoiceOut)
+async def admin_convert_quotation_to_invoice(qid: str, payload: m.QuotationConvertIn,
+                                             request: Request, admin=Depends(get_current_admin)):
+    """Buat invoice dari quotation (menyalin item/pajak). Idempotent: quotation yang
+    sudah dikonversi tidak bisa dikonversi ulang."""
+    db = await _get_db()
+    q = await db.quotations.find_one({"_id": _oid(qid)})
+    if not q:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    if q.get("converted_invoice_id"):
+        raise HTTPException(status_code=400, detail="Quotation ini sudah dikonversi menjadi invoice")
+    due = payload.due_date or (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
+    items = q.get("items") or []
+    subtotal = sum(float(i.get("total") or 0) for i in items)
+    tax_percent = float(q.get("tax_percent") or 0)
+    tax_amount = round(subtotal * tax_percent / 100, 2)
+    doc = {
+        "number": await _next_number(db, "invoices", "INV"),
+        "user_id": q["user_id"],
+        "items": items,
+        "subtotal": subtotal,
+        "tax_percent": tax_percent,
+        "tax_amount": tax_amount,
+        "total": round(subtotal + tax_amount, 2),
+        "due_date": due,
+        "status": "unpaid",
+        "payment_method": None,
+        "paid_at": None,
+        "notes": q.get("notes") or f"Dibuat dari quotation {q.get('number', '')}.",
+        "source_quotation_id": str(q["_id"]),
+        "source_quotation_number": q.get("number", ""),
+        "created_at": _now(),
+    }
+    r = await db.invoices.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await db.quotations.update_one({"_id": q["_id"]}, {"$set": {
+        "status": "accepted", "converted_invoice_id": str(r.inserted_id),
+        "converted_invoice_number": doc["number"], "converted_at": _now()}})
+    await log_audit(db, actor=admin, action="quotation.convert_to_invoice", category="billing",
+                    target_type="quotation", target_id=qid, target_label=q.get("number", ""),
+                    metadata={"invoice": doc["number"], "total": doc["total"]}, request=request)
+    return await _serialize_invoice(db, doc)
 
 
 # Tickets (staff - any staff role can view/reply)
@@ -2787,6 +2865,30 @@ async def admin_user_profile(uid: str, admin=Depends(get_current_admin)):
     services = [_serialize_service(s) for s in svc_docs]
     inv_docs = await db.invoices.find({"user_id": u["_id"]}).sort("created_at", -1).to_list(500)
     outstanding = sum(i.get("total", 0) for i in inv_docs if i.get("status") in ("unpaid", "overdue"))
+    today = datetime.now(timezone.utc).date()
+    overdue_list = []
+    for i in inv_docs:
+        if i.get("status") != "overdue":
+            continue
+        try:
+            days = (today - datetime.strptime((i.get("due_date") or "")[:10], "%Y-%m-%d").date()).days
+        except Exception:
+            days = 0
+        overdue_list.append({"id": str(i["_id"]), "number": i.get("number", ""),
+                             "total": i.get("total", 0), "due_date": i.get("due_date", ""),
+                             "days_past_due": max(0, days)})
+    suspended_list = [{"id": str(s["_id"]), "name": s.get("name") or s.get("product_name", ""),
+                       "reason": s.get("suspended_reason", ""), "suspended_at": s.get("suspended_at", "")}
+                      for s in svc_docs if s.get("status") == "suspended"]
+    max_days = max((o["days_past_due"] for o in overdue_list), default=0)
+    if suspended_list:
+        dunning_level = "suspended"
+    elif max_days >= 7:
+        dunning_level = "urgent"
+    elif overdue_list:
+        dunning_level = "reminder"
+    else:
+        dunning_level = "clear"
     return {
         "user": {"id": str(u["_id"]), "name": u.get("name", ""), "email": u.get("email", ""),
                  "company": u.get("company", ""), "phone": u.get("phone", ""),
@@ -2803,6 +2905,12 @@ async def admin_user_profile(uid: str, admin=Depends(get_current_admin)):
             "id": str(i["_id"]), "number": i.get("number", ""), "total": i.get("total", 0),
             "status": i.get("status", "unpaid"), "due_date": i.get("due_date", ""),
         } for i in inv_docs[:5]],
+        "dunning": {
+            "level": dunning_level,
+            "overdue_invoices": overdue_list,
+            "max_days_past_due": max_days,
+            "suspended_services": suspended_list,
+        },
     }
 
 
@@ -7128,6 +7236,65 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
     return HTMLResponse(content=html)
 
 
+@router.get("/documents/sales-fee-slip/{sid}")
+async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get_current_admin)):
+    """Slip fee sales PDF per entri sales_fees (WeasyPrint)."""
+    db = await _get_db()
+    d = await db.sales_fees.find_one({"_id": _oid(sid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Sales fee entry not found")
+    period = d.get("period_yyyy_mm") or (d.get("date") or "")[:7]
+    amount = float(d.get("amount") or 0)
+    amount_str = "Rp " + f"{amount:,.0f}".replace(",", ".")
+    person = d.get("sales_person") or "-"
+    invoice_no = d.get("invoice_number") or "-"
+    issued = datetime.now(timezone.utc).date().isoformat()
+    html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 24mm 18mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color: #0f172a; font-size: 13px; }}
+      .head {{ display: flex; justify-content: space-between; border-bottom: 3px solid #0a2350; padding-bottom: 14px; }}
+      .co {{ font-size: 19px; font-weight: 800; color: #0a2350; }}
+      .co small {{ display:block; font-size: 10px; color:#64748b; font-weight: 400; margin-top: 3px; }}
+      h1 {{ font-size: 15px; letter-spacing: 2px; color: #0a2350; margin: 26px 0 4px; text-transform: uppercase; }}
+      .meta {{ color: #64748b; font-size: 11px; margin-bottom: 20px; }}
+      table {{ width: 100%; border-collapse: collapse; }}
+      td, th {{ padding: 10px 12px; border: 1px solid #e2e8f0; text-align: left; }}
+      th {{ background: #f8fafc; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; width: 34%; }}
+      .amt {{ font-size: 17px; font-weight: 800; color: #0a2350; }}
+      .foot {{ margin-top: 44px; display: flex; justify-content: space-between; font-size: 11px; color: #64748b; }}
+      .sig {{ text-align: center; }}
+      .sig .line {{ margin-top: 56px; border-top: 1px solid #94a3b8; padding-top: 5px; width: 190px; }}
+      .conf {{ margin-top: 26px; font-size: 9.5px; color: #94a3b8; }}
+    </style></head><body>
+      <div class="head">
+        <div class="co">INTERCLOUD DIGITAL INOVASI<small>Jakarta, Indonesia · support@intercloud-digital.com · +62 878-1239-7187</small></div>
+        <div style="text-align:right"><div style="font-size:11px;color:#64748b">SLIP FEE SALES</div>
+          <div style="font-weight:800;color:#0a2350">{period}</div></div>
+      </div>
+      <h1>Slip Fee Penjualan</h1>
+      <div class="meta">Diterbitkan {issued} · No. ref {str(d["_id"])[-8:].upper()}</div>
+      <table>
+        <tr><th>Nama sales</th><td style="font-weight:700">{person}</td></tr>
+        <tr><th>Periode</th><td>{period}</td></tr>
+        <tr><th>Invoice terkait</th><td>{invoice_no}</td></tr>
+        <tr><th>Tanggal pembayaran</th><td>{(d.get("date") or "")[:10]}</td></tr>
+        <tr><th>Jumlah fee (net)</th><td class="amt">{amount_str}</td></tr>
+        <tr><th>Catatan</th><td>{d.get("notes") or "-"}</td></tr>
+      </table>
+      <div class="foot">
+        <div class="sig">Diserahkan oleh,<div class="line">Finance - Intercloud</div></div>
+        <div class="sig">Diterima oleh,<div class="line">{person}</div></div>
+      </div>
+      <div class="conf">Dokumen ini bersifat rahasia dan dihasilkan otomatis oleh Intercloud Portal.</div>
+    </body></html>"""
+    if format == "pdf":
+        pdf_bytes = _render_pdf_bytes(html)
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "-", person).strip("-") or "sales"
+        return Response(content=pdf_bytes, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="SlipFeeSales-{slug}-{period}.pdf"'})
+    return HTMLResponse(content=html)
+
+
 # ---------------- Finance detailed report ----------------
 @router.get("/admin/finance/detailed")
 async def finance_detailed(admin=Depends(get_current_admin)):
@@ -7437,6 +7604,10 @@ async def finance_cashflow_forecast(admin=Depends(get_current_admin)):
     """Proyeksi arus kas 30/60/90 hari: inflow dari invoice unpaid/overdue + renewal
     layanan aktif; outflow dari run-rate 3 bulan terakhir keempat buku beban."""
     db = await _get_db()
+    return await _compute_cashflow_forecast(db)
+
+
+async def _compute_cashflow_forecast(db) -> dict:
     today = datetime.now(timezone.utc).date()
     horizon = today + timedelta(days=91)
 
@@ -7496,6 +7667,109 @@ async def finance_cashflow_forecast(admin=Depends(get_current_admin)):
             "upcoming_renewals": sum(1 for e in events if e[2] == "renewal"),
         },
     }
+
+
+def _rp(v) -> str:
+    return "Rp " + f"{float(v or 0):,.0f}".replace(",", ".")
+
+
+@router.get("/admin/finance/cashflow-forecast/export")
+async def finance_cashflow_export(format: str = "pdf", token: str = "",
+                                  admin=Depends(get_current_admin)):
+    """Unduh proyeksi arus kas 30/60/90 hari sebagai PDF atau Excel (xlsx)."""
+    db = await _get_db()
+    f = await _compute_cashflow_forecast(db)
+    b = f["buckets"]
+    stamp = f["as_of"]
+    fname = f"Proyeksi-Arus-Kas-{stamp}"
+
+    if format == "xlsx":
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Proyeksi Arus Kas"
+        navy = PatternFill("solid", fgColor="0A2350")
+        white_bold = Font(color="FFFFFF", bold=True)
+        ws["A1"] = "Intercloud Digital - Proyeksi Arus Kas"
+        ws["A1"].font = Font(bold=True, size=14, color="0A2350")
+        ws["A2"] = f"Per {stamp} · run-rate beban {_rp(f['monthly_expense_run_rate'])}/bulan"
+        ws["A2"].font = Font(italic=True, size=9, color="64748B")
+        # Buckets summary
+        ws["A4"] = "Ringkasan"
+        ws["A4"].font = Font(bold=True, color="0A2350")
+        hdr = ["Horizon", "Perkiraan Masuk", "Perkiraan Keluar", "Net"]
+        for i, h in enumerate(hdr):
+            c = ws.cell(row=5, column=1 + i, value=h)
+            c.fill = navy
+            c.font = white_bold
+            c.alignment = Alignment(horizontal="center")
+        for r, (lbl, key) in enumerate([("30 hari", "d30"), ("60 hari", "d60"), ("90 hari", "d90")], start=6):
+            ws.cell(row=r, column=1, value=lbl)
+            ws.cell(row=r, column=2, value=b[key]["inflow"])
+            ws.cell(row=r, column=3, value=b[key]["outflow"])
+            ws.cell(row=r, column=4, value=b[key]["net"])
+        # Weekly detail
+        ws["A10"] = "Rincian Mingguan (90 hari)"
+        ws["A10"].font = Font(bold=True, color="0A2350")
+        whdr = ["Minggu (mulai)", "Masuk", "Keluar", "Net", "Kumulatif"]
+        for i, h in enumerate(whdr):
+            c = ws.cell(row=11, column=1 + i, value=h)
+            c.fill = navy
+            c.font = white_bold
+        for r, wk in enumerate(f["weekly"], start=12):
+            ws.cell(row=r, column=1, value=wk["week_start"])
+            ws.cell(row=r, column=2, value=wk["inflow"])
+            ws.cell(row=r, column=3, value=wk["outflow"])
+            ws.cell(row=r, column=4, value=wk["net"])
+            ws.cell(row=r, column=5, value=wk["cumulative"])
+        for col, w in zip("ABCDE", (18, 18, 18, 18, 18)):
+            ws.column_dimensions[col].width = w
+        for row in ws.iter_rows(min_row=6, max_row=11 + len(f["weekly"]), min_col=2, max_col=5):
+            for cell in row:
+                if isinstance(cell.value, (int, float)):
+                    cell.number_format = '#,##0'
+        import io
+        buf = io.BytesIO()
+        wb.save(buf)
+        return Response(content=buf.getvalue(),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}.xlsx"'})
+
+    # default: PDF
+    def _card(lbl, bk):
+        net_color = "#059669" if bk["net"] >= 0 else "#dc2626"
+        return (f"<td style='padding:14px;border:1px solid #e2e8f0;border-radius:10px;width:33%'>"
+                f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#64748b'>Proyeksi {lbl}</div>"
+                f"<div style='font-size:20px;font-weight:800;color:{net_color};margin:4px 0'>{_rp(bk['net'])}</div>"
+                f"<div style='font-size:11px;color:#334155'>Masuk {_rp(bk['inflow'])}<br/>Keluar {_rp(bk['outflow'])}</div></td>")
+    rows = "".join(
+        f"<tr><td style='padding:6px 8px;border-bottom:1px solid #eef2f7'>{w['week_start']}</td>"
+        f"<td style='padding:6px 8px;border-bottom:1px solid #eef2f7;text-align:right;color:#059669'>{_rp(w['inflow'])}</td>"
+        f"<td style='padding:6px 8px;border-bottom:1px solid #eef2f7;text-align:right;color:#dc2626'>{_rp(w['outflow'])}</td>"
+        f"<td style='padding:6px 8px;border-bottom:1px solid #eef2f7;text-align:right;font-weight:700'>{_rp(w['net'])}</td>"
+        f"<td style='padding:6px 8px;border-bottom:1px solid #eef2f7;text-align:right;font-weight:700;color:#0a2350'>{_rp(w['cumulative'])}</td></tr>"
+        for w in f["weekly"])
+    html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 20mm 16mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color:#0f172a; font-size:12px; }}
+      h1 {{ color:#0a2350; font-size:18px; margin:0; }}
+      .sub {{ color:#64748b; font-size:11px; margin:2px 0 18px; }}
+      table {{ width:100%; border-collapse:collapse; }}
+      th {{ background:#0a2350; color:#fff; padding:7px 8px; font-size:10px; text-transform:uppercase; letter-spacing:1px; text-align:right; }}
+      th:first-child {{ text-align:left; }}
+    </style></head><body>
+      <h1>Proyeksi Arus Kas - Intercloud Digital</h1>
+      <div class="sub">Per {stamp} · run-rate beban {_rp(f['monthly_expense_run_rate'])}/bulan ·
+        {f['sources']['unpaid_invoices']} invoice belum lunas · {f['sources']['upcoming_renewals']} perpanjangan akan datang</div>
+      <table style="margin-bottom:18px"><tr>{_card('30 hari', b['d30'])}{_card('60 hari', b['d60'])}{_card('90 hari', b['d90'])}</tr></table>
+      <div style="font-weight:800;color:#0a2350;margin-bottom:6px">Rincian Mingguan (90 hari ke depan)</div>
+      <table><thead><tr><th>Minggu (mulai)</th><th>Masuk</th><th>Keluar</th><th>Net</th><th>Kumulatif</th></tr></thead>
+      <tbody>{rows}</tbody></table>
+      <div style="margin-top:22px;font-size:9px;color:#94a3b8">Estimasi otomatis dari data invoice, jadwal perpanjangan layanan, dan rata-rata beban 3 bulan terakhir. Bukan angka final akuntansi.</div>
+    </body></html>"""
+    return Response(content=_render_pdf_bytes(html), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}.pdf"'})
 
 
 @router.get("/admin/finance/reports")

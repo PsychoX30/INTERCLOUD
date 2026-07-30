@@ -3,11 +3,13 @@ import { api, money, shortDate, docUrl } from "../../../portal/api";
 import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Trash2, CheckCircle2, FileDown, Download, ReceiptText } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
-import { Link } from "react-router-dom";
+import { TaxPercentField } from "./TaxPercentField";
+import { Link, useNavigate } from "react-router-dom";
 
 const AdminInvoices = () => {
   const [rows, setRows] = useState(null);
   const [modal, setModal] = useState(false);
+  const navigate = useNavigate();
   const load = () => api.get("/admin/invoices").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
 
@@ -73,6 +75,7 @@ const AdminInvoices = () => {
         columns={columns}
         searchKeys={["number", "user_name", "user_email", "status"]}
         rowKey={(r) => r.id}
+        onRowClick={(r) => navigate(`/portal/admin/invoices/${r.id}`)}
         empty={{ title: "No invoices yet", hint: "Create your first invoice." }}
         testid="admin-invoices-table"
       />
@@ -140,13 +143,10 @@ const NewInvoice = ({ onClose, onDone }) => {
             </select>
           </label>
           <label>
-            <div className={labelClass}>Tax %</div>
-            <input type="number" value={taxPercent} onChange={(e) => setTaxPercent(e.target.value)} className={inputClass} />
-          </label>
-          <label>
             <div className={labelClass}>Due date</div>
             <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputClass} required data-testid="inv-due" />
           </label>
+          <TaxPercentField value={taxPercent} onChange={setTaxPercent} testid="inv-tax-percent" />
         </div>
 
         <div className="mt-5">

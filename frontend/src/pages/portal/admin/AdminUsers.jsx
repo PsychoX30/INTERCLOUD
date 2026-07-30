@@ -157,6 +157,39 @@ const ClientProfileModal = ({ userId, onClose }) => {
                 <span className="font-extrabold text-red-700">{money(d.stats.outstanding)}</span>
               </div>
             )}
+            {d.dunning && d.dunning.level !== "clear" && (
+              <div className={`rounded-xl border p-3 text-sm ${
+                d.dunning.level === "suspended" ? "bg-red-50 border-red-300"
+                : d.dunning.level === "urgent" ? "bg-orange-50 border-orange-300"
+                : "bg-amber-50 border-amber-300"}`} data-testid="profile-dunning">
+                <div className="flex items-center justify-between">
+                  <span className={`font-extrabold uppercase text-xs tracking-widest ${
+                    d.dunning.level === "suspended" ? "text-red-700"
+                    : d.dunning.level === "urgent" ? "text-orange-700" : "text-amber-700"}`} data-testid="profile-dunning-level">
+                    {d.dunning.level === "suspended" ? "Layanan Disuspensi"
+                      : d.dunning.level === "urgent" ? "Dunning: Peringatan Akhir"
+                      : "Dunning: Pengingat"}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    {d.dunning.overdue_invoices.length} invoice overdue · max {d.dunning.max_days_past_due} hari
+                  </span>
+                </div>
+                {d.dunning.overdue_invoices.slice(0, 3).map((o) => (
+                  <div key={o.id} className="mt-1.5 flex items-center gap-2 text-xs text-slate-600">
+                    <span className="font-mono font-bold">{o.number}</span>
+                    <span>{money(o.total)}</span>
+                    <span className="ml-auto text-red-600 font-bold">{o.days_past_due} hari lewat tempo</span>
+                  </div>
+                ))}
+                {d.dunning.suspended_services.map((s) => (
+                  <div key={s.id} className="mt-1.5 flex items-center gap-2 text-xs" data-testid={`profile-suspended-${s.id}`}>
+                    <span className="px-1.5 py-0.5 rounded bg-red-600 text-white font-bold uppercase text-[9px]">suspended</span>
+                    <span className="font-semibold text-[#0a2350] truncate">{s.name}</span>
+                    <span className="text-slate-500 truncate">{s.reason}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="rounded-2xl border border-slate-200 p-4" data-testid="profile-hosting-accounts">
               <div className="text-sm font-extrabold text-[#0a2350] mb-2">Akun Hosting</div>

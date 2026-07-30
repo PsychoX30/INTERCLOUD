@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { api, fullDateTime } from "../../../portal/api";
+import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, Card } from "../ui";
-import { CheckCircle2, XCircle, Zap } from "lucide-react";
+import { CheckCircle2, XCircle, Eye } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const AdminOrders = () => {
   const [rows, setRows] = useState(null);
+  const [active, setActive] = useState(null);
   const load = () => api.get("/admin/orders").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
   if (!rows) return <Loading />;
@@ -44,6 +46,9 @@ const AdminOrders = () => {
                 {o.notes && <div className="mt-1 text-sm text-slate-600">Notes: {o.notes}</div>}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
+                <button className={btnSecondary} onClick={() => setActive(o)} data-testid={`order-detail-btn-${o.id}`}>
+                  <Eye className="h-4 w-4" /> Detail
+                </button>
                 {(o.status === "awaiting_verification" || o.status === "pending_payment") && o.invoice_id && (
                   <button className={btnPrimary} onClick={() => verifyPayment(o)} data-testid={`verify-payment-${o.id}`}>
                     <CheckCircle2 className="h-4 w-4" /> Verify Payment & Provision
@@ -76,8 +81,72 @@ const AdminOrders = () => {
           </Card>
         ))}
       </div>
+      {active && <OrderDetail order={active} onClose={() => setActive(null)} />}
     </div>
   );
 };
+
+const OrderDetail = ({ order: o, onClose }) => (
+  <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+    <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col" data-testid="order-detail-modal">
+      <div className="p-6 bg-[#0a2350] text-white flex items-start justify-between">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">Detail Pesanan</div>
+          <div className="text-xl font-extrabold">{o.product_name}</div>
+          <div className="text-sm text-white/70 mt-0.5">{o.user_name} · {o.user_email}</div>
+        </div>
+        <button className="text-white/70 hover:text-white text-2xl leading-none" onClick={onClose} data-testid="order-detail-close">×</button>
+      </div>
+      <div className="p-6 overflow-y-auto space-y-4">
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <div className="text-[10px] font-bold uppercase text-slate-500">Status</div>
+            <div className="mt-1"><StatusBadge status={o.status} /></div>
+          </div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <div className="text-[10px] font-bold uppercase text-slate-500">Dibuat</div>
+            <div className="mt-1 text-xs font-semibold">{fullDateTime(o.created_at)}</div>
+          </div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <div className="text-[10px] font-bold uppercase text-slate-500">Invoice</div>
+            <div className="mt-1 text-xs font-semibold">
+              {o.invoice_id
+                ? <Link to={`/portal/admin/invoices/${o.invoice_id}`} className="text-[#f5b120] font-bold hover:underline" data-testid="order-detail-invoice-link">Lihat invoice</Link>
+                : "-"}
+            </div>
+          </div>
+        </div>
+        {o.config && Object.keys(o.config).length > 0 && (
+          <div className="rounded-2xl border border-slate-200 p-4" data-testid="order-detail-config">
+            <div className="text-sm font-extrabold text-[#0a2350] mb-2">Konfigurasi</div>
+            <div className="divide-y divide-slate-100 text-sm">
+              {Object.entries(o.config).map(([k, v]) => (
+                <div key={k} className="py-1.5 flex justify-between gap-3">
+                  <span className="text-xs uppercase tracking-widest text-slate-500 font-semibold">{k.replaceAll("_", " ")}</span>
+                  <span className="font-mono text-xs text-[#0a2350] text-right break-all">{typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {o.notes && <div className="text-sm text-slate-600 rounded-xl bg-slate-50 border border-slate-100 p-3">Catatan: {o.notes}</div>}
+        <div className="rounded-2xl border border-slate-200 p-4" data-testid="order-detail-log">
+          <div className="text-sm font-extrabold text-[#0a2350] mb-2">Provision log</div>
+          {(o.provision_log || []).length === 0 ? <p className="text-xs text-slate-500">Belum ada log.</p> : (
+            <div className="space-y-1.5 text-xs">
+              {o.provision_log.map((l, i) => (
+                <div key={i} className="flex gap-2 text-slate-600">
+                  <span className="text-[10px] text-slate-400 font-mono w-28 flex-shrink-0">{new Date(l.at).toLocaleString("id-ID", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" })}</span>
+                  <span className="font-mono text-[10px] text-[#f5b120] w-36 flex-shrink-0">{l.step}</span>
+                  <span>{l.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 export default AdminOrders;

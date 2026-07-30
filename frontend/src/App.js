@@ -33,6 +33,7 @@ const PortalLayout          = lazy(() => import("./pages/portal/PortalLayout"));
 const ClientDashboard = lazy(() => import("./pages/portal/client/ClientDashboard"));
 const ClientServices  = lazy(() => import("./pages/portal/client/ClientServices"));
 const ClientInvoices  = lazy(() => import("./pages/portal/client/ClientInvoices"));
+const ClientCreditNotes = lazy(() => import("./pages/portal/client/ClientCreditNotes"));
 const ClientTickets   = lazy(() => import("./pages/portal/client/ClientTickets"));
 const ClientOrder     = lazy(() => import("./pages/portal/client/ClientOrder"));
 const ClientTraffic   = lazy(() => import("./pages/portal/client/ClientTraffic"));
@@ -44,6 +45,7 @@ const AdminUsers        = lazy(() => import("./pages/portal/admin/AdminUsers"));
 const AdminProducts     = lazy(() => import("./pages/portal/admin/AdminProducts"));
 const AdminOrders       = lazy(() => import("./pages/portal/admin/AdminOrders"));
 const AdminInvoices     = lazy(() => import("./pages/portal/admin/AdminInvoices"));
+const AdminInvoiceDetail = lazy(() => import("./pages/portal/admin/AdminInvoiceDetail"));
 const AdminQuotations   = lazy(() => import("./pages/portal/admin/AdminQuotations"));
 const AdminTickets      = lazy(() => import("./pages/portal/admin/AdminTickets"));
 const AdminFinance      = lazy(() => import("./pages/portal/admin/AdminFinance"));
@@ -122,6 +124,7 @@ function App() {
                   <Route path="dashboard" element={<ClientDashboard />} />
                   <Route path="services" element={<ClientServices />} />
                   <Route path="invoices" element={<ClientInvoices />} />
+                  <Route path="credit-notes" element={<ClientCreditNotes />} />
                   <Route path="tickets" element={<ClientTickets />} />
                   <Route path="order" element={<ClientOrder />} />
                   <Route path="traffic" element={<ClientTraffic />} />
@@ -142,6 +145,7 @@ function App() {
                   <Route path="categories" element={<AdminCategories />} />
                   <Route path="orders" element={<AdminOrders />} />
                   <Route path="invoices" element={<AdminInvoices />} />
+                  <Route path="invoices/:id" element={<AdminInvoiceDetail />} />
                   <Route path="quotations" element={<AdminQuotations />} />
                   <Route path="tickets" element={<AdminTickets />} />
                   <Route path="finance" element={<AdminFinance />} />

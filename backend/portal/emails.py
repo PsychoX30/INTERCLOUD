@@ -860,6 +860,7 @@ async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> di
     generated, skipped_existing, errors = 0, 0, 0
 
     cursor = db.services.find({"status": "active",
+                               "auto_renew": {"$ne": False},
                                "next_renewal": {"$gt": "", "$lte": horizon}})
     async for svc in cursor:
         period = svc.get("next_renewal") or ""

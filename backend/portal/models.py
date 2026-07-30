@@ -490,6 +490,8 @@ class InvoiceOut(BaseModel):
     renewal_period: Optional[str] = None
     created_at: str
     notes: str = ""
+    source_quotation_id: Optional[str] = None
+    source_quotation_number: Optional[str] = None
 
 
 class InvoiceStatusIn(BaseModel):
@@ -520,10 +522,16 @@ class QuotationOut(BaseModel):
     status: Literal["draft", "sent", "accepted", "rejected", "expired"]
     created_at: str
     notes: str = ""
+    converted_invoice_id: Optional[str] = None
+    converted_invoice_number: Optional[str] = None
 
 
 class QuotationStatusIn(BaseModel):
     status: Literal["draft", "sent", "accepted", "rejected", "expired"]
+
+
+class QuotationConvertIn(BaseModel):
+    due_date: Optional[str] = None
 
 
 # ---------- EMAIL TEMPLATES ----------
