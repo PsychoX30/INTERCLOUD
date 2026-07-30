@@ -11,6 +11,12 @@ Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku
 
 ## STATUS NGODINGPAKEAI: SEMUA 209+ TASK SELESAI (2026-07-30). "No open tasks" di CLI.
 
+## Sesi 2026-07-30 (lanjutan 3): 4 FITUR BARU - SELESAI & DITES (iteration_37: backend 7/7 + frontend 4/4 PASS)
+1. **Template VM Proxmox**: ProxmoxClient.list_templates() (cluster/resources template=1) + clone_vm auto-discovery (tanpa config manual, pakai template pertama; node target mengikuti node template, "target" param bila beda). Endpoint GET /admin/proxmox/templates (live). Banner info/warn di tab Proxmox VE halaman Provisioning (prov-proxmox-tpl-info/warn). CATATAN: cluster real user BELUM punya template VM -> clone gagal jujur dgn pesan "tidak ada template VM"; begitu user membuat template di Proxmox, order VPS berbayar auto-provision end-to-end.
+2. **Trafik Live**: kolektor per jam (emails.py: sample_service_traffic + run_traffic_sample_sweep, scheduler minute=50 + startup run, retention 48 jam, label jam Asia/Jakarta) membaca MikroTik traffic_monitor -> koleksi traffic_samples. Endpoint PUT /admin/services/{sid}/traffic-source {device_id|'legacy', interface} (kosong = clear) + sampel langsung best-effort. UI: TrafficSourceCard di modal detail AdminServices (pilih router + interface). Client Traffic Report otomatis available:true saat sampel ada.
+3. **Preview Credit Note**: POST /admin/credit-notes/preview (render PDF inline dari draft tanpa menyimpan, %PDF diverifikasi). Tombol "Preview PDF" (cn-modal-preview) di modal buat credit note (blob -> tab baru).
+4. **Onboarding Klien**: template welcome dirombak ke Bahasa Indonesia berisi panduan portal 6 langkah (login, profil/NPWP, order, invoice/pembayaran, tiket, 2FA). _SEED_VERSION bump 3->4 (auto-refresh template send_count==0). Trigger sudah ada: self-register & admin create client -> email_logs event welcome (status 'skipped' bila SMTP off; terkirim live bila SMTP aktif).
+
 ## Sesi 2026-07-30 (lanjutan 2): PRODUCTION READINESS - SELESAI & DITES (iteration_36: 11/11 backend + 14/15 frontend PASS, 1 miss hanya heuristik helper Playwright)
 1. **UAT minor selesai**:
    - Article search: sudah ada di admin (articles-search) & publik (/articles?q=) - diverifikasi berfungsi.
@@ -43,8 +49,9 @@ Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku
 - Frontend: PortalLayout.jsx (mobile-logout-btn, site_content), AdminUsers.jsx (delete + confirm), ClientTraffic.jsx (empty state), AdminMockedScreens.jsx (provisioning real).
 
 ## Backlog / Next (P1-P2)
-- P1: Set clone_template_vmid Proxmox agar auto-provision VPS live end-to-end; kolektor traffic_samples (SNMP/MikroTik) utk Traffic Report live.
-- P2 UAT sisa: torch wildcard UI polish (004), ISO live dari Proxmox real (009), credit note preview (017), CMS layman (026-027), quick action role-based (029), notif security SMTP (030).
+- P1 (butuh aksi USER di Proxmox): buat VM template (template=1) di cluster agar auto-provision VPS live jalan end-to-end; opsional set 'Clone template VMID' + 'Default node' di Integrations untuk mengunci.
+- P1 (butuh aksi USER): tambah router MikroTik real di Admin - MikroTik Devices lalu petakan service via TrafficSourceCard agar Traffic Report live terisi.
+- P2 UAT sisa: torch wildcard UI polish (004), ISO live dari Proxmox real (009), CMS layman (026-027), quick action role-based (029), notif security SMTP (030).
 - P2: DataTable rollout AdminMikrotik, Zod+react-hook-form, bento landing.
 
 ## Kredensial
