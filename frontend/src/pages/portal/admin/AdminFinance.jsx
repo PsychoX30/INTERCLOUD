@@ -22,9 +22,31 @@ const TABS = [
 
 const AdminFinance = () => {
   const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
   const [tab, setTab] = useState("summary");
-  const load = () => api.get("/admin/finance/detailed").then((r) => setD(r.data));
+  const load = () => {
+    setErr("");
+    api.get("/admin/finance/detailed")
+      .then((r) => setD(r.data))
+      .catch((e) => {
+        const code = e?.response?.status;
+        setErr(
+          code === 403
+            ? "Anda tidak memiliki akses ke modul Finance. Hubungi administrator."
+            : (e?.response?.data?.detail || "Gagal memuat data Finance. Coba muat ulang halaman.")
+        );
+      });
+  };
   useEffect(() => { load(); }, []);
+  if (err) return (
+    <div>
+      <PageHeader title="Finance" subtitle="Revenue, expense ledgers, asset depreciation, and reports." />
+      <Card className="p-6 flex flex-col items-start gap-3" data-testid="finance-error">
+        <div className="text-sm text-red-700">{err}</div>
+        <button className={btnSecondary} onClick={load} data-testid="finance-retry">Coba lagi</button>
+      </Card>
+    </div>
+  );
   if (!d) return <Loading />;
 
   const t = d.totals;
@@ -422,7 +444,7 @@ const CashflowPane = () => {
 
 const ReportsPane = ({ dlUrl }) => {
   const [rows, setRows] = useState(null);
-  useEffect(() => { api.get("/admin/finance/reports").then((r) => setRows(r.data)); }, []);
+  useEffect(() => { api.get("/admin/finance/reports").then((r) => setRows(r.data)).catch(() => setRows([])); }, []);
   if (!rows) return <Loading />;
 
   const now = new Date();
