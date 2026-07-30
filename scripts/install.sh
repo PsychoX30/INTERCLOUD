@@ -443,6 +443,7 @@ FRONTEND_ENV="$APP_DIR/frontend/.env"
 install -o intercloud -g intercloud -m 640 /dev/stdin "$FRONTEND_ENV" <<EOF
 REACT_APP_BACKEND_URL=$BACKEND_ORIGIN
 WDS_SOCKET_PORT=443
+PUBLIC_URL=/
 ENABLE_HEALTH_CHECK=false
 REACT_APP_TURNSTILE_SITE_KEY=
 REACT_APP_TURNSTILE_ENABLED=false
@@ -750,9 +751,10 @@ ufw allow 443/tcp
 ufw --force enable >/dev/null
 
 # ------------------------------------------------------------------
-# 10. Verify admin seed happened. The backend seeds an admin on first boot
-# ----using INSTALL_ADMIN_EMAIL / INSTALL_ADMIN_PASSWORD. Poll the health
-# ----endpoint until it's up, then try a login to confirm.
+# 10. Verify admin seed happened. The backend seeds ONE admin user on first
+# ----boot using ADMIN_EMAIL / ADMIN_PASSWORD from backend/.env (no demo
+# ----data is ever seeded). Poll the health endpoint until it's up, then
+# ----try a login to confirm.
 # ------------------------------------------------------------------
 log "Waiting for backend to come online"
 for i in {1..40}; do

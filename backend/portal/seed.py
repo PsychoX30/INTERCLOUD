@@ -29,12 +29,28 @@ async def seed_all(db):
 
 async def _seed_admin(db):
     """Create the admin user on first boot; re-sync the password hash if
-    ADMIN_PASSWORD later changes in backend/.env."""
+    ADMIN_PASSWORD later changes in backend/.env.
+
+    Production safety: the well-known dev default password is ONLY used in
+    the development environment (detected via /app/memory). On a production
+    box without ADMIN_PASSWORD set, a random password is generated and
+    logged ONCE with a must-change flag."""
     admin_email = os.environ.get("ADMIN_EMAIL", "support@intercloud-digital.com").lower()
-    admin_pw    = os.environ.get("ADMIN_PASSWORD", "AdminIntercloud2026!")
+    admin_pw    = os.environ.get("ADMIN_PASSWORD")
+    is_dev      = os.path.isdir("/app/memory")
 
     a = await db.users.find_one({"email": admin_email})
     if not a:
+        generated = False
+        if not admin_pw:
+            if is_dev:
+                admin_pw = "AdminIntercloud2026!"
+            else:
+                import secrets as _secrets
+                admin_pw = _secrets.token_urlsafe(18)
+                generated = True
+        must_change = generated or os.environ.get(
+            "ADMIN_MUST_CHANGE_PASSWORD", "").lower() in ("1", "true", "yes")
         await db.users.insert_one({
             "email": admin_email,
             "password_hash": hash_password(admin_pw),
@@ -44,13 +60,16 @@ async def _seed_admin(db):
             "phone": "",
             "assigned_client_ids": [],
             "billing_emails": [],
-            # Installer sets ADMIN_MUST_CHANGE_PASSWORD=true when it auto-generated
-            # a random password - forces a rotation on first login.
-            "must_change_password": os.environ.get(
-                "ADMIN_MUST_CHANGE_PASSWORD", "").lower() in ("1", "true", "yes"),
+            "must_change_password": must_change,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-    elif not verify_password(admin_pw, a["password_hash"]):
+        if generated:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[seed] ADMIN_PASSWORD was not set - generated a one-time random "
+                "admin password for %s: %s  (login and change it immediately)",
+                admin_email, admin_pw)
+    elif admin_pw and not verify_password(admin_pw, a["password_hash"]):
         # Env-driven password rotation - keeps the door open for the operator
         # who edits backend/.env to change the admin password.
         await db.users.update_one(
@@ -90,14 +109,15 @@ async def _migrate_assets_straight_line(db):
 
 async def _write_credentials_file(db):
     """Write the admin credentials to /app/memory/test_credentials.md for the
-    test harness. In production this file is informational only; feel free
-    to delete after first login."""
+    dev/test harness ONLY. Skipped entirely in production installs (the
+    /app/memory folder only exists in the development environment), so no
+    plaintext credentials ever land on a production server."""
     admin_email = os.environ.get("ADMIN_EMAIL", "support@intercloud-digital.com")
     admin_pw    = os.environ.get("ADMIN_PASSWORD", "AdminIntercloud2026!")
     path = "/app/memory/test_credentials.md"
     try:
-        import pathlib
-        pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+        if not os.path.isdir("/app/memory"):
+            return
         with open(path, "w") as f:
             f.write("# Intercloud Portal - First-boot credentials\n\n")
             f.write("The installer seeds ONE user (admin). All other data starts empty.\n\n")

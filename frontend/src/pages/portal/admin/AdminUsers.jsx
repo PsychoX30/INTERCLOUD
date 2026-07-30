@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { api, shortDate, setToken, getToken } from "../../../portal/api";
 import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { UserPlus, ShieldCheck, KeyRound, LogIn } from "lucide-react";
+import { UserPlus, ShieldCheck, KeyRound, LogIn, Trash2 } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+import { useAuth } from "../../../portal/AuthContext";
 
 const AdminUsers = () => {
+  const { user: me } = useAuth();
   const [rows, setRows] = useState(null);
   const [modal, setModal] = useState(false);
   const [accessUser, setAccessUser] = useState(null);
@@ -21,6 +23,16 @@ const AdminUsers = () => {
     window.location.href = "/portal/client/dashboard";
   };
   const [catalog, setCatalog] = useState(null);
+
+  const removeUser = async (u) => {
+    if (!window.confirm(`Hapus user ${u.email}? Tindakan ini permanen dan tercatat di audit log.`)) return;
+    try {
+      await api.delete(`/admin/users/${u.id}`);
+      load();
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Gagal menghapus user");
+    }
+  };
 
   const load = () => api.get("/admin/users").then((r) => {
     setRows(r.data);
@@ -109,6 +121,16 @@ const AdminUsers = () => {
               data-testid={`edit-access-${u.email}`}
             >
               <ShieldCheck className="h-3.5 w-3.5" /> Manage access
+            </button>
+          )}
+          {me?.id !== u.id && (
+            <button
+              onClick={() => removeUser(u)}
+              className="text-red-500 hover:text-red-700 font-bold text-xs inline-flex items-center gap-1 ml-3"
+              data-testid={`delete-user-${u.email}`}
+              title="Hapus user (permanen)"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Delete
             </button>
           )}
         </span>

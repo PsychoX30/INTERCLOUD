@@ -33,7 +33,7 @@ const ClientTraffic = () => {
     <div>
       <PageHeader
         title="Traffic Report"
-        subtitle="24-hour ingress / egress by service. Data is refreshed hourly from our carrier switches."
+        subtitle="24-hour ingress / egress by service, served from live carrier / router data sources."
       />
       <div className="mb-4 flex flex-wrap gap-2">
         {services.map((s) => (
@@ -53,7 +53,16 @@ const ClientTraffic = () => {
       </div>
 
       {!data && <Loading />}
-      {data && (
+      {data && data.available === false && (
+        <Card className="p-10 text-center" data-testid="traffic-unavailable">
+          <Activity className="h-8 w-8 text-slate-300 mx-auto" />
+          <div className="mt-3 font-extrabold text-[#0a2350]">Data trafik belum tersedia</div>
+          <p className="mt-1 text-sm text-slate-500 max-w-md mx-auto">
+            {data.message || "Sumber data trafik (NetFlow/SNMP/MikroTik) belum dikonfigurasi untuk layanan ini."}
+          </p>
+        </Card>
+      )}
+      {data && data.available !== false && (
         <>
           <div className="grid sm:grid-cols-4 gap-4 mb-4">
             <Card className="p-5">
@@ -85,7 +94,6 @@ const ClientTraffic = () => {
               <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-blue-500" /> Outbound</span>
             </div>
           </Card>
-          <p className="mt-3 text-[11px] text-slate-500">Traffic data is currently mocked. Wire your carrier or router SNMP / MikroTik integration under Admin → Integrations to serve live data.</p>
         </>
       )}
     </div>

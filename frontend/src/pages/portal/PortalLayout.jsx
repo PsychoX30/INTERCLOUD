@@ -95,7 +95,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "security",      to: "/portal/admin/security",      label: "Security",       icon: ShieldCheck,    testid: "nav-security",      roles: ["admin"] },
       { key: "audit_log",     to: "/portal/admin/audit-log",     label: "Audit Log",      icon: History,        testid: "nav-audit-log",     roles: ["admin"] },
       { key: "branding",      to: "/portal/admin/branding",      label: "Branding",       icon: ImageIcon,      testid: "nav-branding",      roles: ["admin"] },
-      { key: "site-content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
+      { key: "site_content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },
       { key: "status_page",   to: "/portal/admin/status-page",   label: "Public Status Page", icon: Globe,        testid: "nav-status-page",   roles: ["admin"] },
     ],
@@ -263,6 +263,14 @@ const PortalLayout = ({ variant = "client" }) => {
             >
               <ExternalLink className="h-3.5 w-3.5" /> View website
             </Link>
+            <button
+              onClick={logout}
+              data-testid="mobile-logout-btn"
+              title="Sign out"
+              className="lg:hidden h-9 w-9 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-600 hover:bg-slate-100 transition-colors"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
           </div>
         </header>
         <main className="flex-1 p-4 md:p-8 min-w-0">

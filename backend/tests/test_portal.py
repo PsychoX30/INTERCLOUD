@@ -168,9 +168,15 @@ class TestClient:
         r = requests.get(f"{API}/client/services/{sid}/traffic", headers=_h(tokens["client"]))
         assert r.status_code == 200
         j = r.json()
-        assert len(j["points"]) == 24
+        # Production behaviour: NO mock series. Either live samples exist
+        # (available=True) or an honest empty payload with a message.
         assert "in_gb" in j["totals"] and "out_gb" in j["totals"]
-        assert j["peak_in_mbps"] > 0
+        if j.get("available"):
+            assert len(j["points"]) > 0
+            assert j["peak_in_mbps"] > 0
+        else:
+            assert j["points"] == []
+            assert j.get("message")
 
     def test_orders_roundtrip(self, tokens):
         # get a product id
@@ -336,11 +342,12 @@ class TestIntegrations:
         assert u.status_code == 200
         assert u.json()["status"] == "enabled"
         assert u.json()["config"]["hostname"] == "whm2.test.com"
-        # TEST
+        # TEST — live connection attempt against a fake host must return a
+        # REAL failure (no more mocked success in production)
         t = requests.post(f"{API}/admin/integrations/{iid}/test", headers=_h(tokens["admin"]))
         assert t.status_code == 200
         body = t.json()
-        assert body["ok"] is True
+        assert body["ok"] is False, "fake host must fail a live connection test"
         assert "latency_ms" in body
         # DELETE
         d = requests.delete(f"{API}/admin/integrations/{iid}", headers=_h(tokens["admin"]))

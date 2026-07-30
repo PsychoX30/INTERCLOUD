@@ -173,23 +173,3 @@ def redact(cfg: dict, schema: dict | None) -> dict:
         if f["type"] in SECRET_FIELD_TYPES and out.get(f["key"]):
             out[f["key"]] = "••••••••"
     return out
-
-
-def mock_test_connection(module: str, cfg: dict) -> dict:
-    """Simulate a Test Connection call. Returns {ok, message, latency_ms}."""
-    import random
-    schema = module_schema(module)
-    if not schema:
-        return {"ok": False, "message": f"Unknown module: {module}"}
-    # Verify required fields
-    missing = [f["label"] for f in schema["fields"]
-               if f.get("required") and not cfg.get(f["key"])]
-    if missing:
-        return {"ok": False, "message": f"Missing required fields: {', '.join(missing)}"}
-    # Simulate latency + occasional soft failure
-    latency = random.randint(35, 320)
-    return {
-        "ok": True,
-        "message": f"Connection to {schema['label']} succeeded (mock).",
-        "latency_ms": latency,
-    }

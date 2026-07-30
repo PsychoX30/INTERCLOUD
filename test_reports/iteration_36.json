@@ -1,0 +1,59 @@
+{
+  "summary": "Iteration 36 - Production-readiness verification for Intercloud Portal (no-mock provisioning, real integration test, user delete UI, menu catalog sync, mobile logout, article search, honest traffic empty state). 11/11 backend pytest PASS. Frontend Playwright: 14/15 checks PASS (1 non-blocking UI helper-only miss on temp-user CREATE modal - functionality validated via backend). No blocking issues.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_results": {
+    "backend": {
+      "test_live_test_config_cpanel_bad_host_returns_real_error": "PASS - POST /admin/integrations/test-config cpanel bad host returns ok:false with REAL DNS error '[Errno -2] Name or service not known' and latency_ms (~26ms) - NOT MOCKED",
+      "test_live_test_config_missing_fields": "PASS - missing fields returns 'Missing required fields: Hostname or IP Address, Username, API Token'",
+      "test_provision_hosting_cpanel_returns_400_not_configured": "PASS - POST /admin/provisioning/hosting/create returns 400 with Indonesian detail mentioning 'cPanel/WHM belum aktif'",
+      "test_provision_proxmox_returns_400_honest": "PASS - POST /admin/provisioning/proxmox/create returns 400 with 'Proxmox: clone requires template_vmid + node' (honest fail, no fake success)",
+      "test_client_traffic_returns_available_false_when_no_samples": "PASS - GET /client/services/{sid}/traffic returns available:false, points:[]",
+      "test_menu_catalog_contains_new_keys_no_user_settings": "PASS - /admin/user-access-catalog contains form_builder, status_page, site_content, utm_builder, backup_restore, content_calendar; user_settings REMOVED",
+      "test_admin_can_create_and_delete_user": "PASS - POST /admin/users creates user, DELETE /admin/users/{id} removes it, list confirms removal",
+      "test_admin_cannot_delete_self": "PASS - DELETE own admin user rejected (400/403/409)",
+      "test_role_logins_work[sales/support/ticket]": "PASS - all three role accounts login and /auth/me returns correct email"
+    },
+    "frontend": {
+      "admin_login_lands_on_dashboard": "PASS - /portal/admin/dashboard",
+      "admin_articles_search_present": "PASS - data-testid='articles-search' present on /portal/admin/articles",
+      "admin_users_delete_buttons_present": "PASS - 443 delete-user-* buttons rendered",
+      "admin_no_self_delete_button": "PASS - no delete-user-admin@intercloud-digital.com button",
+      "mobile_logout_btn": "PASS - data-testid='mobile-logout-btn' visible at 390x800 and click redirects to /portal/login",
+      "sales_role_menus": "PASS - Orders/Quotations visible, Invoices/Finance/Integrations HIDDEN",
+      "ticket_only_role_menus": "PASS - Only Dashboard + Tickets shown (no Orders/Invoices/Finance/Users)",
+      "client_traffic_unavailable": "PASS - data-testid='traffic-unavailable' card appears after service select",
+      "public_articles_search": "PASS - articles-search-input + articles-search-btn + results-count present and filter results on /articles",
+      "prov_hosting_err_box": "PASS - RED data-testid='prov-hosting-err' rendered with text 'Integrasi cPanel/WHM belum aktif...', no prov-hosting-ok",
+      "prov_proxmox_err_box": "PASS - RED data-testid='prov-proxmox-err' rendered with 'Provisioning Proxmox gagal: Proxmox: clone requires template_vmid + node', no prov-proxmox-ok",
+      "prov_no_novnc_mock_block": "PASS - 'noVNC Console (mock)' block not present in DOM (withConsole flag not passed for any tab)",
+      "access_modal_menu_catalog": "PASS - Manage access modal for sales user shows menu-form_builder, menu-status_page, menu-site_content (all present); menu-user_settings NOT present",
+      "temp_user_ui_create": "MINOR - Playwright helper heuristic filled Name into search box (Users page has search filter + modal); backend create/delete tested via pytest and passed. AdminUsers modal itself renders as expected in screenshot."
+    }
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter36_prod_readiness.py",
+    "/app/test_reports/pytest/iter36.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AdminMockedScreens.jsx ProvisionForm still contains the hard-coded 'noVNC Console (mock)' JSX (lines ~194-210) behind the withConsole prop. Not invoked anywhere in the current tab dispatch, so it is unreachable dead code - safe to DELETE completely to guarantee no future accidental exposure of the mock.",
+    "portal/routes.py remains ~10k+ lines. Ongoing recommendation: split by feature (provisioning, integrations, traffic, users) into modules under /app/backend/portal/routers/ - non-blocking.",
+    "/admin/user-access-catalog returns a wrapping object with keys menu_catalog + feature_flags. Both /admin/menu-catalog and /admin/config/menu-catalog return 404 - if the aliases are advertised anywhere, remove from docs.",
+    "ProvisionForm hosting field IDs use free-form keys (username/domain/plan/password) - already testable via data-testid=prov-{key}, good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter36_prod_readiness.py (new, 11 tests)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "93% (14/15 - 1 helper-only miss, functionality confirmed)"},
+  "test_credentials": "admin/client/sales/support/ticket_only all verified working with credentials from /app/memory/test_credentials.md. reCAPTCHA remains DISABLED in DB as instructed (do NOT re-enable). No 2FA state modified.",
+  "seed_data_creation": "Backend test created and deleted one TEST user (tmpdel-iter36@example.com) - cleaned up in same test. One Proxmox provisioning attempt made (failed at clone step as expected - no VM created because template_vmid missing). support@intercloud-digital.com menu_keys NOT modified (Manage access modal only opened for sales user and closed without saving).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_iter36_prod_readiness.py is idempotent and covers all iter36 acceptance criteria. UI selectors for provisioning: use button:has-text('cPanel/WHM')/button:has-text('Proxmox VE') for tabs, then data-testid=prov-username/prov-domain/prov-plan/prov-password (cpanel) or prov-hostname + os-* (proxmox), then data-testid=prov-submit. Success banner is prov-hosting-ok/prov-proxmox-ok (should never appear until real integrations configured). Users page has BOTH a top search input AND a New user modal - target modal inputs specifically (e.g. within [role=dialog]) to avoid filling the search box. Login field is 'token' (not 'access_token') on /api/portal/auth/login.",
+  "rca_of_the_issue": "N/A - all functional acceptance criteria met."
+}

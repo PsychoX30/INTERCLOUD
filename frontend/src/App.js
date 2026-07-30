@@ -75,7 +75,6 @@ const AdminUTMBuilder   = lazy(() => import("./pages/portal/admin/AdminUTMBuilde
 const PublicStatusPage  = lazy(() => import("./pages/PublicStatusPage"));
 
 // Admin (mocked/business chunk)
-const AdminSubscriptions = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminSubscriptions })));
 const AdminProvisioning  = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminProvisioning })));
 const AdminDCIM          = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminDCIM })));
 const AdminCRM           = lazy(() => import("./pages/portal/admin/AdminBusiness").then(m => ({ default: m.AdminCRM })));

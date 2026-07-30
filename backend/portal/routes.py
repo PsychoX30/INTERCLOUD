@@ -1335,11 +1335,31 @@ def _serialize_order(d: dict) -> dict:
     }
 
 
+async def _notify_admin_manual_provision(db, order: dict, note: str) -> None:
+    """Create an internal follow-up task so admins act on orders that could
+    not be auto-provisioned (integration off / live call failed)."""
+    try:
+        await db.followups.insert_one({
+            "customer_id": None,
+            "customer_name": order.get("user_name", ""),
+            "task": (f"Provisioning manual diperlukan untuk order "
+                     f"{order.get('number') or str(order['_id'])[-6:]}: {note}"),
+            "channel": "internal",
+            "due_date": datetime.now(timezone.utc).date().isoformat(),
+            "done": False,
+            "owner": "auto",
+            "created_at": _now(),
+        })
+    except Exception:
+        pass
+
+
 async def _auto_provision(db, order: dict) -> dict:
-    """Actually run auto-provisioning based on product category.
-    Returns the created service (or None if manual setup is required).
-    Currently uses realistic mocked module calls - swap for real cPanel/Plesk/
-    Proxmox API calls once credentials are wired via /admin/integrations.
+    """Run auto-provisioning based on product category.
+    Uses LIVE integration APIs (cPanel/Plesk/DirectAdmin/Proxmox) when they are
+    enabled under /admin/integrations. When no live integration is available the
+    service is created in `pending` state and an admin follow-up task is raised -
+    no fake/mock success is ever recorded.
     """
     prod = await db.products.find_one({"_id": order["product_id"]})
     if not prod:
@@ -1419,31 +1439,52 @@ async def _auto_provision(db, order: dict) -> dict:
                             "username": uname, "provision_status": "failed"})
                 await _log("panel_account_failed",
                            f"{panel_label} provisioning gagal: {str(e)[:150]}. Perlu tindak lanjut manual.")
+                await _notify_admin_manual_provision(
+                    db, order, f"{panel_label} provisioning gagal: {str(e)[:120]}")
         else:
-            module = await db.integrations.find_one({"module": {"$in": ["cpanel", "plesk", "directadmin"]}, "status": "enabled"})
-            provider = module["module"] if module else "cpanel"
-            cfg.setdefault("control_panel", {"cpanel": "cPanel/WHM", "plesk": "Plesk", "directadmin": "DirectAdmin"}.get(provider, "cPanel/WHM"))
             cfg.setdefault("hostname", f"{order['user_email'].split('@')[0]}.icd-cust.net")
             pool_ip = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
                                                        customer=order.get("user_email", ""),
                                                        ref=f"order {str(order['_id'])[-6:]}")
-            cfg.setdefault("ip", pool_ip or ("103.28.14." + str((hash(str(order["_id"])) % 240) + 10)))
             if pool_ip:
+                cfg.setdefault("ip", pool_ip)
                 await _log("ip_allocated", f"IP {pool_ip} dialokasikan otomatis dari IP pool (DCIM).")
-            cfg.setdefault("provision_status", "manual")
-            await _log("panel_account_created", f"{provider.upper()} account provisioned (mock).")
+            cfg["provision_status"] = "pending"
+            await _log("manual_provision_required",
+                       "Integrasi panel hosting (cPanel/Plesk/DirectAdmin) belum aktif. "
+                       "Provisioning manual oleh admin diperlukan.")
+            await _notify_admin_manual_provision(
+                db, order, "Integrasi panel hosting belum aktif - buat akun hosting manual")
     elif cat in ("vps", "cloud"):
-        module = await db.integrations.find_one({"module": "proxmox", "status": "enabled"})
-        cfg.setdefault("node", (module or {}).get("config", {}).get("default_node") or "prox-jkt-05")
         cfg.setdefault("os", cfg.get("os") or "Ubuntu 22.04 LTS Server")
         cfg.setdefault("hostname", f"vm-{str(order['_id'])[-6:]}.icd-cust.net")
         pool_ip = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
                                                    customer=order.get("user_email", ""),
                                                    ref=f"order {str(order['_id'])[-6:]}")
-        cfg.setdefault("ip", pool_ip or ("103.28.14." + str((hash(str(order["_id"])) % 240) + 10)))
         if pool_ip:
+            cfg.setdefault("ip", pool_ip)
             await _log("ip_allocated", f"IP {pool_ip} dialokasikan otomatis dari IP pool (DCIM).")
-        await _log("vm_created", f"Proxmox VM created on {cfg['node']} with {cfg['os']} (mock).")
+        pxs = await iv2.get_settings(db, "proxmox")
+        if pxs and pxs.get("enabled"):
+            try:
+                vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", cfg["hostname"]).strip("-")[:60]
+                vm = await iv2.ProxmoxClient(pxs).clone_vm(hostname=vm_name)
+                cfg.update({"node": vm["node"], "vmid": vm["vmid"],
+                            "provision_status": "provisioned", "provisioned_at": _now()})
+                await _log("vm_created",
+                           f"Proxmox VM {vm['vmid']} ({cfg['os']}) dibuat di node {vm['node']} (live).")
+            except Exception as e:
+                cfg["provision_status"] = "pending"
+                await _log("vm_create_failed",
+                           f"Provisioning Proxmox gagal: {str(e)[:150]}. Perlu tindak lanjut manual.")
+                await _notify_admin_manual_provision(
+                    db, order, f"Proxmox clone gagal: {str(e)[:120]}")
+        else:
+            cfg["provision_status"] = "pending"
+            await _log("manual_provision_required",
+                       "Integrasi Proxmox belum aktif. VM harus dibuat manual oleh tim NOC.")
+            await _notify_admin_manual_provision(
+                db, order, "Integrasi Proxmox belum aktif - buat VM manual")
     elif cat in ("dedicated", "colocation", "interconnect", "firewall", "lease"):
         # These need manual DC/network setup - mark the service as provisioning
         cfg.setdefault("rack", "TBD by NOC")
@@ -1457,7 +1498,7 @@ async def _auto_provision(db, order: dict) -> dict:
         "product_name": prod["name"],
         "category": cat,
         "name": f"{prod['name']} - {order.get('user_name','')}",
-        "status": "active" if cat in ("hosting", "vps", "cloud") else "pending",
+        "status": "active" if cfg.get("provision_status") == "provisioned" else "pending",
         "start_date": now.date().isoformat(),
         "next_renewal": (now + timedelta(days=30)).date().isoformat(),
         "price_monthly": prod.get("price_monthly", 0),
@@ -2009,7 +2050,8 @@ ADMIN_MENU_CATALOG = [
     {"key": "branding",        "label": "Branding",         "group": "System",         "default_roles": ["admin"]},
     {"key": "site_content",    "label": "Landing CMS",      "group": "System",         "default_roles": ["admin"]},
     {"key": "backup",          "label": "Backup & Restore", "group": "System",         "default_roles": ["admin"]},
-    {"key": "user_settings",   "label": "User Settings",    "group": "System",         "default_roles": ["admin"]},
+    {"key": "status_page",     "label": "Public Status Page", "group": "System",       "default_roles": ["admin"]},
+    {"key": "form_builder",    "label": "Form Builder",     "group": "Creative",       "default_roles": ["admin", "creative", "sales"]},
 ]
 
 
@@ -3467,8 +3509,109 @@ async def run_renewal_sweep_now(admin=Depends(get_current_admin)):
 # INTEGRATIONS (WHMCS-style module hub)
 # ============================================================
 from .integrations_registry import (
-    module_list, module_schema, redact, mock_test_connection,
+    module_list, module_schema, redact,
 )
+
+
+def _iv2_settings_for_module(module: str, cfg: dict) -> dict:
+    """Map a module-hub config (hostname/port/protocol/...) to the
+    integrations_v2 settings shape ({credentials, options})."""
+    proto = (cfg.get("protocol") or "https").lower()
+    host = cfg.get("hostname") or ""
+
+    def _url(default_port: int) -> str:
+        scheme = "http" if proto == "http" else "https"
+        return f"{scheme}://{host}:{int(cfg.get('port') or default_port)}"
+
+    if module == "cpanel":
+        return {"credentials": {"host": _url(2087), "username": cfg.get("username"),
+                                "api_token": cfg.get("api_token")},
+                "options": {"ssl_verify": False}}
+    if module == "plesk":
+        return {"credentials": {"host": _url(8443), "username": cfg.get("username"),
+                                "password": cfg.get("password")},
+                "options": {"ssl_verify": False}}
+    if module == "directadmin":
+        return {"credentials": {"host": _url(2222), "username": cfg.get("username"),
+                                "api_token": cfg.get("api_token")},
+                "options": {"ssl_verify": False}}
+    if module == "proxmox":
+        return {"credentials": {"host": _url(8006), "username": cfg.get("username"),
+                                "password": cfg.get("password"),
+                                "token_id": cfg.get("api_token_id"),
+                                "token_secret": cfg.get("api_token_secret")},
+                "options": {"ssl_verify": False}}
+    if module == "mikrotik":
+        return {"credentials": {"host": host, "port": cfg.get("port") or 8728,
+                                "username": cfg.get("username"), "password": cfg.get("password"),
+                                "use_tls": proto == "api-ssl"}}
+    if module == "smtp":
+        return {"credentials": {"host": host, "port": cfg.get("port") or 587,
+                                "username": cfg.get("username"), "password": cfg.get("password")},
+                "options": {"use_tls": proto == "tls", "use_ssl": proto == "ssl",
+                            "from_email": cfg.get("from_email"),
+                            "from_name": cfg.get("from_name")}}
+    if module == "duitku":
+        return {"credentials": {"merchant_code": cfg.get("merchant_code"),
+                                "api_key": cfg.get("api_key")},
+                "sandbox": (cfg.get("environment") or "sandbox") != "production"}
+    if module == "midtrans":
+        return {"credentials": {"server_key": cfg.get("server_key"),
+                                "client_key": cfg.get("client_key")},
+                "sandbox": (cfg.get("environment") or "sandbox") != "production"}
+    if module == "xendit":
+        return {"credentials": {"secret_key": cfg.get("secret_key"),
+                                "webhook_token": cfg.get("callback_token")}}
+    return {"credentials": dict(cfg or {})}
+
+
+async def _live_test_connection(module: str, cfg: dict) -> dict:
+    """Run a REAL connection test for a module-hub integration. Returns
+    {ok, message, latency_ms}. No mocked success in production."""
+    import time as _time
+    import asyncio as _asyncio
+    schema = module_schema(module)
+    if not schema:
+        return {"ok": False, "message": f"Unknown module: {module}"}
+    missing = [f["label"] for f in schema["fields"]
+               if f.get("required") and not cfg.get(f["key"])]
+    if missing:
+        return {"ok": False, "message": f"Missing required fields: {', '.join(missing)}"}
+    started = _time.monotonic()
+    try:
+        settings = _iv2_settings_for_module(module, cfg)
+        if module == "cpanel":
+            result = await iv2.CpanelClient(settings).test_connection()
+        elif module == "plesk":
+            result = await iv2.PleskClient(settings).test_connection()
+        elif module == "directadmin":
+            result = await iv2.DirectAdminClient(settings).test_connection()
+        elif module == "proxmox":
+            result = await iv2.ProxmoxClient(settings).test_connection()
+        elif module == "mikrotik":
+            result = await _asyncio.to_thread(iv2.MikrotikClient(settings).test_connection)
+        elif module == "smtp":
+            result = await _asyncio.to_thread(iv2.SMTPMailer(settings).test_connection)
+        elif module == "duitku":
+            result = await iv2.DuitkuGateway(settings).test_connection()
+        elif module == "midtrans":
+            result = await iv2.MidtransGateway(settings).test_connection()
+        elif module == "xendit":
+            result = await iv2.XenditGateway(settings).test_connection()
+        elif module in ("whois", "blacklist"):
+            import httpx as _httpx
+            endpoint = cfg.get("endpoint") or ""
+            async with _httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+                r = await c.get(endpoint)
+            result = {"ok": r.status_code < 500,
+                      "message": f"Endpoint reachable (HTTP {r.status_code})"}
+        else:
+            result = {"ok": False, "message": f"No live test available for module '{module}'"}
+    except Exception as e:
+        result = {"ok": False, "message": f"{type(e).__name__}: {str(e)[:180]}"}
+    result["latency_ms"] = int((_time.monotonic() - started) * 1000)
+    result.pop("details", None)
+    return result
 
 
 @router.get("/admin/integrations/modules")
@@ -3574,7 +3717,7 @@ async def test_integration(iid: str, admin=Depends(get_current_admin)):
     d = await db.integrations.find_one({"_id": _oid(iid)})
     if not d:
         raise HTTPException(status_code=404, detail="Integration not found")
-    result = mock_test_connection(d["module"], d.get("config", {}))
+    result = await _live_test_connection(d["module"], d.get("config", {}))
     await db.integrations.update_one(
         {"_id": d["_id"]},
         {"$set": {"last_test_at": _now(), "last_test_result": result}},
@@ -3585,7 +3728,7 @@ async def test_integration(iid: str, admin=Depends(get_current_admin)):
 @router.post("/admin/integrations/test-config")
 async def test_integration_draft(payload: dict, admin=Depends(get_current_admin)):
     """Test connection with an unsaved config (used by the Add Server dialog)."""
-    return mock_test_connection(payload.get("module", ""), payload.get("config", {}))
+    return await _live_test_connection(payload.get("module", ""), payload.get("config", {}))
 
 
 # Bank accounts admin CRUD (simple)
@@ -5936,34 +6079,37 @@ async def render_quotation_pdf(qid: str, format: str = "html", staff=Depends(get
     return HTMLResponse(content=html)
 
 
-# Traffic Report (mocked realistic time series)
+# Traffic Report - live samples only (no mock data in production)
 @router.get("/client/services/{sid}/traffic")
 async def client_service_traffic(sid: str, user=Depends(get_current_user)):
     db = await _get_db()
     d = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
     if not d:
         raise HTTPException(status_code=404, detail="Service not found")
-    # Deterministic mocked data based on service id hash
-    import random
-    seed = sum(ord(c) for c in sid)
-    r = random.Random(seed)
-    now = datetime.now(timezone.utc)
-    points = []
-    for i in range(24):
-        h = now - timedelta(hours=23 - i)
-        base_in = r.uniform(150, 850)
-        base_out = r.uniform(120, 700)
-        points.append({
-            "t": h.strftime("%H:00"),
-            "in_mbps": round(base_in, 1),
-            "out_mbps": round(base_out, 1),
-        })
+    samples = await db.traffic_samples.find({"service_id": sid}).sort("at", 1).to_list(500)
+    if not samples:
+        return {
+            "service_id": sid,
+            "service_name": d.get("name", ""),
+            "range": "24h",
+            "available": False,
+            "points": [],
+            "totals": {"in_gb": 0, "out_gb": 0},
+            "peak_in_mbps": 0,
+            "peak_out_mbps": 0,
+            "message": ("Data trafik belum tersedia untuk layanan ini. "
+                        "Hubungkan sumber data (NetFlow/SNMP/MikroTik) melalui "
+                        "Admin - Integrations untuk menampilkan trafik live."),
+        }
+    points = [{"t": p.get("t", ""), "in_mbps": float(p.get("in_mbps", 0)),
+               "out_mbps": float(p.get("out_mbps", 0))} for p in samples[-24:]]
     total_in = round(sum(p["in_mbps"] for p in points) * 60 / 8 / 1024, 2)  # GB
     total_out = round(sum(p["out_mbps"] for p in points) * 60 / 8 / 1024, 2)
     return {
         "service_id": sid,
         "service_name": d.get("name", ""),
         "range": "24h",
+        "available": True,
         "points": points,
         "totals": {"in_gb": total_in, "out_gb": total_out},
         "peak_in_mbps": max(p["in_mbps"] for p in points),
@@ -6662,6 +6808,56 @@ async def proxmox_vnc(node: str, vmid: int, admin=Depends(get_current_admin)):
         raise HTTPException(status_code=400, detail="Proxmox not configured")
     ticket = await iv2.ProxmoxClient(s).vnc_ticket(node, vmid)
     return {"ticket": ticket, "wss": f"{iv2.ProxmoxClient(s).host}/?console=kvm&novnc=1&vmid={vmid}&node={node}"}
+
+
+@router.post("/admin/provisioning/proxmox/create")
+async def admin_provision_proxmox_vm(payload: dict, admin=Depends(get_current_admin)):
+    """Manually clone a VM on the LIVE Proxmox cluster. Fails clearly when the
+    integration is not configured - never fakes success."""
+    db = await _get_db()
+    s = await iv2.get_settings(db, "proxmox")
+    if not s or not s.get("enabled"):
+        raise HTTPException(status_code=400,
+                            detail="Integrasi Proxmox belum aktif. Konfigurasi kredensial di Admin - Integrations terlebih dahulu.")
+    hostname = (payload.get("hostname") or "").strip()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Hostname wajib diisi")
+    vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", hostname).strip("-")[:60]
+    try:
+        vm = await iv2.ProxmoxClient(s).clone_vm(hostname=vm_name,
+                                                 node=(payload.get("node") or "").strip() or None)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Provisioning Proxmox gagal: {str(e)[:180]}")
+    return {"ok": True, "vmid": vm["vmid"], "node": vm["node"], "name": vm["name"]}
+
+
+@router.post("/admin/provisioning/hosting/create")
+async def admin_provision_hosting_account(payload: dict, admin=Depends(get_current_admin)):
+    """Manually create a hosting account on the LIVE control panel (cPanel/
+    Plesk/DirectAdmin). Fails clearly when no integration is enabled."""
+    db = await _get_db()
+    panels = {"cpanel": ("cPanel/WHM", iv2.CpanelClient, "package"),
+              "plesk": ("Plesk", iv2.PleskClient, "plan"),
+              "directadmin": ("DirectAdmin", iv2.DirectAdminClient, "package")}
+    key = (payload.get("panel") or "").lower()
+    if key not in panels:
+        raise HTTPException(status_code=400, detail="panel harus cpanel / plesk / directadmin")
+    s = await iv2.get_settings(db, key)
+    if not s or not s.get("enabled"):
+        raise HTTPException(status_code=400,
+                            detail=f"Integrasi {panels[key][0]} belum aktif. Konfigurasi kredensial di Admin - Integrations terlebih dahulu.")
+    for req in ("domain", "username", "password"):
+        if not payload.get(req):
+            raise HTTPException(status_code=400, detail=f"Field '{req}' wajib diisi")
+    label, cls, pkg_kw = panels[key]
+    try:
+        await cls(s).create_account(domain=payload["domain"], username=payload["username"],
+                                    password=payload["password"],
+                                    contact_email=payload.get("contact_email", ""),
+                                    **{pkg_kw: payload.get("plan") or None})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"{label} provisioning gagal: {str(e)[:180]}")
+    return {"ok": True, "panel": label, "domain": payload["domain"], "username": payload["username"]}
 
 
 # ---------------- Mikrotik multi-device management ----------------

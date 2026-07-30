@@ -50,14 +50,23 @@ const ProxmoxProvision = () => {
   const [chosen, setChosen] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
-  const [f, setF] = useState({ hostname: "", cores: 2, memory: 2048, disk: 40, node: "prox-jkt-05" });
+  const [err, setErr] = useState(null);
+  const [f, setF] = useState({ hostname: "", cores: 2, memory: 2048, disk: 40, node: "" });
   const [reqOpen, setReqOpen] = useState(false);
 
   useEffect(() => { api.get("/admin/proxmox/os-templates").then((r) => setOs(r.data)); }, []);
 
-  const run = (e) => {
-    e.preventDefault(); setBusy(true); setMsg(null);
-    setTimeout(() => { setBusy(false); setMsg(`✓ Proxmox job queued for VM "${f.hostname}" running ${chosen} on ${f.node} (mock). Configure Proxmox creds under Integrations to run for real.`); }, 900);
+  const run = async (e) => {
+    e.preventDefault(); setBusy(true); setMsg(null); setErr(null);
+    try {
+      const { data } = await api.post("/admin/provisioning/proxmox/create", {
+        hostname: f.hostname, node: f.node, os: chosen,
+        cores: f.cores, memory: f.memory, disk: f.disk,
+      });
+      setMsg(`✓ VM "${data.name}" (VMID ${data.vmid}) berhasil dibuat di node ${data.node}.`);
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Provisioning gagal - periksa integrasi Proxmox.");
+    } finally { setBusy(false); }
   };
 
   const groupedOs = os.reduce((acc, t) => { (acc[t.family] = acc[t.family] || []).push(t); return acc; }, {});
@@ -104,20 +113,8 @@ const ProxmoxProvision = () => {
           </button>
         </div>
       </form>
-      {msg && <div className="mt-4 text-sm rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
-
-      <div className="mt-6">
-        <div className={labelClass}>noVNC Console (mock)</div>
-        <div className="mt-2 rounded-xl bg-black h-56 flex items-center justify-center text-emerald-400 font-mono text-xs relative overflow-hidden">
-          <div className="absolute inset-0 opacity-40 pointer-events-none" style={{ backgroundImage: "linear-gradient(rgba(0,255,0,0.05) 1px, transparent 1px)", backgroundSize: "100% 3px" }} />
-          <pre className="relative text-left leading-relaxed">
-{`[    0.000000] Booting ${chosen || "OS"}...
-[    1.412001] systemd[1]: Started system boot.
-[  ok  ] Reached target Cloud-init target.
-${(f.hostname || "vm-hostname")} login: _`}
-          </pre>
-        </div>
-      </div>
+      {msg && <div className="mt-4 text-sm rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2" data-testid="prov-proxmox-ok">{msg}</div>}
+      {err && <div className="mt-4 text-sm rounded-xl bg-red-50 border border-red-200 text-red-700 px-3 py-2" data-testid="prov-proxmox-err">{err}</div>}
 
       {reqOpen && <OsRequestDialog onClose={() => setReqOpen(false)} />}
     </Card>
@@ -164,10 +161,20 @@ const OsRequestDialog = ({ onClose }) => {
 const ProvisionForm = ({ module, fields, withConsole }) => {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [err, setErr] = useState(null);
   const [f, setF] = useState({});
-  const run = (e) => {
-    e.preventDefault(); setBusy(true); setMsg(null);
-    setTimeout(() => { setBusy(false); setMsg(`✓ ${module} provisioning job queued (mock). Configure real credentials in Integrations to run against your server.`); }, 900);
+  const panelKey = module === "cPanel" ? "cpanel" : module.toLowerCase();
+  const run = async (e) => {
+    e.preventDefault(); setBusy(true); setMsg(null); setErr(null);
+    try {
+      const { data } = await api.post("/admin/provisioning/hosting/create", {
+        panel: panelKey, domain: f.domain, username: f.username,
+        password: f.password, plan: f.plan,
+      });
+      setMsg(`✓ Akun ${data.panel} "${data.username}" berhasil dibuat untuk ${data.domain}.`);
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || `Provisioning ${module} gagal - periksa integrasi.`);
+    } finally { setBusy(false); }
   };
   return (
     <Card className="p-6">
@@ -182,7 +189,8 @@ const ProvisionForm = ({ module, fields, withConsole }) => {
           <button className={btnPrimary} disabled={busy} data-testid="prov-submit">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Provision</button>
         </div>
       </form>
-      {msg && <div className="mt-4 text-sm rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2">{msg}</div>}
+      {msg && <div className="mt-4 text-sm rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2" data-testid="prov-hosting-ok">{msg}</div>}
+      {err && <div className="mt-4 text-sm rounded-xl bg-red-50 border border-red-200 text-red-700 px-3 py-2" data-testid="prov-hosting-err">{err}</div>}
       {withConsole && (
         <div className="mt-6">
           <div className={labelClass}>noVNC Console (mock)</div>
