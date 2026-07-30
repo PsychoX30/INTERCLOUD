@@ -163,7 +163,48 @@ if ! command -v mongod >/dev/null 2>&1; then
   systemctl enable --now mongod
 else
   log "MongoDB already present — skipping install"
-  systemctl start mongod || true
+fi
+
+# Known-good minimal mongod config. Single source of truth — reused by the
+# self-heal below AND the auth-recovery path further down.
+write_default_mongod_conf() {
+  cat > /etc/mongod.conf <<'MCFG'
+storage:
+  dbPath: /var/lib/mongodb
+systemLog:
+  destination: file
+  path: /var/log/mongodb/mongod.log
+  logAppend: true
+net:
+  port: 27017
+  bindIp: 127.0.0.1
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+MCFG
+}
+
+# Self-heal: /etc/mongod.conf can vanish after a partial 'apt purge
+# mongodb-org' or manual cleanup while the package stays installed. mongod
+# then dies instantly with "Error opening config file '/etc/mongod.conf':
+# No such file or directory" (systemd status=2/INVALIDARGUMENT). Recreate a
+# known-good config and keep auth ON when it was configured before
+# (detected via /etc/intercloud/mongo.env).
+if [[ ! -f /etc/mongod.conf ]]; then
+  warn "/etc/mongod.conf is missing — recreating a known-good default config"
+  write_default_mongod_conf
+  if [[ -f /etc/intercloud/mongo.env ]]; then
+    printf "\nsecurity:\n  authorization: enabled\n" >> /etc/mongod.conf
+    log "Previous MongoDB auth detected — 'authorization: enabled' restored in the new config"
+  fi
+fi
+
+# Data/log dirs + ownership must exist regardless of the install path — a
+# purge can remove them while leaving the binary in place.
+install -d -o mongodb -g mongodb -m 0755 /var/lib/mongodb /var/log/mongodb
+if ! systemctl is-active --quiet mongod; then
+  systemctl daemon-reload
+  systemctl enable mongod >/dev/null 2>&1 || true
+  systemctl restart mongod || true
 fi
 
 # Wait for mongod to accept connections. If it never comes up we surface
@@ -225,8 +266,11 @@ if [[ "$ENABLE_MONGO_AUTH" == "yes" ]]; then
   if ! grep -qE '^\s*authorization:\s*enabled' /etc/mongod.conf; then
     log "Bootstrapping MongoDB user '${MONGO_APP_USER}' + enabling auth"
     # Create user while auth is still disabled so we don't need a bootstrap admin.
+    # dropUser first = idempotent (user may already exist from a prior run whose
+    # config file was later lost/rewritten without the security block).
     mongosh --quiet <<MONGO
 use admin
+try { db.dropUser("${MONGO_APP_USER}") } catch(e) { /* belum ada - aman */ }
 db.createUser({
   user: "${MONGO_APP_USER}",
   pwd:  "${MONGO_APP_PASSWORD}",
@@ -270,19 +314,7 @@ EOF
       # A previous run may have left the file mangled by stacked seds.
       log "Rewriting /etc/mongod.conf (auth temporarily OFF for recovery)"
       cp -a /etc/mongod.conf "/etc/mongod.conf.bak.$(date +%s)" 2>/dev/null || true
-      cat > /etc/mongod.conf <<'MCFG'
-storage:
-  dbPath: /var/lib/mongodb
-systemLog:
-  destination: file
-  path: /var/log/mongodb/mongod.log
-  logAppend: true
-net:
-  port: 27017
-  bindIp: 127.0.0.1
-processManagement:
-  timeZoneInfo: /usr/share/zoneinfo
-MCFG
+      write_default_mongod_conf
       systemctl restart mongod
       if ! wait_for_mongod 45; then
         warn "mongod failed to start after config rewrite. Diagnostics:"

@@ -1709,6 +1709,74 @@ async def run_weekly_summary(db, *, now: Optional[datetime] = None) -> dict:
             "delivery": delivery, "summary": summary}
 
 
+def _public_ssl_days_left(host: str, port: int = 443, timeout: float = 6.0) -> int:
+    """Sisa hari sertifikat SSL publik sebuah host (blocking, panggil via to_thread)."""
+    import ssl as _ssl
+    import socket as _socket
+    ctx = _ssl.create_default_context()
+    with _socket.create_connection((host, port), timeout=timeout) as sock:
+        with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+            cert = ssock.getpeercert()
+    expires = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    return (expires - datetime.now(timezone.utc)).days
+
+
+async def run_health_alert_sweep(db, disk_threshold: float = 85.0,
+                                 ssl_days_threshold: int = 14):
+    """Email peringatan ke admin bila disk hampir penuh atau SSL akan
+    kedaluwarsa. Dedup: maksimal 1 email per hari (klaim atomik via _id)."""
+    import shutil as _sh
+    import asyncio as _aio
+    issues = []
+
+    du = _sh.disk_usage("/")
+    disk_pct = round(du.used / du.total * 100, 1)
+    if disk_pct >= disk_threshold:
+        free_gb = round(du.free / 1024 ** 3, 1)
+        total_gb = round(du.total / 1024 ** 3, 1)
+        issues.append(f"Disk hampir penuh: {disk_pct}% terpakai (sisa {free_gb} GB dari {total_gb} GB). "
+                      "Bersihkan log/backup lama atau tambah kapasitas disk.")
+
+    origin = (os.environ.get("REACT_APP_BACKEND_URL") or "").strip().rstrip("/")
+    if origin.startswith("https://"):
+        host = origin[8:].split("/")[0].split(":")[0]
+        try:
+            days = await _aio.to_thread(_public_ssl_days_left, host)
+            if days <= ssl_days_threshold:
+                issues.append(f"Sertifikat SSL {host} akan kedaluwarsa dalam {days} hari. "
+                              "Pastikan certbot.timer aktif atau perbarui manual: certbot renew.")
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"[health-alert] cek SSL {host} gagal: {e}")
+
+    if not issues:
+        return {"issues": 0, "delivery": None}
+
+    from pymongo.errors import DuplicateKeyError
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        await db.health_alert_log.insert_one({
+            "_id": f"health-alert-{today}", "date": today, "issues": issues,
+            "created_at": datetime.now(timezone.utc).isoformat()})
+    except DuplicateKeyError:
+        return {"issues": len(issues), "delivery": {"status": "deduped"}}
+
+    rows = "".join(f"<li style='margin:6px 0'>{i}</li>" for i in issues)
+    inner = (
+        "<h2 style='margin:0 0 12px'>Peringatan Kesehatan Server</h2>"
+        f"<p>Pemeriksaan otomatis menemukan <b>{len(issues)} masalah kritis</b> pada server portal:</p>"
+        f"<ul>{rows}</ul>"
+        "<p>Detail lengkap dan status terkini: buka <b>Admin &gt; Diagnostics &gt; System Health</b> di portal.</p>"
+    )
+    to_email = (await get_setting(db, "monthly_report_email", None)
+                or os.environ.get("ADMIN_EMAIL")
+                or "support@intercloud-digital.com")
+    delivery = await deliver(
+        db, to_email=to_email,
+        subject=f"[PERINGATAN] Kesehatan server: {len(issues)} masalah kritis terdeteksi",
+        body_html=wrap_html(inner), event_key="health_alert")
+    return {"issues": len(issues), "to_email": to_email, "delivery": delivery}
+
+
 def start_scheduler(db):
     """Fire up an in-process APScheduler that runs the sweep hourly.
 
@@ -1812,6 +1880,18 @@ def start_scheduler(db):
             log.exception(f"[weekly-summary] tick failed: {e}")
 
     sched.add_job(_weekly_summary_tick, CronTrigger(day_of_week="mon", hour=7, minute=0))
+
+    # Peringatan kesehatan server (disk hampir penuh / SSL akan kedaluwarsa)
+    # - setiap hari 07:30 WIB, dedup 1 email per hari di dalam sweep-nya.
+    async def _health_alert_tick():
+        try:
+            result = await run_health_alert_sweep(db)
+            if result.get("issues"):
+                log.info(f"[health-alert] {result}")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[health-alert] tick failed: {e}")
+
+    sched.add_job(_health_alert_tick, CronTrigger(hour=7, minute=30))
 
     async def _noc_retention_tick():
         try:
