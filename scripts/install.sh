@@ -331,14 +331,20 @@ fi
 # ------------------------------------------------------------------
 # 3. Node.js 20 LTS + Yarn (classic)
 # ------------------------------------------------------------------
-# Always (re)write the NodeSource keyring + repo definition: their signing key
-# rotates and a stale key breaks every later apt-get update with
-# "NO_PUBKEY 2F59B5F99B1BE0B4". The modern keyring method self-heals old installs.
+# Always rebuild the NodeSource repo from scratch: older installers
+# (setup_20.x) leave a duplicate .list pointing at /usr/share/keyrings with a
+# stale key, which causes both "Conflicting values set for option Signed-By"
+# and "NO_PUBKEY 2F59B5F99B1BE0B4". Clean slate, then write ONE definition.
 log "Configuring NodeSource repo (Node.js 20 LTS)"
+grep -RlsE "deb\.nodesource\.com" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f
+sed -i '/deb\.nodesource\.com/d' /etc/apt/sources.list 2>/dev/null || true
+rm -f /usr/share/keyrings/nodesource.gpg /etc/apt/keyrings/nodesource.gpg
 install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
   | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
 chmod 644 /etc/apt/keyrings/nodesource.gpg
+gpg --show-keys --with-colons /etc/apt/keyrings/nodesource.gpg 2>/dev/null \
+  | grep -q "2F59B5F99B1BE0B4" || die "NodeSource GPG key download looks wrong - aborting"
 echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
   > /etc/apt/sources.list.d/nodesource.list
 apt-get update -y

@@ -3,6 +3,10 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-07-30 (lanjutan 9): FIX KONFLIK REPO NODESOURCE - SELESAI & DISIMULASIKAN
+Error lanjutan di server user: `E: Conflicting values set for option Signed-By ... /etc/apt/keyrings/nodesource.gpg != /usr/share/keyrings/nodesource.gpg` -> ada DUA definisi repo NodeSource (peninggalan setup_20.x lama + yang baru). Fix install.sh: sebelum menulis repo, HAPUS semua file sources.list.d yang memuat deb.nodesource.com + keyring lama (/usr/share/keyrings/nodesource.gpg), tulis SATU definisi bersih, lalu VERIFIKASI keyring berisi key ID 2F59B5F99B1BE0B4 (die bila tidak). Diverifikasi: key resmi gpgkey/nodesource-repo.gpg.key memang memuat 2F59B5F99B1BE0B4; simulasi kondisi duplikat di container = bersih, satu .list, key benar. bash -n OK.
+
+
 ## Sesi 2026-07-30 (lanjutan 8): FIX INSTALL.SH DI SERVER PRODUCTION - SELESAI & DIVERIFIKASI
 User menjalankan install.sh di server nyata dan menemui 2 error:
 1. **pip ResolutionImpossible**: requirements.txt tercemar debris pip freeze dev (`emergentintegrations==0.2.0` + `litellm @ customer-assets.emergentagent.com/...whl`) yang hanya ada di index privat sandbox. Kode backend TIDAK meng-import keduanya (grep bersih). Fix: kedua baris DIHAPUS dari requirements.txt + install.sh kini mem-filter defensif (`grep -vE emergentintegrations|litellm|customer-assets`) sebelum pip install (tanpa extra-index-url lagi). VERIFIKASI: `pip install --dry-run -r requirements.txt` di venv bersih dari PyPI publik = EXIT 0.
