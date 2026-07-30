@@ -3,6 +3,16 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-07-30 (lanjutan 7): CODE REVIEW + RBAC HARDENING + README - SELESAI & DITES
+1. **Code review (code_review_agent)**: RBAC & lint dinyatakan bersih; 4 temuan diperbaiki:
+   - Traffic totals klien 60x under-report -> *3600 (1 sampel = 1 jam).
+   - Email handover VM tidak lagi mengirim password yang gagal diterapkan (flag cfg.credentials_applied; fallback teks "disetel manual oleh NOC").
+   - XLSX bulan kosong: baris TOTAL = 0 (tanpa formula circular).
+   - Bucket bulan trafik memakai waktu Asia/Jakarta (konsisten dgn label jam).
+2. **RBAC hardening**: endpoint list diselaraskan dgn default_roles menu via require_roles: /admin/users (admin,sales,finance,support), /admin/orders & /admin/quotations (admin,sales,finance), /admin/invoices (admin,finance). Diverifikasi curl: ticket_only kini 403 utk orders/users/invoices/quotations; sales 403 utk invoices; support 403 utk orders. Full pytest 445+ pass (2 flake xdist terverifikasi pass terisolasi; 2 tes usang diperbarui: test_email_refresh wording welcome Indonesia, test_iter37_features fallback REACT_APP_BACKEND_URL dari frontend/.env).
+3. **install.sh**: diverifikasi kompatibel build terbaru (semua deps baru - openpyxl, pyotp, qrcode, librouteros, weasyprint - via requirements.txt; PUBLIC_URL sudah ada; seed 1 admin saja).
+4. **README.md** ditulis lengkap (fitur, workflow, tech stack, RBAC table, jadwal scheduler, instalasi production via install.sh + tabel env, dev setup, struktur repo, keamanan). Ditambah backend/.env.example & frontend/.env.example (+ pengecualian !.env.example di .gitignore; .env asli & test_credentials.md tetap ter-ignore).
+
 ## Sesi 2026-07-30 (lanjutan 6): 2 FITUR - SELESAI & DITES (self-test curl + openpyxl verify + screenshot)
 1. **Ekspor Arsip Excel**: GET /admin/reports/monthly/{month}/xlsx (builder `_monthly_report_workbook` di routes.py) -> workbook 3 sheet: Ringkasan (formula referensi lintas-sheet =Invoice!I{n}, collection rate =IF() format 0.0%), Invoice (No urut, klien via user_map, subtotal/PPN/total format "Rp" #,##0, baris TOTAL =SUM()), Trafik (total per baris =C+D, SUM, format GB). Freeze panes A2, border, header navy, auto-width. Link "Excel" di MonthlyArchivePane (monthly-archive-xlsx-{month}). Diverifikasi via load_workbook: formula & format benar.
 2. **Ringkasan Mingguan**: run_weekly_summary di emails.py (order baru 7 hari terakhir, tiket terbuka [status nin resolved/closed], invoice jatuh tempo 7 hari ke depan termasuk overdue; tabel maks 10 baris + "N lainnya"). Scheduler Senin 07:00 WIB (scheduler sudah tz Asia/Jakarta). Endpoint manual POST /admin/reports/weekly/send. Penerima sama dgn laporan bulanan (settings monthly_report_email -> ADMIN_EMAIL -> support@). Diuji: 159 order/38 tiket/99 invoice due; delivery skipped (SMTP dev off, terkirim live saat SMTP aktif).

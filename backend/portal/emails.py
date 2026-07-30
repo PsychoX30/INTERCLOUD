@@ -1450,17 +1450,18 @@ async def sample_service_traffic(db, service_id: str, device: dict, interface: s
             return 0.0
 
     from zoneinfo import ZoneInfo
+    local = now.astimezone(ZoneInfo("Asia/Jakarta"))
     doc = {
         "service_id": service_id,
         "at": now.isoformat(),
-        "t": now.astimezone(ZoneInfo("Asia/Jakarta")).strftime("%H:00"),
+        "t": local.strftime("%H:00"),
         "in_mbps": round(_num(res.get("rx-bits-per-second")) / 1_000_000, 2),
         "out_mbps": round(_num(res.get("tx-bits-per-second")) / 1_000_000, 2),
     }
     await db.traffic_samples.insert_one(dict(doc))
     try:
         await db.traffic_monthly.update_one(
-            {"service_id": service_id, "month": now.strftime("%Y-%m")},
+            {"service_id": service_id, "month": local.strftime("%Y-%m")},
             {"$inc": {"in_gb": round(doc["in_mbps"] * 3600 / 8 / 1024, 3),
                       "out_gb": round(doc["out_mbps"] * 3600 / 8 / 1024, 3),
                       "samples": 1}},

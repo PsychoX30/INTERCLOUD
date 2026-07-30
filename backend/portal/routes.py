@@ -1479,9 +1479,11 @@ async def _auto_provision(db, order: dict) -> dict:
                 try:
                     await iv2.ProxmoxClient(pxs).set_cloudinit_credentials(
                         vm["node"], vm["vmid"], "root", root_pw)
+                    cfg["credentials_applied"] = True
                     await _log("vm_credentials_set",
                                "Kredensial root diterapkan via cloud-init (aktif saat boot pertama).")
                 except Exception as e2:
+                    cfg["credentials_applied"] = False
                     await _log("vm_credentials_pending",
                                f"Cloud-init credential belum diterapkan ({str(e2)[:80]}) - NOC perlu set password manual.")
             except Exception as e:
@@ -1545,7 +1547,10 @@ async def _auto_provision(db, order: dict) -> dict:
                     "vmid": cfg.get("vmid", ""),
                     "node": cfg.get("node", ""),
                     "username": cfg.get("root_username", "root"),
-                    "password": cfg.get("root_password", ""),
+                    # Never email a password that was not actually applied to the VM.
+                    "password": (cfg.get("root_password", "")
+                                 if cfg.get("credentials_applied")
+                                 else "(disetel manual oleh tim NOC - dikirim terpisah)"),
                 })
                 await _log("credentials_emailed",
                            f"Detail VM (IP, hostname, kredensial) dikirim via email ke {u.get('email', '')}.")
@@ -1915,10 +1920,13 @@ def _monthly_report_workbook(month: str, summary: dict, invoices: list,
         ])
     n_inv = len(invoices)
     total_row = n_inv + 2
-    ws_inv.append(["", "TOTAL", "", "", "", "",
-                   f"=SUM(G2:G{max(2, total_row - 1)})",
-                   f"=SUM(H2:H{max(2, total_row - 1)})",
-                   f"=SUM(I2:I{max(2, total_row - 1)})"])
+    if n_inv:
+        ws_inv.append(["", "TOTAL", "", "", "", "",
+                       f"=SUM(G2:G{total_row - 1})",
+                       f"=SUM(H2:H{total_row - 1})",
+                       f"=SUM(I2:I{total_row - 1})"])
+    else:
+        ws_inv.append(["", "TOTAL", "", "", "", "", 0, 0, 0])
     for r in range(2, total_row + 1):
         for c in range(1, 10):
             cell = ws_inv.cell(row=r, column=c)
@@ -2422,7 +2430,7 @@ def _paginate(items: list, page: Optional[int], limit: int):
 
 
 @router.get("/admin/users")
-async def admin_list_users(staff=Depends(get_current_staff),
+async def admin_list_users(staff=Depends(require_roles("admin", "sales", "finance", "support")),
                            page: Optional[int] = None, limit: int = 25):
     """Sales sees only their assigned clients; other staff see all."""
     db = await _get_db()
@@ -3123,7 +3131,7 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
 
 # Orders
 @router.get("/admin/orders")
-async def admin_list_orders(staff=Depends(get_current_staff),
+async def admin_list_orders(staff=Depends(require_roles("admin", "sales", "finance")),
                             page: Optional[int] = None, limit: int = 25):
     _deny_creative(staff)
     db = await _get_db()
@@ -3176,7 +3184,7 @@ async def client_confirm_transfer(oid: str, payload: dict, user=Depends(get_curr
 
 # Invoices (staff - Sales sees only invoices of their assigned clients)
 @router.get("/admin/invoices")
-async def admin_list_invoices(staff=Depends(get_current_staff),
+async def admin_list_invoices(staff=Depends(require_roles("admin", "finance")),
                               page: Optional[int] = None, limit: int = 25):
     _deny_creative(staff)
     db = await _get_db()
@@ -3388,7 +3396,7 @@ async def _serialize_quotation(db, d: dict) -> dict:
 
 
 @router.get("/admin/quotations")
-async def admin_list_quotations(staff=Depends(get_current_staff)):
+async def admin_list_quotations(staff=Depends(require_roles("admin", "sales", "finance"))):
     _deny_creative(staff)
     db = await _get_db()
     q = {}
@@ -6411,8 +6419,9 @@ async def client_service_traffic(sid: str, user=Depends(get_current_user)):
         }
     points = [{"t": p.get("t", ""), "in_mbps": float(p.get("in_mbps", 0)),
                "out_mbps": float(p.get("out_mbps", 0))} for p in samples[-24:]]
-    total_in = round(sum(p["in_mbps"] for p in points) * 60 / 8 / 1024, 2)  # GB
-    total_out = round(sum(p["out_mbps"] for p in points) * 60 / 8 / 1024, 2)
+    # 1 sampel = 1 jam (kolektor per jam) -> GB = Mbps * 3600 dtk / 8 / 1024
+    total_in = round(sum(p["in_mbps"] for p in points) * 3600 / 8 / 1024, 2)
+    total_out = round(sum(p["out_mbps"] for p in points) * 3600 / 8 / 1024, 2)
     return {
         "service_id": sid,
         "service_name": d.get("name", ""),

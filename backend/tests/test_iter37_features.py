@@ -9,7 +9,20 @@ import time
 import pytest
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL").rstrip("/") + "/api/portal"
+def _backend_url():
+    v = os.environ.get("REACT_APP_BACKEND_URL")
+    if not v:
+        try:
+            with open("/app/frontend/.env") as f:
+                for line in f:
+                    if line.startswith("REACT_APP_BACKEND_URL="):
+                        v = line.split("=", 1)[1].strip()
+        except OSError:
+            v = "http://127.0.0.1:8001"
+    return v
+
+
+BASE = _backend_url().rstrip("/") + "/api/portal"
 ADMIN_EMAIL = "admin@intercloud-digital.com"
 ADMIN_PW = "AdminIntercloud2026!"
 

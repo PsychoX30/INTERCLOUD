@@ -24,11 +24,12 @@ def test_welcome_subject_uses_new_wording(admin_token):
     assert r.status_code == 200
     tpl = next(t for t in r.json() if t["event_key"] == "welcome")
     subj = tpl["subject"]
-    assert "Welcome to Intercloud" in subj, f"unexpected subject: {subj}"
-    # Body should be polite
+    # Template welcome kini berbahasa Indonesia (onboarding klien + panduan portal)
+    assert "Selamat datang di Intercloud" in subj, f"unexpected subject: {subj}"
     body = tpl["body_html"]
-    assert ("Warm regards" in body) or ("Kind regards" in body), \
+    assert "Salam hangat" in body, \
         f"welcome body not polite: first 200 chars: {body[:200]}"
+    assert "Panduan memulai" in body, "welcome body must contain the portal guide"
 
 
 def test_invoice_generated_subject_includes_due_date(admin_token):
