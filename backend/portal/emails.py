@@ -78,31 +78,33 @@ _WRAPPER = _WRAPPER_TEMPLATE.replace("__LOGO__", LOGO_URL)
 
 # Bump this whenever the shipped default templates meaningfully change - startup
 # will then refresh any unedited system templates in place.
-_SEED_VERSION = 3
+_SEED_VERSION = 4
 
 
 DEFAULT_TEMPLATES: list[dict] = [
     {
         "event_key": "welcome",
-        "name": "Welcome - new user registration",
-        "subject": "Welcome to Intercloud, {{user.name}} - your portal is ready",
+        "name": "Welcome - onboarding klien baru",
+        "subject": "Selamat datang di Intercloud, {{user.name}} - Portal Anda siap digunakan",
         "body_html": (
-            "<p style='font-size:15px'>Dear <b>{{user.name}}</b>,</p>"
-            "<p>Thank you for choosing <b>PT Intercloud Digital Inovasi</b>. Your Client Portal account has been activated and is ready to use.</p>"
-            "<p>From your portal you can:</p>"
-            "<ul style='padding-left:20px;margin:8px 0 16px'>"
-            "  <li>Order Cloud, VPS, Hosting, Colocation, Dedicated Server, and connectivity services</li>"
-            "  <li>Track invoices, download PDF receipts, and pay online</li>"
-            "  <li>Open technical or billing support tickets 24/7</li>"
-            "  <li>Monitor bandwidth, uptime, and service health</li>"
-            "</ul>"
+            "<p style='font-size:15px'>Halo <b>{{user.name}}</b>,</p>"
+            "<p>Terima kasih telah memilih <b>PT Intercloud Digital Inovasi</b>. Akun Client Portal Anda sudah aktif dan siap digunakan.</p>"
+            "<p><b>Panduan memulai:</b></p>"
+            "<ol style='padding-left:20px;margin:8px 0 16px;line-height:1.7'>"
+            "  <li><b>Masuk ke portal</b> menggunakan alamat email ini pada halaman login.</li>"
+            "  <li><b>Lengkapi profil &amp; data penagihan</b> (alamat, NPWP) melalui menu <i>Settings</i>.</li>"
+            "  <li><b>Pesan layanan</b> Cloud, VPS, Hosting, Colocation, Dedicated Server, atau konektivitas dari menu <i>Order</i>.</li>"
+            "  <li><b>Kelola tagihan</b> - lihat, unduh PDF, dan bayar invoice online (Duitku / transfer bank) di menu <i>Invoices</i>.</li>"
+            "  <li><b>Butuh bantuan?</b> Buka tiket teknis atau billing 24/7 dari menu <i>Support Tickets</i>.</li>"
+            "  <li><b>Amankan akun Anda</b> dengan mengaktifkan 2FA di menu <i>Security</i>.</li>"
+            "</ol>"
             "<p style='margin:22px 0'>"
-            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;letter-spacing:.02em'>Open Client Portal &rarr;</a>"
+            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;letter-spacing:.02em'>Buka Client Portal &rarr;</a>"
             "</p>"
-            "<p>Should you require any assistance getting started, our team is available around the clock at "
+            "<p>Tim kami siap membantu kapan pun di "
             "<a href='mailto:support@intercloud-digital.com'>support@intercloud-digital.com</a> "
-            "or via WhatsApp at +62 878-1239-7187.</p>"
-            "<p style='margin-top:24px'>Warm regards,<br><b>The Intercloud Team</b></p>"
+            "atau WhatsApp di +62 878-1239-7187.</p>"
+            "<p style='margin-top:24px'>Salam hangat,<br><b>Tim Intercloud</b></p>"
         ),
         "offset_days": None,
         "send_time": None,
@@ -1385,6 +1387,82 @@ async def dispatch_ddos_notifications(db, incident: dict) -> list:
     return notified
 
 
+# ------------------------------------------------------------------
+# Live traffic collector (MikroTik) - feeds the client Traffic Report
+# ------------------------------------------------------------------
+async def sample_service_traffic(db, service_id: str, device: dict, interface: str,
+                                 *, now: Optional[datetime] = None) -> Optional[dict]:
+    """Take ONE live rate sample from the router and store it in traffic_samples."""
+    from . import integrations_v2 as iv2
+    now = now or datetime.now(timezone.utc)
+    res = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: iv2.MikrotikClient(device).traffic_monitor(interface))
+    if not res or res.get("error"):
+        return None
+
+    def _num(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    from zoneinfo import ZoneInfo
+    doc = {
+        "service_id": service_id,
+        "at": now.isoformat(),
+        "t": now.astimezone(ZoneInfo("Asia/Jakarta")).strftime("%H:00"),
+        "in_mbps": round(_num(res.get("rx-bits-per-second")) / 1_000_000, 2),
+        "out_mbps": round(_num(res.get("tx-bits-per-second")) / 1_000_000, 2),
+    }
+    await db.traffic_samples.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+async def run_traffic_sample_sweep(db, *, now: Optional[datetime] = None) -> dict:
+    """Hourly collector: one live sample per mapped service, 48h retention."""
+    from . import integrations_v2 as iv2
+    from bson import ObjectId
+    now = now or datetime.now(timezone.utc)
+    svcs = await db.services.find({
+        "config.traffic_device_id": {"$exists": True, "$ne": ""},
+        "config.traffic_interface": {"$exists": True, "$ne": ""},
+    }).to_list(500)
+    sampled = errors = 0
+    device_cache: dict = {}
+    for s in svcs:
+        cfg = s.get("config") or {}
+        did = str(cfg.get("traffic_device_id"))
+        iface = cfg.get("traffic_interface")
+        device = device_cache.get(did)
+        if device is None:
+            if did == "legacy":
+                s2 = await iv2.get_settings(db, "mikrotik")
+                device = ({**(s2.get("credentials") or {})}
+                          if (s2 and s2.get("enabled")) else False)
+            else:
+                try:
+                    device = await db.mikrotik_devices.find_one({"_id": ObjectId(did)}) or False
+                except Exception:
+                    device = False
+            device_cache[did] = device
+        if not device:
+            errors += 1
+            continue
+        try:
+            r = await sample_service_traffic(db, str(s["_id"]), device, iface, now=now)
+            sampled += 1 if r else 0
+            errors += 0 if r else 1
+        except Exception:
+            errors += 1
+    cutoff = (now - timedelta(hours=48)).isoformat()
+    try:
+        await db.traffic_samples.delete_many({"at": {"$lt": cutoff}})
+    except Exception:
+        pass
+    return {"services": len(svcs), "sampled": sampled, "errors": errors}
+
+
 def start_scheduler(db):
     """Fire up an in-process APScheduler that runs the sweep hourly.
 
@@ -1453,6 +1531,19 @@ def start_scheduler(db):
     sched.add_job(_domain_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=40))
     # DDoS threshold evaluation - every 5 minutes (offset dari NOC probe) on the SAME scheduler.
     sched.add_job(_ddos_tick, CronTrigger(minute="2-59/5"))
+
+    # Traffic collector - hourly live samples from mapped MikroTik interfaces.
+    async def _traffic_tick():
+        try:
+            summary = await run_traffic_sample_sweep(db)
+            if summary["services"]:
+                log.info(f"[traffic-scheduler] sweep result: {summary}")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[traffic-scheduler] tick failed: {e}")
+
+    sched.add_job(_traffic_tick, CronTrigger(minute=50))
+    sched.add_job(_traffic_tick, "date",
+                  run_date=datetime.now(timezone.utc) + timedelta(seconds=50))
 
     async def _noc_retention_tick():
         try:

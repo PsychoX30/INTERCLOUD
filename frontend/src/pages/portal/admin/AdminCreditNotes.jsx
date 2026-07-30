@@ -175,6 +175,30 @@ const CreateModal = ({ invoices, onClose, onSaved }) => {
   // Show only invoices that still have a balance (unpaid/overdue)
   const eligible = invoices.filter((i) => ["unpaid", "overdue"].includes((i.status || "").toLowerCase()));
 
+  const [previewing, setPreviewing] = useState(false);
+
+  const preview = async () => {
+    setError("");
+    if (!invoiceId || !amount) {
+      setError("Pilih invoice dan isi amount terlebih dahulu untuk preview.");
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const r = await api.post("/admin/credit-notes/preview", {
+        invoice_id: invoiceId,
+        amount: Number(amount),
+        reason: reason.trim(),
+        notes,
+      }, { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+      window.open(url, "_blank", "noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      setError("Gagal membuat preview PDF - periksa invoice dan amount.");
+    } finally { setPreviewing(false); }
+  };
+
   const submit = async () => {
     setError("");
     if (!invoiceId || !amount || !reason.trim()) {
@@ -250,6 +274,10 @@ const CreateModal = ({ invoices, onClose, onSaved }) => {
         </div>
         <div className="p-5 border-t border-slate-200 flex justify-end gap-2">
           <button onClick={onClose} className={btnSecondary} data-testid="cn-modal-cancel">Cancel</button>
+          <button onClick={preview} disabled={previewing || saving} className={btnSecondary} data-testid="cn-modal-preview">
+            {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+            {previewing ? "Rendering…" : "Preview PDF"}
+          </button>
           <button onClick={submit} disabled={saving} className={btnPrimary} data-testid="cn-modal-save">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <ReceiptText className="h-4 w-4" />}
             {saving ? "Saving…" : "Create credit note"}

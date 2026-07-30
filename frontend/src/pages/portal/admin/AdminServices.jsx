@@ -136,6 +136,8 @@ const ServiceDetailModal = ({ serviceId, onClose }) => {
               )}
             </Card>
 
+            <TrafficSourceCard serviceId={serviceId} config={d.config || {}} />
+
             {d.pending_upgrade && (
               <Card className="p-4 border-amber-200 bg-amber-50/50">
                 <div className="text-sm font-extrabold text-amber-800 mb-1">Upgrade menunggu pembayaran</div>
@@ -183,6 +185,92 @@ const ServiceDetailModal = ({ serviceId, onClose }) => {
         )}
       </div>
     </div>
+  );
+};
+
+const TrafficSourceCard = ({ serviceId, config }) => {
+  const [devices, setDevices] = useState([]);
+  const [deviceId, setDeviceId] = useState(config.traffic_device_id || "");
+  const [ifaces, setIfaces] = useState([]);
+  const [iface, setIface] = useState(config.traffic_interface || "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const mapped = Boolean(config.traffic_device_id && config.traffic_interface);
+
+  useEffect(() => {
+    api.get("/admin/mikrotik/devices").then((r) => setDevices(r.data || [])).catch(() => setDevices([]));
+  }, []);
+
+  useEffect(() => {
+    if (!deviceId) { setIfaces([]); return; }
+    const q = deviceId === "legacy" ? "" : `?device_id=${deviceId}`;
+    api.get(`/admin/mikrotik/interfaces${q}`)
+      .then((r) => setIfaces(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setIfaces([]));
+  }, [deviceId]);
+
+  const save = async (clear = false) => {
+    setBusy(true); setMsg(null);
+    try {
+      const { data } = await api.put(`/admin/services/${serviceId}/traffic-source`,
+        clear ? {} : { device_id: deviceId, interface: iface });
+      if (clear) {
+        setDeviceId(""); setIface("");
+        setMsg({ ok: true, text: "Sumber trafik dihapus." });
+      } else {
+        setMsg({ ok: true, text: data.sample
+          ? `Tersimpan. Sampel live pertama: ${data.sample.in_mbps} Mbps in / ${data.sample.out_mbps} Mbps out.`
+          : "Tersimpan. Sampel pertama akan diambil pada sweep per jam berikutnya." });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: e?.response?.data?.detail || "Gagal menyimpan sumber trafik" });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Card className="p-4" data-testid="traffic-source-card">
+      <div className="text-sm font-extrabold text-[#0a2350]">Traffic source (live)</div>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3">
+        Petakan layanan ini ke interface MikroTik. Kolektor per jam menyimpan sampel live untuk Traffic Report klien.
+        {mapped && <span className="text-emerald-700 font-semibold"> Terhubung: {config.traffic_interface}</span>}
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <select value={deviceId} onChange={(e) => { setDeviceId(e.target.value); setIface(""); }}
+                className="h-9 rounded-lg border border-slate-300 px-2 text-sm" data-testid="traffic-source-device">
+          <option value="">- Pilih router -</option>
+          {devices.map((dv) => (
+            <option key={dv.id || "legacy"} value={dv.id || "legacy"}>{dv.name} ({dv.host})</option>
+          ))}
+        </select>
+        <select value={iface} onChange={(e) => setIface(e.target.value)} disabled={!deviceId}
+                className="h-9 rounded-lg border border-slate-300 px-2 text-sm disabled:bg-slate-50" data-testid="traffic-source-interface">
+          <option value="">- Pilih interface -</option>
+          {ifaces.map((i) => (
+            <option key={i.name} value={i.name}>{i.name}</option>
+          ))}
+        </select>
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <button onClick={() => save(false)} disabled={busy || !deviceId || !iface}
+                className="px-3 py-1.5 rounded-lg bg-[#0a2350] text-white text-xs font-bold disabled:opacity-40"
+                data-testid="traffic-source-save">
+          {busy ? "Menyimpan…" : "Simpan sumber trafik"}
+        </button>
+        {mapped && (
+          <button onClick={() => save(true)} disabled={busy}
+                  className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-bold"
+                  data-testid="traffic-source-clear">
+            Hapus mapping
+          </button>
+        )}
+      </div>
+      {msg && (
+        <div className={`mt-2 text-xs rounded-lg px-2.5 py-1.5 border ${msg.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`}
+             data-testid="traffic-source-msg">
+          {msg.text}
+        </div>
+      )}
+    </Card>
   );
 };
 

@@ -53,8 +53,14 @@ const ProxmoxProvision = () => {
   const [err, setErr] = useState(null);
   const [f, setF] = useState({ hostname: "", cores: 2, memory: 2048, disk: 40, node: "" });
   const [reqOpen, setReqOpen] = useState(false);
+  const [tplInfo, setTplInfo] = useState(null);
 
   useEffect(() => { api.get("/admin/proxmox/os-templates").then((r) => setOs(r.data)); }, []);
+  useEffect(() => {
+    api.get("/admin/proxmox/templates")
+      .then((r) => setTplInfo(r.data))
+      .catch((e) => setTplInfo({ error: e?.response?.data?.detail || "Integrasi Proxmox belum aktif" }));
+  }, []);
 
   const run = async (e) => {
     e.preventDefault(); setBusy(true); setMsg(null); setErr(null);
@@ -73,6 +79,20 @@ const ProxmoxProvision = () => {
 
   return (
     <Card className="p-6">
+      {tplInfo && (tplInfo.error ? (
+        <div className="mb-4 text-xs rounded-xl bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2" data-testid="prov-proxmox-tpl-warn">{tplInfo.error}</div>
+      ) : (tplInfo.templates || []).length > 0 ? (
+        <div className="mb-4 text-xs rounded-xl bg-blue-50 border border-blue-200 text-blue-800 px-3 py-2" data-testid="prov-proxmox-tpl-info">
+          {(() => {
+            const t = tplInfo.templates.find((x) => x.vmid === tplInfo.configured_vmid) || tplInfo.templates[0];
+            return <>Template clone aktif: <b>{t.name || "VM"}</b> (VMID {t.vmid}) di node {t.node}{!tplInfo.configured_vmid && " - dipilih otomatis. Set 'Clone template VMID' di Integrations untuk mengunci pilihan."}</>;
+          })()}
+        </div>
+      ) : (
+        <div className="mb-4 text-xs rounded-xl bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2" data-testid="prov-proxmox-tpl-warn">
+          Tidak ada template VM (template=1) di cluster. Buat template terlebih dahulu agar order VPS berbayar bisa auto-provision.
+        </div>
+      ))}
       <form onSubmit={run} className="grid grid-cols-2 gap-3">
         <label><div className={labelClass}>VM Hostname *</div><input required value={f.hostname} onChange={(e) => setF({ ...f, hostname: e.target.value })} className={inputClass} placeholder="app-prod-01" data-testid="prov-hostname" /></label>
         <label><div className={labelClass}>Target Node</div><input value={f.node} onChange={(e) => setF({ ...f, node: e.target.value })} className={inputClass} /></label>

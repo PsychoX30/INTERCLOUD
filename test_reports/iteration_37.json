@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 37 - Verified 4 new features on Intercloud portal: (1) Proxmox templates listing + auto-discover clone (honest 400 when no template on live cluster); (2) MikroTik traffic source mapping on services; (3) Credit note PDF preview endpoint + UI button; (4) Welcome onboarding email logged when a client is created. Backend 7/7 pytest PASS. Frontend 4/4 UI checks PASS. Client traffic regression PASS. No blocking issues.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_results": {
+    "backend": {
+      "test_proxmox_templates_returns_200_with_empty_list": "PASS - GET /admin/proxmox/templates returns 200 with {templates: [], configured_vmid: null} against live cluster (no template=1 VM exists - correct).",
+      "test_proxmox_create_no_template_returns_400_indonesian": "PASS - POST /admin/provisioning/proxmox/create with hostname 'tpl-test-vm' returns 400 with Indonesian detail containing 'tidak ada template' (honest auto-discovery failure).",
+      "test_credit_note_preview_pdf_bytes": "PASS - POST /admin/credit-notes/preview returns 200, content-type application/pdf, body starts with %PDF (used real invoice INV-2026-00584 id=6a6aeff7629cc606a5dfec94, amount=75000).",
+      "test_credit_note_preview_zero_amount_400": "PASS - amount 0 -> 400.",
+      "test_credit_note_preview_bad_invoice_400": "PASS - bogus invoice id -> 400.",
+      "test_traffic_source_set_and_clear": "PASS - PUT /admin/services/{sid}/traffic-source with device_id + ether1 returns {ok:true, interface:'ether1', sample:null}. GET /admin/services/{sid}/detail shows config.traffic_device_id + config.traffic_interface. PUT {} clears -> {ok:true, cleared:true} and config keys removed.",
+      "test_welcome_email_logged_on_user_create": "PASS - Creating qa-onboard@example.com produced an email_logs entry with event_key='welcome', subject beginning 'Selamat datang di Intercloud'. Status 'skipped' (SMTP not configured in dev - expected). User deleted after."
+    },
+    "frontend": {
+      "credit_notes_preview_button": "PASS - /portal/admin/credit-notes: cn-new modal opens, cn-modal-invoice select lists 323 unpaid invoices, cn-modal-amount + cn-modal-reason fill, cn-modal-preview click returns from 'Rendering…' back to 'Preview PDF' with NO error, opens a blob: PDF URL (window.open captured blob:...). No red error visible.",
+      "provisioning_proxmox_tpl_warn_banner": "PASS - /portal/admin/provisioning -> Proxmox VE tab -> data-testid='prov-proxmox-tpl-warn' visible with 'Tidak ada template VM (template=1) di cluster. Buat template terlebih dahulu agar order VPS berbayar bisa auto-provision.'",
+      "admin_services_traffic_source_card": "PASS - Row click opens ServiceDetailModal; data-testid='traffic-source-card' visible; traffic-source-device select lists '- Pilih router -' and 'TEST_shared_router (127.0.0.1)'; selecting router keeps interface select enabled but empty (router unreachable - OK).",
+      "regression_client_traffic_unavailable": "PASS - demo@client.com /portal/client/traffic still shows data-testid='traffic-unavailable' ('Data trafik belum tersedia') after selecting a service; 0 console errors on client portal."
+    }
+  },
+  "test_report_links": ["/app/backend/tests/test_iter37_features.py", "/app/test_reports/pytest/iter37.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AdminServices.jsx traffic-source-card: React hydration warning 'In HTML, <span> cannot be a child of <option>' triggered by dev-instrumentation (x-source-var wrapping). Not a functional bug - caused by dev overlay injecting <span style=display:contents> inside <option> - safe to ignore in prod build, but worth suppressing dev-instrumentation on <option> elements to keep console clean.",
+    "portal/routes.py: still ~10k+ lines; consider splitting traffic/credit-notes/proxmox into routers module (non-blocking, ongoing recommendation)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter37_features.py (new, 7 tests)"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (4/4)"},
+  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! and demo@client.com / ClientDemo2026! both verified working. reCAPTCHA remains DISABLED (as instructed).",
+  "seed_data_creation": "Created qa-onboard@example.com client user then deleted it (via test cleanup). One Proxmox provisioning attempt made (failed at auto-discovery step as expected - no VM created). No other side effects.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_iter37_features.py runs on preview URL with $REACT_APP_BACKEND_URL env var + /api/portal prefix. Login field is 'token'. Credit note preview endpoint returns raw PDF bytes (not JSON) - the UI uses responseType=blob then window.open(blob URL). Traffic source PUT endpoint returns {ok, device, interface, sample, cleared?} - sample may be null when router unreachable (TEST_shared_router 127.0.0.1 is intentionally unreachable). Welcome email is enqueued during POST /admin/users; email_logs collection captures it even if SMTP is skipped in dev.",
+  "rca_of_the_issue": "N/A"
+}

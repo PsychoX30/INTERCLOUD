@@ -6860,6 +6860,89 @@ async def admin_provision_hosting_account(payload: dict, admin=Depends(get_curre
     return {"ok": True, "panel": label, "domain": payload["domain"], "username": payload["username"]}
 
 
+@router.get("/admin/proxmox/templates")
+async def admin_proxmox_templates(admin=Depends(get_current_admin)):
+    """LIVE list of clone templates on the Proxmox cluster + the configured VMID."""
+    db = await _get_db()
+    s = await iv2.get_settings(db, "proxmox")
+    if not s or not s.get("enabled"):
+        raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif.")
+    try:
+        templates = await iv2.ProxmoxClient(s).list_templates()
+    except Exception as e:
+        raise HTTPException(status_code=400,
+                            detail=f"Gagal membaca template dari cluster: {str(e)[:150]}")
+    cfg = (s.get("options") or {}).get("clone_template_vmid")
+    try:
+        cfg = int(cfg) if cfg else None
+    except (TypeError, ValueError):
+        cfg = None
+    return {"templates": templates, "configured_vmid": cfg}
+
+
+@router.put("/admin/services/{sid}/traffic-source")
+async def admin_set_service_traffic_source(sid: str, payload: dict, admin=Depends(get_current_admin)):
+    """Map a service to a MikroTik device+interface for the hourly traffic
+    collector. Empty device/interface clears the mapping."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    device_id = str(payload.get("device_id") or "").strip()
+    interface = (payload.get("interface") or "").strip()
+    if not device_id or not interface:
+        await db.services.update_one(
+            {"_id": svc["_id"]},
+            {"$unset": {"config.traffic_device_id": "", "config.traffic_interface": ""}})
+        return {"ok": True, "cleared": True}
+    device = await _get_mikrotik_device(db, None if device_id == "legacy" else device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="MikroTik device not found")
+    await db.services.update_one(
+        {"_id": svc["_id"]},
+        {"$set": {"config.traffic_device_id": device_id, "config.traffic_interface": interface}})
+    sample = None
+    try:
+        from portal import emails as _em
+        sample = await _em.sample_service_traffic(db, str(svc["_id"]), device, interface)
+    except Exception:
+        sample = None
+    return {"ok": True, "device": device.get("name", ""), "interface": interface, "sample": sample}
+
+
+@router.post("/admin/credit-notes/preview")
+async def credit_notes_preview(payload: dict, admin=Depends(get_current_admin)):
+    """Render a DRAFT credit note as an inline PDF without saving anything."""
+    db = await _get_db()
+    try:
+        inv_oid = ObjectId(payload.get("invoice_id") or "")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid invoice_id")
+    invoice = await db.invoices.find_one({"_id": inv_oid})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    amount = float(payload.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be > 0")
+    user = await db.users.find_one({"_id": invoice["user_id"]}) or {}
+    cn = {
+        "number": "CN-PREVIEW",
+        "invoice_id": inv_oid,
+        "invoice_number": invoice.get("number", ""),
+        "user_id": invoice.get("user_id"),
+        "amount": amount,
+        "reason": (payload.get("reason") or "").strip() or "-",
+        "notes": payload.get("notes") or "",
+        "status": "draft",
+        "created_at": _now(),
+    }
+    branding = await _get_branding_dict(db)
+    html = _credit_note_html(cn=cn, invoice=invoice, billed_to=user, for_pdf=True,
+                             logo_url=branding["logo_dark"])
+    return Response(content=_render_pdf_bytes(html), media_type="application/pdf",
+                    headers={"Content-Disposition": 'inline; filename="CreditNote-PREVIEW.pdf"'})
+
+
 # ---------------- Mikrotik multi-device management ----------------
 async def _get_mikrotik_device(db, device_id: str | None):
     """Resolve a Mikrotik device by id; if id is missing return the legacy

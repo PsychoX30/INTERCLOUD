@@ -139,14 +139,41 @@ class ProxmoxClient:
     async def next_vmid(self) -> int:
         return int(await self._get("/cluster/nextid"))
 
+    async def list_templates(self) -> list:
+        """Template VMs (template=1) across the whole cluster."""
+        rows = await self._get("/cluster/resources?type=vm") or []
+        out = []
+        for r in rows:
+            if int(r.get("template") or 0) == 1:
+                out.append({"vmid": int(r.get("vmid")), "node": r.get("node", ""),
+                            "name": r.get("name", "")})
+        return sorted(out, key=lambda t: t["vmid"])
+
     async def clone_vm(self, *, hostname: str, template_vmid: Optional[int] = None, node: Optional[str] = None) -> dict:
+        """Full-clone a template into a new VM. When no template VMID is
+        configured, auto-discovers the first template VM on the cluster so
+        paid VPS orders provision without manual setup."""
         template_vmid = template_vmid or self.clone_template_vmid
-        node = node or self.default_node
-        if not (template_vmid and node):
-            raise ValueError("Proxmox: clone requires template_vmid + node")
+        templates = await self.list_templates()
+        tpl = None
+        if template_vmid:
+            tpl = next((t for t in templates if t["vmid"] == int(template_vmid)), None)
+        elif templates:
+            tpl = templates[0]
+            template_vmid = tpl["vmid"]
+        if not template_vmid:
+            raise ValueError("Proxmox: tidak ada template VM (template=1) di cluster. "
+                             "Buat template atau set 'Clone template VMID' di Integrations.")
+        src_node = (tpl or {}).get("node") or node or self.default_node
+        if not src_node:
+            raise ValueError("Proxmox: node template tidak diketahui. Set 'Default node' di Integrations.")
         newid = await self.next_vmid()
-        await self._post(f"/nodes/{node}/qemu/{template_vmid}/clone", {"newid": newid, "name": hostname, "full": 1})
-        return {"vmid": newid, "node": node, "name": hostname}
+        payload = {"newid": newid, "name": hostname, "full": 1}
+        target = node or self.default_node
+        if target and target != src_node:
+            payload["target"] = target
+        await self._post(f"/nodes/{src_node}/qemu/{int(template_vmid)}/clone", payload)
+        return {"vmid": newid, "node": target or src_node, "name": hostname}
 
     async def vm_action(self, node: str, vmid: int, action: str) -> Any:
         assert action in ("start", "stop", "reboot", "shutdown", "suspend", "resume")
