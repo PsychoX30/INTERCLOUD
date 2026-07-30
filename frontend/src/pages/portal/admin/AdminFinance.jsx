@@ -512,6 +512,7 @@ const MonthlyArchivePane = () => {
   };
 
   const pdfUrl = (month) => `${BASE}/api/portal/admin/reports/monthly/${month}/pdf?token=${encodeURIComponent(getToken() || "")}`;
+  const xlsxUrl = (month) => `${BASE}/api/portal/admin/reports/monthly/${month}/xlsx?token=${encodeURIComponent(getToken() || "")}`;
 
   return (
     <Card className="p-5" data-testid="monthly-archive-pane">
@@ -559,7 +560,10 @@ const MonthlyArchivePane = () => {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <a href={pdfUrl(r.month)} className="inline-flex items-center gap-1 text-[#0a2350] hover:text-[#f5b120] font-bold text-xs" data-testid={`monthly-archive-pdf-${r.month}`}>
-                      <Download className="h-3.5 w-3.5" /> Unduh
+                      <Download className="h-3.5 w-3.5" /> PDF
+                    </a>
+                    <a href={xlsxUrl(r.month)} className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-500 font-bold text-xs ml-3" data-testid={`monthly-archive-xlsx-${r.month}`}>
+                      <FileText className="h-3.5 w-3.5" /> Excel
                     </a>
                   </td>
                 </tr>

@@ -1860,6 +1860,188 @@ async def admin_monthly_report_pdf(month: str, admin=Depends(get_current_admin))
                     headers={"Content-Disposition": f'attachment; filename="Laporan-Bulanan-{month}.pdf"'})
 
 
+def _monthly_report_workbook(month: str, summary: dict, invoices: list,
+                             user_map: dict, traffic: list, svc_map: dict) -> bytes:
+    """Excel arsip bulanan siap olah: formula SUM/referensi antar-sheet,
+    format Rupiah & persen, penomoran baris, freeze header, border."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    RP = '"Rp" #,##0'
+    NUM = "#,##0"
+    GB = "#,##0.00"
+    PCT = "0.0%"
+    thin = Side(style="thin", color="FFD8DEE9")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_font = Font(bold=True, color="FFFFFFFF")
+    head_fill = PatternFill("solid", fgColor="FF0A2350")
+    tot_font = Font(bold=True)
+    tot_fill = PatternFill("solid", fgColor="FFFEF3C7")
+
+    wb = Workbook()
+
+    def _style_header(ws, ncols):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.font = head_font
+            cell.fill = head_fill
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = border
+        ws.freeze_panes = "A2"
+
+    def _autofit(ws):
+        for col in ws.columns:
+            width = max((len(str(c.value)) for c in col if c.value is not None), default=8)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(width + 3, 42)
+
+    # ---- Sheet 2 data first (Invoice) so Ringkasan can reference its totals ----
+    ws_inv = wb.active
+    ws_inv.title = "Invoice"
+    inv_headers = ["No", "Nomor Invoice", "Klien", "Tanggal Terbit", "Jatuh Tempo",
+                   "Status", "Subtotal", "PPN", "Total"]
+    ws_inv.append(inv_headers)
+    for idx, inv in enumerate(invoices, start=1):
+        ws_inv.append([
+            idx,
+            inv.get("number", ""),
+            user_map.get(str(inv.get("user_id") or ""), ""),
+            (inv.get("created_at") or "")[:10],
+            (inv.get("due_date") or "")[:10],
+            inv.get("status", ""),
+            float(inv.get("subtotal") or 0),
+            float(inv.get("tax_amount") or 0),
+            float(inv.get("total") or 0),
+        ])
+    n_inv = len(invoices)
+    total_row = n_inv + 2
+    ws_inv.append(["", "TOTAL", "", "", "", "",
+                   f"=SUM(G2:G{max(2, total_row - 1)})",
+                   f"=SUM(H2:H{max(2, total_row - 1)})",
+                   f"=SUM(I2:I{max(2, total_row - 1)})"])
+    for r in range(2, total_row + 1):
+        for c in range(1, 10):
+            cell = ws_inv.cell(row=r, column=c)
+            cell.border = border
+            if c == 1:
+                cell.number_format = NUM
+            elif c >= 7:
+                cell.number_format = RP
+            if r == total_row:
+                cell.font = tot_font
+                cell.fill = tot_fill
+    _style_header(ws_inv, 9)
+    _autofit(ws_inv)
+
+    # ---- Sheet 3: Trafik ----
+    ws_tr = wb.create_sheet("Trafik")
+    ws_tr.append(["No", "Layanan", "Inbound (GB)", "Outbound (GB)", "Total (GB)"])
+    if traffic:
+        for idx, t in enumerate(traffic, start=1):
+            r = idx + 1
+            ws_tr.append([idx,
+                          svc_map.get(t.get("service_id", ""), t.get("service_id", "")),
+                          round(float(t.get("in_gb") or 0), 3),
+                          round(float(t.get("out_gb") or 0), 3),
+                          f"=C{r}+D{r}"])
+        tr_total = len(traffic) + 2
+        ws_tr.append(["", "TOTAL", f"=SUM(C2:C{tr_total - 1})",
+                      f"=SUM(D2:D{tr_total - 1})", f"=SUM(E2:E{tr_total - 1})"])
+        for r in range(2, tr_total + 1):
+            for c in range(1, 6):
+                cell = ws_tr.cell(row=r, column=c)
+                cell.border = border
+                if c == 1:
+                    cell.number_format = NUM
+                elif c >= 3:
+                    cell.number_format = GB
+                if r == tr_total:
+                    cell.font = tot_font
+                    cell.fill = tot_fill
+    else:
+        ws_tr.append(["", "Belum ada data trafik untuk bulan ini", "", "", ""])
+    _style_header(ws_tr, 5)
+    _autofit(ws_tr)
+
+    # ---- Sheet 1: Ringkasan (referensi formula ke sheet Invoice/Trafik) ----
+    ws_sum = wb.create_sheet("Ringkasan", 0)
+    ws_sum.append(["Metrik", "Jumlah", "Nilai"])
+    paid_count = int(summary.get("invoices_paid") or 0)
+    rows = [
+        ("Periode", month, None, None),
+        ("Invoice diterbitkan", n_inv, f"=Invoice!I{total_row}", RP),
+        ("Invoice dibayar", paid_count, float(summary.get("invoices_paid_total") or 0), RP),
+        ("Collection rate (dibayar / terbit)", None, "=IF(C3=0,0,C4/C3)", PCT),
+        ("Outstanding saat ini (unpaid + overdue)", None, float(summary.get("outstanding_total") or 0), RP),
+        ("Credit note diterapkan", int(summary.get("credit_notes_applied") or 0),
+         float(summary.get("credit_notes_total") or 0), RP),
+        ("Klien baru", int(summary.get("new_clients") or 0), None, None),
+        ("Order baru", int(summary.get("new_orders") or 0), None, None),
+        ("Trafik inbound (GB)", None,
+         (f"=Trafik!C{len(traffic) + 2}" if traffic else 0), GB),
+        ("Trafik outbound (GB)", None,
+         (f"=Trafik!D{len(traffic) + 2}" if traffic else 0), GB),
+    ]
+    for r_off, (label, qty, val, fmt) in enumerate(rows, start=2):
+        ws_sum.cell(row=r_off, column=1, value=label).border = border
+        qcell = ws_sum.cell(row=r_off, column=2, value=qty)
+        qcell.border = border
+        qcell.number_format = NUM
+        vcell = ws_sum.cell(row=r_off, column=3, value=val)
+        vcell.border = border
+        if fmt:
+            vcell.number_format = fmt
+    _style_header(ws_sum, 3)
+    _autofit(ws_sum)
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+@router.get("/admin/reports/monthly/{month}/xlsx")
+async def admin_monthly_report_xlsx(month: str, admin=Depends(get_current_admin)):
+    """Arsip laporan bulanan sebagai Excel (formula, format Rupiah/persen,
+    penomoran) untuk diolah tim finance."""
+    db = await _get_db()
+    d = await db.monthly_reports.find_one({"month": month})
+    if not d:
+        raise HTTPException(status_code=404, detail="Arsip laporan tidak ditemukan")
+    q_month = {"$regex": f"^{month}"}
+    invoices = await db.invoices.find({"created_at": q_month}).sort("created_at", 1).to_list(3000)
+    uids = list({inv["user_id"] for inv in invoices if inv.get("user_id")})
+    user_map = {}
+    if uids:
+        async for u in db.users.find({"_id": {"$in": uids}}):
+            user_map[str(u["_id"])] = u.get("name") or u.get("email", "")
+    traffic = await db.traffic_monthly.find({"month": month}).sort("in_gb", -1).to_list(500)
+    svc_ids = []
+    for t in traffic:
+        try:
+            svc_ids.append(ObjectId(t["service_id"]))
+        except Exception:
+            pass
+    svc_map = {}
+    if svc_ids:
+        async for s in db.services.find({"_id": {"$in": svc_ids}}):
+            svc_map[str(s["_id"])] = s.get("name") or s.get("product_name", "")
+    data = _monthly_report_workbook(month, d.get("summary", {}), invoices,
+                                    user_map, traffic, svc_map)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="Laporan-Bulanan-{month}.xlsx"'})
+
+
+@router.post("/admin/reports/weekly/send")
+async def admin_send_weekly_summary(admin=Depends(get_current_admin)):
+    """Kirim ringkasan mingguan (order baru, tiket terbuka, invoice jatuh tempo) sekarang."""
+    db = await _get_db()
+    from portal import emails as _em
+    return await _em.run_weekly_summary(db)
+
+
 @router.post("/admin/integrations-v2/smtp/send-test")
 async def integrations_v2_smtp_send_test(payload: dict = None, admin=Depends(get_current_admin)):
     """Kirim email percobaan via SMTP tersimpan - verifikasi cepat produksi."""

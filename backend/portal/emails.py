@@ -1624,6 +1624,90 @@ async def run_monthly_report(db, *, month: Optional[str] = None) -> dict:
             "delivery": delivery, "summary": summary}
 
 
+# ------------------------------------------------------------------
+# Ringkasan mingguan (Senin pagi WIB) ke email support
+# ------------------------------------------------------------------
+async def run_weekly_summary(db, *, now: Optional[datetime] = None) -> dict:
+    """Order baru 7 hari terakhir, tiket terbuka saat ini, dan invoice jatuh
+    tempo 7 hari ke depan (termasuk yang sudah overdue)."""
+    now = now or datetime.now(timezone.utc)
+    week_ago = (now - timedelta(days=7)).isoformat()
+    week_ahead = (now + timedelta(days=7)).date().isoformat()
+    orders = await db.orders.find(
+        {"created_at": {"$gte": week_ago}}).sort("created_at", -1).to_list(300)
+    tickets = await db.tickets.find(
+        {"status": {"$nin": ["resolved", "closed"]}}).sort("updated_at", -1).to_list(300)
+    due_invoices = await db.invoices.find(
+        {"status": {"$in": ["unpaid", "overdue"]},
+         "due_date": {"$lte": week_ahead}}).sort("due_date", 1).to_list(500)
+
+    summary = {
+        "new_orders": len(orders),
+        "open_tickets": len(tickets),
+        "invoices_due": len(due_invoices),
+        "invoices_due_total": round(sum(i.get("total", 0) for i in due_invoices), 2),
+    }
+
+    def _table(headers, rows):
+        head = "".join(
+            f"<th style='padding:8px 12px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase'>{h}</th>"
+            for h in headers)
+        body = "".join(
+            "<tr style='border-top:1px solid #e2e8f0'>" +
+            "".join(f"<td style='padding:8px 12px;font-size:12px;color:#0f172a'>{c}</td>" for c in r) +
+            "</tr>" for r in rows)
+        return ("<table style='width:100%;border-collapse:collapse;background:#f8fafc;"
+                f"border-radius:10px;overflow:hidden'><tr>{head}</tr>{body}</table>")
+
+    def _more(total):
+        return (f"<p style='font-size:11px;color:#64748b;margin:4px 0 0'>"
+                f"dan {total - 10} lainnya di portal.</p>") if total > 10 else ""
+
+    if orders:
+        orders_html = _table(
+            ["Produk", "Klien", "Status", "Tanggal"],
+            [[o.get("product_name", ""), o.get("user_name") or o.get("user_email", ""),
+              o.get("status", ""), (o.get("created_at") or "")[:10]] for o in orders[:10]],
+        ) + _more(len(orders))
+    else:
+        orders_html = "<p style='font-size:13px;color:#64748b'>Tidak ada order baru minggu ini.</p>"
+
+    if tickets:
+        tickets_html = _table(
+            ["Nomor", "Subjek", "Prioritas", "Status"],
+            [[t.get("number", ""), (t.get("subject") or "")[:60], t.get("priority", ""),
+              t.get("status", "")] for t in tickets[:10]],
+        ) + _more(len(tickets))
+    else:
+        tickets_html = "<p style='font-size:13px;color:#64748b'>Tidak ada tiket terbuka. Kerja bagus!</p>"
+
+    if due_invoices:
+        inv_html = _table(
+            ["Nomor", "Jatuh Tempo", "Status", "Total"],
+            [[i.get("number", ""), (i.get("due_date") or "")[:10], i.get("status", ""),
+              _fmt_idr(i.get("total", 0))] for i in due_invoices[:10]],
+        ) + _more(len(due_invoices))
+    else:
+        inv_html = "<p style='font-size:13px;color:#64748b'>Tidak ada invoice jatuh tempo minggu ini.</p>"
+
+    inner = (
+        f"<p>Ringkasan mingguan otomatis per <b>{now.date().isoformat()}</b>.</p>"
+        f"<h3 style='color:#0a2350;margin:18px 0 8px'>Order baru 7 hari terakhir ({summary['new_orders']})</h3>{orders_html}"
+        f"<h3 style='color:#0a2350;margin:22px 0 8px'>Tiket terbuka saat ini ({summary['open_tickets']})</h3>{tickets_html}"
+        f"<h3 style='color:#0a2350;margin:22px 0 8px'>Invoice jatuh tempo minggu ini ({summary['invoices_due']} &middot; {_fmt_idr(summary['invoices_due_total'])})</h3>{inv_html}"
+        "<p style='margin-top:20px;font-size:12px;color:#64748b'>Email ini dikirim otomatis oleh Intercloud Portal setiap Senin pagi.</p>"
+    )
+    to_email = (await get_setting(db, "monthly_report_email", None)
+                or os.environ.get("ADMIN_EMAIL")
+                or "support@intercloud-digital.com")
+    delivery = await deliver(
+        db, to_email=to_email,
+        subject=f"[Ringkasan Mingguan] {now.date().isoformat()} - order, tiket & invoice jatuh tempo",
+        body_html=wrap_html(inner), event_key="weekly_summary")
+    return {"date": now.date().isoformat(), "to_email": to_email,
+            "delivery": delivery, "summary": summary}
+
+
 def start_scheduler(db):
     """Fire up an in-process APScheduler that runs the sweep hourly.
 
@@ -1716,6 +1800,17 @@ def start_scheduler(db):
             log.exception(f"[monthly-report] tick failed: {e}")
 
     sched.add_job(_monthly_report_tick, CronTrigger(day=1, hour=6, minute=30))
+
+    # Ringkasan mingguan ke email support - setiap Senin 07:00 WIB.
+    async def _weekly_summary_tick():
+        try:
+            result = await run_weekly_summary(db)
+            log.info(f"[weekly-summary] {result.get('date')} -> {result.get('to_email')} "
+                     f"({(result.get('delivery') or {}).get('status')})")
+        except Exception as e:  # noqa: BLE001
+            log.exception(f"[weekly-summary] tick failed: {e}")
+
+    sched.add_job(_weekly_summary_tick, CronTrigger(day_of_week="mon", hour=7, minute=0))
 
     async def _noc_retention_tick():
         try:
