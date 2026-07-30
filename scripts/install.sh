@@ -331,9 +331,19 @@ fi
 # ------------------------------------------------------------------
 # 3. Node.js 20 LTS + Yarn (classic)
 # ------------------------------------------------------------------
+# Always (re)write the NodeSource keyring + repo definition: their signing key
+# rotates and a stale key breaks every later apt-get update with
+# "NO_PUBKEY 2F59B5F99B1BE0B4". The modern keyring method self-heals old installs.
+log "Configuring NodeSource repo (Node.js 20 LTS)"
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+  | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+chmod 644 /etc/apt/keyrings/nodesource.gpg
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+  > /etc/apt/sources.list.d/nodesource.list
+apt-get update -y
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | cut -c2-3)" -lt 20 ]]; then
   log "Installing Node.js 20"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
 fi
 if ! command -v yarn >/dev/null 2>&1; then
@@ -388,9 +398,12 @@ sudo -u intercloud -H bash -c "
   python3.12 -m venv .venv
   . .venv/bin/activate
   pip install --upgrade pip wheel
-  # emergentintegrations lives on a private index; pass it as an extra so
-  # the rest of the deps still resolve from PyPI.
-  pip install --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ -r requirements.txt
+  # Strip Emergent-internal dev packages: they only exist on the dev sandbox's
+  # private index and are NOT used by the application code. Leaving them in
+  # causes 'ResolutionImpossible' on a clean server.
+  grep -vE '^(emergentintegrations|litellm)\b|customer-assets\.emergentagent\.com' requirements.txt > /tmp/requirements.prod.txt
+  pip install -r /tmp/requirements.prod.txt
+  rm -f /tmp/requirements.prod.txt
 "
 
 BACKEND_ENV="$APP_DIR/backend/.env"

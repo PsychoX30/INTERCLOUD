@@ -3,6 +3,13 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-07-30 (lanjutan 8): FIX INSTALL.SH DI SERVER PRODUCTION - SELESAI & DIVERIFIKASI
+User menjalankan install.sh di server nyata dan menemui 2 error:
+1. **pip ResolutionImpossible**: requirements.txt tercemar debris pip freeze dev (`emergentintegrations==0.2.0` + `litellm @ customer-assets.emergentagent.com/...whl`) yang hanya ada di index privat sandbox. Kode backend TIDAK meng-import keduanya (grep bersih). Fix: kedua baris DIHAPUS dari requirements.txt + install.sh kini mem-filter defensif (`grep -vE emergentintegrations|litellm|customer-assets`) sebelum pip install (tanpa extra-index-url lagi). VERIFIKASI: `pip install --dry-run -r requirements.txt` di venv bersih dari PyPI publik = EXIT 0.
+2. **NodeSource NO_PUBKEY 2F59B5F99B1BE0B4**: setup_20.x lama meninggalkan GPG key usang. Fix: install.sh kini SELALU menulis ulang keyring modern (/etc/apt/keyrings/nodesource.gpg dari deb.nodesource.com/gpgkey/nodesource-repo.gpg.key + sources.list signed-by) setiap run -> self-healing utk server yang sudah tercemar key lama. bash -n OK.
+CATATAN: user cukup ambil kode terbaru & jalankan ulang install.sh; installer memperbaiki repo NodeSource otomatis.
+LEARNING: JANGAN pakai pip freeze mentah utk requirements produksi - selalu cek debris paket internal sandbox (emergentintegrations/litellm URL) sebelum rilis.
+
 ## Sesi 2026-07-30 (lanjutan 7): CODE REVIEW + RBAC HARDENING + README - SELESAI & DITES
 1. **Code review (code_review_agent)**: RBAC & lint dinyatakan bersih; 4 temuan diperbaiki:
    - Traffic totals klien 60x under-report -> *3600 (1 sampel = 1 jam).
