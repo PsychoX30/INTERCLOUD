@@ -456,8 +456,8 @@ const AdminSiteContent = () => {
               title="Landing preview"
               src={previewUrl}
               onLoad={() => pushPreview()}
-              className="bg-white rounded-xl shadow-lg border border-slate-200"
-              style={{ width: DEVICES[device].w, height: "100%", maxWidth: "100%", transition: "width 0.25s ease" }}
+              className="bg-white rounded-xl shadow-lg border border-slate-200 flex-shrink-0"
+              style={{ width: DEVICES[device].w, height: "100%", transition: "width 0.25s ease" }}
               data-testid="cms-preview-iframe"
             />
           </div>

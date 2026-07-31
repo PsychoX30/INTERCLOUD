@@ -105,5 +105,21 @@ if command -v supervisorctl >/dev/null 2>&1; then
     supervisorctl restart intercloud-backend || sudo supervisorctl restart intercloud-backend || true
 fi
 
+# ---- 7. Patch nginx for WebSocket (noVNC VM console) -----------------------
+# Older installs proxied /api/ without Upgrade/Connection headers, which made
+# the VM console websocket disconnect immediately. Idempotent one-time patch.
+NGINX_SITE=$(grep -rl "proxy_pass http://127.0.0.1:8001" /etc/nginx/sites-enabled/ 2>/dev/null | head -1 || true)
+if [[ -n "$NGINX_SITE" ]] && ! grep -q "connection_upgrade" "$NGINX_SITE"; then
+    log "Patching nginx ($NGINX_SITE) for WebSocket console support"
+    sed -i '0,/^server {/s//map $http_upgrade $connection_upgrade {\n    default upgrade;\n    '"''"'      close;\n}\n\nserver {/' "$NGINX_SITE"
+    sed -i '/location \/api\/ {/,/}/{s|proxy_read_timeout 600s;|proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $connection_upgrade;\n        proxy_read_timeout 600s;|}' "$NGINX_SITE"
+    if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx || sudo systemctl reload nginx || true
+        log "nginx patched + reloaded (WebSocket console enabled)"
+    else
+        log "WARNING: nginx -t failed after patch — review $NGINX_SITE manually"
+    fi
+fi
+
 log "Update complete. $OLD_SHA → $NEW_SHA"
 echo "STATUS=ok OLD=$OLD_SHA NEW=$NEW_SHA BACKUP=$ARCHIVE"

@@ -524,7 +524,7 @@ const TerminateRequestPanel = ({ service }) => {
         <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs">
           <div className="font-bold text-slate-700">Permintaan sebelumnya ditolak.</div>
           {req.note && <p className="text-slate-500 mt-1">Catatan: {req.note}</p>}
-          <button onClick={() => { setReq(null); setOpen(true); }} className="mt-2 text-xs font-bold text-[#0a2350] hover:underline">
+          <button onClick={() => { setReq(null); setOpen(true); }} className="mt-2 text-xs font-bold text-[#0a2350] hover:underline" data-testid="terminate-rerequest-btn">
             Ajukan lagi
           </button>
         </div>

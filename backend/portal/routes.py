@@ -8432,10 +8432,18 @@ async def client_terminate_request(sid: str, payload: dict, request: Request,
                     target_label=svc.get("name", ""), severity="warning",
                     metadata={"reason": reason}, request=request)
     try:
-        await _notify_admin_manual_provision(
-            db, {"user_email": user.get("email", ""), "_id": svc.get("order_id") or svc["_id"]},
-            f"Permintaan TERMINATE layanan '{svc.get('name', '')}' oleh {user.get('email', '')}"
-            + (f" - alasan: {reason}" if reason else ""))
+        await db.followups.insert_one({
+            "customer_id": None,
+            "customer_name": user.get("name", "") or user.get("email", ""),
+            "task": (f"Permintaan TERMINATE layanan '{svc.get('name', '')}' oleh "
+                     f"{user.get('email', '')}" + (f" - alasan: {reason}" if reason else "")
+                     + ". Tinjau di Admin > Active Services."),
+            "channel": "internal",
+            "due_date": datetime.now(timezone.utc).date().isoformat(),
+            "done": False,
+            "owner": "auto",
+            "created_at": _now(),
+        })
     except Exception:
         pass
     return {"ok": True, "termination_request": req}
