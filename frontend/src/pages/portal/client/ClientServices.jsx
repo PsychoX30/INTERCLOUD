@@ -4,6 +4,7 @@ import { api, money, shortDate, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, StatusBadge, EmptyState, btnSecondary } from "../ui";
 import { ServerCog, Cpu, Globe, ArrowRight, Copy, Play, Square, RotateCw, KeyRound, Monitor, X } from "lucide-react";
 import RFB from "@novnc/novnc";
+import { VmMetricsPanel } from "./VmMetricsPanel";
 
 const catIcon = { vps: Cpu, hosting: Globe, colocation: ServerCog, dedicated: Cpu, cloud: Cpu };
 
@@ -513,6 +514,7 @@ const ServiceDetail = ({ service, onClose }) => {
           </Card>
 
           {isVPS && <VMControls serviceId={s.id} />}
+          {isVPS && <VmMetricsPanel serviceId={s.id} />}
           {isVPS && s.status === "active" && <UpgradePanel serviceId={s.id} />}
           <AutoRenewToggle service={s} />
 

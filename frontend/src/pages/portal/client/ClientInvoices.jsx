@@ -83,6 +83,7 @@ const InvoiceDetail = ({ invoice, onClose }) => {
   const [payBusy, setPayBusy] = useState(false);
   const [payErr, setPayErr] = useState("");
   const [payUrl, setPayUrl] = useState(invoice.payment_link || "");
+  const [linkCopied, setLinkCopied] = useState(false);
 
   useEffect(() => {
     api.get("/client/payment-info").then((r) => { setBanks(r.data.bank_accounts || []); setDuitkuOn(!!r.data.duitku_enabled); });
@@ -122,6 +123,22 @@ const InvoiceDetail = ({ invoice, onClose }) => {
           {isOverdue && (
             <div className="rounded-xl bg-red-50 border border-red-200 text-red-800 px-4 py-3 text-sm flex items-center gap-2">
               <AlertTriangle className="h-4 w-4" /> This invoice is overdue. Please settle to avoid service interruption.
+            </div>
+          )}
+
+          {invoice.pay_token && invoice.status !== "paid" && (
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 flex items-center justify-between gap-3" data-testid="public-pay-link-row">
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Link pembayaran publik (tanpa login)</div>
+                <div className="text-xs font-mono text-[#0a2350] truncate">{`${window.location.origin}/pay/${invoice.pay_token}`}</div>
+              </div>
+              <button
+                data-testid="copy-public-pay-link"
+                onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/pay/${invoice.pay_token}`); setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500); }}
+                className={`${btnSecondary} shrink-0`}
+              >
+                <Copy className="h-4 w-4" /> {linkCopied ? "Disalin!" : "Salin"}
+              </button>
             </div>
           )}
 

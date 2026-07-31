@@ -48,6 +48,7 @@ const AdminOrders       = lazy(() => import("./pages/portal/admin/AdminOrders"))
 const AdminInvoices     = lazy(() => import("./pages/portal/admin/AdminInvoices"));
 const AdminFormBuilder  = lazy(() => import("./pages/portal/admin/AdminFormBuilder"));
 const PublicForm        = lazy(() => import("./pages/PublicForm"));
+const PublicPayInvoice  = lazy(() => import("./pages/PublicPayInvoice"));
 const AdminInvoiceDetail = lazy(() => import("./pages/portal/admin/AdminInvoiceDetail"));
 const AdminQuotations   = lazy(() => import("./pages/portal/admin/AdminQuotations"));
 const AdminTickets      = lazy(() => import("./pages/portal/admin/AdminTickets"));
@@ -112,6 +113,7 @@ function App() {
                 <Route path="/legal/sla" element={<ServiceLevelAgreement />} />
                 <Route path="/status" element={<PublicStatusPage />} />
                 <Route path="/form/:slug" element={<PublicForm />} />
+                <Route path="/pay/:token" element={<PublicPayInvoice />} />
 
                 {/* Portal */}
                 <Route path="/portal/login" element={<PortalLogin />} />

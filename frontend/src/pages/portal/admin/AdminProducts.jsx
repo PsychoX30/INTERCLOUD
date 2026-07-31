@@ -167,7 +167,12 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
       applies_to_categories: f.applies_to_categories,
       applies_to_product_ids: f.applies_to_product_ids,
       option_groups: f.is_addon ? [] : f.option_groups,
-      provision: !f.is_addon && ["vps", "cloud"].includes(f.category) ? {
+      provision: f.is_addon ? {
+        cores: Number(f.provision?.cores) || 0,
+        memory_mb: Number(f.provision?.memory_mb) || 0,
+        disk_gb: Number(f.provision?.disk_gb) || 0,
+        ip: Number(f.provision?.ip) || 0,
+      } : ["vps", "cloud"].includes(f.category) ? {
         template_vmid: Number(f.provision?.template_vmid) || null,
         cores: Number(f.provision?.cores) || null,
         memory_mb: Number(f.provision?.memory_mb) || null,
@@ -281,6 +286,22 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
                   })}
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Add-on resource extras ---------- */}
+        {f.is_addon && (
+          <div className="mt-5 border-t border-slate-200 pt-5" data-testid="addon-resource-fields">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-purple-800 mb-1">Resource tambahan (auto-provisioning)</div>
+            <p className="text-xs text-slate-500 mb-3">
+              Bila add-on ini dibeli bersama produk VPS/Cloud, resource di bawah otomatis DITAMBAHKAN ke spesifikasi VM saat provisioning. Kosongkan (0) bila add-on tidak menambah resource.
+            </p>
+            <div className="grid grid-cols-4 gap-3">
+              <label><div className={labelClass}>+ vCPU</div><input type="number" min="0" value={f.provision?.cores || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, cores: e.target.value } })} className={inputClass} placeholder="0" data-testid="addon-res-cores" /></label>
+              <label><div className={labelClass}>+ RAM (MB)</div><input type="number" min="0" step="512" value={f.provision?.memory_mb || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, memory_mb: e.target.value } })} className={inputClass} placeholder="0" data-testid="addon-res-memory" /></label>
+              <label><div className={labelClass}>+ Disk (GB)</div><input type="number" min="0" value={f.provision?.disk_gb || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, disk_gb: e.target.value } })} className={inputClass} placeholder="0" data-testid="addon-res-disk" /></label>
+              <label><div className={labelClass}>+ IP publik</div><input type="number" min="0" value={f.provision?.ip || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, ip: e.target.value } })} className={inputClass} placeholder="0" data-testid="addon-res-ip" /></label>
             </div>
           </div>
         )}

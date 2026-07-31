@@ -93,8 +93,9 @@ export default function AdminInvoiceDetail() {
     toast.success("Invoice dibatalkan"); load();
   };
   const copyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
-    toast.success("Tautan invoice disalin");
+    const url = inv?.pay_token ? `${window.location.origin}/pay/${inv.pay_token}` : window.location.href;
+    navigator.clipboard.writeText(url);
+    toast.success(inv?.pay_token ? "Link pembayaran publik disalin - bisa dibuka klien tanpa login" : "Tautan invoice disalin");
   };
 
   if (err) {

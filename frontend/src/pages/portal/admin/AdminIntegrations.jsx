@@ -7,6 +7,7 @@ import {
   Save, Zap, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp,
   Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck, Send,
 } from "lucide-react";
+import { ProxmoxServersCard } from "./ProxmoxServersCard";
 
 /* Unified Integrations page - replaces the old split "Integrations" + "Real APIs".
    Drives the /admin/integrations-v2 schema (single source of truth). Adds IMAP
@@ -108,6 +109,7 @@ const AdminIntegrations = () => {
                   onSaved={load}
                 />
               ))}
+              {cat === "virtualization" && <ProxmoxServersCard />}
             </div>
           </div>
         ))}

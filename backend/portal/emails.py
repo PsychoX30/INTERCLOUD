@@ -543,12 +543,27 @@ def wrap_html(inner_html: str, logo_url: str | None = None) -> str:
     return wrapper.replace("{body}", inner_html)
 
 
-def _portal_urls(invoice_id: Optional[str] = None) -> dict:
+def _portal_urls(invoice_id: Optional[str] = None, pay_token: Optional[str] = None) -> dict:
     origin = os.environ.get("REACT_APP_BACKEND_URL", "")
+    # Link email menuju halaman pembayaran PUBLIK (tanpa login) bila invoice
+    # punya pay_token; fallback ke daftar invoice portal (route yang valid).
+    pay = f"{origin}/pay/{pay_token}" if pay_token else f"{origin}/portal/client/invoices"
     return {
         "login_url": f"{origin}/portal/login",
-        "invoice_url": f"{origin}/portal/client/invoices" + (f"/{invoice_id}" if invoice_id else ""),
+        "invoice_url": pay,
+        "pay_url": pay,
     }
+
+
+async def ensure_pay_token(db, inv: dict) -> str:
+    """Token link pembayaran publik per invoice - permanen sampai lunas."""
+    import secrets as _secrets
+    tok = (inv or {}).get("pay_token")
+    if not tok and inv and inv.get("_id") is not None:
+        tok = _secrets.token_urlsafe(24)
+        await db.invoices.update_one({"_id": inv["_id"]}, {"$set": {"pay_token": tok}})
+        inv["pay_token"] = tok
+    return tok or ""
 
 
 def _fmt_idr(v: float | int) -> str:
@@ -578,7 +593,7 @@ def build_context(*, user: dict = None, invoice: dict = None, order: dict = None
             "due_date": invoice.get("due_date", ""),
             "status": invoice.get("status", ""),
         }
-        ctx["portal"] = _portal_urls(invoice_id=iid)
+        ctx["portal"] = _portal_urls(invoice_id=iid, pay_token=invoice.get("pay_token"))
     else:
         ctx["portal"] = _portal_urls()
     if order:
@@ -702,6 +717,7 @@ async def on_order_created(db, order_doc: dict, user_doc: dict) -> None:
 
 async def on_invoice_generated(db, invoice_doc: dict, user_doc: dict,
                                order_doc: dict = None) -> None:
+    await ensure_pay_token(db, invoice_doc)
     ctx = build_context(user=user_doc, invoice=invoice_doc, order=order_doc)
     await send_via_template(db, event_key="invoice_generated",
                             to_email=user_doc["email"], ctx=ctx,
@@ -748,6 +764,7 @@ async def on_vm_provisioned(db, user_doc: dict, service_doc: dict, vm: dict) -> 
 async def on_invoice_paid(db, invoice_doc: dict, user_doc: dict) -> None:
     """Payment-received confirmation - fired by the payment webhook (and any
     other flow that marks an invoice paid and wants the client notified)."""
+    await ensure_pay_token(db, invoice_doc)
     ctx = build_context(user=user_doc, invoice=invoice_doc)
     await send_via_template(db, event_key="payment_received",
                             to_email=user_doc["email"], ctx=ctx,
@@ -827,6 +844,7 @@ async def _run_invoice_reminder_sweep_inner(db, *, now: Optional[datetime] = Non
             user = await db.users.find_one({"_id": inv["user_id"]})
             if not user:
                 continue
+            await ensure_pay_token(db, inv)
             ctx = build_context(user=user, invoice=inv)
             res = await send_via_template(
                 db, event_key=event_key, to_email=user["email"], ctx=ctx,

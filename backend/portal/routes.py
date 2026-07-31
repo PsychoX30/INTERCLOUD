@@ -869,8 +869,15 @@ async def client_vms(user=Depends(get_current_user)):
     svcs = await db.services.find(
         {"user_id": ObjectId(user["id"]), "category": {"$in": list(_VM_CATEGORIES)}}
     ).sort("created_at", -1).to_list(100)
-    s = await _proxmox_settings(db)
-    client = iv2.ProxmoxClient(s) if s else None
+    _px_cache: dict = {}
+
+    async def _px_for(svc_doc):
+        key = ((svc_doc.get("config") or {}).get("server_id") or "").strip() or "legacy"
+        if key not in _px_cache:
+            st = await _proxmox_settings_for_service(db, svc_doc)
+            _px_cache[key] = iv2.ProxmoxClient(st) if st else None
+        return _px_cache[key]
+
     out = []
     for svc in svcs:
         cfg = svc.get("config") or {}
@@ -884,6 +891,7 @@ async def client_vms(user=Depends(get_current_user)):
             "configured": False,
             "status": "unknown",
         }
+        client = await _px_for(svc)
         if client and cfg.get("node") and cfg.get("vmid"):
             item["configured"] = True
             try:
@@ -906,7 +914,7 @@ async def client_vm_status(sid: str, user=Depends(get_current_user)):
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
     cfg = svc.get("config") or {}
-    s = await _proxmox_settings(db)
+    s = await _proxmox_settings_for_service(db, svc)
     if not (s and cfg.get("node") and cfg.get("vmid")):
         return {"configured": False, "status": "unknown"}
     try:
@@ -917,6 +925,42 @@ async def client_vm_status(sid: str, user=Depends(get_current_user)):
                 "node": cfg["node"], "vmid": int(cfg["vmid"])}
     except Exception as e:
         return {"configured": True, "status": "unreachable", "error": str(e)[:200]}
+
+
+@router.get("/client/services/{sid}/vm/metrics")
+async def client_vm_metrics(sid: str, timeframe: str = "hour", user=Depends(get_current_user)):
+    """Grafik resource VM (CPU/RAM/Disk/Net) dari RRD Proxmox - default 1 jam."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    cfg = svc.get("config") or {}
+    s = await _proxmox_settings_for_service(db, svc)
+    if not (s and cfg.get("node") and cfg.get("vmid")):
+        return {"available": False, "message": "VM belum terhubung ke layanan ini."}
+    try:
+        rows = await iv2.ProxmoxClient(s).rrddata(cfg["node"], int(cfg["vmid"]), timeframe)
+    except Exception as e:
+        return {"available": False, "message": f"Gagal membaca metrik dari server: {str(e)[:150]}"}
+    series = []
+    for r in rows:
+        if r.get("time") is None:
+            continue
+        maxmem = float(r.get("maxmem") or 0)
+        mem = float(r.get("mem") or 0)
+        series.append({
+            "t": int(r["time"]),
+            "cpu_pct": round(float(r.get("cpu") or 0) * 100, 2),
+            "mem_used_mb": round(mem / 1048576, 1),
+            "mem_total_mb": round(maxmem / 1048576, 1),
+            "mem_pct": round(mem / maxmem * 100, 2) if maxmem else 0,
+            "disk_read_kb": round(float(r.get("diskread") or 0) / 1024, 1),
+            "disk_write_kb": round(float(r.get("diskwrite") or 0) / 1024, 1),
+            "net_in_kb": round(float(r.get("netin") or 0) / 1024, 1),
+            "net_out_kb": round(float(r.get("netout") or 0) / 1024, 1),
+        })
+    return {"available": True, "timeframe": timeframe, "series": series,
+            "vm": {"node": cfg["node"], "vmid": int(cfg["vmid"])}}
 
 
 @router.get("/client/services/{sid}/vm/console")
@@ -931,7 +975,7 @@ async def client_vm_console_info(sid: str, user=Depends(get_current_user)):
     if svc.get("status") == "suspended":
         raise HTTPException(status_code=403, detail="Layanan sedang disuspend")
     cfg = svc.get("config") or {}
-    s = await _proxmox_settings(db)
+    s = await _proxmox_settings_for_service(db, svc)
     if not (s and cfg.get("node") and cfg.get("vmid")):
         raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini")
     try:
@@ -965,7 +1009,7 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
     except Exception:
         svc = None
     cfg = (svc or {}).get("config") or {}
-    s = await _proxmox_settings(db)
+    s = await _proxmox_settings_for_service(db, svc) if svc else None
     if not (svc and svc.get("category") in _VM_CATEGORIES and svc.get("status") != "suspended"
             and cfg.get("node") and cfg.get("vmid") and s and port and vncticket):
         await ws.close(code=4403)
@@ -1047,7 +1091,7 @@ async def client_vm_reset_password(sid: str, payload: dict, request: Request, us
     node, vmid = cfg.get("node"), cfg.get("vmid")
     if not (node and vmid):
         raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini. Hubungi support.")
-    s = await _proxmox_settings(db)
+    s = await _proxmox_settings_for_service(db, svc)
     if not s:
         raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif. Hubungi support.")
     client = iv2.ProxmoxClient(s)
@@ -1113,7 +1157,7 @@ async def client_vm_action(sid: str, action: str, request: Request, user=Depends
     node, vmid = cfg.get("node"), cfg.get("vmid")
     if not (node and vmid):
         raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini. Hubungi support.")
-    s = await _proxmox_settings(db)
+    s = await _proxmox_settings_for_service(db, svc)
     if not s:
         raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif. Hubungi support.")
     try:
@@ -1266,7 +1310,12 @@ async def client_upgrade_request(sid: str, payload: dict, request: Request, user
 
 async def _serialize_invoice(db, d: dict) -> dict:
     u = await db.users.find_one({"_id": d["user_id"]}) or {}
+    pay_token = d.get("pay_token")
+    if not pay_token:
+        pay_token = secrets.token_urlsafe(24)
+        await db.invoices.update_one({"_id": d["_id"]}, {"$set": {"pay_token": pay_token}})
     return {
+        "pay_token": pay_token,
         "id": str(d["_id"]),
         "number": d["number"],
         "user_id": str(d["user_id"]),
@@ -1502,6 +1551,11 @@ async def _proxmox_settings(db) -> Optional[dict]:
                             "password": cfg.get("password")},
             "options": {"default_node": cfg.get("default_node") or "", "ssl_verify": False},
         }
+    # Fallback terakhir: server pertama dari registry multi-server
+    doc = await db.proxmox_servers.find_one(
+        {"enabled": {"$ne": False}, "host": {"$nin": [None, ""]}}, sort=[("sort_order", 1)])
+    if doc:
+        return _px_server_to_settings(doc)
     return None
 
 
@@ -1605,6 +1659,43 @@ async def _notify_admin_manual_provision(db, order: dict, note: str) -> None:
         })
     except Exception:
         pass
+
+
+def _selection_extras(prod: dict, selections: list) -> dict:
+    """Extra resource (vCPU/RAM/Disk/IP) dari opsi konfigurasi yang dipilih klien."""
+    extras = {"cores": 0.0, "memory_mb": 0.0, "disk_gb": 0.0, "ip": 0.0}
+    groups = {g.get("key"): g for g in (prod.get("option_groups") or [])}
+    for s in selections or []:
+        g = groups.get(s.get("group_key"))
+        if not g:
+            continue
+        if g.get("type") == "quantity":
+            kind = g.get("resource_kind")
+            qty = float(s.get("quantity") or 0)
+            per = float(g.get("resource_per_unit") or 0)
+            if kind in extras and qty and per:
+                extras[kind] += qty * per
+        else:
+            opts = {o.get("label"): o for o in (g.get("options") or [])}
+            for lbl in (s.get("option_labels") or []):
+                o = opts.get(lbl)
+                if o and o.get("resource_kind") in extras and o.get("resource_amount"):
+                    extras[o["resource_kind"]] += float(o["resource_amount"])
+    return extras
+
+
+async def _order_resource_extras(db, order: dict, prod: dict) -> dict:
+    """Total extra resource order: opsi konfigurasi + add-on (field provision add-on)."""
+    extras = _selection_extras(prod, order.get("selections") or [])
+    if order.get("addon_ids"):
+        addons = await db.products.find({"_id": {"$in": order["addon_ids"]}}).to_list(50)
+        for a in addons:
+            ap = a.get("provision") or {}
+            extras["cores"] += float(ap.get("cores") or 0)
+            extras["memory_mb"] += float(ap.get("memory_mb") or 0)
+            extras["disk_gb"] += float(ap.get("disk_gb") or 0)
+            extras["ip"] += float(ap.get("ip") or 0)
+    return {k: int(v) for k, v in extras.items()}
 
 
 async def _auto_provision(db, order: dict) -> dict:
@@ -1727,7 +1818,26 @@ async def _auto_provision(db, order: dict) -> dict:
             await _log("ip_pool_empty",
                        "Tidak ada IP pool khusus VPS/Cloud dengan slot tersisa "
                        "(centang 'Untuk provisioning VPS/Cloud' di DCIM - IP Prefixes). VM memakai DHCP.")
-        pxs = await _proxmox_settings(db)
+        # IP tambahan yang dipesan klien (opsi konfigurasi / add-on)
+        extras = await _order_resource_extras(db, order, prod)
+        if extras.get("ip"):
+            extra_ips = []
+            for _ in range(int(extras["ip"])):
+                p2 = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
+                                                      customer=order.get("user_email", ""),
+                                                      ref=f"order {str(order['_id'])[-6:]} (extra)",
+                                                      purpose="vps")
+                if not p2:
+                    break
+                extra_ips.append(f"{p2['ip']}/{p2['prefixlen']}")
+            if extra_ips:
+                cfg["extra_ips"] = extra_ips
+                await _log("extra_ip_allocated",
+                           f"{len(extra_ips)} IP tambahan dialokasikan sesuai order: {', '.join(extra_ips)}.")
+            if len(extra_ips) < int(extras["ip"]):
+                await _log("extra_ip_shortage",
+                           f"Hanya {len(extra_ips)} dari {int(extras['ip'])} IP tambahan yang tersedia di pool.")
+        pxs = await _proxmox_servers(db)
         if pxs:
             cfg["provision_status"] = "provisioning"
             await _log("vm_queued",
@@ -2007,11 +2117,53 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
     cfg = dict(svc.get("config") or {})
     prod = await db.products.find_one({"_id": svc["product_id"]}) or {}
     prov = prod.get("provision") or {}
-    pxs = await _proxmox_settings(db)
+
+    # Spesifikasi VM = setting produk (admin) + extra dari opsi/add-on order klien
+    extras = await _order_resource_extras(db, order, prod)
+    cores = (int(prov.get("cores") or 0) or int(cfg.get("cpu") or 0) or 2) + extras["cores"]
+    memory_mb = ((int(prov.get("memory_mb") or 0)
+                  or (int(float(cfg.get("ram_gb") or 0)) * 1024) or 2048) + extras["memory_mb"])
+    base_disk = int(prov.get("disk_gb") or cfg.get("disk_gb") or 0)
+    disk_gb = (base_disk + extras["disk_gb"]) if (base_disk or extras["disk_gb"]) else 0
+    if any(extras.values()):
+        await _log("spec_resolved",
+                   f"Spek produk '{prod.get('name', '')}' + extra order: {cores} vCPU, {memory_mb} MB RAM"
+                   f"{f', {disk_gb} GB disk' if disk_gb else ''} "
+                   f"(extra: +{extras['cores']} vCPU, +{extras['memory_mb']} MB RAM, "
+                   f"+{extras['disk_gb']} GB disk, +{extras['ip']} IP).")
+
+    # Multi-server load balance: pilih server+node dengan RAM bebas TERBANYAK yang muat spek
+    pxs, target_node, report = await _pick_proxmox_server(
+        db, cores=cores, memory_mb=memory_mb, disk_gb=disk_gb)
     if not pxs:
-        await _fail("Integrasi Proxmox belum aktif.")
+        # Fallback: tidak ada node yang memenuhi spek penuh - pakai node paling lega yang online
+        best = None
+        for r in report:
+            if not r.get("ok"):
+                continue
+            for n in r.get("nodes", []):
+                if best is None or n["free_mem_mb"] > best[0]:
+                    best = (n["free_mem_mb"], r.get("server_id") or "legacy", n["node"], r.get("server", ""))
+        if best:
+            srv = await _proxmox_settings_by_id(db, best[1])
+            if srv:
+                pxs, target_node = srv, best[2]
+                await _log("capacity_warning",
+                           f"Tidak ada node yang memenuhi spesifikasi penuh - memakai node paling lega "
+                           f"'{best[2]}' ({best[0]} MB RAM bebas) di server '{best[3] or 'Default'}'.")
+    if not pxs:
+        details = "; ".join(f"{r.get('server') or 'Default'}: {r.get('error') or 'tidak terjangkau'}"
+                            for r in report)
+        await _fail(f"Tidak ada server Proxmox yang bisa dipakai. {details or 'Integrasi Proxmox belum aktif.'}")
         return
     px = iv2.ProxmoxClient(pxs)
+    picked = next((n for r in report if (r.get("server_id") or "legacy") == (pxs.get("server_id") or "legacy")
+                   for n in r.get("nodes", []) if n.get("node") == target_node), {})
+    free_mb = picked.get("free_mem_mb")
+    await _log("server_selected",
+               f"Load-balance: server '{pxs.get('name', 'Default')}' node '{target_node}' dipilih dari "
+               f"{len(report)} server terdaftar"
+               + (f" (RAM bebas {free_mb} MB)." if free_mb is not None else "."))
     try:
         os_choice = str(cfg.get("os") or "").strip()
         templates = await px.list_templates()
@@ -2044,20 +2196,22 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
             await _log("template_default",
                        f"OS tidak dipilih - memakai template default {tpl['name']} (VMID {tpl['vmid']}).")
 
-        cores = int(prov.get("cores") or cfg.get("cpu") or 2)
-        memory_mb = int(prov.get("memory_mb") or 0) or (int(float(cfg.get("ram_gb") or 0)) * 1024) or 2048
-        disk_gb = int(prov.get("disk_gb") or cfg.get("disk_gb") or 0)
         vm_name = re.sub(r"[^a-zA-Z0-9-]", "-",
                          str(cfg.get("hostname") or f"vm-{str(order_id)[-6:]}")).strip("-")[:60]
 
-        dup = await px.find_vm_by_name(vm_name)
-        if dup:
-            await _fail(f"VM bernama '{vm_name}' sudah ada (VMID {dup['vmid']} di {dup['node']}) - "
-                        "tidak membuat duplikat.")
-            return
+        # Anti-duplikat: cek nama VM di SEMUA server Proxmox terdaftar
+        for s_chk in await _proxmox_servers(db):
+            try:
+                dup = await iv2.ProxmoxClient(s_chk).find_vm_by_name(vm_name)
+            except Exception:
+                dup = None
+            if dup:
+                await _fail(f"VM bernama '{vm_name}' sudah ada (VMID {dup['vmid']} di {dup['node']}, "
+                            f"server '{s_chk.get('name', 'Default')}') - tidak membuat duplikat.")
+                return
 
         if tpl:
-            vm = await px.clone_vm(hostname=vm_name, template_vmid=tpl["vmid"])
+            vm = await px.clone_vm(hostname=vm_name, template_vmid=tpl["vmid"], node=target_node)
             await _log("vm_cloned",
                        f"VM {vm['vmid']} di-clone dari template '{tpl['name']}' di node {vm['node']} - "
                        "menunggu clone selesai.")
@@ -2085,6 +2239,8 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
             except Exception as e:
                 await _log("vm_start_failed", f"VM gagal start otomatis: {str(e)[:100]}")
             upd = {"config.node": vm["node"], "config.vmid": vm["vmid"],
+                   "config.server_id": pxs.get("server_id") or "legacy",
+                   "config.server_name": pxs.get("name", ""),
                    "config.os": os_choice or tpl["name"],
                    "config.root_username": "root", "config.root_password": root_pw,
                    "config.credentials_applied": True, "config.cpu": cores,
@@ -2114,7 +2270,8 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
         elif iso:
             nodes = [n.get("node") for n in await px.list_nodes()]
             node = iso.get("node") if iso.get("node") in nodes else \
-                (px.default_node if px.default_node in nodes else (nodes[0] if nodes else ""))
+                (target_node if target_node in nodes else
+                 (px.default_node if px.default_node in nodes else (nodes[0] if nodes else "")))
             newid = await px.next_vmid()
             params = {"vmid": newid, "name": vm_name, "cores": cores, "memory": memory_mb,
                       "net0": f"virtio,bridge={px.default_bridge or 'vmbr0'},firewall=1",
@@ -2127,6 +2284,8 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
                 await px.wait_task(node, upid, timeout_s=300)
             await db.services.update_one({"_id": service_id}, {"$set": {
                 "config.node": node, "config.vmid": newid, "config.cpu": cores,
+                "config.server_id": pxs.get("server_id") or "legacy",
+                "config.server_name": pxs.get("name", ""),
                 "config.ram_gb": round(memory_mb / 1024, 1),
                 "config.disk_gb": disk_gb or 40,
                 "config.provision_status": "pending"}})
@@ -3907,7 +4066,7 @@ async def _apply_pending_upgrade(db, inv: dict) -> bool:
          "$push": {"self_service_log": {"at": _now(), "action": "upgrade_applied",
                                          "by": f"billing (invoice {inv.get('number', '')})"}}})
     try:
-        s = await _proxmox_settings(db)
+        s = await _proxmox_settings_for_service(db, svc)
         if s and cfg.get("node") and cfg.get("vmid"):
             body = {}
             if up.get("cpu"):
@@ -7874,19 +8033,29 @@ async def admin_service_verify_vm(sid: str, payload: dict,
         raise HTTPException(status_code=400,
                             detail="Service tidak punya hostname - kirim field 'hostname' pada request.")
     vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", hostname).strip("-")[:60]
-    s = await _proxmox_settings(db)
-    if not s:
+    servers = await _proxmox_servers(db)
+    if not servers:
         raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif.")
-    try:
-        found = await iv2.ProxmoxClient(s).find_vm_by_name(vm_name)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Gagal terhubung ke Proxmox: {str(e)[:150]}")
+    found, found_srv, last_err = None, None, None
+    for s in servers:
+        try:
+            found = await iv2.ProxmoxClient(s).find_vm_by_name(vm_name)
+        except Exception as e:
+            last_err = str(e)[:150]
+            found = None
+        if found:
+            found_srv = s
+            break
     if not found:
+        if last_err and len(servers) == 1:
+            raise HTTPException(status_code=400, detail=f"Gagal terhubung ke Proxmox: {last_err}")
         raise HTTPException(status_code=404,
-                            detail=f"Tidak ada VM bernama '{vm_name}' di cluster. Buat VM dengan "
-                                   "nama persis itu di Proxmox, lalu klik verifikasi lagi.")
+                            detail=f"Tidak ada VM bernama '{vm_name}' di {len(servers)} server terdaftar. "
+                                   "Buat VM dengan nama persis itu di Proxmox, lalu klik verifikasi lagi.")
     await db.services.update_one({"_id": svc["_id"]}, {"$set": {
         "config.hostname": hostname,
+        "config.server_id": found_srv.get("server_id") or "legacy",
+        "config.server_name": found_srv.get("name", ""),
         "config.node": found["node"], "config.vmid": found["vmid"],
         "config.provision_status": "provisioned", "config.provisioned_at": _now(),
         "status": "active"}})
@@ -7955,6 +8124,124 @@ async def admin_proxmox_templates(admin=Depends(require_roles("admin", "support"
     except (TypeError, ValueError):
         cfg = None
     return {"templates": templates, "configured_vmid": cfg}
+
+
+# ---------------- Multi-server Proxmox registry (admin) ----------------
+def _px_server_public(d: dict) -> dict:
+    return {"id": str(d["_id"]), "name": d.get("name", ""), "host": d.get("host", ""),
+            "token_id": d.get("token_id", ""), "has_secret": bool(d.get("token_secret")),
+            "username": d.get("username", ""), "has_password": bool(d.get("password")),
+            "default_node": d.get("default_node", ""),
+            "default_storage": d.get("default_storage", ""),
+            "default_bridge": d.get("default_bridge", ""),
+            "enabled": d.get("enabled", True) is not False,
+            "sort_order": d.get("sort_order", 0),
+            "created_at": d.get("created_at", "")}
+
+
+@router.get("/admin/proxmox/servers")
+async def admin_px_servers_list(staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    docs = await db.proxmox_servers.find({}).sort("sort_order", 1).to_list(100)
+    return [_px_server_public(d) for d in docs]
+
+
+@router.get("/admin/proxmox/servers/capacity")
+async def admin_px_servers_capacity(staff=Depends(require_roles("admin", "support"))):
+    """Laporan kapasitas live semua server + node yang akan dipilih load balancer."""
+    db = await _get_db()
+    s, node, report = await _pick_proxmox_server(db)
+    best = None
+    if s and node:
+        picked = next((n for r in report if (r.get("server_id") or "legacy") == (s.get("server_id") or "legacy")
+                       for n in r.get("nodes", []) if n.get("node") == node), {})
+        best = {"server": s.get("name", "Default"), "server_id": s.get("server_id") or "legacy",
+                "node": node, "free_mem_mb": picked.get("free_mem_mb", 0)}
+    return {"best": best, "report": report}
+
+
+@router.post("/admin/proxmox/servers")
+async def admin_px_servers_create(payload: dict, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    host = (payload.get("host") or "").strip()
+    if not host:
+        raise HTTPException(status_code=400, detail="Host URL wajib diisi")
+    doc = {"name": (payload.get("name") or "").strip() or host,
+           "host": host,
+           "token_id": (payload.get("token_id") or "").strip(),
+           "token_secret": (payload.get("token_secret") or "").strip(),
+           "username": (payload.get("username") or "").strip(),
+           "password": payload.get("password") or "",
+           "default_node": (payload.get("default_node") or "").strip(),
+           "default_storage": (payload.get("default_storage") or "").strip() or "local-lvm",
+           "default_bridge": (payload.get("default_bridge") or "").strip() or "vmbr0",
+           "enabled": payload.get("enabled", True) is not False,
+           "sort_order": int(payload.get("sort_order") or 100),
+           "created_at": _now()}
+    r = await db.proxmox_servers.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="proxmox_server.create", category="integrations",
+                    target_type="proxmox_server", target_id=str(r.inserted_id),
+                    target_label=doc["name"], request=request)
+    return _px_server_public(doc)
+
+
+@router.put("/admin/proxmox/servers/{spid}")
+async def admin_px_servers_update(spid: str, payload: dict, request: Request,
+                                  admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = await db.proxmox_servers.find_one({"_id": _oid(spid)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Server not found")
+    upd = {}
+    for k in ("name", "host", "token_id", "username", "default_node",
+              "default_storage", "default_bridge"):
+        if k in payload:
+            upd[k] = (payload.get(k) or "").strip()
+    # Secret/password: kosong = pertahankan yang tersimpan
+    if (payload.get("token_secret") or "").strip():
+        upd["token_secret"] = payload["token_secret"].strip()
+    if payload.get("password"):
+        upd["password"] = payload["password"]
+    if "enabled" in payload:
+        upd["enabled"] = payload.get("enabled") is not False
+    if "sort_order" in payload:
+        upd["sort_order"] = int(payload.get("sort_order") or 100)
+    if upd.get("host") == "":
+        raise HTTPException(status_code=400, detail="Host URL wajib diisi")
+    await db.proxmox_servers.update_one({"_id": doc["_id"]}, {"$set": upd})
+    doc = await db.proxmox_servers.find_one({"_id": doc["_id"]})
+    await log_audit(db, actor=admin, action="proxmox_server.update", category="integrations",
+                    target_type="proxmox_server", target_id=spid,
+                    target_label=doc.get("name", ""), request=request)
+    return _px_server_public(doc)
+
+
+@router.delete("/admin/proxmox/servers/{spid}")
+async def admin_px_servers_delete(spid: str, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = await db.proxmox_servers.find_one({"_id": _oid(spid)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Server not found")
+    await db.proxmox_servers.delete_one({"_id": doc["_id"]})
+    await log_audit(db, actor=admin, action="proxmox_server.delete", category="integrations",
+                    target_type="proxmox_server", target_id=spid,
+                    target_label=doc.get("name", ""), severity="warning", request=request)
+    return {"ok": True}
+
+
+@router.post("/admin/proxmox/servers/{spid}/test")
+async def admin_px_servers_test(spid: str, staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    doc = await db.proxmox_servers.find_one({"_id": _oid(spid)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Server not found")
+    px = iv2.ProxmoxClient(_px_server_to_settings(doc))
+    res = await px.test_connection()
+    if not res.get("ok"):
+        return {"ok": False, "message": res.get("message", "Connection failed"), "nodes": []}
+    cap = await px.capacity()
+    return {"ok": True, "message": res.get("message", "OK"), "nodes": cap.get("nodes", [])}
 
 
 @router.put("/admin/services/{sid}/traffic-source")
@@ -8523,22 +8810,10 @@ async def _payment_settings(db, provider: str) -> Optional[dict]:
     return None
 
 
-@router.post("/client/invoices/{iid}/pay-online")
-async def client_pay_online(iid: str, request: Request, provider: str = "duitku",
-                            user=Depends(get_current_user)):
-    """Create a hosted payment link for the given invoice (Duitku-only policy)."""
-    db = await _get_db()
-    if provider not in iv2.PAYMENT_PROVIDERS:
-        raise HTTPException(status_code=400, detail="Unknown payment provider")
-    if provider in _EXTRA_PAYMENT_MODULES and not bool(
-            await _get_setting_value(db, "enable_extra_payment_gateways", False)):
-        raise HTTPException(status_code=400,
-                            detail="Hanya Duitku yang tersedia sebagai payment gateway.")
-    inv = await db.invoices.find_one({"_id": _oid(iid), "user_id": ObjectId(user["id"])})
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    if inv.get("status") == "paid":
-        raise HTTPException(status_code=400, detail="Invoice already paid")
+async def _create_online_payment(db, request: Request, inv: dict, *, email: str, name: str,
+                                 provider: str = "duitku", return_url: str = "") -> dict:
+    """Buat transaksi hosted payment di gateway + simpan payment_link di invoice.
+    Dipakai oleh flow klien (login) dan flow payment link publik (tanpa login)."""
     s = await _payment_settings(db, provider)
     if not s:
         raise HTTPException(status_code=400, detail=f"{provider} not configured")
@@ -8560,17 +8835,16 @@ async def client_pay_online(iid: str, request: Request, provider: str = "duitku"
     kwargs = dict(
         invoice_id=inv["number"] or str(inv["_id"]),
         amount_idr=int(inv["total"]),
-        customer_email=user["email"],
+        customer_email=email,
         callback_url=callback,
     )
     if provider == "duitku":
-        # returnUrl is REQUIRED by the POP docs - send the client back to their
-        # invoices page after payment (config override supported).
-        return_url = (opts.get("return_url") or "").strip()
-        if not return_url and base:
-            return_url = f"{base}/portal/client/invoices"
-        kwargs.update(return_url=return_url,
-                      customer_name=user.get("name") or "",
+        # returnUrl is REQUIRED by the POP docs.
+        r_url = return_url or (opts.get("return_url") or "").strip()
+        if not r_url and base:
+            r_url = f"{base}/portal/client/invoices"
+        kwargs.update(return_url=r_url,
+                      customer_name=name or "",
                       expiry_minutes=int(opts.get("expiry_minutes") or 1440))
     try:
         result = await gw.create_payment(**kwargs)
@@ -8583,6 +8857,83 @@ async def client_pay_online(iid: str, request: Request, provider: str = "duitku"
                   "payment_link": result.get("payment_url")}},
     )
     return result
+
+
+@router.post("/client/invoices/{iid}/pay-online")
+async def client_pay_online(iid: str, request: Request, provider: str = "duitku",
+                            user=Depends(get_current_user)):
+    """Create a hosted payment link for the given invoice (Duitku-only policy)."""
+    db = await _get_db()
+    if provider not in iv2.PAYMENT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown payment provider")
+    if provider in _EXTRA_PAYMENT_MODULES and not bool(
+            await _get_setting_value(db, "enable_extra_payment_gateways", False)):
+        raise HTTPException(status_code=400,
+                            detail="Hanya Duitku yang tersedia sebagai payment gateway.")
+    inv = await db.invoices.find_one({"_id": _oid(iid), "user_id": ObjectId(user["id"])})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if inv.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Invoice already paid")
+    return await _create_online_payment(db, request, inv, email=user["email"],
+                                        name=user.get("name") or "", provider=provider)
+
+
+# ---------------- Payment link PUBLIK (tanpa login) ----------------
+async def _invoice_by_pay_token(db, token: str) -> dict:
+    if not token or len(token) < 16:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    inv = await db.invoices.find_one({"pay_token": token})
+    if not inv or inv.get("status") == "cancelled":
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return inv
+
+
+@router.get("/portal-public/pay/{token}")
+async def public_pay_invoice_view(token: str):
+    """Detail tagihan untuk halaman pembayaran publik - diakses via pay_token
+    acak (permanen sampai lunas), tanpa autentikasi."""
+    db = await _get_db()
+    await _mark_overdue(db)
+    inv = await _invoice_by_pay_token(db, token)
+    u = await db.users.find_one({"_id": inv["user_id"]}) or {}
+    bank_doc = await db.settings.find_one({"key": "bank_accounts"}) or {}
+    banks = bank_doc.get("value") or [
+        {"bank": "MANDIRI", "number": "1240011911816", "holder": "INTERCLOUD DIGITAL INOVASI"},
+        {"bank": "BCA", "number": "4730862038", "holder": "ANANG MADIA CUGITA"},
+    ]
+    duitku_on = bool(await _payment_settings(db, "duitku"))
+    return {
+        "number": inv.get("number", ""),
+        "items": inv.get("items", []),
+        "subtotal": inv.get("subtotal", 0),
+        "tax_percent": inv.get("tax_percent"),
+        "tax_amount": inv.get("tax_amount", 0),
+        "total": inv.get("total", 0),
+        "due_date": inv.get("due_date", ""),
+        "status": inv.get("status", "unpaid"),
+        "paid_at": inv.get("paid_at"),
+        "payment_method": inv.get("payment_method"),
+        "client_name": u.get("name", ""),
+        "client_company": u.get("company", "") or "",
+        "bank_accounts": banks,
+        "duitku_enabled": duitku_on,
+        "payment_link": inv.get("payment_link") if inv.get("status") != "paid" else None,
+    }
+
+
+@router.post("/portal-public/pay/{token}/pay-online")
+async def public_pay_invoice_online(token: str, request: Request):
+    """Buat link pembayaran Duitku dari halaman publik (tanpa login)."""
+    db = await _get_db()
+    inv = await _invoice_by_pay_token(db, token)
+    if inv.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Invoice sudah lunas")
+    u = await db.users.find_one({"_id": inv["user_id"]}) or {}
+    base = (os.environ.get("REACT_APP_BACKEND_URL") or "").strip().rstrip("/")
+    return await _create_online_payment(
+        db, request, inv, email=u.get("email", ""), name=u.get("name", ""),
+        provider="duitku", return_url=f"{base}/pay/{token}" if base else "")
 
 
 @router.post("/webhooks/{provider}")
