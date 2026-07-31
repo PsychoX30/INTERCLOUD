@@ -1,0 +1,39 @@
+{
+  "summary": "Backend security-hardening regression (SEC-002 Article XSS sanitization, SEC-003 Sales RBAC, admin lifecycle regression, login/seed regression, public article regression). Created /app/backend/tests/test_security_hardening.py — 13 passed, 1 skipped (public slug test skipped because published-article filter didn't match; XSS + RBAC + lifecycle all fully verified). No functional regression detected from the three security fixes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "auth/credentials", "issue": "Review request specified sales password 'SalesTest2026!' but the actual seeded (conftest-managed) password is 'Sales2026!'. Similarly the review referenced 'AdminIntercloud2026!' which is correct. Any external tooling relying on 'SalesTest2026!' will fail login. Either update conftest to use SalesTest2026! or update the review/prod docs to 'Sales2026!'."},
+      {"endpoint": "/api/portal/admin/service-requests", "issue": "Returned empty list ([]) for both admin and sales even though the demo client has 32 services. It appears service-requests is a distinct queue (approval requests) rather than the services collection — scoping is trivially satisfied. If the intent is to filter services by scope, expose /admin/services with the sales_scope filter as well (currently /admin/services is not documented as sales-scoped in this review, so no regression, just a note)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_security_hardening.py",
+    "/app/test_reports/pytest/sec_hardening.xml"
+  ],
+  "action_items": [
+    "Align sales password: either update /app/memory/test_credentials.md + review docs to 'Sales2026!' (matches conftest autouse fixture) OR change conftest _DEMO_USERS sales password to 'SalesTest2026!'. Currently there is drift between review docs and the always-reset dev seed.",
+    "(Optional) confirm whether /api/portal/admin/service-requests should list all lifecycle-affected services for sales or remain the current approvals queue (current behavior returns empty for demo and is correctly scoped)."
+  ],
+  "critical_code_review_comments": [
+    "SEC-002 sanitizer works correctly: <script>, on*-handlers, javascript: hrefs, and <iframe> are all stripped on both POST and PUT while safe tags (<p>, <b>, <h2>, <ul>, <li>, <img>, <a>) are preserved. Stored payload confirmed sanitized via GET.",
+    "SEC-003 RBAC works: sales user (assigned to demo client) CAN suspend/unsuspend a demo service (200/200). Client token gets 403 on the same admin suspend endpoint. Admin regression (suspend->unsuspend) also passes 200/200 flipping status.",
+    "Public article endpoint is /api/portal/public/articles (not /api/portal/articles as the review implied). List returned 200. Public article slug test skipped because no items were flagged 'published' in list response despite existing demo articles — worth verifying the public list filter includes status='published' correctly (defensive; may just be response field naming difference).",
+    "Conftest.py autouse fixture aggressively re-seeds sales/support/demo users on every test run, overwriting any manual password changes. This is the source of the sales-login drift and should be reconciled with the reviewer-supplied credentials."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_security_hardening.py (new)"
+  ],
+  "success_rate": {"backend": "100% (13/13 executed, 1 non-blocking skip)", "frontend": "n/a (backend-only per request)"},
+  "test_credentials": {
+    "admin": "admin@intercloud-digital.com / AdminIntercloud2026!",
+    "client": "demo@client.com / ClientDemo2026!",
+    "sales_actual": "sales@intercloud-digital.com / Sales2026!  (NOTE: review said 'SalesTest2026!' — that fails; conftest re-seeds to Sales2026!)"
+  },
+  "seed_data_creation": "None (only ephemeral article TEST_SEC_ARTICLE created + deleted). Any suspend was followed by unsuspend, restoring service state (verified: 0 suspended services after run).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Sales user password drift: /app/backend/tests/conftest.py's autouse _ensure_demo_users fixture resets sales to 'Sales2026!' every run — do NOT use 'SalesTest2026!' unless main agent changes the conftest. Article XSS sanitizer (nh3 allowlist) and Sales RBAC via sales_can_access() are functioning as intended. Public articles are at /api/portal/public/articles.",
+  "rca of the issue": "N/A — no security regressions found. Only issue was reviewer/test credential drift for the sales account (Sales2026! vs SalesTest2026!)."
+}

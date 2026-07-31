@@ -8371,6 +8371,8 @@ async def admin_service_suspend(sid: str, payload: dict, request: Request,
     svc = await db.services.find_one({"_id": _oid(sid)})
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
+    if not sales_can_access(staff, svc.get("user_id")):
+        raise HTTPException(status_code=403, detail="Layanan ini di luar klien yang Anda tangani")
     if svc.get("status") == "suspended":
         raise HTTPException(status_code=400, detail="Layanan sudah dalam status suspended")
     if svc.get("status") == "terminated":
@@ -8403,6 +8405,8 @@ async def admin_service_unsuspend(sid: str, request: Request,
     svc = await db.services.find_one({"_id": _oid(sid)})
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
+    if not sales_can_access(staff, svc.get("user_id")):
+        raise HTTPException(status_code=403, detail="Layanan ini di luar klien yang Anda tangani")
     if svc.get("status") != "suspended":
         raise HTTPException(status_code=400, detail="Layanan tidak sedang disuspend")
     vm_note = await _service_vm_power(db, svc, "start")
@@ -8488,6 +8492,8 @@ async def admin_service_requests(status: str = "pending",
         query = {"termination_request": {"$exists": True, "$ne": None}}
     else:
         query = {"termination_request.status": "pending"}
+    # Sales hanya melihat permintaan dari klien yang mereka tangani.
+    query.update(_sales_scope_filter(staff))
     docs = await db.services.find(query).to_list(1000)
     out = []
     for d in docs:
@@ -8512,6 +8518,8 @@ async def admin_terminate_approve(sid: str, payload: dict, request: Request,
     svc = await db.services.find_one({"_id": _oid(sid)})
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
+    if not sales_can_access(staff, svc.get("user_id")):
+        raise HTTPException(status_code=403, detail="Layanan ini di luar klien yang Anda tangani")
     req = svc.get("termination_request") or {}
     if req.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Tidak ada permintaan terminate yang pending")
@@ -8546,6 +8554,8 @@ async def admin_terminate_reject(sid: str, payload: dict, request: Request,
     svc = await db.services.find_one({"_id": _oid(sid)})
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
+    if not sales_can_access(staff, svc.get("user_id")):
+        raise HTTPException(status_code=403, detail="Layanan ini di luar klien yang Anda tangani")
     req = svc.get("termination_request") or {}
     if req.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Tidak ada permintaan terminate yang pending")
@@ -10951,6 +10961,35 @@ async def _ensure_article_indexes(db):
         pass
 
 
+# Allowlist HTML sanitizer for user-authored rich text (article body). Neutralizes
+# stored XSS: strips <script>/<style>/<iframe>, on* handlers, javascript: URLs, etc.
+# Applied server-side so it protects even if the browser CSP allows inline scripts.
+_ALLOWED_HTML_TAGS = {
+    "p", "br", "hr", "span", "div", "a", "b", "strong", "i", "em", "u", "s",
+    "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote",
+    "code", "pre", "img", "figure", "figcaption", "table", "thead", "tbody",
+    "tfoot", "tr", "th", "td", "sub", "sup", "mark", "small",
+}
+_ALLOWED_HTML_ATTRS = {
+    "a": {"href", "title", "target"},
+    "img": {"src", "alt", "title", "width", "height", "loading"},
+    "*": {"class"},
+}
+
+
+def _sanitize_article_html(html: str) -> str:
+    if not html:
+        return ""
+    import nh3
+    return nh3.clean(
+        html,
+        tags=_ALLOWED_HTML_TAGS,
+        attributes=_ALLOWED_HTML_ATTRS,
+        url_schemes={"http", "https", "mailto", "tel"},
+        link_rel="noopener noreferrer nofollow",
+    )
+
+
 async def _unique_slug(db, base: str, ignore_id: Optional[str] = None) -> str:
     slug = _slugify(base)
     i = 1
@@ -11002,6 +11041,7 @@ async def admin_article_create(payload: m.ArticleIn, admin=Depends(get_current_c
     doc = payload.model_dump()
     doc.update({
         "slug": slug,
+        "body_html": _sanitize_article_html(doc.get("body_html", "")),
         "tags": _norm_tags(payload.tags),
         "meta_keywords": _norm_tags(payload.meta_keywords),
         "author_name": payload.author_name or admin["name"],
@@ -11025,6 +11065,7 @@ async def admin_article_update(aid: str, payload: m.ArticleIn,
     if not existing:
         raise HTTPException(status_code=404, detail="Article not found")
     upd = payload.model_dump()
+    upd["body_html"] = _sanitize_article_html(upd.get("body_html", ""))
     upd["tags"] = _norm_tags(payload.tags)
     upd["meta_keywords"] = _norm_tags(payload.meta_keywords)
     upd["updated_at"] = _now()

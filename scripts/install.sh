@@ -19,6 +19,11 @@
 #                         a password change)
 #   EMERGENT_LLM_KEY      Optional: paste to enable AI features
 #
+# SECURITY: This installer NEVER sets SEED_DEV. The backend treats SEED_DEV as
+# the dev/preview switch — when unset (i.e. every production install) it will
+# NOT use any well-known default admin password and will NOT write a plaintext
+# credentials file to disk. Do not set SEED_DEV on a production server.
+#
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/PsychoX30/INTERCLOUD.git}"

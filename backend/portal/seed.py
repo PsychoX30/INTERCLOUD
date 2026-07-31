@@ -21,6 +21,14 @@ from datetime import datetime, timezone
 from .auth import hash_password, verify_password
 
 
+def _is_dev_env() -> bool:
+    """Development/preview only when SEED_DEV is explicitly enabled. Secure by
+    default: a production install (SEED_DEV unset) NEVER uses the well-known dev
+    admin password and NEVER writes a plaintext credentials file to disk, even
+    if the repo's `memory/` folder happens to be present."""
+    return os.environ.get("SEED_DEV", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 async def seed_all(db):
     await _seed_admin(db)
     await _migrate_assets_straight_line(db)
@@ -31,13 +39,13 @@ async def _seed_admin(db):
     """Create the admin user on first boot; re-sync the password hash if
     ADMIN_PASSWORD later changes in backend/.env.
 
-    Production safety: the well-known dev default password is ONLY used in
-    the development environment (detected via /app/memory). On a production
-    box without ADMIN_PASSWORD set, a random password is generated and
-    logged ONCE with a must-change flag."""
+    Production safety: the well-known dev default password is ONLY used when
+    SEED_DEV is explicitly enabled (development/preview). On a production box
+    (SEED_DEV unset) without ADMIN_PASSWORD set, a random password is generated
+    and logged ONCE with a must-change flag."""
     admin_email = os.environ.get("ADMIN_EMAIL", "support@intercloud-digital.com").lower()
     admin_pw    = os.environ.get("ADMIN_PASSWORD")
-    is_dev      = os.path.isdir("/app/memory")
+    is_dev      = _is_dev_env()
 
     a = await db.users.find_one({"email": admin_email})
     if not a:
@@ -109,9 +117,10 @@ async def _migrate_assets_straight_line(db):
 
 async def _write_credentials_file(db):
     """Write the admin credentials to /app/memory/test_credentials.md for the
-    dev/test harness ONLY. Skipped entirely in production installs (the
-    /app/memory folder only exists in the development environment), so no
-    plaintext credentials ever land on a production server."""
+    dev/test harness ONLY (SEED_DEV enabled). Skipped entirely in production so
+    no plaintext credentials ever land on a production server."""
+    if not _is_dev_env():
+        return
     admin_email = os.environ.get("ADMIN_EMAIL", "support@intercloud-digital.com")
     admin_pw    = os.environ.get("ADMIN_PASSWORD", "AdminIntercloud2026!")
     path = "/app/memory/test_credentials.md"

@@ -69,9 +69,20 @@ agenthub/agents/youtube/db
 **/*.tar.gz
 **/*.tar
 **/*.tgz
+**/*.gz
+**/*.archive.gz
 *.pack
 *.deb
 *.dylib
+
+# Database backups (may contain live integration secrets — NEVER commit)
+/backups/
+backups/
+**/*.archive.gz
+
+# Debris / editor artifacts
+backend/requirements.txt.new
+_backup_frontend_new/
 
 # Build caches
 .cache/
