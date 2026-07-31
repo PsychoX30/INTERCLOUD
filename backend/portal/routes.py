@@ -6836,6 +6836,7 @@ def _pdf_template(
     tax_amount: float,    total: float,
     tax_percent: float,
     credit_applied: float = 0,
+    credit_notes: list = None,
     status: str,
     billed_to: dict,
     transactions: list = None,
@@ -6897,6 +6898,34 @@ def _pdf_template(
         """
     else:
         tx_block = ""
+
+    # ---- credit notes applied (detail di bawah tabel total) ----
+    if credit_notes:
+        cn_rows = "".join(
+            f"<tr>"
+            f"<td>{c.get('number', '')}</td>"
+            f"<td>{c.get('reason', '') or '-'}</td>"
+            f"<td>{_long_date(c.get('applied_at') or c.get('created_at', ''))}</td>"
+            f"<td class='amt'>-{_idr(c.get('amount', 0))}</td>"
+            f"</tr>"
+            for c in credit_notes
+        )
+        cn_block = f"""
+        <div class="section-title">Credit Notes Applied</div>
+        <table class="tx">
+          <thead>
+            <tr>
+              <th style="width:22%">Number</th>
+              <th style="width:36%">Reason</th>
+              <th style="width:22%">Applied Date</th>
+              <th style="width:20%;text-align:right">Amount</th>
+            </tr>
+          </thead>
+          <tbody>{cn_rows}</tbody>
+        </table>
+        """
+    else:
+        cn_block = ""
 
     # ---- banks (unpaid only) ----
     if banks:
@@ -7045,6 +7074,8 @@ def _pdf_template(
     </table>
   </div>
 
+  {cn_block}
+
   {tx_block}
 
   {bank_block}
@@ -7083,6 +7114,10 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
 
     status = (d.get("status") or "unpaid").lower()
 
+    cn_docs = await db.credit_notes.find({"invoice_id": d["_id"], "status": "applied"}) \
+        .sort("created_at", 1).to_list(50)
+    credit_applied = sum(float(c.get("amount") or 0) for c in cn_docs)
+
     # Synthesize transactions from paid_at + payment_method when invoice is paid
     tx_list = list(d.get("transactions") or [])
     if not tx_list and status == "paid" and d.get("paid_at"):
@@ -7104,7 +7139,8 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
         tax_amount=d.get("tax_amount", 0),
         total=d.get("total", 0),
         tax_percent=d.get("tax_percent", 11.0),
-        credit_applied=await _sum_applied_credit(db, d["_id"]),
+        credit_applied=credit_applied,
+        credit_notes=cn_docs,
         status=status,
         billed_to=u,
         transactions=tx_list,
