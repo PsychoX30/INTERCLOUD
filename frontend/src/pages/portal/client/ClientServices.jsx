@@ -109,7 +109,10 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
         const base = process.env.REACT_APP_BACKEND_URL.replace(/^http/, "ws");
         const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
                     `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}`;
-        const rfb = new RFB(screenRef.current, url, { credentials: { password: data.ticket } });
+        const rfb = new RFB(screenRef.current, url, {
+          credentials: { password: data.ticket },
+          wsProtocols: ["binary"],
+        });
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
         rfb.addEventListener("connect", () => setState("connected"));

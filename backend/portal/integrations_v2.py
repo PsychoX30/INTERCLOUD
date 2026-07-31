@@ -105,6 +105,8 @@ class ProxmoxClient:
         self.default_bridge = o.get("default_bridge") or "vmbr0"
         self.clone_template_vmid = o.get("clone_template_vmid")
         self.ssl_verify = bool(o.get("ssl_verify", False))
+        self.server_name = settings.get("name") or o.get("name") or "Default"
+        self.server_id = settings.get("server_id") or settings.get("_id")
 
     def _headers(self) -> Dict[str, str]:
         if self.token_id and self.token_secret:
@@ -318,6 +320,56 @@ class ProxmoxClient:
     async def vnc_ticket(self, node: str, vmid: int) -> dict:
         """Returns {ticket, port, cert} for VNC proxy."""
         return await self._post(f"/nodes/{node}/qemu/{vmid}/vncproxy", {"websocket": 1})
+
+    async def node_status(self, node: str) -> dict:
+        return await self._get(f"/nodes/{node}/status") or {}
+
+    async def rrddata(self, node: str, vmid: int, timeframe: str = "hour") -> list:
+        """Per-VM RRD time series (cpu, mem/maxmem, disk, netin/netout)."""
+        tf = timeframe if timeframe in ("hour", "day", "week", "month", "year") else "hour"
+        return await self._get(
+            f"/nodes/{node}/qemu/{vmid}/rrddata?timeframe={tf}&cf=AVERAGE") or []
+
+    async def capacity(self) -> dict:
+        """Aggregate free resources across all online nodes of THIS server.
+
+        Returns {ok, nodes:[{node,free_mem_mb,total_mem_mb,cpus,cpu_used_pct,
+        free_disk_gb}], free_mem_mb, cores, free_disk_gb}."""
+        out = {"ok": True, "nodes": [], "free_mem_mb": 0, "cores": 0, "free_disk_gb": 0}
+        try:
+            nodes = await self.list_nodes()
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:150], "nodes": [],
+                    "free_mem_mb": 0, "cores": 0, "free_disk_gb": 0}
+        for n in nodes:
+            if n.get("status") != "online":
+                continue
+            node = n.get("node")
+            try:
+                st = await self.node_status(node)
+            except Exception:
+                continue
+            mem = st.get("memory") or {}
+            free_mem_mb = int((mem.get("free") or 0) / (1024 * 1024))
+            total_mem_mb = int((mem.get("total") or 0) / (1024 * 1024))
+            cpus = int((st.get("cpuinfo") or {}).get("cpus") or 0)
+            cpu_used = float(st.get("cpu") or 0) * 100
+            # best local storage free space
+            free_disk_gb = 0
+            try:
+                for s in await self.list_storages(node):
+                    if int(s.get("active") or 0) == 1 and "images" in (s.get("content") or ""):
+                        free_disk_gb = max(free_disk_gb, int((s.get("avail") or 0) / (1024 ** 3)))
+            except Exception:
+                pass
+            out["nodes"].append({"node": node, "free_mem_mb": free_mem_mb,
+                                 "total_mem_mb": total_mem_mb, "cpus": cpus,
+                                 "cpu_used_pct": round(cpu_used, 1),
+                                 "free_disk_gb": free_disk_gb})
+            out["free_mem_mb"] += free_mem_mb
+            out["cores"] += cpus
+            out["free_disk_gb"] = max(out["free_disk_gb"], free_disk_gb)
+        return out
 
 
 # ============================================================

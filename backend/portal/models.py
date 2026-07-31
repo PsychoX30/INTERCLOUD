@@ -151,6 +151,9 @@ class ProductOption(BaseModel):
     price_monthly_delta: float = 0
     price_setup_delta: float = 0
     is_default: bool = False
+    # Optional provisioning resource this option adds (vps/cloud)
+    resource_kind: Optional[str] = None        # 'cores' | 'memory_mb' | 'disk_gb' | 'ip'
+    resource_amount: float = 0
 
 
 class ProductOptionGroup(BaseModel):
@@ -172,6 +175,9 @@ class ProductOptionGroup(BaseModel):
     unit_label: str = ""        # e.g. 'GB', 'core', 'IP'
     unit_price_monthly: float = 0
     unit_price_setup: float = 0
+    # Optional: each unit of this quantity group adds this provisioning resource
+    resource_kind: Optional[str] = None        # 'cores' | 'memory_mb' | 'disk_gb' | 'ip'
+    resource_per_unit: float = 0
 
 
 class ProductIn(BaseModel):

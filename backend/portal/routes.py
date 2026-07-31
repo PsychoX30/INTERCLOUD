@@ -985,7 +985,12 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
         ssl_ctx = _ssl.create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = _ssl.CERT_NONE
-    await ws.accept(subprotocol="binary")
+    # Echo back the "binary" subprotocol only when the client (noVNC) offered it.
+    # Forcing a subprotocol the client didn't request makes the browser reject
+    # the upgrade -> silent disconnect.
+    offered = ws.scope.get("subprotocols") or []
+    accept_sub = "binary" if "binary" in offered else None
+    await ws.accept(subprotocol=accept_sub)
     try:
         async with _wsl.connect(upstream, additional_headers=headers, ssl=ssl_ctx,
                                 subprotocols=["binary"], max_size=None,
@@ -1046,6 +1051,7 @@ async def client_vm_reset_password(sid: str, payload: dict, request: Request, us
     if not s:
         raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif. Hubungi support.")
     client = iv2.ProxmoxClient(s)
+    method = "guest-agent"
     try:
         st = await client.vm_status(node, int(vmid))
         if st.get("status") != "running":
@@ -1054,20 +1060,37 @@ async def client_vm_reset_password(sid: str, payload: dict, request: Request, us
     except HTTPException:
         raise
     except Exception as e:
-        detail = str(e)[:200]
-        if ("agent" in detail.lower() or "500" in detail or "timeout" in detail.lower()
-                or "timed out" in detail.lower()):
-            detail = "QEMU guest agent tidak aktif atau tidak merespons di VM ini. Hubungi support untuk reset manual."
-        raise HTTPException(status_code=502, detail=detail)
+        detail = str(e)[:200].lower()
+        agent_missing = ("agent" in detail or "500" in detail or "timeout" in detail
+                         or "timed out" in detail or "not running" in detail)
+        if not agent_missing:
+            raise HTTPException(status_code=502, detail=str(e)[:200])
+        # Fallback: cloud-init password reset. cloud-init's set-passwords module
+        # re-applies on every boot, so updating cipassword + rebooting resets the
+        # OS password even without the QEMU guest agent.
+        try:
+            ci_user = username if username else "root"
+            await client.set_config(node, int(vmid), {"ciuser": ci_user, "cipassword": password})
+            await client.vm_action(node, int(vmid), "reboot")
+            method = "cloud-init-reboot"
+        except Exception as e2:
+            raise HTTPException(
+                status_code=502,
+                detail=("Guest agent tidak aktif dan reset via cloud-init gagal "
+                        f"({str(e2)[:120]}). Gunakan Console (noVNC) untuk reset manual."))
     await log_audit(db, actor=user, action="client_vm.reset_password", category="services",
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""),
-                    metadata={"node": node, "vmid": int(vmid), "os_username": username},
+                    metadata={"node": node, "vmid": int(vmid), "os_username": username, "method": method},
                     severity="warning", request=request)
     await db.services.update_one(
         {"_id": svc["_id"]},
-        {"$push": {"self_service_log": {"at": _now(), "action": "reset_password", "by": user["email"]}}})
-    out = {"ok": True, "username": username}
+        {"$push": {"self_service_log": {"at": _now(), "action": "reset_password",
+                                        "by": user["email"], "method": method}}})
+    out = {"ok": True, "username": username, "method": method}
+    if method == "cloud-init-reboot":
+        out["message"] = ("Guest agent tidak tersedia - password diterapkan via cloud-init. "
+                          "VM sedang di-reboot; password baru aktif setelah VM menyala kembali (~1 menit).")
     if generated:
         out["generated_password"] = password
     return out
@@ -1480,6 +1503,89 @@ async def _proxmox_settings(db) -> Optional[dict]:
             "options": {"default_node": cfg.get("default_node") or "", "ssl_verify": False},
         }
     return None
+
+
+# ---------------------------------------------------------------------------
+# Multi-server Proxmox: registry (`proxmox_servers`) + resource-aware placement
+# ---------------------------------------------------------------------------
+def _px_server_to_settings(doc: dict) -> dict:
+    return {
+        "provider": "proxmox",
+        "enabled": bool(doc.get("enabled", True)),
+        "name": doc.get("name") or "Server",
+        "server_id": str(doc.get("_id") or ""),
+        "credentials": {"host": doc.get("host") or "",
+                        "token_id": doc.get("token_id") or "",
+                        "token_secret": doc.get("token_secret") or "",
+                        "username": doc.get("username") or "",
+                        "password": doc.get("password") or ""},
+        "options": {"default_node": doc.get("default_node") or "",
+                    "default_storage": doc.get("default_storage") or "local-lvm",
+                    "default_bridge": doc.get("default_bridge") or "vmbr0",
+                    "clone_template_vmid": doc.get("clone_template_vmid"),
+                    "ssl_verify": False},
+    }
+
+
+async def _proxmox_servers(db) -> list:
+    """Semua server Proxmox aktif (multi-server). Bila registry `proxmox_servers`
+    kosong, fallback ke konfigurasi tunggal legacy (Integrations)."""
+    docs = await db.proxmox_servers.find({"enabled": {"$ne": False}}).sort("sort_order", 1).to_list(50)
+    out = [_px_server_to_settings(d) for d in docs if d.get("host")]
+    if out:
+        return out
+    legacy = await _proxmox_settings(db)
+    if legacy:
+        legacy = dict(legacy)
+        legacy.setdefault("name", "Default")
+        legacy.setdefault("server_id", "legacy")
+        return [legacy]
+    return []
+
+
+async def _proxmox_settings_by_id(db, server_id: str) -> Optional[dict]:
+    if not server_id or server_id == "legacy":
+        return await _proxmox_settings(db)
+    try:
+        doc = await db.proxmox_servers.find_one({"_id": _oid(server_id)})
+    except Exception:
+        doc = None
+    if doc:
+        return _px_server_to_settings(doc)
+    return await _proxmox_settings(db)
+
+
+async def _proxmox_settings_for_service(db, svc: dict) -> Optional[dict]:
+    """Settings server yang menaungi VM service ini (config.server_id), fallback legacy."""
+    sid = ((svc.get("config") or {}).get("server_id") or "").strip()
+    return await _proxmox_settings_by_id(db, sid)
+
+
+async def _pick_proxmox_server(db, *, cores: int = 0, memory_mb: int = 0,
+                               disk_gb: int = 0) -> tuple:
+    """Resource-aware placement: pilih server+node dengan RAM bebas TERBANYAK
+    yang muat spesifikasi (load-balance/spread). Return (settings, node, report)."""
+    servers = await _proxmox_servers(db)
+    report = []
+    best = None  # (free_mem_mb, settings, node)
+    for s in servers:
+        px = iv2.ProxmoxClient(s)
+        cap = await px.capacity()
+        entry = {"server": s.get("name", ""), "server_id": s.get("server_id", ""),
+                 "ok": cap.get("ok"), "error": cap.get("error"), "nodes": cap.get("nodes", [])}
+        report.append(entry)
+        if not cap.get("ok"):
+            continue
+        for n in cap["nodes"]:
+            fits = (n["free_mem_mb"] >= memory_mb + 512 and
+                    (not disk_gb or n["free_disk_gb"] >= disk_gb + 5) and
+                    (not cores or n["cpus"] >= cores))
+            n["fits"] = fits
+            if fits and (best is None or n["free_mem_mb"] > best[0]):
+                best = (n["free_mem_mb"], s, n["node"])
+    if best:
+        return best[1], best[2], report
+    return None, None, report
 
 
 async def _notify_admin_manual_provision(db, order: dict, note: str) -> None:
