@@ -66,6 +66,24 @@ LEARNING: JANGAN pakai pip freeze mentah utk requirements produksi - selalu cek 
 - Kredensial integrasi real user: Duitku, Proxmox, reCAPTCHA, SMTP, RNA.id (lihat test_credentials.md).
 - Bahasa respons ke user: INDONESIA.
 
+## Sesi 2026-07-31: PROVISIONING ENGINE UPGRADE + noVNC CONSOLE - SELESAI & DITES E2E DGN SERVER ASLI
+Semua diverifikasi end-to-end di server Proxmox production user (157.20.32.249, node1, API Token root@pam!IDI). VM uji sudah dihapus bersih.
+
+1. **Anti double-submit (invoice & VM)**:
+   - Order klien: guard `submittingRef` di ClientOrder StepReview + backend dedupe (order identik <90s dikembalikan apa adanya). BUKTI: 2x POST /client/orders -> 1 order/invoice sama.
+   - Mark-paid: `find_one_and_update({status:{$ne:paid}})` atomic + order guard `provisioning_started:{$ne:true}`. BUKTI: paid#1 memicu provision, paid#2 = 0.14s no-op.
+   - Provision manual & webhook: guard order `provisioning_started`. find_vm_by_name menolak hostname yg sudah ada VM (409).
+2. **Verifikasi deployment manual by hostname**: POST /admin/services/{sid}/verify-vm - cari VM di cluster by name=hostname, tautkan node+vmid, aktifkan service. BUKTI: hostname 'GRAFANA' -> VMID 104 ditemukan & service aktif; hostname invalid -> 404. UI: VerifyVmCard di AdminServices detail (muncul bila belum provisioned). Fix root cause screenshot user: node 'node01' salah -> clone_vm kini validasi nama node vs list_nodes, fallback ke node template.
+3. **OS & template REAL dari Proxmox**: GET /admin/proxmox/os-options & /client/proxmox/os-options -> _build_os_options: gabungan template (template=1) + ISO semua storage/node + katalog cloud image. BUKTI UI: 13 opsi render di admin ProxmoxProvisionCard & client OsPicker (grouped ubuntu/debian/rhel).
+4. **Template per-produk + pilih OS klien (VPS & Cloud)**: ProductIn.provision={template_vmid,cores,memory_mb,disk_gb}. AdminProducts -> ProvisionSettings (dropdown template dari server + spek). ClientOrder StepConfigure -> OsPicker (wajib utk vps/cloud), os disimpan di order config.
+5. **Auto-provision engine baru `_vps_provision_task` (background)**: match template by OS -> kalau tak ada, AUTO-BUILD template cloud-init di server dari katalog cloud image (download qcow2 via storage download-url content=import, create VM import-from, convert template, dipakai ulang) -> clone -> wait_unlock -> set cores/memory/ciuser/cipassword/ipconfig0 -> resize disk -> START. Fallback: template produk -> ISO match (VM+ISO, NOC install manual) -> default. BUKTI E2E: order OS 'debian-12' -> match ci-debian-12(9000) -> VM 112 clone+cloud-init(root+IP)+running di node1.
+   - _autobuild_ci_template TERBUKTI: debian-12 qcow2 di-download & jadi template 9000 di server (import-from diterima Proxmox 8.4). Katalog default 6 OS (ubuntu-22.04/24.04, debian-12, almalinux-9, rocky-9, centos-stream-9); override via setting os_cloud_images.
+   - Windows/ISO-only: VM dibuat dari nol + ISO cdrom, status pending, NOC install manual (sesuai pilihan user).
+6. **IP pool KHUSUS VPS/Cloud + inject ke VM**: dcim_prefixes.vps_provision flag + gateway field. _auto_allocate_customer_ip(purpose='vps') HANYA pakai prefix ber-flag. Gateway default = host pertama subnet (mis /29 .0 -> gw .1). IP diinject via cloud-init ipconfig0=ip=X/prefix,gw=Y. BUKTI: 103.147.92.2/29 gw 103.147.92.1 terpasang di VM 112. UI PrefixForm: checkbox 'Untuk provisioning VPS/Cloud' + field Gateway + badge 'VPS Pool'.
+7. **noVNC console utk KLIEN**: GET /client/services/{sid}/vm/console (tiket VNC 1x pakai) + WS proxy /client/services/{sid}/vm/console-ws (relay browser<->Proxmox vncwebsocket, auth via JWT portal, kredensial Proxmox tak bocor ke klien). Frontend: @novnc/novnc RFB modal (VncConsoleModal) di ClientServices, tombol 'Console (noVNC)' + Ctrl+Alt+Del. BUKTI: console endpoint balikkan tiket PVEVNC + port 5900 utk VM running. CATATAN: live streaming perlu diverifikasi user di VM klien yg running (WS proxy siap, ticket OK).
+
+Deps: @novnc/novnc@1.7.0 (yarn), websockets 16.1 (sudah ada). ProxmoxClient integrations_v2.py: +PUT method, +list_storages/storage_content/enable_storage_content/download_url/task_status/wait_task/wait_unlock/create_vm/make_template/set_config/resize_disk/find_vm_by_name, clone_vm validasi node.
+
 ## STATUS NGODINGPAKEAI: SEMUA 209+ TASK SELESAI (2026-07-30). "No open tasks" di CLI.
 
 ## Sesi 2026-07-30 (lanjutan 5): 3 BUG P0 GO-LIVE - SELESAI & DITES E2E DENGAN SERVER ASLI

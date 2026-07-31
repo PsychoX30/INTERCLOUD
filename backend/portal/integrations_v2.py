@@ -134,6 +134,9 @@ class ProxmoxClient:
                 headers = {"CSRFPreventionToken": td.get("CSRFPreventionToken", "")}
             if method == "GET":
                 r = await c.get(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies)
+            elif method == "PUT":
+                r = await c.put(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies,
+                                data=payload or {})
             else:
                 r = await c.post(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies,
                                  data=payload or {})
@@ -202,13 +205,94 @@ class ProxmoxClient:
         src_node = (tpl or {}).get("node") or node or self.default_node
         if not src_node:
             raise ValueError("Proxmox: node template tidak diketahui. Set 'Default node' di Integrations.")
+        valid_nodes = []
+        try:
+            valid_nodes = [n.get("node") for n in await self.list_nodes()]
+        except Exception:
+            valid_nodes = []
+        target = node or self.default_node
+        if target and valid_nodes and target not in valid_nodes:
+            target = None  # nama node salah konfigurasi - tetap di node template
+        if valid_nodes and src_node not in valid_nodes:
+            raise ValueError(f"Proxmox: node '{src_node}' tidak ada di cluster. "
+                             f"Node tersedia: {', '.join(valid_nodes)}")
         newid = await self.next_vmid()
         payload = {"newid": newid, "name": hostname, "full": 1}
-        target = node or self.default_node
         if target and target != src_node:
             payload["target"] = target
         await self._post(f"/nodes/{src_node}/qemu/{int(template_vmid)}/clone", payload)
         return {"vmid": newid, "node": target or src_node, "name": hostname}
+
+    async def list_storages(self, node: str) -> list:
+        return await self._get(f"/nodes/{node}/storage") or []
+
+    async def storage_content(self, node: str, storage: str, content: str = "") -> list:
+        q = f"?content={content}" if content else ""
+        return await self._get(f"/nodes/{node}/storage/{storage}/content{q}") or []
+
+    async def enable_storage_content(self, storage: str, content_type: str) -> None:
+        cur = await self._get(f"/storage/{storage}") or {}
+        kinds = [c for c in (cur.get("content") or "").split(",") if c]
+        if content_type not in kinds:
+            kinds.append(content_type)
+            await self._request("PUT", f"/storage/{storage}", {"content": ",".join(kinds)})
+
+    async def download_url(self, node: str, storage: str, *, url: str, filename: str,
+                           content: str = "import") -> str:
+        return await self._post(f"/nodes/{node}/storage/{storage}/download-url",
+                                {"content": content, "filename": filename, "url": url})
+
+    async def task_status(self, node: str, upid: str) -> dict:
+        from urllib.parse import quote
+        return await self._get(f"/nodes/{node}/tasks/{quote(upid, safe='')}/status") or {}
+
+    async def wait_task(self, node: str, upid: str, timeout_s: int = 900, interval: int = 5) -> None:
+        import asyncio as _aio
+        waited = 0
+        while waited <= timeout_s:
+            st = await self.task_status(node, upid)
+            if st.get("status") == "stopped":
+                if st.get("exitstatus") != "OK":
+                    raise RuntimeError(f"Proxmox task gagal: {st.get('exitstatus')}")
+                return
+            await _aio.sleep(interval)
+            waited += interval
+        raise RuntimeError(f"Proxmox task belum selesai setelah {timeout_s}s")
+
+    async def wait_unlock(self, node: str, vmid: int, timeout_s: int = 600, interval: int = 5) -> None:
+        import asyncio as _aio
+        waited = 0
+        while waited <= timeout_s:
+            st = await self.vm_status(node, vmid)
+            if not st.get("lock"):
+                return
+            await _aio.sleep(interval)
+            waited += interval
+        raise RuntimeError("VM masih terkunci (clone) setelah menunggu")
+
+    async def create_vm(self, node: str, params: dict) -> Any:
+        return await self._post(f"/nodes/{node}/qemu", params)
+
+    async def make_template(self, node: str, vmid: int) -> Any:
+        return await self._post(f"/nodes/{node}/qemu/{vmid}/template", {})
+
+    async def set_config(self, node: str, vmid: int, params: dict) -> Any:
+        return await self._post(f"/nodes/{node}/qemu/{vmid}/config", params)
+
+    async def resize_disk(self, node: str, vmid: int, disk: str, size: str) -> Any:
+        return await self._request("PUT", f"/nodes/{node}/qemu/{vmid}/resize",
+                                   {"disk": disk, "size": size})
+
+    async def find_vm_by_name(self, name: str) -> Optional[dict]:
+        rows = await self._get("/cluster/resources?type=vm") or []
+        want = (name or "").strip().lower()
+        if not want:
+            return None
+        for r in rows:
+            if str(r.get("name", "")).strip().lower() == want and int(r.get("template") or 0) != 1:
+                return {"vmid": int(r.get("vmid")), "node": r.get("node", ""),
+                        "name": r.get("name", ""), "status": r.get("status", "")}
+        return None
 
     async def set_cloudinit_credentials(self, node: str, vmid: int, username: str, password: str) -> None:
         """Set ciuser/cipassword on the VM config - applied by cloud-init on first boot."""

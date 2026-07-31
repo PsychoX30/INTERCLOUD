@@ -78,9 +78,8 @@ const CONFIG_LABELS = {
 
 const ServiceDetailModal = ({ serviceId, onClose }) => {
   const [d, setD] = useState(null);
-  useEffect(() => {
-    api.get(`/admin/services/${serviceId}/detail`).then((r) => setD(r.data)).catch(() => setD(false));
-  }, [serviceId]);
+  const load = () => api.get(`/admin/services/${serviceId}/detail`).then((r) => setD(r.data)).catch(() => setD(false));
+  useEffect(() => { load(); }, [serviceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" onClick={onClose}>
@@ -138,6 +137,11 @@ const ServiceDetailModal = ({ serviceId, onClose }) => {
 
             <TrafficSourceCard serviceId={serviceId} config={d.config || {}} />
 
+            {["vps", "cloud", "dedicated"].includes(d.category) &&
+              ((d.config || {}).provision_status !== "provisioned" || !(d.config || {}).vmid) && (
+              <VerifyVmCard serviceId={serviceId} config={d.config || {}} onVerified={load} />
+            )}
+
             {d.pending_upgrade && (
               <Card className="p-4 border-amber-200 bg-amber-50/50">
                 <div className="text-sm font-extrabold text-amber-800 mb-1">Upgrade menunggu pembayaran</div>
@@ -185,6 +189,48 @@ const ServiceDetailModal = ({ serviceId, onClose }) => {
         )}
       </div>
     </div>
+  );
+};
+
+const VerifyVmCard = ({ serviceId, config, onVerified }) => {
+  const [hostname, setHostname] = useState(config.hostname || "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const verify = async () => {
+    if (busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const { data } = await api.post(`/admin/services/${serviceId}/verify-vm`, { hostname });
+      setMsg({ ok: true, text: data.message });
+      onVerified && onVerified();
+    } catch (e) {
+      setMsg({ ok: false, text: e?.response?.data?.detail || "Verifikasi gagal" });
+    } finally { setBusy(false); }
+  };
+  return (
+    <Card className="p-4 border-amber-200 bg-amber-50/40" data-testid="verify-vm-card">
+      <div className="text-sm font-extrabold text-amber-900">Verifikasi deployment manual (by hostname)</div>
+      <p className="text-xs text-amber-800 mt-0.5 mb-3">
+        Provisioning otomatis belum selesai? Buat VM di Proxmox dengan nama persis hostname di bawah,
+        lalu klik verifikasi - sistem mencari VM tersebut di cluster dan mengaktifkan service.
+      </p>
+      <div className="flex items-center gap-2">
+        <input value={hostname} onChange={(e) => setHostname(e.target.value)}
+               className="h-9 flex-1 rounded-lg border border-amber-300 px-2 text-sm font-mono bg-white"
+               placeholder="vm-xxxxxx.icd-cust.net" data-testid="verify-vm-hostname" />
+        <button onClick={verify} disabled={busy || !hostname.trim()}
+                className="px-3 py-2 rounded-lg bg-amber-600 text-white text-xs font-bold disabled:opacity-40 whitespace-nowrap"
+                data-testid="verify-vm-btn">
+          {busy ? "Mencari VM…" : "Verifikasi VM"}
+        </button>
+      </div>
+      {msg && (
+        <div className={`mt-2 text-xs rounded-lg px-2.5 py-1.5 border ${msg.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`}
+             data-testid="verify-vm-msg">
+          {msg.text}
+        </div>
+      )}
+    </Card>
   );
 };
 

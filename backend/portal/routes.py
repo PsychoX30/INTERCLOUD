@@ -7,7 +7,7 @@ import re
 from urllib.parse import quote
 
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from bson import ObjectId
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -919,6 +919,105 @@ async def client_vm_status(sid: str, user=Depends(get_current_user)):
         return {"configured": True, "status": "unreachable", "error": str(e)[:200]}
 
 
+@router.get("/client/services/{sid}/vm/console")
+async def client_vm_console_info(sid: str, user=Depends(get_current_user)):
+    """Tiket noVNC console untuk VM milik klien sendiri (via WS proxy portal)."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("category") not in _VM_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Layanan ini bukan VM")
+    if svc.get("status") == "suspended":
+        raise HTTPException(status_code=403, detail="Layanan sedang disuspend")
+    cfg = svc.get("config") or {}
+    s = await _proxmox_settings(db)
+    if not (s and cfg.get("node") and cfg.get("vmid")):
+        raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini")
+    try:
+        t = await iv2.ProxmoxClient(s).vnc_ticket(cfg["node"], int(cfg["vmid"]))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Gagal membuat tiket console: {str(e)[:150]}")
+    await db.services.update_one({"_id": svc["_id"]}, {"$push": {"self_service_log": {
+        "at": _now(), "action": "console_opened", "by": user.get("email", "")}}})
+    return {"ok": True, "node": cfg["node"], "vmid": int(cfg["vmid"]),
+            "port": t.get("port"), "ticket": t.get("ticket"),
+            "ws_path": f"/api/portal/client/services/{sid}/vm/console-ws"}
+
+
+@router.websocket("/client/services/{sid}/vm/console-ws")
+async def client_vm_console_ws(ws: WebSocket, sid: str):
+    """WS relay browser (noVNC) <-> Proxmox vncwebsocket. Klien tidak perlu
+    kredensial Proxmox - autentikasi via JWT portal + vncticket sekali pakai."""
+    from portal import auth as _auth
+    token = ws.query_params.get("token", "")
+    port = ws.query_params.get("port", "")
+    vncticket = ws.query_params.get("vncticket", "")
+    try:
+        payload = _auth.decode_token(token)
+        uid = payload["sub"]
+    except Exception:
+        await ws.close(code=4401)
+        return
+    db = await _get_db()
+    try:
+        svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(uid)})
+    except Exception:
+        svc = None
+    cfg = (svc or {}).get("config") or {}
+    s = await _proxmox_settings(db)
+    if not (svc and svc.get("category") in _VM_CATEGORIES and svc.get("status") != "suspended"
+            and cfg.get("node") and cfg.get("vmid") and s and port and vncticket):
+        await ws.close(code=4403)
+        return
+    px = iv2.ProxmoxClient(s)
+    scheme = "wss" if px.host.startswith("https") else "ws"
+    hostpart = px.host.split("://", 1)[1]
+    upstream = (f"{scheme}://{hostpart}/api2/json/nodes/{cfg['node']}/qemu/{int(cfg['vmid'])}"
+                f"/vncwebsocket?port={quote(str(port), safe='')}&vncticket={quote(vncticket, safe='')}")
+    headers = {}
+    if px.token_id and px.token_secret:
+        headers["Authorization"] = f"PVEAPIToken={px.token_id}={px.token_secret}"
+    import ssl as _ssl
+    import websockets as _wsl
+    ssl_ctx = None
+    if scheme == "wss":
+        ssl_ctx = _ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = _ssl.CERT_NONE
+    await ws.accept(subprotocol="binary")
+    try:
+        async with _wsl.connect(upstream, additional_headers=headers, ssl=ssl_ctx,
+                                subprotocols=["binary"], max_size=None,
+                                open_timeout=15, ping_interval=20) as up:
+            async def _client_to_pve():
+                while True:
+                    msg = await ws.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        return
+                    if msg.get("bytes") is not None:
+                        await up.send(msg["bytes"])
+                    elif msg.get("text"):
+                        await up.send(msg["text"].encode())
+
+            async def _pve_to_client():
+                async for m in up:
+                    await ws.send_bytes(m if isinstance(m, (bytes, bytearray)) else m.encode())
+
+            t1 = asyncio.create_task(_client_to_pve())
+            t2 = asyncio.create_task(_pve_to_client())
+            _, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+            for p in pending:
+                p.cancel()
+    except Exception:
+        pass
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
 @router.post("/client/services/{sid}/vm/reset-password")
 async def client_vm_reset_password(sid: str, payload: dict, request: Request, user=Depends(get_current_user)):
     """Self-service guest OS password reset via QEMU guest agent (audited)."""
@@ -1205,6 +1304,19 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
         tax_percent=float(await _get_setting_value(db, "default_tax_percent", 11.0)),
     )
 
+    # Anti double-submit: klik ganda pada "Confirm & Generate Invoice" tidak
+    # boleh membuat order + invoice kedua. Order identik dalam 90 detik terakhir
+    # dikembalikan apa adanya.
+    dup_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+    dup = await db.orders.find_one({
+        "user_id": ObjectId(user["id"]),
+        "product_id": prod["_id"],
+        "status": {"$in": ["pending_payment", "awaiting_quote"]},
+        "created_at": {"$gte": dup_cutoff},
+    }, sort=[("created_at", -1)])
+    if dup and (dup.get("cart_snapshot") or {}).get("total") == cart["total"]:
+        return _serialize_order(dup)
+
     # 1. Create the order
     doc = {
         "user_id": ObjectId(user["id"]),
@@ -1478,12 +1590,12 @@ async def _auto_provision(db, order: dict) -> dict:
                     db, order, f"{panel_label} provisioning gagal: {str(e)[:120]}")
         else:
             cfg.setdefault("hostname", f"{order['user_email'].split('@')[0]}.icd-cust.net")
-            pool_ip = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
-                                                       customer=order.get("user_email", ""),
-                                                       ref=f"order {str(order['_id'])[-6:]}")
-            if pool_ip:
-                cfg.setdefault("ip", pool_ip)
-                await _log("ip_allocated", f"IP {pool_ip} dialokasikan otomatis dari IP pool (DCIM).")
+            pool = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
+                                                    customer=order.get("user_email", ""),
+                                                    ref=f"order {str(order['_id'])[-6:]}")
+            if pool:
+                cfg.setdefault("ip", pool["ip"])
+                await _log("ip_allocated", f"IP {pool['ip']} dialokasikan otomatis dari IP pool (DCIM).")
             cfg["provision_status"] = "pending"
             await _log("manual_provision_required",
                        "Integrasi panel hosting (cPanel/Plesk/DirectAdmin) belum aktif. "
@@ -1491,42 +1603,30 @@ async def _auto_provision(db, order: dict) -> dict:
             await _notify_admin_manual_provision(
                 db, order, "Integrasi panel hosting belum aktif - buat akun hosting manual")
     elif cat in ("vps", "cloud"):
-        cfg.setdefault("os", cfg.get("os") or "Ubuntu 22.04 LTS Server")
+        if cfg.get("os"):
+            await _log("os_selected", f"OS dipilih klien saat order: {cfg['os']}.")
         cfg.setdefault("hostname", f"vm-{str(order['_id'])[-6:]}.icd-cust.net")
-        pool_ip = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
-                                                   customer=order.get("user_email", ""),
-                                                   ref=f"order {str(order['_id'])[-6:]}")
-        if pool_ip:
-            cfg.setdefault("ip", pool_ip)
-            await _log("ip_allocated", f"IP {pool_ip} dialokasikan otomatis dari IP pool (DCIM).")
+        pool = await _auto_allocate_customer_ip(db, hostname=cfg.get("hostname", ""),
+                                                customer=order.get("user_email", ""),
+                                                ref=f"order {str(order['_id'])[-6:]}",
+                                                purpose="vps")
+        if pool:
+            cfg.setdefault("ip", pool["ip"])
+            cfg["ip_prefixlen"] = pool["prefixlen"]
+            cfg["ip_gateway"] = pool["gateway"]
+            await _log("ip_allocated",
+                       f"IP {pool['ip']}/{pool['prefixlen']} (gateway {pool['gateway']}) "
+                       f"dialokasikan dari IP pool khusus VPS/Cloud ({pool['prefix']}).")
+        else:
+            await _log("ip_pool_empty",
+                       "Tidak ada IP pool khusus VPS/Cloud dengan slot tersisa "
+                       "(centang 'Untuk provisioning VPS/Cloud' di DCIM - IP Prefixes). VM memakai DHCP.")
         pxs = await _proxmox_settings(db)
         if pxs:
-            try:
-                vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", cfg["hostname"]).strip("-")[:60]
-                vm = await iv2.ProxmoxClient(pxs).clone_vm(hostname=vm_name)
-                import secrets as _secrets
-                root_pw = _secrets.token_urlsafe(12)
-                cfg.update({"node": vm["node"], "vmid": vm["vmid"],
-                            "root_username": "root", "root_password": root_pw,
-                            "provision_status": "provisioned", "provisioned_at": _now()})
-                await _log("vm_created",
-                           f"Proxmox VM {vm['vmid']} ({cfg['os']}) dibuat di node {vm['node']} (live).")
-                try:
-                    await iv2.ProxmoxClient(pxs).set_cloudinit_credentials(
-                        vm["node"], vm["vmid"], "root", root_pw)
-                    cfg["credentials_applied"] = True
-                    await _log("vm_credentials_set",
-                               "Kredensial root diterapkan via cloud-init (aktif saat boot pertama).")
-                except Exception as e2:
-                    cfg["credentials_applied"] = False
-                    await _log("vm_credentials_pending",
-                               f"Cloud-init credential belum diterapkan ({str(e2)[:80]}) - NOC perlu set password manual.")
-            except Exception as e:
-                cfg["provision_status"] = "pending"
-                await _log("vm_create_failed",
-                           f"Provisioning Proxmox gagal: {str(e)[:150]}. Perlu tindak lanjut manual.")
-                await _notify_admin_manual_provision(
-                    db, order, f"Proxmox clone gagal: {str(e)[:120]}")
+            cfg["provision_status"] = "provisioning"
+            await _log("vm_queued",
+                       "Provisioning VM Proxmox dijadwalkan - berjalan otomatis di background "
+                       "(match template by OS, auto-build template bila belum ada, clone, set spek, start).")
         else:
             cfg["provision_status"] = "pending"
             await _log("manual_provision_required",
@@ -1570,28 +1670,371 @@ async def _auto_provision(db, order: dict) -> dict:
                            f"Detail akun hosting dikirim via email ke {u.get('email', '')}.")
             except Exception as e:
                 await _log("credentials_email_failed", f"Gagal mengirim email detail akun: {str(e)[:120]}")
-    if cat in ("vps", "cloud") and cfg.get("provision_status") == "provisioned":
-        u = await db.users.find_one({"_id": order["user_id"]})
-        if u:
-            from portal import emails as _em
-            try:
-                await _em.on_vm_provisioned(db, u, svc, {
-                    "hostname": cfg.get("hostname", ""),
-                    "ip": cfg.get("ip") or "-",
-                    "os": cfg.get("os", ""),
-                    "vmid": cfg.get("vmid", ""),
-                    "node": cfg.get("node", ""),
-                    "username": cfg.get("root_username", "root"),
-                    # Never email a password that was not actually applied to the VM.
-                    "password": (cfg.get("root_password", "")
-                                 if cfg.get("credentials_applied")
-                                 else "(disetel manual oleh tim NOC - dikirim terpisah)"),
-                })
-                await _log("credentials_emailed",
-                           f"Detail VM (IP, hostname, kredensial) dikirim via email ke {u.get('email', '')}.")
-            except Exception as e:
-                await _log("credentials_email_failed", f"Gagal mengirim email detail VM: {str(e)[:120]}")
+    if cat in ("vps", "cloud") and cfg.get("provision_status") == "provisioning":
+        asyncio.create_task(_vps_provision_task(db, order["_id"], sr.inserted_id))
     return svc
+
+
+# ---------------------------------------------------------------------------
+# VPS/Cloud auto-provisioning: OS catalog, template matching & auto-build
+# ---------------------------------------------------------------------------
+_CLOUD_IMAGE_CATALOG = [
+    {"key": "ubuntu-22.04", "label": "Ubuntu 22.04 LTS", "family": "ubuntu",
+     "url": "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"},
+    {"key": "ubuntu-24.04", "label": "Ubuntu 24.04 LTS", "family": "ubuntu",
+     "url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img"},
+    {"key": "debian-12", "label": "Debian 12 (Bookworm)", "family": "debian",
+     "url": "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"},
+    {"key": "almalinux-9", "label": "AlmaLinux 9", "family": "rhel",
+     "url": "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"},
+    {"key": "rocky-9", "label": "Rocky Linux 9", "family": "rhel",
+     "url": "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"},
+    {"key": "centos-stream-9", "label": "CentOS Stream 9", "family": "rhel",
+     "url": "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"},
+]
+
+_OS_STOPWORDS = {"lts", "server", "live", "desktop", "amd64", "x86", "generic", "genericcloud",
+                 "cloud", "cloudimg", "standard", "latest", "base", "edition", "std", "iso",
+                 "img", "ci", "template", "linux", "bookworm", "jammy", "noble"}
+
+
+def _os_slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9.]+", "-", (s or "").lower()).strip("-")
+
+
+def _os_tokens(s: str) -> list:
+    return [t for t in re.split(r"[^a-z0-9]+", (s or "").lower()) if t and t not in _OS_STOPWORDS]
+
+
+def _match_os_template(templates: list, os_choice: str):
+    """Cari VM template Proxmox yang namanya cocok dengan OS pilihan klien."""
+    want = _os_slug(os_choice)
+    if not want:
+        return None
+    for t in templates or []:
+        tn = _os_slug(t.get("name", ""))
+        if tn and (want in tn or tn in want):
+            return t
+    wt = _os_tokens(os_choice)
+    if not wt:
+        return None
+    for t in templates or []:
+        tt = set(_os_tokens(t.get("name", "")))
+        if tt and all(x in tt for x in wt):
+            return t
+    return None
+
+
+def _match_iso(isos: list, os_choice: str):
+    want = _os_slug(os_choice)
+    if not want:
+        return None
+    for i in isos or []:
+        n = _os_slug(i.get("name", ""))
+        if n and (want in n or n in want):
+            return i
+    wt = _os_tokens(os_choice)
+    if not wt:
+        return None
+    for i in isos or []:
+        it = set(_os_tokens(i.get("name", "")))
+        if it and all(x in it for x in wt):
+            return i
+    return None
+
+
+def _catalog_entry_for(catalog: list, os_choice: str):
+    want = _os_slug(os_choice)
+    if not want:
+        return None
+    for c in catalog or []:
+        ck = _os_slug(c.get("key", ""))
+        if ck and (want == ck or ck in want or want in ck):
+            return c
+    wt = set(_os_tokens(os_choice))
+    for c in catalog or []:
+        ct = set(_os_tokens(c.get("key", "")) + _os_tokens(c.get("label", "")))
+        if wt and ct and wt <= ct:
+            return c
+    return None
+
+
+async def _get_os_catalog(db) -> list:
+    val = await _get_setting_value(db, "os_cloud_images", None)
+    return val if isinstance(val, list) and val else _CLOUD_IMAGE_CATALOG
+
+
+async def _list_cluster_isos(px) -> list:
+    """Semua ISO nyata dari seluruh storage/node cluster Proxmox."""
+    out, seen = [], set()
+    try:
+        nodes = await px.list_nodes()
+    except Exception:
+        return out
+    for n in nodes:
+        node = n.get("node")
+        try:
+            storages = await px.list_storages(node)
+        except Exception:
+            continue
+        for st in storages:
+            if "iso" not in (st.get("content") or ""):
+                continue
+            try:
+                for c in await px.storage_content(node, st["storage"], "iso"):
+                    volid = c.get("volid", "")
+                    fname = volid.split("/")[-1]
+                    if fname and fname not in seen:
+                        seen.add(fname)
+                        out.append({"volid": volid, "name": fname,
+                                    "node": node, "storage": st["storage"]})
+            except Exception:
+                continue
+    return out
+
+
+async def _build_os_options(db) -> dict:
+    """Daftar OS REAL: template + ISO live dari Proxmox + katalog cloud image."""
+    s = await _proxmox_settings(db)
+    catalog = await _get_os_catalog(db)
+    templates, isos, err = [], [], None
+    if s:
+        px = iv2.ProxmoxClient(s)
+        try:
+            templates = await px.list_templates()
+            isos = await _list_cluster_isos(px)
+        except Exception as e:
+            err = str(e)[:150]
+    else:
+        err = "Integrasi Proxmox belum aktif"
+    matched = set()
+    options = []
+    for c in catalog:
+        tpl = _match_os_template(templates, c.get("key", ""))
+        if tpl:
+            matched.add(tpl["vmid"])
+        options.append({"key": c["key"], "label": c.get("label", c["key"]),
+                        "family": c.get("family", "linux"), "type": "cloud-init",
+                        "ready": bool(tpl),
+                        "note": (f"Template siap (VMID {tpl['vmid']})" if tpl
+                                 else "Template dibuat OTOMATIS di server saat order pertama")})
+    for t in templates:
+        if t["vmid"] in matched:
+            continue
+        options.append({"key": t.get("name") or f"vmid-{t['vmid']}",
+                        "label": f"{t.get('name') or t['vmid']} (template)",
+                        "family": "template", "type": "template", "ready": True,
+                        "note": f"Clone langsung dari template VMID {t['vmid']}"})
+    for i in isos:
+        options.append({"key": i["name"], "label": i["name"], "family": "iso",
+                        "type": "iso", "ready": True,
+                        "note": "VM dibuat + ISO terpasang - instalasi OS oleh NOC via console"})
+    return {"online": bool(s) and not err, "error": err,
+            "templates": templates, "isos": isos, "options": options}
+
+
+async def _autobuild_ci_template(px, entry: dict) -> dict:
+    """Bangun template cloud-init di Proxmox dari URL cloud image (sekali per OS,
+    dipakai ulang untuk semua order berikutnya)."""
+    nodes = [n.get("node") for n in await px.list_nodes()]
+    if not nodes:
+        raise RuntimeError("Tidak ada node Proxmox yang terlihat")
+    node = px.default_node if px.default_node in nodes else nodes[0]
+    storages = await px.list_storages(node)
+    imp = next((s for s in storages if "import" in (s.get("content") or "").split(",")), None)
+    if not imp:
+        cand = next((s for s in storages if "iso" in (s.get("content") or "")), None)
+        if not cand:
+            raise RuntimeError(f"Tidak ada storage yang mendukung import/iso di node {node}")
+        await px.enable_storage_content(cand["storage"], "import")
+        imp = cand
+    imp_storage = imp["storage"]
+    fname = f"{_os_slug(entry['key'])}-cloudimg.qcow2"
+    existing = await px.storage_content(node, imp_storage, "import")
+    if not any(str(c.get("volid", "")).endswith("/" + fname) for c in existing):
+        upid = await px.download_url(node, imp_storage, url=entry["url"],
+                                     filename=fname, content="import")
+        await px.wait_task(node, upid, timeout_s=1800, interval=8)
+    rows = await px._get("/cluster/resources?type=vm") or []
+    used = {int(r["vmid"]) for r in rows if r.get("vmid") is not None}
+    tid = 9000
+    while tid in used:
+        tid += 1
+    disk_storage = px.default_storage or "local-lvm"
+    name = f"ci-{_os_slug(entry['key'])}"
+    params = {"vmid": tid, "name": name, "memory": 2048, "cores": 2,
+              "cpu": "x86-64-v2-AES",
+              "net0": f"virtio,bridge={px.default_bridge or 'vmbr0'},firewall=1",
+              "scsihw": "virtio-scsi-single",
+              "scsi0": f"{disk_storage}:0,import-from={imp_storage}:import/{fname}",
+              "ide2": f"{disk_storage}:cloudinit", "boot": "order=scsi0",
+              "serial0": "socket", "vga": "serial0", "ostype": "l26", "agent": 1}
+    upid = await px.create_vm(node, params)
+    if isinstance(upid, str) and upid.startswith("UPID"):
+        await px.wait_task(node, upid, timeout_s=900, interval=6)
+    await px.make_template(node, tid)
+    return {"vmid": tid, "node": node, "name": name}
+
+
+async def _vps_provision_task(db, order_id, service_id) -> None:
+    """Background VM provisioning: match/auto-build template by OS, clone,
+    terapkan spesifikasi produk + cloud-init (root pw + IP pool), start VM."""
+    from portal import emails as _em
+    order = await db.orders.find_one({"_id": order_id})
+    svc = await db.services.find_one({"_id": service_id})
+    if not (order and svc):
+        return
+
+    async def _log(step, msg):
+        await db.orders.update_one(
+            {"_id": order_id},
+            {"$push": {"provision_log": {"at": _now(), "step": step, "message": msg}}})
+
+    async def _fail(msg):
+        await db.services.update_one({"_id": service_id},
+                                     {"$set": {"config.provision_status": "pending"}})
+        await _log("vm_create_failed",
+                   f"{msg} Perlu tindak lanjut manual - buat VM dengan hostname yang sama lalu "
+                   "gunakan 'Verifikasi VM by Hostname' di detail service.")
+        await _notify_admin_manual_provision(db, order, msg[:120])
+
+    cfg = dict(svc.get("config") or {})
+    prod = await db.products.find_one({"_id": svc["product_id"]}) or {}
+    prov = prod.get("provision") or {}
+    pxs = await _proxmox_settings(db)
+    if not pxs:
+        await _fail("Integrasi Proxmox belum aktif.")
+        return
+    px = iv2.ProxmoxClient(pxs)
+    try:
+        os_choice = str(cfg.get("os") or "").strip()
+        templates = await px.list_templates()
+        catalog = await _get_os_catalog(db)
+        tpl = _match_os_template(templates, os_choice) if os_choice else None
+        if tpl:
+            await _log("template_matched",
+                       f"Template '{tpl['name']}' (VMID {tpl['vmid']}) cocok dengan OS '{os_choice}'.")
+        if not tpl and prov.get("template_vmid"):
+            tpl = next((t for t in templates if int(t["vmid"]) == int(prov["template_vmid"])), None)
+            if tpl:
+                await _log("template_product",
+                           f"Memakai template produk '{prod.get('name', '')}': {tpl['name']} (VMID {tpl['vmid']}).")
+        if not tpl and os_choice:
+            entry = _catalog_entry_for(catalog, os_choice)
+            if entry:
+                await _log("template_autobuild_started",
+                           f"Template '{os_choice}' belum ada di server - membuat OTOMATIS dari cloud image "
+                           f"{entry['url'].split('/')[-1]} (±3-10 menit, sekali saja - dipakai ulang order berikutnya).")
+                tpl = await _autobuild_ci_template(px, entry)
+                await _log("template_autobuild_done",
+                           f"Template '{tpl['name']}' (VMID {tpl['vmid']}) selesai dibuat di node {tpl['node']}.")
+        iso = None
+        if not tpl and os_choice:
+            iso = _match_iso(await _list_cluster_isos(px), os_choice)
+        if not tpl and not iso and not os_choice and templates:
+            tpl = (next((t for t in templates
+                         if int(t["vmid"]) == int(px.clone_template_vmid or 0)), None)
+                   or templates[0])
+            await _log("template_default",
+                       f"OS tidak dipilih - memakai template default {tpl['name']} (VMID {tpl['vmid']}).")
+
+        cores = int(prov.get("cores") or cfg.get("cpu") or 2)
+        memory_mb = int(prov.get("memory_mb") or 0) or (int(float(cfg.get("ram_gb") or 0)) * 1024) or 2048
+        disk_gb = int(prov.get("disk_gb") or cfg.get("disk_gb") or 0)
+        vm_name = re.sub(r"[^a-zA-Z0-9-]", "-",
+                         str(cfg.get("hostname") or f"vm-{str(order_id)[-6:]}")).strip("-")[:60]
+
+        dup = await px.find_vm_by_name(vm_name)
+        if dup:
+            await _fail(f"VM bernama '{vm_name}' sudah ada (VMID {dup['vmid']} di {dup['node']}) - "
+                        "tidak membuat duplikat.")
+            return
+
+        if tpl:
+            vm = await px.clone_vm(hostname=vm_name, template_vmid=tpl["vmid"])
+            await _log("vm_cloned",
+                       f"VM {vm['vmid']} di-clone dari template '{tpl['name']}' di node {vm['node']} - "
+                       "menunggu clone selesai.")
+            await px.wait_unlock(vm["node"], vm["vmid"], timeout_s=900)
+            root_pw = secrets.token_urlsafe(12)
+            conf = {"cores": cores, "memory": memory_mb, "ciuser": "root",
+                    "cipassword": root_pw, "nameserver": "8.8.8.8 1.1.1.1"}
+            if cfg.get("ip") and cfg.get("ip_prefixlen"):
+                conf["ipconfig0"] = f"ip={cfg['ip']}/{cfg['ip_prefixlen']},gw={cfg.get('ip_gateway', '')}"
+            else:
+                conf["ipconfig0"] = "ip=dhcp"
+            await px.set_config(vm["node"], vm["vmid"], conf)
+            await _log("vm_configured",
+                       f"Spesifikasi diterapkan: {cores} vCPU, {memory_mb} MB RAM, "
+                       f"cloud-init root + {conf['ipconfig0']}.")
+            if disk_gb:
+                try:
+                    await px.resize_disk(vm["node"], vm["vmid"], "scsi0", f"{disk_gb}G")
+                    await _log("vm_disk_resized", f"Disk utama di-resize ke {disk_gb} GB.")
+                except Exception as e:
+                    await _log("vm_disk_resize_skipped", f"Resize disk dilewati: {str(e)[:100]}")
+            try:
+                await px.vm_action(vm["node"], vm["vmid"], "start")
+                await _log("vm_started", f"VM {vm['vmid']} dinyalakan otomatis.")
+            except Exception as e:
+                await _log("vm_start_failed", f"VM gagal start otomatis: {str(e)[:100]}")
+            upd = {"config.node": vm["node"], "config.vmid": vm["vmid"],
+                   "config.os": os_choice or tpl["name"],
+                   "config.root_username": "root", "config.root_password": root_pw,
+                   "config.credentials_applied": True, "config.cpu": cores,
+                   "config.ram_gb": round(memory_mb / 1024, 1),
+                   "config.provision_status": "provisioned",
+                   "config.provisioned_at": _now(), "status": "active"}
+            if disk_gb:
+                upd["config.disk_gb"] = disk_gb
+            await db.services.update_one({"_id": service_id}, {"$set": upd})
+            await db.orders.update_one({"_id": order_id}, {"$set": {"status": "active"}})
+            await _log("service_activated", f"VM {vm['vmid']} aktif - service diserahkan ke klien.")
+            u = await db.users.find_one({"_id": order["user_id"]})
+            if u:
+                try:
+                    svc2 = await db.services.find_one({"_id": service_id}) or svc
+                    await _em.on_vm_provisioned(db, u, svc2, {
+                        "hostname": cfg.get("hostname", vm_name),
+                        "ip": cfg.get("ip") or "DHCP",
+                        "os": os_choice or tpl["name"],
+                        "vmid": vm["vmid"], "node": vm["node"],
+                        "username": "root", "password": root_pw})
+                    await _log("credentials_emailed",
+                               f"Detail VM + kredensial dikirim via email ke {u.get('email', '')}.")
+                except Exception as e:
+                    await _log("credentials_email_failed",
+                               f"Gagal mengirim email detail VM: {str(e)[:100]}")
+        elif iso:
+            nodes = [n.get("node") for n in await px.list_nodes()]
+            node = iso.get("node") if iso.get("node") in nodes else \
+                (px.default_node if px.default_node in nodes else (nodes[0] if nodes else ""))
+            newid = await px.next_vmid()
+            params = {"vmid": newid, "name": vm_name, "cores": cores, "memory": memory_mb,
+                      "net0": f"virtio,bridge={px.default_bridge or 'vmbr0'},firewall=1",
+                      "scsihw": "virtio-scsi-single",
+                      "scsi0": f"{px.default_storage or 'local-lvm'}:{disk_gb or 40}",
+                      "ide2": f"{iso['volid']},media=cdrom",
+                      "boot": "order=ide2;scsi0", "ostype": "l26"}
+            upid = await px.create_vm(node, params)
+            if isinstance(upid, str) and upid.startswith("UPID"):
+                await px.wait_task(node, upid, timeout_s=300)
+            await db.services.update_one({"_id": service_id}, {"$set": {
+                "config.node": node, "config.vmid": newid, "config.cpu": cores,
+                "config.ram_gb": round(memory_mb / 1024, 1),
+                "config.disk_gb": disk_gb or 40,
+                "config.provision_status": "pending"}})
+            await _log("vm_created_iso",
+                       f"VM {newid} dibuat di node {node} dengan ISO {iso['name']} terpasang "
+                       f"({cores} vCPU / {memory_mb} MB / {disk_gb or 40} GB). OS ini belum punya "
+                       "template cloud-init - NOC install OS via console lalu klik 'Verifikasi VM' untuk aktivasi.")
+            await _notify_admin_manual_provision(
+                db, order, f"Install OS manual via console: VM {newid} ({iso['name']})")
+        else:
+            await _fail(f"Tidak ada template, katalog cloud image, atau ISO yang cocok "
+                        f"untuk OS '{os_choice or '-'}'.")
+    except Exception as e:
+        await _fail(f"Provisioning Proxmox gagal: {str(e)[:200]}.")
 
 
 @router.get("/client/orders")
@@ -2622,6 +3065,7 @@ def _serialize_product(d: dict) -> dict:
         "applies_to_product_ids": [str(x) for x in (d.get("applies_to_product_ids") or [])],
         "applies_to_categories": list(d.get("applies_to_categories") or []),
         "option_groups": list(d.get("option_groups") or []),
+        "provision": d.get("provision") or {},
         "stock_qty": d.get("stock_qty"),
         "sort_order": d.get("sort_order", 100),
         "created_at": _iso(d.get("created_at", "")),
@@ -3381,26 +3825,34 @@ async def admin_update_invoice_status(
     if payload.status == "paid":
         upd["paid_at"] = _now()
         upd["payment_method"] = payload.payment_method or "bank_transfer"
-    await db.invoices.update_one({"_id": _oid(iid)}, {"$set": upd})
+        # Atomic transition: klik ganda "confirm payment" tidak boleh memicu
+        # provisioning / upgrade dua kali.
+        prev = await db.invoices.find_one_and_update(
+            {"_id": _oid(iid), "status": {"$ne": "paid"}}, {"$set": upd})
+        just_paid = prev is not None
+    else:
+        await db.invoices.update_one({"_id": _oid(iid)}, {"$set": upd})
+        just_paid = False
     d = await db.invoices.find_one({"_id": _oid(iid)})
     if not d:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     # If payment just confirmed AND invoice is linked to an order → auto-provision.
-    if payload.status == "paid" and d.get("order_id"):
-        order = await db.orders.find_one({"_id": _oid(d["order_id"])})
-        if order and not order.get("service_id"):
-            await db.orders.update_one(
-                {"_id": order["_id"]},
-                {"$set": {"status": "payment_verified"},
-                 "$push": {"provision_log": {"at": _now(), "step": "payment_verified",
-                                              "message": f"Payment received for invoice {d['number']}."}}},
-            )
+    # Atomic guard on the order: hanya satu request yang boleh memulai provisioning.
+    if just_paid and d.get("order_id"):
+        order = await db.orders.find_one_and_update(
+            {"_id": _oid(d["order_id"]), "service_id": None,
+             "provisioning_started": {"$ne": True}},
+            {"$set": {"status": "payment_verified", "provisioning_started": True},
+             "$push": {"provision_log": {"at": _now(), "step": "payment_verified",
+                                          "message": f"Payment received for invoice {d['number']}."}}},
+        )
+        if order:
             order = await db.orders.find_one({"_id": order["_id"]})
             await _auto_provision(db, order)
 
     # Eksekusi upgrade resource yang menunggu pembayaran invoice ini.
-    if payload.status == "paid":
+    if just_paid:
         await _apply_pending_upgrade(db, d)
         await _auto_register_domain(db, d)
         await _apply_domain_renewal(db, d)
@@ -4791,10 +5243,20 @@ async def _allocate_ip_from_pool(db, prefix_doc: dict, *, hostname: str = "",
     return None
 
 
-async def _auto_allocate_customer_ip(db, *, hostname: str, customer: str, ref: str) -> str | None:
-    """Pilih prefix IPv4 customer dengan slot tersisa, lalu alokasikan IP."""
+async def _auto_allocate_customer_ip(db, *, hostname: str, customer: str, ref: str,
+                                     purpose: str | None = None) -> dict | None:
+    """Pilih prefix IPv4 customer dengan slot tersisa, lalu alokasikan IP.
+
+    purpose="vps": HANYA prefix ber-flag `vps_provision` (pool khusus VPS/Cloud).
+    purpose None : prefix umum (pool khusus VPS/Cloud di-skip agar tidak terpakai)."""
+    import ipaddress as _ip
     prefixes = await db.dcim_prefixes.find({"family": 4}).to_list(100)
     for p in prefixes:
+        if purpose == "vps":
+            if not p.get("vps_provision"):
+                continue
+        elif p.get("vps_provision"):
+            continue
         if str(p.get("site", "")).lower() == "internal":
             continue
         if int(p.get("usage", 0)) >= int(p.get("capacity", 0)):
@@ -4802,7 +5264,14 @@ async def _auto_allocate_customer_ip(db, *, hostname: str, customer: str, ref: s
         ip = await _allocate_ip_from_pool(db, p, hostname=hostname, customer=customer,
                                           description=f"Auto-allocated for {ref}")
         if ip:
-            return ip
+            try:
+                net = _ip.ip_network(p.get("prefix", ""), strict=False)
+                prefixlen = net.prefixlen
+                gateway = str(p.get("gateway") or "").strip() or str(next(net.hosts()))
+            except (ValueError, StopIteration):
+                prefixlen, gateway = 24, ""
+            return {"ip": ip, "prefixlen": prefixlen, "gateway": gateway,
+                    "prefix": p.get("prefix", "")}
     return None
 
 
@@ -7165,8 +7634,9 @@ async def proxmox_vnc(node: str, vmid: int, admin=Depends(get_current_admin)):
 
 @router.post("/admin/provisioning/proxmox/create")
 async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles("admin", "support"))):
-    """Manually clone a VM on the LIVE Proxmox cluster. Fails clearly when the
-    integration is not configured - never fakes success."""
+    """Manual VM provisioning di Proxmox LIVE: match template by OS, auto-build
+    template cloud-init bila belum ada di server, atau buat VM + ISO terpasang.
+    Menolak hostname yang sudah ada VM-nya (anti double-provision)."""
     db = await _get_db()
     s = await _proxmox_settings(db)
     if not s:
@@ -7176,12 +7646,160 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles(
     if not hostname:
         raise HTTPException(status_code=400, detail="Hostname wajib diisi")
     vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", hostname).strip("-")[:60]
+    px = iv2.ProxmoxClient(s)
     try:
-        vm = await iv2.ProxmoxClient(s).clone_vm(hostname=vm_name,
-                                                 node=(payload.get("node") or "").strip() or None)
+        dup = await px.find_vm_by_name(vm_name)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Gagal terhubung ke Proxmox: {str(e)[:150]}")
+    if dup:
+        raise HTTPException(status_code=409,
+                            detail=f"VM dengan hostname '{vm_name}' sudah ada (VMID {dup['vmid']} "
+                                   f"di node {dup['node']}). Tidak membuat duplikat.")
+    os_choice = str(payload.get("os") or "").strip()
+    cores = int(payload.get("cores") or 2)
+    memory_mb = int(payload.get("memory") or 2048)
+    disk_gb = int(payload.get("disk") or 0)
+    root_pw = secrets.token_urlsafe(12)
+
+    async def _configure_and_start(node, vmid):
+        try:
+            await px.wait_unlock(node, vmid, timeout_s=900)
+            await px.set_config(node, vmid, {
+                "cores": cores, "memory": memory_mb, "ciuser": "root",
+                "cipassword": root_pw, "ipconfig0": "ip=dhcp",
+                "nameserver": "8.8.8.8 1.1.1.1"})
+            if disk_gb:
+                try:
+                    await px.resize_disk(node, vmid, "scsi0", f"{disk_gb}G")
+                except Exception:
+                    pass
+            await px.vm_action(node, vmid, "start")
+        except Exception:
+            logging.getLogger("portal.provision").exception("manual VM %s post-config failed", vmid)
+
+    try:
+        templates = await px.list_templates()
+        tpl = _match_os_template(templates, os_choice) if os_choice else None
+        if not tpl and os_choice:
+            entry = _catalog_entry_for(await _get_os_catalog(db), os_choice)
+            if entry:
+                async def _build_then_clone():
+                    try:
+                        t = await _autobuild_ci_template(px, entry)
+                        vm = await px.clone_vm(hostname=vm_name, template_vmid=t["vmid"])
+                        await _configure_and_start(vm["node"], vm["vmid"])
+                    except Exception:
+                        logging.getLogger("portal.provision").exception(
+                            "autobuild+clone gagal untuk %s", vm_name)
+                asyncio.create_task(_build_then_clone())
+                return {"ok": True, "building": True, "root_password": root_pw,
+                        "message": (f"Template cloud-init '{os_choice}' belum ada - sedang DIBUAT OTOMATIS "
+                                    f"di server (download image ±3-10 menit). VM '{vm_name}' akan di-clone, "
+                                    f"dikonfigurasi ({cores} vCPU/{memory_mb} MB) dan di-start otomatis. "
+                                    f"Password root: {root_pw}. Pantau progres di menu Proxmox VMs.")}
+            iso = _match_iso(await _list_cluster_isos(px), os_choice)
+            if iso:
+                nodes = [n.get("node") for n in await px.list_nodes()]
+                node = iso.get("node") if iso.get("node") in nodes else \
+                    (px.default_node if px.default_node in nodes else (nodes[0] if nodes else ""))
+                newid = await px.next_vmid()
+                params = {"vmid": newid, "name": vm_name, "cores": cores, "memory": memory_mb,
+                          "net0": f"virtio,bridge={px.default_bridge or 'vmbr0'},firewall=1",
+                          "scsihw": "virtio-scsi-single",
+                          "scsi0": f"{px.default_storage or 'local-lvm'}:{disk_gb or 40}",
+                          "ide2": f"{iso['volid']},media=cdrom",
+                          "boot": "order=ide2;scsi0", "ostype": "l26"}
+                upid = await px.create_vm(node, params)
+                if isinstance(upid, str) and upid.startswith("UPID"):
+                    await px.wait_task(node, upid, timeout_s=300)
+                return {"ok": True, "vmid": newid, "node": node, "name": vm_name, "iso": iso["name"],
+                        "message": f"VM {newid} dibuat dengan ISO {iso['name']} terpasang - "
+                                   "install OS via console (noVNC)."}
+        if not tpl:
+            tpl = (next((t for t in templates
+                         if int(t["vmid"]) == int(px.clone_template_vmid or 0)), None)
+                   or (templates[0] if templates else None))
+        if not tpl:
+            raise HTTPException(status_code=400,
+                                detail=f"OS '{os_choice or '-'}' tidak cocok dengan template/ISO manapun "
+                                       "di cluster dan tidak ada di katalog cloud image.")
+        vm = await px.clone_vm(hostname=vm_name, template_vmid=tpl["vmid"],
+                               node=(payload.get("node") or "").strip() or None)
+        asyncio.create_task(_configure_and_start(vm["node"], vm["vmid"]))
+        return {"ok": True, "vmid": vm["vmid"], "node": vm["node"], "name": vm["name"],
+                "root_password": root_pw,
+                "message": f"VM {vm['vmid']} di-clone dari template '{tpl.get('name', '')}' - "
+                           f"konfigurasi ({cores} vCPU/{memory_mb} MB) + auto-start berjalan di background. "
+                           f"Password root: {root_pw}."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Provisioning Proxmox gagal: {str(e)[:180]}")
-    return {"ok": True, "vmid": vm["vmid"], "node": vm["node"], "name": vm["name"]}
+
+
+@router.get("/admin/proxmox/os-options")
+async def admin_proxmox_os_options(staff=Depends(require_roles("admin", "support"))):
+    """Daftar OS REAL untuk provisioning: template + ISO live dari Proxmox
+    production + katalog cloud image (auto-build)."""
+    db = await _get_db()
+    return await _build_os_options(db)
+
+
+@router.get("/client/proxmox/os-options")
+async def client_proxmox_os_options(user=Depends(get_current_user)):
+    """Pilihan OS untuk order VPS/Cloud (tanpa detail infrastruktur)."""
+    db = await _get_db()
+    data = await _build_os_options(db)
+    return {"online": data["online"], "options": data["options"]}
+
+
+@router.post("/admin/services/{sid}/verify-vm")
+async def admin_service_verify_vm(sid: str, payload: dict,
+                                  staff=Depends(require_roles("admin", "support"))):
+    """Verifikasi deployment manual by HOSTNAME: cari VM di cluster Proxmox
+    dengan nama = hostname service, tautkan (node+VMID) dan aktifkan service."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    cfg = svc.get("config") or {}
+    hostname = (payload.get("hostname") or cfg.get("hostname") or "").strip()
+    if not hostname:
+        raise HTTPException(status_code=400,
+                            detail="Service tidak punya hostname - kirim field 'hostname' pada request.")
+    vm_name = re.sub(r"[^a-zA-Z0-9-]", "-", hostname).strip("-")[:60]
+    s = await _proxmox_settings(db)
+    if not s:
+        raise HTTPException(status_code=400, detail="Integrasi Proxmox belum aktif.")
+    try:
+        found = await iv2.ProxmoxClient(s).find_vm_by_name(vm_name)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Gagal terhubung ke Proxmox: {str(e)[:150]}")
+    if not found:
+        raise HTTPException(status_code=404,
+                            detail=f"Tidak ada VM bernama '{vm_name}' di cluster. Buat VM dengan "
+                                   "nama persis itu di Proxmox, lalu klik verifikasi lagi.")
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+        "config.hostname": hostname,
+        "config.node": found["node"], "config.vmid": found["vmid"],
+        "config.provision_status": "provisioned", "config.provisioned_at": _now(),
+        "status": "active"}})
+    if svc.get("order_id"):
+        try:
+            await db.orders.update_one(
+                {"_id": _oid(svc["order_id"])},
+                {"$set": {"status": "active"},
+                 "$push": {"provision_log": {
+                     "at": _now(), "step": "vm_verified",
+                     "message": f"VM '{vm_name}' diverifikasi manual by hostname oleh "
+                                f"{staff.get('name', 'staff')}: VMID {found['vmid']} di node "
+                                f"{found['node']} (status {found.get('status', '')}). Service diaktifkan."}}})
+        except Exception:
+            pass
+    return {"ok": True, "vmid": found["vmid"], "node": found["node"],
+            "vm_status": found.get("status", ""),
+            "message": f"VM ditemukan: VMID {found['vmid']} di node {found['node']} "
+                       f"(status {found.get('status', '')}). Service diaktifkan."}
 
 
 @router.post("/admin/provisioning/hosting/create")

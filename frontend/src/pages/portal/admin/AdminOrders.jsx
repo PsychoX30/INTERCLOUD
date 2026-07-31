@@ -7,15 +7,20 @@ import { Link } from "react-router-dom";
 const AdminOrders = () => {
   const [rows, setRows] = useState(null);
   const [active, setActive] = useState(null);
+  const [verifying, setVerifying] = useState(null);
   const load = () => api.get("/admin/orders").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
   if (!rows) return <Loading />;
 
   const verifyPayment = async (o) => {
+    if (verifying) return; // anti double-click: 1 konfirmasi = 1 provisioning
     if (!o.invoice_id) { alert("No linked invoice for this order."); return; }
     if (!window.confirm(`Confirm payment received for order "${o.product_name}"? This will auto-provision the service.`)) return;
-    await api.put(`/admin/invoices/${o.invoice_id}/status`, { status: "paid", payment_method: "bank_transfer" });
-    load();
+    setVerifying(o.id);
+    try {
+      await api.put(`/admin/invoices/${o.invoice_id}/status`, { status: "paid", payment_method: "bank_transfer" });
+      await load();
+    } finally { setVerifying(null); }
   };
 
   const setStatus = async (id, status) => {
@@ -50,8 +55,8 @@ const AdminOrders = () => {
                   <Eye className="h-4 w-4" /> Detail
                 </button>
                 {(o.status === "awaiting_verification" || o.status === "pending_payment") && o.invoice_id && (
-                  <button className={btnPrimary} onClick={() => verifyPayment(o)} data-testid={`verify-payment-${o.id}`}>
-                    <CheckCircle2 className="h-4 w-4" /> Verify Payment & Provision
+                  <button className={btnPrimary} onClick={() => verifyPayment(o)} disabled={verifying === o.id} data-testid={`verify-payment-${o.id}`}>
+                    <CheckCircle2 className="h-4 w-4" /> {verifying === o.id ? "Memproses…" : "Verify Payment & Provision"}
                   </button>
                 )}
                 {o.status === "awaiting_quote" && (

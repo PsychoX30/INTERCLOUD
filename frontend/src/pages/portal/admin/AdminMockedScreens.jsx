@@ -55,7 +55,11 @@ const ProxmoxProvision = () => {
   const [reqOpen, setReqOpen] = useState(false);
   const [tplInfo, setTplInfo] = useState(null);
 
-  useEffect(() => { api.get("/admin/proxmox/os-templates").then((r) => setOs(r.data)); }, []);
+  useEffect(() => {
+    api.get("/admin/proxmox/os-options")
+      .then((r) => setOs(r.data.options || []))
+      .catch(() => setOs([]));
+  }, []);
   useEffect(() => {
     api.get("/admin/proxmox/templates")
       .then((r) => setTplInfo(r.data))
@@ -63,13 +67,16 @@ const ProxmoxProvision = () => {
   }, []);
 
   const run = async (e) => {
-    e.preventDefault(); setBusy(true); setMsg(null); setErr(null);
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true); setMsg(null); setErr(null);
     try {
       const { data } = await api.post("/admin/provisioning/proxmox/create", {
         hostname: f.hostname, node: f.node, os: chosen,
         cores: f.cores, memory: f.memory, disk: f.disk,
       });
-      setMsg(`✓ VM "${data.name}" (VMID ${data.vmid}) berhasil dibuat di node ${data.node}.`);
+      if (data.building) setMsg(`⏳ ${data.message}`);
+      else setMsg(`✓ ${data.message || `VM "${data.name}" (VMID ${data.vmid}) berhasil dibuat di node ${data.node}.`}`);
     } catch (e2) {
       setErr(e2?.response?.data?.detail || "Provisioning gagal - periksa integrasi Proxmox.");
     } finally { setBusy(false); }
@@ -102,24 +109,27 @@ const ProxmoxProvision = () => {
 
         <div className="col-span-2">
           <div className="flex items-center justify-between mb-2">
-            <div className={labelClass}>OS Template - from Proxmox ISO library</div>
+            <div className={labelClass}>OS - LIVE dari Proxmox (template, ISO & katalog cloud image)</div>
             <button type="button" className="text-xs font-bold text-[#f5b120] hover:text-[#0a2350]" onClick={() => setReqOpen(true)}>OS not listed? Request one →</button>
           </div>
           <div className="rounded-xl border border-slate-200 max-h-56 overflow-y-auto divide-y divide-slate-100">
-            {Object.keys(groupedOs).length === 0 && <div className="p-4 text-sm text-slate-500">Loading templates…</div>}
+            {Object.keys(groupedOs).length === 0 && <div className="p-4 text-sm text-slate-500">Loading OS dari server Proxmox…</div>}
             {Object.entries(groupedOs).map(([fam, list]) => (
               <div key={fam}>
                 <div className="px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold text-slate-500 bg-slate-50">{fam}</div>
                 {list.map((t) => (
                   <button
-                    key={t.name}
+                    key={t.key}
                     type="button"
-                    onClick={() => setChosen(t.name)}
-                    className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between ${chosen === t.name ? "bg-[#f5b120]/15 text-[#0a2350] font-bold" : "hover:bg-slate-50"}`}
-                    data-testid={`os-${t.name}`}
+                    onClick={() => setChosen(t.key)}
+                    className={`w-full text-left px-3 py-2 text-sm ${chosen === t.key ? "bg-[#f5b120]/15 text-[#0a2350] font-bold" : "hover:bg-slate-50"}`}
+                    data-testid={`os-${t.key}`}
                   >
-                    <span>{t.name}</span>
-                    <span className="text-[10px] uppercase tracking-widest text-slate-400">{t.type}</span>
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="truncate">{t.label}</span>
+                      <span className="text-[10px] uppercase tracking-widest text-slate-400 shrink-0">{t.type}</span>
+                    </span>
+                    {t.note && <span className="block text-[10px] text-slate-400">{t.note}</span>}
                   </button>
                 ))}
               </div>
@@ -412,7 +422,10 @@ const PrefixesTab = () => {
           </thead>
           <tbody>{rows.map((p) => (
             <tr key={p.id} className="border-t border-slate-100">
-              <td className="px-4 py-3 font-mono">{p.prefix}</td>
+              <td className="px-4 py-3 font-mono">
+                {p.prefix}
+                {p.vps_provision && <span className="ml-2 text-[9px] font-bold uppercase tracking-widest bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded" data-testid={`prefix-vps-badge-${p.id}`}>VPS Pool</span>}
+              </td>
               <td className="px-4 py-3 text-xs">IPv{p.family}</td>
               <td className="px-4 py-3">
                 {(() => {
@@ -462,6 +475,7 @@ const PrefixForm = ({ p, onClose, onDone }) => {
     prefix: p?.prefix || "", family: p?.family || 4,
     usage: p?.usage || 0, capacity: p?.capacity || 256,
     vlan: p?.vlan || "", site: p?.site || "",
+    gateway: p?.gateway || "", vps_provision: !!p?.vps_provision,
   });
   const submit = async (e) => {
     e.preventDefault();
@@ -479,6 +493,14 @@ const PrefixForm = ({ p, onClose, onDone }) => {
         <label><div className={labelClass}>Usage</div><input type="number" min="0" value={f.usage} onChange={(e) => setF({ ...f, usage: e.target.value })} className={inputClass} /></label>
         <label><div className={labelClass}>Capacity</div><input type="number" min="1" value={f.capacity} onChange={(e) => setF({ ...f, capacity: e.target.value })} className={inputClass} /></label>
         <label className="col-span-2"><div className={labelClass}>Site</div><input value={f.site} onChange={(e) => setF({ ...f, site: e.target.value })} className={inputClass} /></label>
+        <label className="col-span-2"><div className={labelClass}>Gateway (untuk cloud-init VM)</div><input value={f.gateway} onChange={(e) => setF({ ...f, gateway: e.target.value })} className={`${inputClass} font-mono`} placeholder="kosong = IP pertama subnet, mis. .1" data-testid="prefix-gateway" /></label>
+        <label className="col-span-2 flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+          <input type="checkbox" checked={f.vps_provision} onChange={(e) => setF({ ...f, vps_provision: e.target.checked })} data-testid="prefix-vps-provision" />
+          <div>
+            <div className="font-bold text-emerald-800 text-sm">Untuk provisioning VPS/Cloud (IP pool khusus)</div>
+            <div className="text-xs text-emerald-700">Hanya prefix ber-flag ini yang dipakai alokasi IP otomatis saat auto-provision VM.</div>
+          </div>
+        </label>
         <div className="col-span-2 flex justify-end gap-2 mt-2">
           <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
           <button type="submit" className={btnPrimary}>Save</button>

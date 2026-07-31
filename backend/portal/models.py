@@ -188,6 +188,7 @@ class ProductIn(BaseModel):
     applies_to_product_ids: List[str] = []     # for add-ons: which base products this attaches to
     applies_to_categories: List[str] = []      # for add-ons: OR-attach to any product in these cats
     option_groups: List[ProductOptionGroup] = []
+    provision: dict = {}                        # vps/cloud: {template_vmid, cores, memory_mb, disk_gb}
     stock_qty: Optional[int] = None            # None = unlimited
     sort_order: int = 100
 

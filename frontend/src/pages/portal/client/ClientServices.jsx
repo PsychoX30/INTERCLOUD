@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link as RLink } from "react-router-dom";
-import { api, money, shortDate } from "../../../portal/api";
+import { api, money, shortDate, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, StatusBadge, EmptyState, btnSecondary } from "../ui";
-import { ServerCog, Cpu, Globe, ArrowRight, Copy, Play, Square, RotateCw, KeyRound } from "lucide-react";
+import { ServerCog, Cpu, Globe, ArrowRight, Copy, Play, Square, RotateCw, KeyRound, Monitor, X } from "lucide-react";
+import RFB from "@novnc/novnc";
 
 const catIcon = { vps: Cpu, hosting: Globe, colocation: ServerCog, dedicated: Cpu, cloud: Cpu };
 
@@ -18,6 +19,7 @@ const VMControls = ({ serviceId }) => {
   const [vm, setVm] = useState(null);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
+  const [consoleOpen, setConsoleOpen] = useState(false);
 
   const load = React.useCallback(() => {
     api.get(`/client/services/${serviceId}/vm`)
@@ -68,6 +70,14 @@ const VMControls = ({ serviceId }) => {
           <RotateCw className="h-4 w-4" /> {busy === "reboot" ? "..." : "Reboot"}
         </button>
       </div>
+      <button
+        data-testid="vm-btn-console"
+        className={`${btnSecondary} w-full mt-2`}
+        disabled={disabled || !running}
+        onClick={() => setConsoleOpen(true)}
+      >
+        <Monitor className="h-4 w-4" /> Console (noVNC)
+      </button>
       {msg && (
         <p data-testid="vm-action-msg" className={`mt-3 text-xs font-semibold ${msg.ok ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>
       )}
@@ -78,7 +88,86 @@ const VMControls = ({ serviceId }) => {
         <p className="mt-3 text-[11px] text-slate-500">Uptime {Math.floor(vm.uptime / 3600)} jam - node {vm.node} - VMID {vm.vmid}</p>
       )}
       {configured && <ResetPasswordPanel serviceId={serviceId} running={running} />}
+      {consoleOpen && <VncConsoleModal serviceId={serviceId} onClose={() => setConsoleOpen(false)} />}
     </Card>
+  );
+};
+
+const VncConsoleModal = ({ serviceId, onClose }) => {
+  const screenRef = useRef(null);
+  const rfbRef = useRef(null);
+  const [state, setState] = useState("connecting");
+  const [err, setErr] = useState("");
+  const [info, setInfo] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get(`/client/services/${serviceId}/vm/console`)
+      .then(({ data }) => {
+        if (cancelled || !screenRef.current) return;
+        setInfo(data);
+        const base = process.env.REACT_APP_BACKEND_URL.replace(/^http/, "ws");
+        const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
+                    `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}`;
+        const rfb = new RFB(screenRef.current, url, { credentials: { password: data.ticket } });
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
+        rfb.addEventListener("connect", () => setState("connected"));
+        rfb.addEventListener("disconnect", (e) => {
+          setState("disconnected");
+          if (!(e.detail && e.detail.clean)) setErr("Koneksi console terputus. Tutup dan buka kembali.");
+        });
+        rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: data.ticket }));
+        rfbRef.current = rfb;
+      })
+      .catch((e) => {
+        setState("error");
+        setErr(e?.response?.data?.detail || "Gagal membuka console");
+      });
+    return () => {
+      cancelled = true;
+      try { rfbRef.current && rfbRef.current.disconnect(); } catch { /* noop */ }
+    };
+  }, [serviceId]);
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-2 sm:p-6" data-testid="vnc-console-modal">
+      <div className="w-full max-w-5xl bg-[#0b0f19] rounded-2xl overflow-hidden shadow-2xl border border-white/10 flex flex-col" style={{ height: "min(80vh, 760px)" }}>
+        <div className="flex items-center justify-between px-4 py-2.5 bg-[#0a2350] text-white shrink-0">
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <Monitor className="h-4 w-4 text-[#f5b120]" />
+            VM Console {info ? `- VMID ${info.vmid} @ ${info.node}` : ""}
+            <span className={`ml-2 text-[10px] uppercase tracking-widest px-2 py-0.5 rounded-full ${
+              state === "connected" ? "bg-emerald-500/20 text-emerald-300"
+              : state === "connecting" ? "bg-amber-500/20 text-amber-300"
+              : "bg-red-500/20 text-red-300"}`} data-testid="vnc-state">
+              {state}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              className="text-[11px] font-bold text-white/70 hover:text-white border border-white/20 rounded-lg px-2.5 py-1"
+              onClick={() => { try { rfbRef.current && rfbRef.current.sendCtrlAltDel(); } catch { /* noop */ } }}
+              data-testid="vnc-cad-btn"
+            >
+              Ctrl+Alt+Del
+            </button>
+            <button className="text-white/70 hover:text-white" onClick={onClose} data-testid="vnc-close-btn">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 relative min-h-0">
+          <div ref={screenRef} className="absolute inset-0" />
+          {state === "connecting" && (
+            <div className="absolute inset-0 flex items-center justify-center text-white/70 text-sm">Menghubungkan ke console…</div>
+          )}
+          {err && (
+            <div className="absolute inset-x-0 bottom-0 bg-red-600/90 text-white text-xs px-4 py-2" data-testid="vnc-error">{err}</div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 };
 

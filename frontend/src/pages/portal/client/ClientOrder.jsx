@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, money, shortDate, fullDateTime } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
@@ -116,8 +116,59 @@ const StepPick = ({ products, categories, chosen, setChosen, onNext }) => {
 };
 
 /* ============ Step 2 - configure options for the chosen product ============ */
-const StepConfigure = ({ product, selections, setSelections, onNext, onBack }) => {
+const OsPicker = ({ value, onChange }) => {
+  const [opts, setOpts] = useState(null);
+  useEffect(() => {
+    api.get("/client/proxmox/os-options")
+      .then((r) => setOpts(r.data.options || []))
+      .catch(() => setOpts([]));
+  }, []);
+  if (opts === null) {
+    return <Card className="p-5 text-sm text-slate-500" data-testid="os-picker-loading">Memuat pilihan OS dari server…</Card>;
+  }
+  if (opts.length === 0) return null;
+  const grouped = opts.reduce((a, o) => {
+    const fam = o.family || "other";
+    (a[fam] = a[fam] || []).push(o);
+    return a;
+  }, {});
+  return (
+    <Card className="p-5" data-testid="os-picker">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400">operating system · required</div>
+          <div className="font-extrabold text-[#0a2350] text-lg">Pilih OS server Anda</div>
+        </div>
+        {value && <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1" data-testid="os-picker-selected">{value}</span>}
+      </div>
+      <div className="rounded-xl border border-slate-200 max-h-64 overflow-y-auto divide-y divide-slate-100">
+        {Object.entries(grouped).map(([fam, list]) => (
+          <div key={fam}>
+            <div className="px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold text-slate-500 bg-slate-50">{fam}</div>
+            {list.map((o) => (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => onChange(o.key)}
+                data-testid={`client-os-${o.key}`}
+                className={`w-full text-left px-3 py-2 text-sm ${value === o.key ? "bg-[#f5b120]/15 text-[#0a2350] font-bold" : "hover:bg-slate-50"}`}
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <span className="truncate">{o.label}</span>
+                  <span className="text-[10px] uppercase tracking-widest text-slate-400 shrink-0">{o.type}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+};
+
+const StepConfigure = ({ product, selections, setSelections, osChoice, setOsChoice, onNext, onBack }) => {
   const groups = product.option_groups || [];
+  const needsOs = ["vps", "cloud"].includes(product.category);
 
   // Ensure every required dropdown has a default value
   useEffect(() => {
@@ -155,9 +206,10 @@ const StepConfigure = ({ product, selections, setSelections, onNext, onBack }) =
 
   if (groups.length === 0) {
     return (
-      <div className="mt-6">
+      <div className="mt-6 space-y-4">
+        {needsOs && <OsPicker value={osChoice} onChange={setOsChoice} />}
         <Card className="p-6 text-slate-600">
-          <div className="font-bold text-[#0a2350] mb-1">No configuration needed</div>
+          <div className="font-bold text-[#0a2350] mb-1">{needsOs ? "Fixed specs" : "No configuration needed"}</div>
           This product ships with fixed specs. Click Continue to review your order.
         </Card>
         <div className="mt-6 flex justify-between">
@@ -170,6 +222,7 @@ const StepConfigure = ({ product, selections, setSelections, onNext, onBack }) =
 
   return (
     <div className="mt-4 space-y-4">
+      {needsOs && <OsPicker value={osChoice} onChange={setOsChoice} />}
       {groups.map((g) => (
         <Card key={g.key} className="p-5">
           <div className="flex items-center justify-between mb-3">
@@ -393,10 +446,11 @@ const LiveTotalBar = ({ product, selections, addonIds, addons }) => {
 };
 
 /* ============ Step 4 - review cart, confirm, generate invoice ============ */
-const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, onConfirmed }) => {
+const StepReview = ({ product, selections, addonIds, notes, setNotes, osChoice, onBack, onConfirmed }) => {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     api
@@ -406,15 +460,19 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, on
   }, [product.id, selections, addonIds]);
 
   const confirm = async () => {
+    if (submittingRef.current) return; // anti double-click: 1 klik = 1 order = 1 invoice
+    submittingRef.current = true;
     setBusy(true); setErr("");
     try {
       const { data } = await api.post("/client/orders", {
         product_id: product.id, selections, addon_ids: addonIds, notes,
+        config: osChoice ? { os: osChoice } : {},
       });
       onConfirmed(data);
     } catch (e) {
       setErr(e?.response?.data?.detail || "Failed to place order");
     } finally {
+      submittingRef.current = false;
       setBusy(false);
     }
   };
@@ -446,6 +504,7 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, onBack, on
         <div className="mt-5 space-y-2.5">
           <Row label={`${product.name} - base plan (monthly)`} value={idr(preview.base_line.monthly)} />
           {preview.base_line.setup > 0 && <Row label={`${product.name} - setup fee`} value={idr(preview.base_line.setup)} muted />}
+          {osChoice && <Row label="Operating System" value={osChoice} muted />}
 
           {preview.option_lines.length > 0 && <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mt-4">Configuration</div>}
           {preview.option_lines.map((ol, i) => (
@@ -548,6 +607,7 @@ const ClientOrder = () => {
   const [selections, setSelections] = useState([]);
   const [addonIds, setAddonIds] = useState([]);
   const [notes, setNotes] = useState("");
+  const [osChoice, setOsChoice] = useState("");
   const [result, setResult] = useState(null);
   const [orders, setOrders] = useState([]);
 
@@ -603,6 +663,7 @@ const ClientOrder = () => {
     setSelections([]);
     setAddonIds([]);
     setNotes("");
+    setOsChoice("");
     setResult(null);
   };
 
@@ -631,6 +692,8 @@ const ClientOrder = () => {
             product={chosen}
             selections={selections}
             setSelections={setSelections}
+            osChoice={osChoice}
+            setOsChoice={setOsChoice}
             onBack={() => setStep(0)}
             onNext={() => setStep(2)}
           />
@@ -659,6 +722,7 @@ const ClientOrder = () => {
           addonIds={addonIds}
           notes={notes}
           setNotes={setNotes}
+          osChoice={osChoice}
           onBack={() => setStep(2)}
           onConfirmed={(r) => { setResult(r); setStep(4); loadOrders(); }}
         />

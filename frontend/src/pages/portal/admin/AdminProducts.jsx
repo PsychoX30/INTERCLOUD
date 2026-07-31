@@ -145,6 +145,7 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
     applies_to_categories: p?.applies_to_categories || [],
     applies_to_product_ids: p?.applies_to_product_ids || [],
     option_groups: p?.option_groups || [],
+    provision: p?.provision || {},
     sort_order: p?.sort_order ?? 100,
   });
   const [busy, setBusy] = useState(false);
@@ -166,6 +167,12 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
       applies_to_categories: f.applies_to_categories,
       applies_to_product_ids: f.applies_to_product_ids,
       option_groups: f.is_addon ? [] : f.option_groups,
+      provision: !f.is_addon && ["vps", "cloud"].includes(f.category) ? {
+        template_vmid: Number(f.provision?.template_vmid) || null,
+        cores: Number(f.provision?.cores) || null,
+        memory_mb: Number(f.provision?.memory_mb) || null,
+        disk_gb: Number(f.provision?.disk_gb) || null,
+      } : {},
       sort_order: Number(f.sort_order) || 100,
     };
     try {
@@ -316,6 +323,38 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
           <button type="submit" disabled={busy} className={btnPrimary} data-testid="p-submit">{p ? "Save changes" : "Create product"}</button>
         </div>
       </form>
+    </div>
+  );
+};
+
+const ProvisionSettings = ({ value, onChange }) => {
+  const [templates, setTemplates] = useState([]);
+  const [tplErr, setTplErr] = useState("");
+  useEffect(() => {
+    api.get("/admin/proxmox/templates")
+      .then((r) => setTemplates(r.data.templates || []))
+      .catch((e) => setTplErr(e?.response?.data?.detail || "Integrasi Proxmox belum aktif"));
+  }, []);
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  return (
+    <div className="mt-5 border-t border-slate-200 pt-5" data-testid="product-provision-settings">
+      <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350] mb-1">Auto-provisioning (Proxmox)</div>
+      <p className="text-xs text-slate-500 mb-3">
+        Template & spesifikasi VM untuk paket ini. Saat klien memilih OS, sistem mencari template yang cocok dengan OS
+        (auto-build bila belum ada) - template di bawah dipakai bila klien tidak memilih OS.
+      </p>
+      {tplErr && <div className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{tplErr}</div>}
+      <div className="grid grid-cols-2 gap-3">
+        <label className="col-span-2"><div className={labelClass}>Template VM default (dari server Proxmox)</div>
+          <select value={value.template_vmid || ""} onChange={(e) => set("template_vmid", e.target.value)} className={inputClass} data-testid="p-provision-template">
+            <option value="">- Otomatis (match OS / template pertama) -</option>
+            {templates.map((t) => <option key={t.vmid} value={t.vmid}>{t.name || "VM"} (VMID {t.vmid} · {t.node})</option>)}
+          </select>
+        </label>
+        <label><div className={labelClass}>vCPU</div><input type="number" min="1" value={value.cores || ""} onChange={(e) => set("cores", e.target.value)} className={inputClass} placeholder="2" data-testid="p-provision-cores" /></label>
+        <label><div className={labelClass}>RAM (MB)</div><input type="number" min="512" step="512" value={value.memory_mb || ""} onChange={(e) => set("memory_mb", e.target.value)} className={inputClass} placeholder="2048" data-testid="p-provision-memory" /></label>
+        <label className="col-span-2"><div className={labelClass}>Disk (GB)</div><input type="number" min="10" value={value.disk_gb || ""} onChange={(e) => set("disk_gb", e.target.value)} className={inputClass} placeholder="40" data-testid="p-provision-disk" /></label>
+      </div>
     </div>
   );
 };
