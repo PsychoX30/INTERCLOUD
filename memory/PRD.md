@@ -19,6 +19,13 @@ Permintaan user (error provisioning + fitur): VM console tidak konek, konfiguras
 6. **CMS revamp + live preview**: AdminSiteContent.jsx ditulis ulang jadi split-view - editor kiri (semua section landing: Navbar/Hero/Features/Infra/Services/Guide/Pricing/Partners/PoP/FAQ/CTA/Footer + tombol umum, label Indonesia ramah awam, ID+EN, chips lompat section, tab FAQ & JSON) + iframe preview kanan (`/?cmsPreview=1`) yang update REAL-TIME via postMessage. LanguageContext.jsx dengar `ic-cms-preview` (origin-checked) & emit `ic-cms-preview-ready`. Toggle device (desktop/tablet/mobile) & bahasa preview. DIVERIFIKASI testing agent (live update <2s, save berhasil).
 
 CATATAN preview: reCAPTCHA di-DISABLE di DB preview (site key domain-locked ke intercloud-digital.com, tak bisa validasi di URL preview) - HARUS tetap enabled di produksi. demo@client.com direset ke ClientDemo2026! utk testing.
+
+### Lanjutan batch 5 (permintaan follow-up user) - SELESAI & DITES
+7. **Notifikasi email klien** utk perubahan lifecycle: 4 template sistem baru di emails.py (`service_suspended_manual`, `service_reactivated`, `service_termination_approved`, `service_termination_rejected`, auto-seed) + helper `on_service_lifecycle`. Endpoint suspend/unsuspend/approve/reject memicu email (asyncio.create_task, best-effort). **DIVERIFIKASI end-to-end** via SMTP debug lokal (email_logs status=sent, subject render `{{service.name}}` benar, penerima = email klien). Di produksi butuh SMTP diaktifkan.
+8. **Menu khusus "Termination Requests"** (AdminServiceRequests.jsx, route /portal/admin/service-requests, nav key `service_requests` di PortalLayout + ADMIN_MENU_CATALOG, roles admin/support/sales) - filter Menunggu/Semua (riwayat), review->approve/reject inline, badge status. GET /admin/service-requests kini dukung `?status=all`. DIVERIFIKASI testing agent (iteration_40) - full flow request->reject->re-request->approve.
+9. **CMS section-scroll**: klik chip section di editor -> iframe preview ikut scroll ke section (Landing.jsx tiap section dibungkus `data-cms-section`+id; LanguageContext handle `scrollTo`). DIVERIFIKASI (scrollY iframe berubah 0->9349->18604->13835).
+CATATAN: 2 warning pre-existing non-blocking (span di <option> TrafficSourceCard; Tailwind CDN) - di luar scope perubahan ini.
+
 LEARNING: Proxmox 8.4 upload API TIDAK terima content=snippets; cloud image Ubuntu tanpa qemu-guest-agent -> guest-agent exec gagal; drop-in sshd HARUS prefix rendah (00-) agar menang first-match atas 60-cloudimg-settings; gateway cloud-init WAJIB tanpa prefix CIDR.
 
 
