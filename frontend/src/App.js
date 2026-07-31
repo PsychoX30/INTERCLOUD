@@ -60,6 +60,7 @@ const AdminSiteContent  = lazy(() => import("./pages/portal/admin/AdminSiteConte
 const AdminBackup       = lazy(() => import("./pages/portal/admin/AdminBackup"));
 const AdminMail         = lazy(() => import("./pages/portal/admin/AdminMail"));
 const AdminServices     = lazy(() => import("./pages/portal/admin/AdminServices"));
+const AdminServiceRequests = lazy(() => import("./pages/portal/admin/AdminServiceRequests"));
 const AdminAssets       = lazy(() => import("./pages/portal/admin/AdminAssets"));
 const AdminMikrotik     = lazy(() => import("./pages/portal/admin/AdminMikrotik"));
 const AdminDiagnostics  = lazy(() => import("./pages/portal/admin/AdminDiagnostics"));
@@ -147,6 +148,7 @@ function App() {
                   <Route path="users" element={<AdminUsers />} />
                   <Route path="products" element={<AdminProducts />} />
                   <Route path="services" element={<AdminServices />} />
+                  <Route path="service-requests" element={<AdminServiceRequests />} />
                   <Route path="addons" element={<AdminProducts />} />
                   <Route path="categories" element={<AdminCategories />} />
                   <Route path="orders" element={<AdminOrders />} />

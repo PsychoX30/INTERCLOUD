@@ -92,22 +92,22 @@ const Landing = () => {
   return (
     <div className="bg-white text-[#0a2350]">
       <DefaultSeo />
-      <Header />
+      <div data-cms-section="navbar" id="navbar"><Header /></div>
       <main>
-        <Hero />
-        <Features />
-        <Infrastructure />
-        <Services />
-        <DecisionGuide />
-        <Pricing />
-        <PoP />
-        <Partners />
+        <div data-cms-section="hero" id="hero"><Hero /></div>
+        <div data-cms-section="features" id="features"><Features /></div>
+        <div data-cms-section="infra" id="infra"><Infrastructure /></div>
+        <div data-cms-section="services" id="services"><Services /></div>
+        <div data-cms-section="guide" id="guide"><DecisionGuide /></div>
+        <div data-cms-section="pricing" id="pricing"><Pricing /></div>
+        <div data-cms-section="pop" id="pop"><PoP /></div>
+        <div data-cms-section="partners" id="partners"><Partners /></div>
         <Testimonials />
-        <FAQ />
+        <div data-cms-section="faqsec" id="faqsec"><FAQ /></div>
         <LeadForm />
-        <CTA />
+        <div data-cms-section="cta" id="cta"><CTA /></div>
       </main>
-      <Footer />
+      <div data-cms-section="footer" id="footer"><Footer /></div>
       <FloatingWA />
     </div>
   );

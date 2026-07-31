@@ -1,0 +1,30 @@
+{
+  "summary": "Frontend-only verification of the three new items on top of iteration_39. (1) NEW dedicated admin menu 'Termination Requests' at /portal/admin/service-requests works end-to-end: sidebar nav (nav-service-requests) present under Catalog group, page (admin-service-requests-page) renders with filter buttons (req-filter-pending, req-filter-all), req-refresh, and req-empty state. Client submitted a termination via terminate-panel > terminate-request-btn > terminate-reason > terminate-submit-btn; the request appeared as a pending row (req-row-<id>) with Tinjau. Reject flow: req-review > req-note > req-reject produced req-msg 'Permintaan ditolak - layanan tetap aktif...', row disappeared from pending filter, and on 'Semua' the row shows req-status-rejected badge 'Ditolak'. Approve flow: after re-submitting a request on a different service, admin clicked Tinjau > note > Setujui & akhiri, got req-msg 'Permintaan disetujui - layanan diterminasi...' and under 'Semua' filter the row shows req-status-approved badge 'Disetujui (terminated)'. (2) CMS section-scroll on /portal/admin/site-content: iframe cms-preview-iframe loaded and clicking cms-jump-pricing, cms-jump-footer, cms-jump-partners visibly changed iframe scrollY (0 -> 9349 -> 18604 -> 13835). No console errors from scrolling. (3) Regression lifecycle card: svc-suspend-btn and svc-unsuspend-btn on /portal/admin/services detail modal still succeed with lifecycle-msg 'Suspend berhasil (non-VM).' and 'Unsuspend berhasil (non-VM).'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin/AdminServices detail modal", "issues": ["React hydration console warning: '<span> cannot be a child of <option>' inside TrafficSourceCard select options (devices dropdown). Pre-existing but should be fixed by rendering plain text in <option>, not wrapping in a <span>."]},
+      {"screen": "Global", "issues": ["cdn.tailwindcss.com used in production - Tailwind CDN warning; consider building Tailwind via PostCSS/CLI for production."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional: fix React hydration warning in AdminServices TrafficSourceCard <option> where child <span data-ve-dynamic> is injected. Not blocking, but pollutes console.",
+    "Optional: replace Tailwind CDN with build-time Tailwind for production readiness."
+  ],
+  "critical_code_review_comments": [
+    "AdminServiceRequests fetches with status=all always and filters client-side; harmless for small datasets but should paginate or accept ?status=pending when data grows.",
+    "req-msg is shown at page-level and persists across filter toggles until next load; consider auto-dismiss.",
+    "logout-btn in sidebar can be intercepted by open service detail modal (fixed inset-0 backdrop). Not a bug in this iteration but worth adding a modal-close testid to make E2E more robust."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100% (3/3 features verified)"},
+  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026! ; Client: demo@client.com / ClientDemo2026!",
+  "seed_data_creation": "Mutated demo data as expected: one request Rejected, one Approved (service 6a6afaeec74e8df10fdc9086 now terminated).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Two terminations already processed in demo DB (1 rejected on 6a6b056a176b95885ec6ff02, 1 approved/terminated on 6a6afaeec74e8df10fdc9086). Future re-runs should pick a different active service card for a new pending request. Client services cards have testid service-<id>; the terminate-request-btn is only present on services without an existing pending request. To reliably logout in E2E when a service detail modal is open, press Escape or close the modal first (modal backdrop intercepts sidebar clicks).",
+  "rca of the issue": "No open issues."
+}

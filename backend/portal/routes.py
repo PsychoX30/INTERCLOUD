@@ -3243,6 +3243,7 @@ ADMIN_MENU_CATALOG = [
     {"key": "addons",          "label": "Add-ons",          "group": "Catalog",        "default_roles": ["admin", "support"]},
     {"key": "categories",      "label": "Categories",       "group": "Catalog",        "default_roles": ["admin"]},
     {"key": "services",        "label": "Services",         "group": "Catalog",        "default_roles": ["admin", "finance", "support"]},
+    {"key": "service_requests","label": "Termination Requests","group": "Catalog",     "default_roles": ["admin", "support", "sales"]},
     {"key": "users",           "label": "Users / Clients",  "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "tickets",         "label": "Tickets",          "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support", "ticket_only"]},
     {"key": "mail",            "label": "Webmail",          "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support"]},
@@ -8384,6 +8385,13 @@ async def admin_service_suspend(sid: str, payload: dict, request: Request,
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""), severity="warning",
                     metadata={"reason": reason, "vm": vm_note}, request=request)
+
+    async def _notify():
+        from portal import emails as _em
+        u = await db.users.find_one({"_id": svc["user_id"]})
+        if u:
+            await _em.on_service_lifecycle(db, u, svc, "service_suspended_manual", reason=reason)
+    asyncio.create_task(_notify())
     return {"ok": True, "status": "suspended", "vm": vm_note}
 
 
@@ -8407,6 +8415,13 @@ async def admin_service_unsuspend(sid: str, request: Request,
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""), severity="warning",
                     metadata={"vm": vm_note}, request=request)
+
+    async def _notify():
+        from portal import emails as _em
+        u = await db.users.find_one({"_id": svc["user_id"]})
+        if u:
+            await _em.on_service_lifecycle(db, u, svc, "service_reactivated")
+    asyncio.create_task(_notify())
     return {"ok": True, "status": "active", "vm": vm_note}
 
 
@@ -8464,17 +8479,28 @@ async def client_terminate_request_cancel(sid: str, user=Depends(get_current_use
 
 
 @router.get("/admin/service-requests")
-async def admin_service_requests(staff=Depends(require_roles("admin", "support", "sales"))):
-    """Daftar layanan dengan permintaan terminate yang menunggu persetujuan."""
+async def admin_service_requests(status: str = "pending",
+                                 staff=Depends(require_roles("admin", "support", "sales"))):
+    """Daftar permintaan terminate layanan. `status=pending` (default) hanya yang
+    menunggu; `status=all` menyertakan riwayat (approved/rejected) untuk tracking."""
     db = await _get_db()
-    docs = await db.services.find({"termination_request.status": "pending"}).to_list(500)
+    if status == "all":
+        query = {"termination_request": {"$exists": True, "$ne": None}}
+    else:
+        query = {"termination_request.status": "pending"}
+    docs = await db.services.find(query).to_list(1000)
     out = []
     for d in docs:
         u = await db.users.find_one({"_id": d["user_id"]}) or {}
         item = _serialize_service(d)
         item["termination_request"] = d.get("termination_request")
-        item["user"] = {"name": u.get("name", ""), "email": u.get("email", "")}
+        item["user"] = {"name": u.get("name", ""), "email": u.get("email", ""),
+                        "company": u.get("company", "")}
         out.append(item)
+    # Urutkan: pending dulu, lalu berdasarkan waktu permintaan terbaru.
+    out.sort(key=lambda x: (
+        0 if (x.get("termination_request") or {}).get("status") == "pending" else 1,
+        (x.get("termination_request") or {}).get("requested_at", "")), reverse=False)
     return out
 
 
@@ -8501,6 +8527,14 @@ async def admin_terminate_approve(sid: str, payload: dict, request: Request,
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""), severity="warning",
                     metadata={"vm": vm_note}, request=request)
+
+    async def _notify():
+        from portal import emails as _em
+        u = await db.users.find_one({"_id": svc["user_id"]})
+        if u:
+            await _em.on_service_lifecycle(db, u, svc, "service_termination_approved",
+                                           note=req.get("note", ""))
+    asyncio.create_task(_notify())
     return {"ok": True, "status": "terminated", "vm": vm_note}
 
 
@@ -8523,6 +8557,14 @@ async def admin_terminate_reject(sid: str, payload: dict, request: Request,
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""), severity="info",
                     metadata={"note": req.get("note", "")}, request=request)
+
+    async def _notify():
+        from portal import emails as _em
+        u = await db.users.find_one({"_id": svc["user_id"]})
+        if u:
+            await _em.on_service_lifecycle(db, u, svc, "service_termination_rejected",
+                                           note=req.get("note", ""))
+    asyncio.create_task(_notify())
     return {"ok": True, "status": svc.get("status", "active")}
 
 

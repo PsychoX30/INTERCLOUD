@@ -476,6 +476,95 @@ DEFAULT_TEMPLATES: list[dict] = [
         "is_active": True,
         "is_system": True,
     },
+    {
+        "event_key": "service_suspended_manual",
+        "name": "Layanan disuspend manual",
+        "subject": "Pemberitahuan: layanan {{service.name}} untuk sementara dinonaktifkan",
+        "body_html": (
+            "<p>Halo <b>{{user.name}}</b>,</p>"
+            "<p>Kami informasikan bahwa layanan Anda berikut telah <b>dinonaktifkan sementara (suspended)</b> oleh tim kami:</p>"
+            "<table style='width:100%;border-collapse:collapse;margin:16px 0;background:#f8fafc;border-radius:10px;overflow:hidden'>"
+            "  <tr><td style='padding:10px 14px;color:#64748b;font-size:12px;width:40%'>Layanan</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{service.name}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Alasan</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{reason}}</td></tr>"
+            "</table>"
+            "<p>Data dan konfigurasi Anda tetap tersimpan aman selama masa suspend. Layanan dapat diaktifkan kembali setelah kendala terkait diselesaikan.</p>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Buka Client Portal &rarr;</a>"
+            "</p>"
+            "<p>Bila Anda merasa ini keliru atau butuh bantuan, silakan hubungi kami di "
+            "<a href='mailto:support@intercloud-digital.com'>support@intercloud-digital.com</a> atau WhatsApp +62 878-1239-7187.</p>"
+            "<p style='margin-top:24px'>Hormat kami,<br><b>Tim Intercloud</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
+        "event_key": "service_reactivated",
+        "name": "Layanan diaktifkan kembali",
+        "subject": "Layanan {{service.name}} Anda telah aktif kembali",
+        "body_html": (
+            "<p>Halo <b>{{user.name}}</b>,</p>"
+            "<p>Kabar baik! Layanan Anda berikut telah <b>diaktifkan kembali</b> dan sudah dapat digunakan seperti biasa:</p>"
+            "<table style='width:100%;border-collapse:collapse;margin:16px 0;background:#f0fdf4;border-radius:10px;overflow:hidden'>"
+            "  <tr><td style='padding:10px 14px;color:#64748b;font-size:12px;width:40%'>Layanan</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{service.name}}</td></tr>"
+            "</table>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a7a3f;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Buka Client Portal &rarr;</a>"
+            "</p>"
+            "<p>Terima kasih atas kepercayaan Anda. Jika ada pertanyaan, tim kami siap membantu di "
+            "<a href='mailto:support@intercloud-digital.com'>support@intercloud-digital.com</a>.</p>"
+            "<p style='margin-top:24px'>Salam hangat,<br><b>Tim Intercloud</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
+        "event_key": "service_termination_approved",
+        "name": "Permintaan terminate disetujui",
+        "subject": "Permintaan pengakhiran layanan {{service.name}} disetujui",
+        "body_html": (
+            "<p>Halo <b>{{user.name}}</b>,</p>"
+            "<p>Permintaan Anda untuk mengakhiri layanan berikut telah <b>disetujui</b> dan layanan kini telah <b>diterminasi</b>:</p>"
+            "<table style='width:100%;border-collapse:collapse;margin:16px 0;background:#f8fafc;border-radius:10px;overflow:hidden'>"
+            "  <tr><td style='padding:10px 14px;color:#64748b;font-size:12px;width:40%'>Layanan</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{service.name}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Catatan tim</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{note}}</td></tr>"
+            "</table>"
+            "<p>Terima kasih telah menggunakan layanan Intercloud. Kami akan senang menyambut Anda kembali kapan pun Anda membutuhkan infrastruktur digital yang andal.</p>"
+            "<p>Untuk kebutuhan baru, silakan hubungi tim sales kami di "
+            "<a href='mailto:sales@intercloud-digital.com'>sales@intercloud-digital.com</a>.</p>"
+            "<p style='margin-top:24px'>Hormat kami,<br><b>Tim Intercloud</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
+        "event_key": "service_termination_rejected",
+        "name": "Permintaan terminate ditolak",
+        "subject": "Permintaan pengakhiran layanan {{service.name}} - perlu tindak lanjut",
+        "body_html": (
+            "<p>Halo <b>{{user.name}}</b>,</p>"
+            "<p>Terima kasih atas permintaan pengakhiran layanan <b>{{service.name}}</b>. Setelah kami tinjau, permintaan tersebut <b>belum dapat kami proses saat ini</b> dan layanan Anda <b>tetap aktif</b>.</p>"
+            "<table style='width:100%;border-collapse:collapse;margin:16px 0;background:#fffbeb;border-radius:10px;overflow:hidden'>"
+            "  <tr><td style='padding:10px 14px;color:#64748b;font-size:12px;width:40%'>Catatan tim</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{note}}</td></tr>"
+            "</table>"
+            "<p>Silakan hubungi kami untuk mendiskusikan langkah selanjutnya di "
+            "<a href='mailto:support@intercloud-digital.com'>support@intercloud-digital.com</a> atau WhatsApp +62 878-1239-7187. Anda juga dapat mengajukan kembali dari Client Portal.</p>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Buka Client Portal &rarr;</a>"
+            "</p>"
+            "<p style='margin-top:24px'>Hormat kami,<br><b>Tim Intercloud</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
 ]
 
 
@@ -772,6 +861,22 @@ async def on_invoice_paid(db, invoice_doc: dict, user_doc: dict) -> None:
     await send_via_template(db, event_key="payment_received",
                             to_email=user_doc["email"], ctx=ctx,
                             invoice_id=str(invoice_doc.get("_id") or ""),
+                            user_id=str(user_doc.get("_id") or ""))
+
+
+async def on_service_lifecycle(db, user_doc: dict, service_doc: dict,
+                               event_key: str, *, reason: str = "", note: str = "") -> None:
+    """Client notification for manual service lifecycle changes: suspend,
+    reactivate, termination approved/rejected. Best-effort (never raises)."""
+    if not (user_doc and user_doc.get("email")):
+        return
+    ctx = build_context(user=user_doc, extra={
+        "service": {"name": service_doc.get("name", "") or service_doc.get("product_name", "")},
+        "reason": reason or "-",
+        "note": note or "-",
+    })
+    await send_via_template(db, event_key=event_key,
+                            to_email=user_doc["email"], ctx=ctx,
                             user_id=str(user_doc.get("_id") or ""))
 
 

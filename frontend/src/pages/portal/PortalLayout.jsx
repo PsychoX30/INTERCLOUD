@@ -50,6 +50,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "addons",     to: "/portal/admin/addons",     label: "Add-ons",    icon: Puzzle,       testid: "nav-addons",     roles: ["admin", "support"] },
       { key: "categories", to: "/portal/admin/categories", label: "Categories", icon: FolderTree,   testid: "nav-categories", roles: ["admin"] },
       { key: "services",   to: "/portal/admin/services",   label: "Services",   icon: ServerCog,    testid: "nav-services",   roles: ["admin", "finance", "support"] },
+      { key: "service_requests", to: "/portal/admin/service-requests", label: "Termination Requests", icon: ClipboardList, testid: "nav-service-requests", roles: ["admin", "support", "sales"] },
     ],
   },
   {
