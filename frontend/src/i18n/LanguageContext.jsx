@@ -312,6 +312,34 @@ export const LanguageProvider = ({ children }) => {
       .catch(() => { /* stay on hardcoded defaults */ });
   }, []);
 
+  // Live CMS preview: the Admin ▸ Landing Content editor renders this page in
+  // an iframe and pushes draft content via postMessage so changes appear in
+  // real time before saving.
+  useEffect(() => {
+    const onMsg = (e) => {
+      if (e.origin !== window.location.origin) return;
+      const d = e.data;
+      if (!d || d.type !== "ic-cms-preview") return;
+      setOverrides(d.overrides && typeof d.overrides === "object" ? d.overrides : {});
+      setCmsFaqs(Array.isArray(d.faqs) && d.faqs.length ? d.faqs : null);
+      setContactOverride(d.contact && typeof d.contact === "object" ? d.contact : null);
+      if (d.lang === "id" || d.lang === "en") setLangState(d.lang);
+      if (d.scrollTo) {
+        const el = document.getElementById(d.scrollTo) ||
+                   document.querySelector(`[data-cms-section="${d.scrollTo}"]`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    };
+    window.addEventListener("message", onMsg);
+    // Announce readiness so the editor can push its initial draft.
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "ic-cms-preview-ready" }, window.location.origin);
+      }
+    } catch (_) { /* noop */ }
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
   useEffect(() => {
     document.documentElement.lang = lang;
     try { localStorage.setItem("ic_lang", lang); } catch (_) {}

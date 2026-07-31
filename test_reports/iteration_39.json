@@ -1,0 +1,32 @@
+{
+  "summary": "Frontend-only E2E testing of the 4 requested Intercloud portal features: (1) Landing CMS split-view editor with live iframe preview, (2) Admin manual suspend/unsuspend, (3) Client termination request, (4) Admin review + reject/approve termination. All four feature flows PASS end-to-end via the public preview URL using the seeded admin & demo client accounts. Live preview iframe correctly reflects hero headline edits within ~2s; device mobile toggle changes iframe width to 390; language toggle & Save (with success msg 'Tersimpan - perubahan sudah live di landing page.') work; FAQ tab opens with an Add button. Admin suspend/unsuspend on service 6a6b056a176b95885ec6ff02 succeeded and status flipped ACTIVE->SUSPENDED->ACTIVE with lifecycle-msg 'Suspend berhasil (non-VM).' / 'Unsuspend berhasil (non-VM).' Client termination request created pending state with cancel option; admin banner surfaced the request; REJECT cleared the request block and kept service ACTIVE ('Reject terminate berhasil.'); after client re-request (via 'Ajukan lagi'), admin APPROVE flipped service status to TERMINATED with 'Approve terminate berhasil (non-VM).'",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "CMS Editor - device toggle", "issue": "Clicking cms-device-tablet does not change the iframe width from the desktop value (700px stays 700px). Desktop and Tablet render identical width; only Mobile switches (to 390px). Likely the tablet breakpoint size is the same as, or larger than, the available preview column width (~700px), so the iframe max-width clamps it. Either shrink desktop preview, or set explicit tablet width (e.g. 768px) with horizontal scroll.", "selector": "[data-testid='cms-device-tablet']", "priority": "LOW"},
+      {"component": "ClientServices TerminateRequestPanel - 'Ajukan lagi' button", "issue": "The re-request-after-rejected button ('Ajukan lagi', ClientServices.jsx line 527) has no data-testid, making it hard to automate. Add data-testid='terminate-rerequest-btn'.", "selector": "button:has-text('Ajukan lagi')", "priority": "LOW"},
+      {"component": "CMS FAQ item testid", "issue": "Adding an FAQ works (FAQ tab counter changes to '(1)' after Tambah FAQ) but the individual FAQ item cards do not appear to use a data-testid pattern like 'cms-faq-item-*'. Test could not count items via testid. Consider adding data-testid='cms-faq-item-<idx>' plus 'cms-faq-remove-<idx>' for testability.", "selector": "[data-testid^='cms-faq-item-']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/artifacts/03_cms.png", "/app/test_reports/artifacts/04_cms_after.png", "/app/test_reports/artifacts/11_client_service_detail.png", "/app/test_reports/artifacts/12_client_termreq_pending.png", "/app/test_reports/artifacts/20_admin_services.png", "/app/test_reports/artifacts/21_admin_service_detail.png", "/app/test_reports/artifacts/22_admin_suspended.png", "/app/test_reports/artifacts/23_admin_unsuspended.png", "/app/test_reports/artifacts/31_admin_approved.png"],
+  "action_items": [
+    "(Optional/LOW) Fix tablet device preview width in AdminSiteContent so cms-device-tablet actually changes iframe width (e.g. width 768 with overflow-x auto).",
+    "(Optional/LOW) Add data-testid='terminate-rerequest-btn' to the 'Ajukan lagi' button in ClientServices.jsx TerminateRequestPanel (rejected state).",
+    "(Optional/LOW) Add data-testid to individual FAQ items in AdminSiteContent for easier automation."
+  ],
+  "critical_code_review_comments": [
+    "AdminSiteContent.jsx uses postMessage 'ic-cms-preview' + iframe with cmsPreview=1 - clean pattern; verified live update <2s.",
+    "ClientServices.jsx TerminateRequestPanel handles 3 states (pending/rejected/create) - good; only missing testid on re-request button.",
+    "Backend suspend/unsuspend/terminate messages returned localized Indonesian success strings - matches app language policy."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100% of the 4 requested flows pass; 3 LOW-priority testability/UI polish nits"},
+  "test_credentials": "Admin admin@intercloud-digital.com / AdminIntercloud2026! and Client demo@client.com / ClientDemo2026! (both from /app/memory/test_credentials.md).",
+  "seed_data_creation": "Mutated demo data as expected per request: service 6a6b056a176b95885ec6ff02 (DC-to-DC 100 Mbps - Demo Client) is now in status=TERMINATED after the approve test. Also saved a CMS hero headline draft ('LiveTest Headline XYZ') via Save button. FAQ tab may show 1 empty FAQ entry created during the add test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The demo client's first previously-active DC-to-DC 100 Mbps service (id 6a6b056a176b95885ec6ff02) has been terminated during this iteration. If future tests need an ACTIVE demo service, either pick another service, re-activate via admin API, or reseed. Login testids: login-email, login-password, login-submit. Service card testid pattern: service-<id>. Admin termination review banner uses termreq-review-<sid>.",
+  "rca of the issue": "n/a - no blocking bugs. Minor findings above are cosmetic/testability polish only."
+}

@@ -7,6 +7,11 @@ const AdminServices = () => {
   const [rows, setRows] = useState(null);
   const [users, setUsers] = useState({});
   const [active, setActive] = useState(null);
+  const [requests, setRequests] = useState([]);
+
+  const loadRequests = () =>
+    api.get("/admin/service-requests").then((r) => setRequests(r.data || [])).catch(() => setRequests([]));
+
   useEffect(() => {
     api.get("/admin/services").then((r) => setRows(r.data));
     api.get("/admin/users").then((r) => {
@@ -14,7 +19,13 @@ const AdminServices = () => {
       for (const u of r.data) map[u.id] = u;
       setUsers(map);
     }).catch(() => {});
+    loadRequests();
   }, []);
+
+  const refresh = () => {
+    api.get("/admin/services").then((r) => setRows(r.data));
+    loadRequests();
+  };
 
   const columns = [
     { key: "product_name", label: "Service", sortable: true,
@@ -47,6 +58,32 @@ const AdminServices = () => {
   return (
     <div>
       <PageHeader title="Active Services" subtitle="Every provisioned instance across your clients. Klik baris untuk detail provisioning." />
+      {requests.length > 0 && (
+        <Card className="p-4 mb-4 border-red-200 bg-red-50/50" data-testid="termination-requests-banner">
+          <div className="text-sm font-extrabold text-red-800 mb-2">
+            Permintaan pengakhiran layanan menunggu persetujuan ({requests.length})
+          </div>
+          <div className="space-y-2">
+            {requests.map((r) => (
+              <div key={r.id} className="flex items-center justify-between gap-3 rounded-lg bg-white border border-red-100 px-3 py-2"
+                   data-testid={`termreq-${r.id}`}>
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-[#0a2350] truncate">{r.product_name} · {r.name}</div>
+                  <div className="text-[11px] text-slate-500 truncate">
+                    {r.user?.email} · {r.termination_request?.reason || "tanpa alasan"}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActive(r)}
+                  className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-bold whitespace-nowrap"
+                  data-testid={`termreq-review-${r.id}`}>
+                  Tinjau
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       <DataTable
         rows={rows || []}
         loading={rows === null}
@@ -57,7 +94,7 @@ const AdminServices = () => {
         empty={{ title: "No services yet", hint: "Provisioned services will appear here once orders are verified." }}
         testid="admin-services-table"
       />
-      {active && <ServiceDetailModal serviceId={active.id} onClose={() => setActive(null)} />}
+      {active && <ServiceDetailModal serviceId={active.id} onClose={() => { setActive(null); refresh(); }} />}
     </div>
   );
 };
@@ -118,6 +155,8 @@ const ServiceDetailModal = ({ serviceId, onClose }) => {
               <div className="text-sm font-semibold text-[#0a2350]">{d.user?.name}</div>
               <div className="text-xs text-slate-500">{d.user?.email}{d.user?.company ? ` - ${d.user.company}` : ""}</div>
             </Card>
+
+            <ServiceLifecycleCard d={d} serviceId={serviceId} onChanged={load} />
 
             <Card className="p-4">
               <div className="text-sm font-extrabold text-[#0a2350] mb-2">Provisioning config</div>
@@ -189,6 +228,108 @@ const ServiceDetailModal = ({ serviceId, onClose }) => {
         )}
       </div>
     </div>
+  );
+};
+
+const ServiceLifecycleCard = ({ d, serviceId, onChanged }) => {
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  const req = d.termination_request;
+  const pendingTerm = req && req.status === "pending";
+
+  const run = async (fn, label) => {
+    setBusy(label); setMsg(null);
+    try {
+      const { data } = await fn();
+      setMsg({ ok: true, text: data?.vm ? `${label} berhasil (${data.vm}).` : `${label} berhasil.` });
+      onChanged && onChanged();
+    } catch (e) {
+      setMsg({ ok: false, text: e?.response?.data?.detail || `${label} gagal` });
+    } finally { setBusy(""); }
+  };
+
+  return (
+    <Card className="p-4" data-testid="service-lifecycle-card">
+      <div className="text-sm font-extrabold text-[#0a2350] mb-2">Lifecycle layanan</div>
+
+      {d.status === "terminated" ? (
+        <p className="text-xs font-semibold text-red-700">Layanan sudah diterminasi.</p>
+      ) : (
+        <>
+          {d.status === "suspended" ? (
+            <div className="mb-3">
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                Disuspend{d.suspended_reason ? ` - ${d.suspended_reason}` : ""}.
+              </p>
+              <button
+                data-testid="svc-unsuspend-btn"
+                onClick={() => run(() => api.post(`/admin/services/${serviceId}/unsuspend`), "Unsuspend")}
+                disabled={!!busy}
+                className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold disabled:opacity-50">
+                {busy === "Unsuspend" ? "Memproses..." : "Aktifkan kembali (Unsuspend)"}
+              </button>
+            </div>
+          ) : (
+            <div className="mb-3 space-y-2">
+              <input
+                data-testid="svc-suspend-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Alasan suspend (mis. toleransi telat bayar)"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+              <button
+                data-testid="svc-suspend-btn"
+                onClick={() => run(() => api.post(`/admin/services/${serviceId}/suspend`, { reason }), "Suspend")}
+                disabled={!!busy}
+                className="px-3 py-2 rounded-lg bg-amber-600 text-white text-xs font-bold disabled:opacity-50">
+                {busy === "Suspend" ? "Memproses..." : "Suspend layanan (manual)"}
+              </button>
+            </div>
+          )}
+
+          {pendingTerm && (
+            <div className="rounded-xl border border-red-200 bg-red-50/60 p-3" data-testid="terminate-request-admin">
+              <div className="text-xs font-extrabold text-red-800">Permintaan pengakhiran dari klien</div>
+              <p className="text-[11px] text-red-700 mt-0.5">
+                Diminta oleh {req.requested_by} · {req.requested_at}
+                {req.reason ? ` · alasan: ${req.reason}` : ""}
+              </p>
+              <input
+                data-testid="terminate-note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Catatan (opsional)"
+                className="w-full mt-2 rounded-lg border border-red-200 px-3 py-1.5 text-xs"
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  data-testid="terminate-approve-btn"
+                  onClick={() => run(() => api.post(`/admin/services/${serviceId}/terminate-request/approve`, { note }), "Approve terminate")}
+                  disabled={!!busy}
+                  className="px-3 py-2 rounded-lg bg-red-600 text-white text-xs font-bold disabled:opacity-50">
+                  Setujui &amp; akhiri
+                </button>
+                <button
+                  data-testid="terminate-reject-btn"
+                  onClick={() => run(() => api.post(`/admin/services/${serviceId}/terminate-request/reject`, { note }), "Reject terminate")}
+                  disabled={!!busy}
+                  className="px-3 py-2 rounded-lg border border-slate-300 text-slate-600 text-xs font-bold disabled:opacity-50">
+                  Tolak
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {msg && (
+        <div className={`mt-2 text-xs rounded-lg px-2.5 py-1.5 border ${msg.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`} data-testid="lifecycle-msg">
+          {msg.text}
+        </div>
+      )}
+    </Card>
   );
 };
 

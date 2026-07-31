@@ -469,6 +469,98 @@ const AutoRenewToggle = ({ service }) => {
   );
 };
 
+const TerminateRequestPanel = ({ service }) => {
+  const [req, setReq] = useState(service.termination_request || null);
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  if (service.status === "terminated") {
+    return (
+      <Card className="p-5" data-testid="terminate-panel">
+        <div className="text-sm font-extrabold text-red-700">Layanan telah diakhiri</div>
+        <p className="mt-1 text-xs text-slate-500">Layanan ini sudah diterminasi. Hubungi sales untuk mengaktifkan layanan baru.</p>
+      </Card>
+    );
+  }
+
+  const submit = async () => {
+    setBusy(true); setErr("");
+    try {
+      const { data } = await api.post(`/client/services/${service.id}/terminate-request`, { reason });
+      setReq(data.termination_request);
+      service.termination_request = data.termination_request;
+      setOpen(false);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal mengirim permintaan");
+    } finally { setBusy(false); }
+  };
+
+  const cancel = async () => {
+    setBusy(true); setErr("");
+    try {
+      await api.delete(`/client/services/${service.id}/terminate-request`);
+      setReq(null);
+      service.termination_request = null;
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal membatalkan permintaan");
+    } finally { setBusy(false); }
+  };
+
+  const status = req?.status;
+  return (
+    <Card className="p-5" data-testid="terminate-panel">
+      <div className="text-sm font-extrabold text-[#0a2350] mb-1">Akhiri layanan</div>
+      {status === "pending" ? (
+        <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs" data-testid="terminate-pending">
+          <div className="font-bold text-amber-800">Permintaan pengakhiran menunggu persetujuan tim kami.</div>
+          {req.reason && <p className="text-amber-700 mt-1">Alasan: {req.reason}</p>}
+          <button onClick={cancel} disabled={busy} className="mt-2 text-xs font-bold text-red-600 hover:underline disabled:opacity-50" data-testid="terminate-cancel-btn">
+            Batalkan permintaan
+          </button>
+        </div>
+      ) : status === "rejected" ? (
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs">
+          <div className="font-bold text-slate-700">Permintaan sebelumnya ditolak.</div>
+          {req.note && <p className="text-slate-500 mt-1">Catatan: {req.note}</p>}
+          <button onClick={() => { setReq(null); setOpen(true); }} className="mt-2 text-xs font-bold text-[#0a2350] hover:underline">
+            Ajukan lagi
+          </button>
+        </div>
+      ) : open ? (
+        <div className="space-y-2.5">
+          <p className="text-[11px] text-slate-500">Permintaan pengakhiran perlu disetujui admin/support/sales. Layanan tetap aktif sampai disetujui.</p>
+          <textarea
+            data-testid="terminate-reason"
+            rows={2}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Alasan mengakhiri layanan (opsional)"
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          />
+          <div className="flex items-center gap-2">
+            <button onClick={submit} disabled={busy} className="px-3 py-2 rounded-lg bg-red-600 text-white text-xs font-bold disabled:opacity-50" data-testid="terminate-submit-btn">
+              {busy ? "Mengirim..." : "Kirim permintaan"}
+            </button>
+            <button onClick={() => setOpen(false)} disabled={busy} className="px-3 py-2 rounded-lg border border-slate-300 text-xs font-bold text-slate-600">
+              Batal
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="text-[11px] text-slate-500 mb-2">Ingin mengakhiri layanan ini? Ajukan permintaan; tim kami akan meninjau &amp; menyetujui.</p>
+          <button onClick={() => setOpen(true)} className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-xs font-bold hover:bg-red-50" data-testid="terminate-request-btn">
+            Ajukan pengakhiran layanan
+          </button>
+        </>
+      )}
+      {err && <p className="mt-2 text-xs font-semibold text-red-600" data-testid="terminate-error">{err}</p>}
+    </Card>
+  );
+};
+
 const ServiceDetail = ({ service, onClose }) => {
   const s = service;
   const isVPS = s.category === "vps" || s.category === "dedicated" || s.category === "cloud";
@@ -517,6 +609,7 @@ const ServiceDetail = ({ service, onClose }) => {
           {isVPS && <VmMetricsPanel serviceId={s.id} />}
           {isVPS && s.status === "active" && <UpgradePanel serviceId={s.id} />}
           <AutoRenewToggle service={s} />
+          <TerminateRequestPanel service={s} />
 
           {isHosting && (
             <Card className="p-5">

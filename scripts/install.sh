@@ -565,6 +565,14 @@ cat > /etc/nginx/sites-available/intercloud <<NGINX
 # NOTE: kept as a static string, NOT an nginx 'map' directive, because
 # not every nginx build supports \$var interpolation inside add_header.
 
+# Maps $http_upgrade to the Connection header value so WebSocket upgrades
+# (noVNC VM console) are proxied correctly while normal requests keep
+# keep-alive. Placed in http context (sites-enabled is included there).
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
@@ -603,6 +611,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        # WebSocket upgrade — required for the noVNC VM console relay
+        # (/api/portal/client/services/{id}/vm/console-ws). Without these
+        # the browser Upgrade request is dropped and the console shows
+        # "DISCONNECTED" immediately.
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
         proxy_read_timeout 600s;
     }
 

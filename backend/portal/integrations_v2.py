@@ -321,6 +321,41 @@ class ProxmoxClient:
         """Returns {ticket, port, cert} for VNC proxy."""
         return await self._post(f"/nodes/{node}/qemu/{vmid}/vncproxy", {"websocket": 1})
 
+    async def snippets_storage(self, node: str) -> Optional[str]:
+        """Nama storage di node yang mendukung konten `snippets` (untuk cicustom
+        cloud-init). Bila belum ada, coba aktifkan konten snippets pada storage
+        direktori (mis. `local`)."""
+        storages = await self.list_storages(node)
+        for s in storages:
+            if "snippets" in (s.get("content") or "").split(","):
+                return s.get("storage")
+        for s in storages:
+            if s.get("type") == "dir" or s.get("storage") == "local":
+                try:
+                    await self.enable_storage_content(s["storage"], "snippets")
+                    return s.get("storage")
+                except Exception:
+                    continue
+        return None
+
+    async def guest_ping(self, node: str, vmid: int) -> Any:
+        """QEMU guest-agent ping. Sukses hanya bila agent hidup di dalam VM."""
+        async with httpx.AsyncClient(timeout=15, verify=self.ssl_verify) as c:
+            r = await c.post(f"{self.host}/api2/json/nodes/{node}/qemu/{vmid}/agent/ping",
+                             headers=self._headers())
+            r.raise_for_status()
+            return r.json().get("data")
+
+    async def guest_exec(self, node: str, vmid: int, command: list) -> Any:
+        """Jalankan perintah di dalam VM via QEMU guest-agent. Return {pid:...}."""
+        async with httpx.AsyncClient(timeout=30, verify=self.ssl_verify) as c:
+            # Proxmox menerima argumen `command` berulang (satu per token).
+            data = [("command", str(x)) for x in command]
+            r = await c.post(f"{self.host}/api2/json/nodes/{node}/qemu/{vmid}/agent/exec",
+                             headers=self._headers(), data=data)
+            r.raise_for_status()
+            return r.json().get("data")
+
     async def node_status(self, node: str) -> dict:
         return await self._get(f"/nodes/{node}/status") or {}
 

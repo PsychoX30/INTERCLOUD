@@ -787,6 +787,8 @@ async def client_services(user=Depends(get_current_user)):
             "price_monthly": d.get("price_monthly", 0),
             "auto_renew": d.get("auto_renew", True),
             "config": d.get("config", {}),
+            "termination_request": d.get("termination_request"),
+            "suspended_reason": d.get("suspended_reason", ""),
         })
     return result
 
@@ -2053,6 +2055,113 @@ async def _build_os_options(db) -> dict:
             "templates": templates, "isos": isos, "options": options}
 
 
+# Skrip sshd yang diminta operasional. Ditulis sebagai drop-in ber-prefix "00-"
+# agar MENANG atas bawaan cloud image (60-cloudimg-settings) - sshd memakai
+# nilai pertama yang ditemukan (first-match) saat membaca /etc/ssh/sshd_config.d/*.
+def _ssh_config_script(root_pw: str) -> str:
+    return (
+        "mkdir -p /etc/ssh/sshd_config.d; "
+        "printf '%s\\n' 'PermitRootLogin yes' 'PasswordAuthentication yes' "
+        "'MaxAuthTries 10' 'MaxSessions 6' 'Port 22' 'ListenAddress 0.0.0.0' "
+        "> /etc/ssh/sshd_config.d/00-intercloud.conf; "
+        f"echo 'root:{root_pw}' | chpasswd; "
+        "systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || "
+        "service ssh restart 2>/dev/null || service sshd restart 2>/dev/null || true"
+    )
+
+
+async def _get_provision_ssh_key(db) -> dict:
+    """Keypair SSH milik portal untuk auto-config VM. Dibuat sekali & dipakai ulang."""
+    doc = await db.settings.find_one({"key": "provision_ssh_key"})
+    if doc and doc.get("private") and doc.get("public"):
+        return {"private": doc["private"], "public": doc["public"]}
+    import io as _io
+    import paramiko as _pk
+    k = _pk.RSAKey.generate(2048)
+    buf = _io.StringIO()
+    k.write_private_key(buf)
+    priv = buf.getvalue()
+    pub = f"{k.get_name()} {k.get_base64()} intercloud-portal"
+    await db.settings.update_one(
+        {"key": "provision_ssh_key"},
+        {"$set": {"key": "provision_ssh_key", "private": priv, "public": pub, "created_at": _now()}},
+        upsert=True)
+    return {"private": priv, "public": pub}
+
+
+def _ssh_pubkey_param(pub: str) -> str:
+    """Nilai `sshkeys` untuk Proxmox cloud-init (harus URL-encoded)."""
+    return quote(pub, safe="")
+
+
+def _blocking_ssh_configure(ip: str, private_key_pem: str, root_pw: str) -> tuple:
+    """Tunggu port 22, SSH sebagai root via key portal, konfigurasi sshd + set
+    password root. Sinkron - dipanggil lewat asyncio.to_thread. Return (ok, msg)."""
+    import io as _io
+    import time as _time
+    import socket as _socket
+    import paramiko as _pk
+    deadline = _time.time() + 210
+    up = False
+    while _time.time() < deadline:
+        try:
+            with _socket.create_connection((ip, 22), timeout=5):
+                up = True
+                break
+        except Exception:
+            _time.sleep(6)
+    if not up:
+        return (False, "port 22 tidak terbuka dalam ~3.5 menit")
+    key = _pk.RSAKey.from_private_key(_io.StringIO(private_key_pem))
+    cli = _pk.SSHClient()
+    cli.set_missing_host_key_policy(_pk.AutoAddPolicy())
+    last = None
+    for _ in range(6):
+        try:
+            cli.connect(ip, port=22, username="root", pkey=key, timeout=10,
+                        allow_agent=False, look_for_keys=False)
+            last = None
+            break
+        except Exception as e:
+            last = e
+            _time.sleep(8)
+    if last is not None:
+        return (False, f"login SSH key gagal: {str(last)[:100]}")
+    try:
+        _stdin, stdout, _stderr = cli.exec_command(_ssh_config_script(root_pw), timeout=25)
+        stdout.channel.recv_exit_status()
+    finally:
+        cli.close()
+    return (True, "diterapkan")
+
+
+async def _apply_ssh_config(db, ip, root_pw, log=None) -> bool:
+    """Auto-config SSH VM baru: pasang PermitRootLogin yes, PasswordAuthentication
+    yes, MaxAuthTries 10, MaxSessions 6, Port 22, ListenAddress 0.0.0.0 + set root pw.
+    Best-effort: bila IP DHCP/tak terjangkau, provisioning tetap sukses."""
+    ip = str(ip or "").split("/")[0].strip()
+    if not ip or ip.upper() == "DHCP":
+        if log:
+            await log("ssh_config_skipped", "IP DHCP/tidak diketahui - SSH auto-config dilewati.")
+        return False
+    try:
+        key = await _get_provision_ssh_key(db)
+        ok, msg = await asyncio.to_thread(_blocking_ssh_configure, ip, key["private"], root_pw)
+    except Exception as e:
+        ok, msg = False, str(e)[:120]
+    if log:
+        if ok:
+            await log("ssh_config_applied",
+                      "SSH auto-config diterapkan (via key portal): PermitRootLogin yes, "
+                      "PasswordAuthentication yes, MaxAuthTries 10, MaxSessions 6, Port 22, "
+                      "ListenAddress 0.0.0.0. Login root via password & key aktif.")
+        else:
+            await log("ssh_config_failed",
+                      f"SSH auto-config dilewati: {msg}. VM & IP tetap aktif; login key portal "
+                      "tetap terpasang via cloud-init.")
+    return ok
+
+
 async def _autobuild_ci_template(px, entry: dict) -> dict:
     """Bangun template cloud-init di Proxmox dari URL cloud image (sekali per OS,
     dipakai ulang untuk semua order berikutnya)."""
@@ -2223,8 +2332,18 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
             root_pw = secrets.token_urlsafe(12)
             conf = {"cores": cores, "memory": memory_mb, "ciuser": "root",
                     "cipassword": root_pw, "nameserver": "8.8.8.8 1.1.1.1"}
+            try:
+                _pkey = await _get_provision_ssh_key(db)
+                conf["sshkeys"] = _ssh_pubkey_param(_pkey["public"])
+            except Exception:
+                pass
+            _ip = ""
             if cfg.get("ip") and cfg.get("ip_prefixlen"):
-                conf["ipconfig0"] = f"ip={cfg['ip']}/{cfg['ip_prefixlen']},gw={cfg.get('ip_gateway', '')}"
+                # Proxmox menolak gateway/IP yang masih mengandung prefix CIDR
+                # (mis. "157.20.32.177/28"). Bersihkan agar ipconfig0 valid.
+                _ip = str(cfg["ip"]).split("/")[0].strip()
+                _gw = str(cfg.get("ip_gateway", "")).split("/")[0].strip()
+                conf["ipconfig0"] = f"ip={_ip}/{cfg['ip_prefixlen']}" + (f",gw={_gw}" if _gw else "")
             else:
                 conf["ipconfig0"] = "ip=dhcp"
             await px.set_config(vm["node"], vm["vmid"], conf)
@@ -2240,6 +2359,8 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
             try:
                 await px.vm_action(vm["node"], vm["vmid"], "start")
                 await _log("vm_started", f"VM {vm['vmid']} dinyalakan otomatis.")
+                # SSH auto-config berjalan di background (tunggu VM boot + cloud-init).
+                asyncio.create_task(_apply_ssh_config(db, _ip, root_pw, _log))
             except Exception as e:
                 await _log("vm_start_failed", f"VM gagal start otomatis: {str(e)[:100]}")
             upd = {"config.node": vm["node"], "config.vmid": vm["vmid"],
@@ -4397,6 +4518,9 @@ def _serialize_service(d: dict) -> dict:
         "price_monthly": d.get("price_monthly", 0),
         "config": d.get("config", {}),
         "order_id": d.get("order_id"),
+        "termination_request": d.get("termination_request"),
+        "suspended_reason": d.get("suspended_reason", ""),
+        "suspended_manual": d.get("suspended_manual", False),
     }
 
 
@@ -5533,9 +5657,15 @@ async def _allocate_ip_from_pool(db, prefix_doc: dict, *, hostname: str = "",
         return None
     used_docs = await db.dcim_ips.find({"prefix_id": prefix_doc["_id"]}).to_list(5000)
     used = {d.get("address", "").split("/")[0] for d in used_docs}
+    # Jangan pernah alokasikan gateway prefix. Untuk subnet non-/24 (mis. /28)
+    # gateway bisa berakhiran selain .1, jadi harus dikecualikan eksplisit.
+    gw = str(prefix_doc.get("gateway") or "").strip().split("/")[0]
+    reserved = {str(r).split("/")[0] for r in (prefix_doc.get("reserved") or [])}
+    if gw:
+        reserved.add(gw)
     for host in net.hosts():
         a = str(host)
-        if a.endswith(".0") or a.endswith(".1") or a in used:
+        if a == str(net.network_address) or a in reserved or a in used:
             continue
         await db.dcim_ips.insert_one({
             "address": a, "prefix_id": prefix_doc["_id"], "status": "allocated",
@@ -5571,7 +5701,8 @@ async def _auto_allocate_customer_ip(db, *, hostname: str, customer: str, ref: s
             try:
                 net = _ip.ip_network(p.get("prefix", ""), strict=False)
                 prefixlen = net.prefixlen
-                gateway = str(p.get("gateway") or "").strip() or str(next(net.hosts()))
+                # Buang prefix CIDR bila admin mengisi gateway sebagai "x.x.x.x/28".
+                gateway = str(p.get("gateway") or "").strip().split("/")[0] or str(next(net.hosts()))
             except (ValueError, StopIteration):
                 prefixlen, gateway = 24, ""
             return {"ip": ip, "prefixlen": prefixlen, "gateway": gateway,
@@ -8048,16 +8179,29 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles(
     async def _configure_and_start(node, vmid):
         try:
             await px.wait_unlock(node, vmid, timeout_s=900)
-            await px.set_config(node, vmid, {
+            conf = {
                 "cores": cores, "memory": memory_mb, "ciuser": "root",
-                "cipassword": root_pw, "ipconfig0": "ip=dhcp",
-                "nameserver": "8.8.8.8 1.1.1.1"})
+                "cipassword": root_pw, "nameserver": "8.8.8.8 1.1.1.1"}
+            try:
+                _pkey = await _get_provision_ssh_key(db)
+                conf["sshkeys"] = _ssh_pubkey_param(_pkey["public"])
+            except Exception:
+                pass
+            _ip = str(payload.get("ip") or "").split("/")[0].strip()
+            _pl = payload.get("prefixlen") or payload.get("ip_prefixlen")
+            if _ip and _pl:
+                _gw = str(payload.get("gateway") or payload.get("ip_gateway") or "").split("/")[0].strip()
+                conf["ipconfig0"] = f"ip={_ip}/{int(_pl)}" + (f",gw={_gw}" if _gw else "")
+            else:
+                conf["ipconfig0"] = "ip=dhcp"
+            await px.set_config(node, vmid, conf)
             if disk_gb:
                 try:
                     await px.resize_disk(node, vmid, "scsi0", f"{disk_gb}G")
                 except Exception:
                     pass
             await px.vm_action(node, vmid, "start")
+            await _apply_ssh_config(db, _ip, root_pw)
         except Exception:
             logging.getLogger("portal.provision").exception("manual VM %s post-config failed", vmid)
 
@@ -8194,6 +8338,185 @@ async def admin_service_verify_vm(sid: str, payload: dict,
             "vm_status": found.get("status", ""),
             "message": f"VM ditemukan: VMID {found['vmid']} di node {found['node']} "
                        f"(status {found.get('status', '')}). Service diaktifkan."}
+
+
+# ============================================================
+# Manual suspend / unsuspend & permintaan terminate layanan
+# ============================================================
+async def _service_vm_power(db, svc: dict, action: str) -> str:
+    """Best-effort start/stop VM Proxmox milik service. Return keterangan singkat."""
+    if svc.get("category") not in _VM_CATEGORIES:
+        return "non-VM"
+    cfg = svc.get("config") or {}
+    node, vmid = cfg.get("node"), cfg.get("vmid")
+    if not (node and vmid):
+        return "VM tidak tertaut"
+    s = await _proxmox_settings_for_service(db, svc)
+    if not s:
+        return "Proxmox nonaktif"
+    try:
+        await iv2.ProxmoxClient(s).vm_action(node, int(vmid), action)
+        return f"VM {action}"
+    except Exception as e:
+        return f"VM {action} gagal: {str(e)[:80]}"
+
+
+@router.post("/admin/services/{sid}/suspend")
+async def admin_service_suspend(sid: str, payload: dict, request: Request,
+                                staff=Depends(require_roles("admin", "support", "sales"))):
+    """Suspend layanan secara manual (mis. toleransi keterlambatan bayar).
+    Menonaktifkan self-service klien & mematikan VM (best-effort)."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("status") == "suspended":
+        raise HTTPException(status_code=400, detail="Layanan sudah dalam status suspended")
+    if svc.get("status") == "terminated":
+        raise HTTPException(status_code=400, detail="Layanan sudah diterminasi")
+    reason = (payload.get("reason") or "").strip() or "Disuspend manual oleh staff"
+    vm_note = await _service_vm_power(db, svc, "stop")
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+        "status": "suspended", "suspended_at": _now(),
+        "suspended_reason": reason, "suspended_manual": True,
+        "suspended_by": staff.get("email", "")}})
+    await log_audit(db, actor=staff, action="service.suspend", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""), severity="warning",
+                    metadata={"reason": reason, "vm": vm_note}, request=request)
+    return {"ok": True, "status": "suspended", "vm": vm_note}
+
+
+@router.post("/admin/services/{sid}/unsuspend")
+async def admin_service_unsuspend(sid: str, request: Request,
+                                  staff=Depends(require_roles("admin", "support", "sales"))):
+    """Aktifkan kembali layanan yang disuspend & nyalakan VM (best-effort)."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("status") != "suspended":
+        raise HTTPException(status_code=400, detail="Layanan tidak sedang disuspend")
+    vm_note = await _service_vm_power(db, svc, "start")
+    await db.services.update_one({"_id": svc["_id"]}, {
+        "$set": {"status": "active", "reactivated_at": _now(),
+                 "reactivated_reason": f"Diaktifkan manual oleh {staff.get('email', 'staff')}"},
+        "$unset": {"suspended_at": "", "suspended_reason": "",
+                   "suspended_manual": "", "suspended_by": ""}})
+    await log_audit(db, actor=staff, action="service.unsuspend", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""), severity="warning",
+                    metadata={"vm": vm_note}, request=request)
+    return {"ok": True, "status": "active", "vm": vm_note}
+
+
+@router.post("/client/services/{sid}/terminate-request")
+async def client_terminate_request(sid: str, payload: dict, request: Request,
+                                   user=Depends(get_current_user)):
+    """Klien mengajukan permintaan pengakhiran layanan. Perlu persetujuan staff."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("status") == "terminated":
+        raise HTTPException(status_code=400, detail="Layanan sudah diterminasi")
+    existing = svc.get("termination_request")
+    if existing and existing.get("status") == "pending":
+        raise HTTPException(status_code=400, detail="Sudah ada permintaan terminate yang menunggu persetujuan")
+    reason = (payload.get("reason") or "").strip()
+    req = {"status": "pending", "reason": reason, "requested_at": _now(),
+           "requested_by": user.get("email", "")}
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {"termination_request": req}})
+    await log_audit(db, actor=user, action="service.terminate_request", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""), severity="warning",
+                    metadata={"reason": reason}, request=request)
+    try:
+        await _notify_admin_manual_provision(
+            db, {"user_email": user.get("email", ""), "_id": svc.get("order_id") or svc["_id"]},
+            f"Permintaan TERMINATE layanan '{svc.get('name', '')}' oleh {user.get('email', '')}"
+            + (f" - alasan: {reason}" if reason else ""))
+    except Exception:
+        pass
+    return {"ok": True, "termination_request": req}
+
+
+@router.delete("/client/services/{sid}/terminate-request")
+async def client_terminate_request_cancel(sid: str, user=Depends(get_current_user)):
+    """Klien membatalkan permintaan terminate yang masih pending."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    req = svc.get("termination_request")
+    if not req or req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Tidak ada permintaan terminate yang pending")
+    await db.services.update_one({"_id": svc["_id"]}, {"$unset": {"termination_request": ""}})
+    return {"ok": True}
+
+
+@router.get("/admin/service-requests")
+async def admin_service_requests(staff=Depends(require_roles("admin", "support", "sales"))):
+    """Daftar layanan dengan permintaan terminate yang menunggu persetujuan."""
+    db = await _get_db()
+    docs = await db.services.find({"termination_request.status": "pending"}).to_list(500)
+    out = []
+    for d in docs:
+        u = await db.users.find_one({"_id": d["user_id"]}) or {}
+        item = _serialize_service(d)
+        item["termination_request"] = d.get("termination_request")
+        item["user"] = {"name": u.get("name", ""), "email": u.get("email", "")}
+        out.append(item)
+    return out
+
+
+@router.post("/admin/services/{sid}/terminate-request/approve")
+async def admin_terminate_approve(sid: str, payload: dict, request: Request,
+                                  staff=Depends(require_roles("admin", "support", "sales"))):
+    """Setujui permintaan terminate: hentikan VM (best-effort) & tandai terminated."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    req = svc.get("termination_request") or {}
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Tidak ada permintaan terminate yang pending")
+    vm_note = await _service_vm_power(db, svc, "stop")
+    req.update({"status": "approved", "resolved_at": _now(),
+                "resolved_by": staff.get("email", ""),
+                "note": (payload.get("note") or "").strip()})
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+        "status": "terminated", "terminated_at": _now(),
+        "terminated_reason": req.get("reason") or "Permintaan klien disetujui",
+        "auto_renew": False, "termination_request": req}})
+    await log_audit(db, actor=staff, action="service.terminate_approve", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""), severity="warning",
+                    metadata={"vm": vm_note}, request=request)
+    return {"ok": True, "status": "terminated", "vm": vm_note}
+
+
+@router.post("/admin/services/{sid}/terminate-request/reject")
+async def admin_terminate_reject(sid: str, payload: dict, request: Request,
+                                 staff=Depends(require_roles("admin", "support", "sales"))):
+    """Tolak permintaan terminate: layanan tetap aktif."""
+    db = await _get_db()
+    svc = await db.services.find_one({"_id": _oid(sid)})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    req = svc.get("termination_request") or {}
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Tidak ada permintaan terminate yang pending")
+    req.update({"status": "rejected", "resolved_at": _now(),
+                "resolved_by": staff.get("email", ""),
+                "note": (payload.get("note") or "").strip()})
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {"termination_request": req}})
+    await log_audit(db, actor=staff, action="service.terminate_reject", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""), severity="info",
+                    metadata={"note": req.get("note", "")}, request=request)
+    return {"ok": True, "status": svc.get("status", "active")}
+
 
 
 @router.post("/admin/provisioning/hosting/create")
