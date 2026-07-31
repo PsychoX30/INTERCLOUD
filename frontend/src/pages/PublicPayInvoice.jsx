@@ -81,6 +81,8 @@ export default function PublicPayInvoice() {
   }
 
   const canPay = inv.status === "unpaid" || inv.status === "overdue";
+  const due = inv.amount_due != null ? inv.amount_due : inv.total;
+  const hasCredit = (inv.credit_applied || 0) > 0;
 
   return (
     <div className="min-h-screen bg-slate-100" data-testid="public-pay-page">
@@ -103,7 +105,7 @@ export default function PublicPayInvoice() {
         <div className="bg-white rounded-3xl shadow-xl border border-slate-200 p-6">
           <div className="flex items-center justify-between text-sm text-slate-500 mb-4">
             <span>Jatuh tempo <b className="text-[#0a2350]">{shortDate(inv.due_date)}</b></span>
-            <span className="text-xl font-extrabold text-[#0a2350]" data-testid="public-pay-total">{money(inv.total)}</span>
+            <span className="text-xl font-extrabold text-[#0a2350]" data-testid="public-pay-total">{money(canPay ? due : inv.total)}</span>
           </div>
           <table className="w-full text-sm">
             <thead className="text-[11px] uppercase tracking-widest text-slate-500 border-b border-slate-100">
@@ -122,7 +124,15 @@ export default function PublicPayInvoice() {
           <div className="mt-3 space-y-1 text-sm text-right">
             <div className="text-slate-500">Subtotal: <span className="font-semibold text-[#0a2350]">{money(inv.subtotal)}</span></div>
             <div className="text-slate-500">PPN{inv.tax_percent != null ? ` ${inv.tax_percent}%` : ""}: <span className="font-semibold text-[#0a2350]">{money(inv.tax_amount)}</span></div>
-            <div className="text-lg font-extrabold text-[#0a2350]">Total: {money(inv.total)}</div>
+            {hasCredit ? (
+              <>
+                <div className="text-slate-500">Total: <span className="font-semibold text-[#0a2350]">{money(inv.total)}</span></div>
+                <div className="text-emerald-700" data-testid="public-pay-credit-row">Credit note: <span className="font-semibold">-{money(inv.credit_applied)}</span></div>
+                <div className="text-lg font-extrabold text-[#0a2350]" data-testid="public-pay-amount-due">Sisa tagihan: {money(inv.status === "paid" ? 0 : due)}</div>
+              </>
+            ) : (
+              <div className="text-lg font-extrabold text-[#0a2350]">Total: {money(inv.total)}</div>
+            )}
           </div>
         </div>
 
@@ -147,7 +157,7 @@ export default function PublicPayInvoice() {
                 className={`mt-3 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm text-[#0a2350] bg-[#f5b120] hover:brightness-95 transition-all ${(!inv.duitku_enabled || payBusy) ? "opacity-50 cursor-not-allowed" : ""}`}
               >
                 {payBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-                {payBusy ? "Membuat link pembayaran…" : `Bayar ${money(inv.total)} sekarang`}
+                {payBusy ? "Membuat link pembayaran…" : `Bayar ${money(due)} sekarang`}
               </button>
               {payUrl && (
                 <div className="mt-2 text-xs text-slate-500">
@@ -162,7 +172,7 @@ export default function PublicPayInvoice() {
             <div className="rounded-2xl border border-slate-200 p-4" data-testid="public-pay-bank">
               <div className="flex items-center gap-2 font-bold text-[#0a2350]"><Wallet className="h-4 w-4" /> Transfer Bank Manual</div>
               <p className="text-xs text-slate-500 mt-1">
-                Transfer persis <b className="text-[#0a2350]">{money(inv.total)}</b> dan cantumkan nomor invoice <span className="font-mono">{inv.number}</span> di berita transfer.
+                Transfer persis <b className="text-[#0a2350]">{money(due)}</b>{hasCredit ? " (setelah potongan credit note)" : ""} dan cantumkan nomor invoice <span className="font-mono">{inv.number}</span> di berita transfer.
               </p>
               <div className="mt-3 grid sm:grid-cols-2 gap-2">
                 {(inv.bank_accounts || []).map((b, i) => (

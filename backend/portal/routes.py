@@ -1314,8 +1314,12 @@ async def _serialize_invoice(db, d: dict) -> dict:
     if not pay_token:
         pay_token = secrets.token_urlsafe(24)
         await db.invoices.update_one({"_id": d["_id"]}, {"$set": {"pay_token": pay_token}})
+    credit_applied = await _sum_applied_credit(db, d["_id"])
+    total = float(d.get("total") or 0)
     return {
         "pay_token": pay_token,
+        "credit_applied": credit_applied,
+        "amount_due": 0.0 if d.get("status") == "paid" else max(0.0, total - credit_applied),
         "id": str(d["_id"]),
         "number": d["number"],
         "user_id": str(d["user_id"]),
@@ -8818,6 +8822,12 @@ async def _create_online_payment(db, request: Request, inv: dict, *, email: str,
     if not s:
         raise HTTPException(status_code=400, detail=f"{provider} not configured")
     gw = iv2.payment_gateway(provider, s)
+    # Potongan credit note: gateway hanya menagih SISA tagihan
+    credit_applied = await _sum_applied_credit(db, inv["_id"])
+    amount_due = int(round(float(inv.get("total") or 0) - credit_applied))
+    if amount_due <= 0:
+        raise HTTPException(status_code=400,
+                            detail="Tagihan sudah tertutup credit note - tidak ada sisa yang perlu dibayar.")
     # Public base URL resolution: env → request headers (behind ingress).
     base = (os.environ.get("REACT_APP_BACKEND_URL") or "").strip().rstrip("/")
     if not base:
@@ -8834,7 +8844,7 @@ async def _create_online_payment(db, request: Request, inv: dict, *, email: str,
         callback = f"{base}/api/portal/webhooks/{provider}"
     kwargs = dict(
         invoice_id=inv["number"] or str(inv["_id"]),
-        amount_idr=int(inv["total"]),
+        amount_idr=amount_due,
         customer_email=email,
         callback_url=callback,
     )
@@ -8903,6 +8913,8 @@ async def public_pay_invoice_view(token: str):
         {"bank": "BCA", "number": "4730862038", "holder": "ANANG MADIA CUGITA"},
     ]
     duitku_on = bool(await _payment_settings(db, "duitku"))
+    credit_applied = await _sum_applied_credit(db, inv["_id"])
+    total = float(inv.get("total") or 0)
     return {
         "number": inv.get("number", ""),
         "items": inv.get("items", []),
@@ -8910,6 +8922,8 @@ async def public_pay_invoice_view(token: str):
         "tax_percent": inv.get("tax_percent"),
         "tax_amount": inv.get("tax_amount", 0),
         "total": inv.get("total", 0),
+        "credit_applied": credit_applied,
+        "amount_due": 0.0 if inv.get("status") == "paid" else max(0.0, total - credit_applied),
         "due_date": inv.get("due_date", ""),
         "status": inv.get("status", "unpaid"),
         "paid_at": inv.get("paid_at"),
@@ -11154,6 +11168,84 @@ async def credit_notes_cancel(cid: str, request: Request, admin=Depends(require_
                     target_type="credit_note", target_id=cid,
                     target_label=cn.get("number", ""),
                     severity="info", request=request)
+    return {"ok": True}
+
+
+@router.put("/admin/credit-notes/{cid}")
+async def credit_notes_update(cid: str, payload: dict, request: Request,
+                              admin=Depends(require_roles("admin", "finance"))):
+    """Edit amount/reason/notes credit note. CN yang sudah applied pada invoice
+    LUNAS tidak bisa diedit (ubah status invoice dulu)."""
+    db = await _get_db()
+    cn = await db.credit_notes.find_one({"_id": _oid(cid)})
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    invoice = await db.invoices.find_one({"_id": cn["invoice_id"]}) if cn.get("invoice_id") else None
+    if cn.get("status") == "applied" and (invoice or {}).get("status") == "paid":
+        raise HTTPException(status_code=400,
+                            detail="Credit note sudah diterapkan dan invoice sudah LUNAS - "
+                                   "ubah status invoice ke unpaid dulu bila perlu koreksi.")
+    upd, before = {}, {}
+    if "amount" in payload:
+        amount = float(payload.get("amount") or 0)
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be > 0")
+        if invoice:
+            inv_total = float(invoice.get("total") or 0)
+            other_applied = await _sum_applied_credit(db, cn["invoice_id"]) - (
+                float(cn.get("amount") or 0) if cn.get("status") == "applied" else 0)
+            if amount + other_applied > inv_total + 0.001:
+                raise HTTPException(status_code=400,
+                                    detail=f"Credit ({amount:.0f}) + credit lain ({other_applied:.0f}) "
+                                           f"melebihi total invoice ({inv_total:.0f}).")
+        before["amount"], upd["amount"] = float(cn.get("amount") or 0), amount
+    if "reason" in payload:
+        reason = (payload.get("reason") or "").strip()
+        if not reason:
+            raise HTTPException(status_code=400, detail="Reason is required")
+        before["reason"], upd["reason"] = cn.get("reason"), reason
+    if "notes" in payload:
+        before["notes"], upd["notes"] = cn.get("notes"), payload.get("notes") or ""
+    if not upd:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    upd["updated_at"] = _now()
+    await db.credit_notes.update_one({"_id": cn["_id"]}, {"$set": upd})
+    await log_audit(db, actor=admin, action="credit_note.update", category="billing",
+                    target_type="credit_note", target_id=cid,
+                    target_label=cn.get("number", ""), before=before, after=upd,
+                    severity="warning", request=request)
+    # Bila CN applied dan setelah edit menutup total invoice -> settle otomatis
+    if cn.get("status") == "applied" and invoice and invoice.get("status") != "paid":
+        try:
+            await _settle_invoice_from_credit(db, invoice, request, admin)
+        except Exception:
+            pass
+    doc = await db.credit_notes.find_one({"_id": cn["_id"]})
+    invoice = await db.invoices.find_one({"_id": cn["invoice_id"]}) if cn.get("invoice_id") else None
+    user = await db.users.find_one({"_id": cn["user_id"]}) if cn.get("user_id") else None
+    return _credit_note_serialize(doc, invoice, user)
+
+
+@router.delete("/admin/credit-notes/{cid}")
+async def credit_notes_delete(cid: str, request: Request,
+                              admin=Depends(require_roles("admin", "finance"))):
+    """Hapus credit note. CN applied pada invoice LUNAS tidak bisa dihapus."""
+    db = await _get_db()
+    cn = await db.credit_notes.find_one({"_id": _oid(cid)})
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    invoice = await db.invoices.find_one({"_id": cn["invoice_id"]}) if cn.get("invoice_id") else None
+    if cn.get("status") == "applied" and (invoice or {}).get("status") == "paid":
+        raise HTTPException(status_code=400,
+                            detail="Credit note sudah diterapkan dan invoice sudah LUNAS - "
+                                   "ubah status invoice ke unpaid dulu bila ingin menghapus.")
+    await db.credit_notes.delete_one({"_id": cn["_id"]})
+    await log_audit(db, actor=admin, action="credit_note.delete", category="billing",
+                    target_type="credit_note", target_id=cid,
+                    target_label=cn.get("number", ""),
+                    before={"invoice_number": cn.get("invoice_number"),
+                            "amount": cn.get("amount"), "status": cn.get("status")},
+                    severity="warning", request=request)
     return {"ok": True}
 
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { api, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, btnDanger, inputClass, labelClass } from "../ui";
-import { Plus, ReceiptText, Loader2, CheckCircle2, XCircle, FileText, Download, Search, RefreshCw } from "lucide-react";
+import { Plus, ReceiptText, Loader2, CheckCircle2, XCircle, FileText, Download, Search, RefreshCw, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
@@ -46,6 +46,15 @@ const AdminCreditNotes = () => {
     await api.post(`/admin/credit-notes/${id}/cancel`);
     await load();
   };
+  const del = async (r) => {
+    if (!window.confirm(`Hapus credit note ${r.number}? Potongan pada invoice ${r.invoice_number || "-"} akan hilang.`)) return;
+    try {
+      await api.delete(`/admin/credit-notes/${r.id}`);
+      toast.success("Credit note dihapus");
+      await load();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Gagal menghapus credit note"); }
+  };
+  const [editRow, setEditRow] = useState(null);
 
   const filtered = rows.filter((r) => {
     if (!q) return true;
@@ -131,6 +140,12 @@ const AdminCreditNotes = () => {
                         <a href={pdfUrl(r.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" title="Download PDF" data-testid={`cn-pdf-${r.id}`}>
                           <Download className="h-4 w-4" />
                         </a>
+                        <button onClick={() => setEditRow(r)} className="p-1.5 rounded hover:bg-slate-100 text-slate-600" title="Edit" data-testid={`cn-edit-${r.id}`}>
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => del(r)} className="p-1.5 rounded hover:bg-red-50 text-red-600" title="Hapus" data-testid={`cn-delete-${r.id}`}>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
                         {r.status === "draft" && (
                           <>
                             <button onClick={() => apply(r.id)} className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold" data-testid={`cn-apply-${r.id}`}>
@@ -158,6 +173,83 @@ const AdminCreditNotes = () => {
           onSaved={() => { setShowCreate(false); load(); }}
         />
       )}
+
+      {editRow && (
+        <EditModal
+          cn={editRow}
+          onClose={() => setEditRow(null)}
+          onSaved={() => { setEditRow(null); load(); }}
+        />
+      )}
+    </div>
+  );
+};
+
+const EditModal = ({ cn, onClose, onSaved }) => {
+  const [amount, setAmount] = useState(String(cn.amount || ""));
+  const [reason, setReason] = useState(cn.reason || "");
+  const [notes, setNotes] = useState(cn.notes || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    setError("");
+    if (!amount || Number(amount) <= 0 || !reason.trim()) {
+      setError("Amount (>0) dan reason wajib diisi.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.put(`/admin/credit-notes/${cn.id}`, { amount: Number(amount), reason: reason.trim(), notes });
+      toast.success(`${cn.number} diperbarui`);
+      onSaved();
+    } catch (e) {
+      setError(e.response?.data?.detail || "Gagal menyimpan perubahan");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose} data-testid="cn-edit-modal">
+      <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="p-5 border-b border-slate-200 flex items-start justify-between">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-slate-500">Edit credit note</div>
+            <div className="text-lg font-extrabold text-[#0a2350] font-mono">{cn.number}</div>
+            <div className="text-xs text-slate-500 mt-0.5">Invoice {cn.invoice_number || "-"} · status <b className="uppercase">{cn.status}</b></div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl" data-testid="cn-edit-close">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          {cn.status === "applied" && (
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+              Credit note ini sudah diterapkan - mengubah amount langsung mengubah sisa tagihan invoice. Bila amount baru menutup total invoice, invoice otomatis LUNAS.
+            </div>
+          )}
+          <div>
+            <label className={labelClass}>Amount (IDR)*</label>
+            <input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)}
+                   className={inputClass} data-testid="cn-edit-amount" />
+          </div>
+          <div>
+            <label className={labelClass}>Reason*</label>
+            <input value={reason} onChange={(e) => setReason(e.target.value)}
+                   className={inputClass} data-testid="cn-edit-reason" />
+          </div>
+          <div>
+            <label className={labelClass}>Notes</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
+                      className={inputClass + " h-auto py-2"} data-testid="cn-edit-notes" />
+          </div>
+          {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 p-2 rounded" data-testid="cn-edit-error">{error}</div>}
+        </div>
+        <div className="p-5 border-t border-slate-200 flex justify-end gap-2">
+          <button onClick={onClose} className={btnSecondary} data-testid="cn-edit-cancel">Cancel</button>
+          <button onClick={submit} disabled={saving} className={btnPrimary} data-testid="cn-edit-save">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}
+            {saving ? "Saving…" : "Simpan perubahan"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

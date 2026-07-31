@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { LogIn, Loader2, AlertTriangle, Cloud, ArrowLeft, ShieldCheck } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
-import { isRecaptchaEnabled } from "../../portal/recaptcha";
+import { isRecaptchaEnabled, preloadRecaptcha } from "../../portal/recaptcha";
 
 const PortalLogin = () => {
   const { user, login, loginTwoFA } = useAuth();
@@ -20,6 +20,7 @@ const PortalLogin = () => {
 
   useEffect(() => {
     isRecaptchaEnabled().then(setCaptchaOn);
+    preloadRecaptcha();
   }, []);
 
   useEffect(() => {

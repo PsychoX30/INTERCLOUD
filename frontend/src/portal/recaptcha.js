@@ -47,22 +47,46 @@ function loadScript(siteKey) {
   return _scriptPromise;
 }
 
+/** Poll until the grecaptcha object is fully initialised (execute available).
+ * Right after script onload, `grecaptcha` exists but `.execute` is attached
+ * asynchronously - checking it immediately made the FIRST login always fail. */
+function waitForGrecaptcha(timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    (function poll() {
+      const g = typeof window !== "undefined" ? window.grecaptcha : null;
+      if (g && typeof g.ready === "function") return resolve(g);
+      if (Date.now() - started > timeoutMs) return reject(new Error("reCAPTCHA not ready"));
+      setTimeout(poll, 100);
+    })();
+  });
+}
+
 /** Returns a token or null if reCAPTCHA is disabled server-side. */
 export async function getRecaptchaToken(action) {
   const cfg = await fetchConfig();
   if (!cfg?.enabled || !cfg.site_key) return null;
   await loadScript(cfg.site_key);
+  const g = await waitForGrecaptcha();
   return new Promise((resolve, reject) => {
-    if (!window.grecaptcha || !window.grecaptcha.execute) {
-      return reject(new Error("reCAPTCHA not ready"));
-    }
-    window.grecaptcha.ready(() => {
-      window.grecaptcha
-        .execute(cfg.site_key, { action })
-        .then(resolve)
-        .catch(reject);
+    g.ready(() => {
+      g.execute(cfg.site_key, { action }).then(resolve).catch(reject);
     });
   });
+}
+
+/** Warm up config + Google script so the token is instant on first submit. */
+export async function preloadRecaptcha() {
+  try {
+    const cfg = await fetchConfig();
+    if (cfg?.enabled && cfg.site_key) {
+      await loadScript(cfg.site_key);
+      await waitForGrecaptcha().catch(() => null);
+    }
+    return !!cfg?.enabled;
+  } catch {
+    return false;
+  }
 }
 
 /** Public helper for pages that want to render a "Protected by reCAPTCHA" note. */

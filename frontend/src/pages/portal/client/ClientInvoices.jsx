@@ -106,6 +106,8 @@ const InvoiceDetail = ({ invoice, onClose }) => {
 
   const isOverdue = invoice.status === "overdue";
   const canPay = invoice.status === "unpaid" || invoice.status === "overdue";
+  const dueAmt = invoice.amount_due != null ? invoice.amount_due : invoice.total;
+  const hasCredit = (invoice.credit_applied || 0) > 0;
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6" onClick={onClose}>
@@ -147,17 +149,17 @@ const InvoiceDetail = ({ invoice, onClose }) => {
               <div className="font-extrabold text-[#0a2350]">Line items</div>
               <StatusBadge status={invoice.status} />
             </div>
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full text-sm">
               <thead className="text-[11px] uppercase tracking-widest text-slate-500 border-b border-slate-100">
-                <tr><th className="text-left py-2">Description</th><th className="text-right">Qty</th><th className="text-right">Unit</th><th className="text-right">Total</th></tr>
+                <tr><th className="text-left py-2">Description</th><th className="text-right">Qty</th><th className="text-right hidden sm:table-cell">Unit</th><th className="text-right pl-2">Total</th></tr>
               </thead>
               <tbody>
                 {invoice.items.map((it, i) => (
                   <tr key={i} className="border-b border-slate-100 last:border-0">
-                    <td className="py-3">{it.description}</td>
+                    <td className="py-3 pr-2 break-words">{it.description}</td>
                     <td className="text-right">{it.qty}</td>
-                    <td className="text-right">{money(it.unit_price)}</td>
-                    <td className="text-right font-bold">{money(it.total)}</td>
+                    <td className="text-right hidden sm:table-cell">{money(it.unit_price)}</td>
+                    <td className="text-right font-bold pl-2 whitespace-nowrap">{money(it.total)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -165,7 +167,15 @@ const InvoiceDetail = ({ invoice, onClose }) => {
             <div className="mt-3 space-y-1 text-sm text-right">
               <div className="text-slate-500">Subtotal: <span className="font-semibold text-[#0a2350]">{money(invoice.subtotal)}</span></div>
               <div className="text-slate-500">Tax: <span className="font-semibold text-[#0a2350]">{money(invoice.tax_amount)}</span></div>
-              <div className="text-lg font-extrabold text-[#0a2350]">Total: {money(invoice.total)}</div>
+              {hasCredit ? (
+                <>
+                  <div className="text-slate-500">Total: <span className="font-semibold text-[#0a2350]">{money(invoice.total)}</span></div>
+                  <div className="text-emerald-700" data-testid="invoice-credit-row">Credit note: <span className="font-semibold">-{money(invoice.credit_applied)}</span></div>
+                  <div className="text-lg font-extrabold text-[#0a2350]" data-testid="invoice-amount-due">Sisa tagihan: {money(invoice.status === "paid" ? 0 : dueAmt)}</div>
+                </>
+              ) : (
+                <div className="text-lg font-extrabold text-[#0a2350]">Total: {money(invoice.total)}</div>
+              )}
             </div>
           </Card>
 
@@ -193,7 +203,7 @@ const InvoiceDetail = ({ invoice, onClose }) => {
 
               {pay === "bank" && (
                 <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-3" data-testid="bank-details">
-                  <div className="text-xs text-slate-500">Transfer the exact total <span className="font-bold text-[#0a2350]">{money(invoice.total)}</span> to one of the accounts below. Include the invoice number <span className="font-mono">{invoice.number}</span> in the transfer memo.</div>
+                  <div className="text-xs text-slate-500">Transfer the exact amount <span className="font-bold text-[#0a2350]">{money(dueAmt)}</span>{hasCredit ? " (setelah potongan credit note)" : ""} to one of the accounts below. Include the invoice number <span className="font-mono">{invoice.number}</span> in the transfer memo.</div>
                   {banks.map((b, i) => (
                     <div key={i} className="rounded-lg bg-white border border-slate-200 p-3">
                       <div className="text-xs uppercase font-bold tracking-widest text-[#f5b120]">{b.bank}</div>
@@ -205,7 +215,7 @@ const InvoiceDetail = ({ invoice, onClose }) => {
                     </div>
                   ))}
                   <a
-                    href={`https://wa.me/6287812397187?text=${encodeURIComponent(`Halo, saya sudah transfer untuk invoice ${invoice.number} sebesar Rp ${invoice.total.toLocaleString('id-ID')}. Mohon konfirmasi.`)}`}
+                    href={`https://wa.me/6287812397187?text=${encodeURIComponent(`Halo, saya sudah transfer untuk invoice ${invoice.number} sebesar Rp ${Number(dueAmt).toLocaleString('id-ID')}. Mohon konfirmasi.`)}`}
                     target="_blank" rel="noreferrer"
                     className={btnPrimary}
                     data-testid="wa-confirm-payment"

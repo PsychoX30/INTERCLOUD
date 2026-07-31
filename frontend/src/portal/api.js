@@ -47,7 +47,7 @@ export const formatApiError = (err) => {
       .map((e) => (e?.msg ? e.msg : JSON.stringify(e)))
       .filter(Boolean)
       .join(" ");
-  return typeof d === "object" ? d.msg || JSON.stringify(d) : String(d);
+  return typeof d === "object" ? d.message || d.msg || JSON.stringify(d) : String(d);
 };
 
 export const money = (v) =>
