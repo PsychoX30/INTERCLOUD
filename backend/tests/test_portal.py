@@ -9,7 +9,7 @@ import time
 import requests
 from typing import Dict
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://intercloud-phase1.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://repo-analyzer-264.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api/portal"
 
 # ------- credentials (from /app/memory/test_credentials.md) -------
