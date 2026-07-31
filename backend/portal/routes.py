@@ -6835,6 +6835,7 @@ def _pdf_template(
     subtotal: float,
     tax_amount: float,    total: float,
     tax_percent: float,
+    credit_applied: float = 0,
     status: str,
     billed_to: dict,
     transactions: list = None,
@@ -6847,6 +6848,12 @@ def _pdf_template(
 ) -> str:
     """Renders the invoice/quotation HTML matching the reference layout."""
     transactions = transactions or []
+    credit_val = ("-" + _idr(credit_applied)) if credit_applied and credit_applied > 0 else _idr(0)
+    amount_due_row = ""
+    if credit_applied and credit_applied > 0:
+        due_val = 0 if status == "paid" else max(0, total - credit_applied)
+        amount_due_row = ("<tr class='grand'><td class='lbl'>Amount Due</td>"
+                          f"<td class='val'>{_idr(due_val)}</td></tr>")
     title = "Invoice" if doc_kind == "invoice" else "Quotation"
     header_title = f"{title} #{number}"
 
@@ -7032,8 +7039,9 @@ def _pdf_template(
     <table>
       <tr><td class="lbl">Sub Total</td><td class="val">{_idr(subtotal)}</td></tr>
       <tr><td class="lbl">Tax ({tax_percent:g}%)</td><td class="val">{_idr(tax_amount)}</td></tr>
-      <tr><td class="lbl">Credit</td><td class="val">{_idr(0)}</td></tr>
+      <tr><td class="lbl">Credit</td><td class="val">{credit_val}</td></tr>
       <tr class="grand"><td class="lbl">Total</td><td class="val">{_idr(total)}</td></tr>
+      {amount_due_row}
     </table>
   </div>
 
@@ -7096,6 +7104,7 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
         tax_amount=d.get("tax_amount", 0),
         total=d.get("total", 0),
         tax_percent=d.get("tax_percent", 11.0),
+        credit_applied=await _sum_applied_credit(db, d["_id"]),
         status=status,
         billed_to=u,
         transactions=tx_list,
