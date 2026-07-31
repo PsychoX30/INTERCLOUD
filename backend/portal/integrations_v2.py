@@ -1536,17 +1536,29 @@ class SMTPMailer:
         except Exception as e:
             return {"ok": False, "message": f"{type(e).__name__}: {e}"}
 
-    def send(self, *, to: str, subject: str, html: str, text: str = "") -> None:
+    def send(self, *, to: str, subject: str, html: str, text: str = "",
+             attachments: list = None) -> None:
+        """attachments: list of (filename, bytes, mime_subtype) tuples."""
         import smtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
-        msg = MIMEMultipart("alternative")
+        from email.mime.application import MIMEApplication
+        alt = MIMEMultipart("alternative")
+        if text:
+            alt.attach(MIMEText(text, "plain"))
+        alt.attach(MIMEText(html, "html"))
+        if attachments:
+            msg = MIMEMultipart("mixed")
+            msg.attach(alt)
+            for fname, blob, mime in attachments:
+                part = MIMEApplication(blob, _subtype=(mime or "octet-stream").split("/")[-1])
+                part.add_header("Content-Disposition", "attachment", filename=fname)
+                msg.attach(part)
+        else:
+            msg = alt
         msg["From"] = f"{self.from_name} <{self.from_email}>"
         msg["To"] = to
         msg["Subject"] = subject
-        if text:
-            msg.attach(MIMEText(text, "plain"))
-        msg.attach(MIMEText(html, "html"))
         if self.use_ssl:
             s = smtplib.SMTP_SSL(self.host, self.port, timeout=15)
         else:

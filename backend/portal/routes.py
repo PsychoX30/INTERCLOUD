@@ -2524,6 +2524,41 @@ async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
             "detail": "Integrasi tidak aktif saat order dibayar - selesaikan provisioning lalu aktifkan layanan",
             "link": "/portal/admin/services",
         })
+    # Kesehatan server: disk (cek live) + SSL (dari sweep harian health_alert_log)
+    if staff["role"] in ("admin", "support"):
+        try:
+            import shutil as _sh
+            du = _sh.disk_usage("/")
+            disk_pct = round(du.used / du.total * 100, 1)
+            if disk_pct >= 85.0:
+                free_gb = round(du.free / 1024 ** 3, 1)
+                alerts.append({
+                    "type": "disk_full",
+                    "severity": "danger",
+                    "title": f"Disk server {disk_pct}% terpakai",
+                    "detail": f"Sisa {free_gb} GB - bersihkan log/backup lama atau tambah kapasitas",
+                    "link": "/portal/admin/diagnostics",
+                })
+        except Exception:
+            pass
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat()
+        hdocs = await db.health_alert_log.find(
+            {"date": {"$gte": cutoff}}).sort("date", -1).to_list(3)
+        seen_issues = set()
+        for h in hdocs:
+            for issue in h.get("issues", []):
+                low = issue.lower()
+                if low.startswith("disk") or issue in seen_issues:
+                    continue  # disk sudah dicek live di atas
+                seen_issues.add(issue)
+                alerts.append({
+                    "type": "ssl_expiry" if "ssl" in low else "server_health",
+                    "severity": "danger",
+                    "title": "Sertifikat SSL akan kedaluwarsa" if "ssl" in low
+                             else "Peringatan kesehatan server",
+                    "detail": issue,
+                    "link": "/portal/admin/diagnostics",
+                })
     order = {"danger": 0, "warning": 1, "info": 2}
     alerts.sort(key=lambda a: order.get(a["severity"], 9))
     return alerts
@@ -7095,17 +7130,8 @@ def _render_pdf_bytes(html: str) -> bytes:
     return HTML(string=html).write_pdf()
 
 
-@router.get("/documents/invoice/{iid}")
-async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_current_user)):
-    db = await _get_db()
-    d = await db.invoices.find_one({"_id": _oid(iid)})
-    if not d:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    # Access: owner or staff
-    if user["role"] == "client" and str(d["user_id"]) != str(user["id"]):
-        raise HTTPException(status_code=403, detail="Not your invoice")
-    u = await db.users.find_one({"_id": d["user_id"]}) or {}
-
+async def _invoice_document_html(db, d: dict, u: dict, for_pdf: bool) -> str:
+    """Render HTML dokumen invoice (dipakai route documents + kirim ulang email)."""
     bank_doc = await db.settings.find_one({"key": "bank_accounts"}) or {}
     banks = bank_doc.get("value") or [
         {"bank": "MANDIRI", "number": "1240011911816", "holder": "INTERCLOUD DIGITAL INOVASI"},
@@ -7128,7 +7154,7 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
             "amount": d.get("total", 0),
         }]
 
-    html = _pdf_template(
+    return _pdf_template(
         doc_kind="invoice",
         number=d.get("number", ""),
         issued_date=(d.get("created_at") or "")[:10],
@@ -7146,9 +7172,23 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
         transactions=tx_list,
         banks=banks if status in ("unpaid", "overdue") else None,
         notes=d.get("notes", ""),
-        for_pdf=(format == "pdf"),
+        for_pdf=for_pdf,
         logo_url=(await _get_branding_dict(db))["logo_dark"],
     )
+
+
+@router.get("/documents/invoice/{iid}")
+async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_current_user)):
+    db = await _get_db()
+    d = await db.invoices.find_one({"_id": _oid(iid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    # Access: owner or staff
+    if user["role"] == "client" and str(d["user_id"]) != str(user["id"]):
+        raise HTTPException(status_code=403, detail="Not your invoice")
+    u = await db.users.find_one({"_id": d["user_id"]}) or {}
+
+    html = await _invoice_document_html(db, d, u, for_pdf=(format == "pdf"))
 
     if format == "pdf":
         pdf_bytes = _render_pdf_bytes(html)
@@ -7163,6 +7203,36 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
     token = user.get("_token", "")
     html = html.replace("{TOKEN_PLACEHOLDER}", token)
     return HTMLResponse(content=html)
+
+
+@router.post("/admin/invoices/{iid}/resend-email")
+async def admin_invoice_resend_email(iid: str, request: Request,
+                                     staff=Depends(require_roles("admin", "finance", "support"))):
+    """Kirim ulang email invoice ke klien dengan PDF invoice terlampir."""
+    db = await _get_db()
+    d = await db.invoices.find_one({"_id": _oid(iid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    u = await db.users.find_one({"_id": d["user_id"]})
+    if not (u and u.get("email")):
+        raise HTTPException(status_code=400, detail="Email klien tidak ditemukan")
+    await _emails.ensure_pay_token(db, d)
+    html = await _invoice_document_html(db, d, u, for_pdf=True)
+    try:
+        pdf_bytes = await asyncio.to_thread(_render_pdf_bytes, html)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal membuat PDF: {type(e).__name__}: {e}")
+    ctx = _emails.build_context(user=u, invoice=d)
+    event_key = "payment_received" if d.get("status") == "paid" else "invoice_generated"
+    result = await _emails.send_via_template(
+        db, event_key=event_key, to_email=u["email"], ctx=ctx,
+        invoice_id=str(d["_id"]), user_id=str(u["_id"]),
+        attachments=[(f"Invoice-{d.get('number', 'invoice')}.pdf", pdf_bytes, "pdf")])
+    await log_audit(db, actor=staff, action="invoice.resend_email", category="billing",
+                    target_type="invoice", target_id=iid, target_label=d.get("number", ""),
+                    metadata={"to": u["email"], "delivery": result.get("status"),
+                              "event_key": event_key}, request=request)
+    return {"ok": result.get("status") == "sent", "to": u["email"], **result}
 
 
 @router.get("/documents/quotation/{qid}")

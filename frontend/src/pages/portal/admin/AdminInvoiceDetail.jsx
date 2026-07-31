@@ -98,6 +98,19 @@ export default function AdminInvoiceDetail() {
     toast.success(inv?.pay_token ? "Link pembayaran publik disalin - bisa dibuka klien tanpa login" : "Tautan invoice disalin");
   };
 
+  const [resending, setResending] = useState(false);
+  const resendEmail = async () => {
+    if (!window.confirm(`Kirim ulang email invoice ${inv.number} (dengan PDF terlampir) ke ${inv.user_email || "klien"}?`)) return;
+    setResending(true);
+    try {
+      const { data } = await api.post(`/admin/invoices/${id}/resend-email`);
+      if (data.ok) toast.success(`Email terkirim ke ${data.to}`);
+      else toast.error(`Email tidak terkirim (${data.status}${data.error ? `: ${data.error}` : ""})`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Gagal mengirim ulang email");
+    } finally { setResending(false); }
+  };
+
   if (err) {
     return (
       <div className="text-center py-20" data-testid="invoice-detail-error">
@@ -127,6 +140,9 @@ export default function AdminInvoiceDetail() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button className={btnSecondary} onClick={copyLink} data-testid="invoice-detail-copy-link"><Copy className="h-4 w-4" /> Salin tautan</button>
+          <button className={btnSecondary} onClick={resendEmail} disabled={resending} data-testid="invoice-detail-resend-email">
+            <Send className="h-4 w-4" /> {resending ? "Mengirim…" : "Kirim ulang email"}
+          </button>
           <a href={docUrl("invoice", inv.id)} target="_blank" rel="noreferrer" className={btnSecondary} data-testid="invoice-detail-preview"><FileDown className="h-4 w-4" /> Preview</a>
           <a href={docUrl("invoice", inv.id, "pdf")} target="_blank" rel="noreferrer" className={btnSecondary} data-testid="invoice-detail-pdf"><Download className="h-4 w-4" /> PDF</a>
           {open && <button className={btnPrimary} onClick={markPaid} data-testid="invoice-detail-mark-paid"><CheckCircle2 className="h-4 w-4" /> Tandai Lunas</button>}

@@ -637,7 +637,8 @@ async def _log_send(db, *, event_key: str, template_id: Optional[str], to_email:
 async def send_via_template(db, *, event_key: str, to_email: str, ctx: dict,
                             invoice_id: Optional[str] = None,
                             order_id: Optional[str] = None,
-                            user_id: Optional[str] = None) -> dict:
+                            user_id: Optional[str] = None,
+                            attachments: list = None) -> dict:
     """Resolve the event_key → active template, render, send via SMTP, log the outcome.
 
     Never raises - returns a dict `{status, delivered_via, error}` so callers
@@ -657,13 +658,14 @@ async def send_via_template(db, *, event_key: str, to_email: str, ctx: dict,
         db, to_email=to_email, subject=subject, body_html=body,
         event_key=event_key, template_id=tpl_id,
         invoice_id=invoice_id, order_id=order_id, user_id=user_id,
+        attachments=attachments,
     )
 
 
 async def deliver(db, *, to_email: str, subject: str, body_html: str,
                   event_key: str = "manual", template_id: Optional[str] = None,
                   invoice_id: Optional[str] = None, order_id: Optional[str] = None,
-                  user_id: Optional[str] = None) -> dict:
+                  user_id: Optional[str] = None, attachments: list = None) -> dict:
     """Low-level dispatch (SMTP or skip). Writes to `email_logs`."""
     smtp = await iv2.get_settings(db, "smtp")
     if not smtp or not smtp.get("enabled"):
@@ -675,7 +677,8 @@ async def deliver(db, *, to_email: str, subject: str, body_html: str,
         return {"status": "skipped", "delivered_via": "log", "error": "SMTP integration disabled"}
     try:
         await asyncio.to_thread(iv2.SMTPMailer(smtp).send,
-                                to=to_email, subject=subject, html=body_html)
+                                to=to_email, subject=subject, html=body_html,
+                                attachments=attachments)
         await _log_send(db, event_key=event_key, template_id=template_id, to_email=to_email,
                         subject=subject, status="sent", delivered_via="smtp",
                         invoice_id=invoice_id, order_id=order_id, user_id=user_id)
