@@ -1,0 +1,902 @@
+"""Business ops: CRM, projects, content planner, follow-ups, documents, media library, content calendar.
+
+Split from the former monolithic routes.py - behavior preserved 1:1.
+"""
+import os
+import asyncio
+import logging
+import secrets
+import re
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from bson import ObjectId
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
+
+from .. import models as m
+from ..auth import (
+    verify_password, hash_password, create_access_token,
+    get_current_user, get_current_admin, get_current_staff, get_current_content,
+    require_roles, sales_can_access,
+    STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
+    OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+)
+from ..audit import log_audit, serialize as _serialize_audit
+from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
+                         decrypt_config as _sb_dec_config)
+from .. import integrations_v2 as iv2
+from .shared import _get_db, _iso, _now, _oid, _sales_scope_filter, _sales_visible_crm_ids  # noqa: E402
+from .tickets import _deny_creative  # noqa: E402
+
+router = APIRouter()
+
+
+# ============================================================
+# BUSINESS - CRM, Projects, Content Planner, Follow-ups, Documents
+# ============================================================
+
+# ---------- CRM (customers/prospects) ----------
+def _serialize_crm(d):
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "email": d.get("email", ""),
+        "phone": d.get("phone", ""),
+        "company": d.get("company", ""),
+        "position": d.get("position", ""),
+        "industry": d.get("industry", ""),
+        "status": d.get("status", "prospect"),
+        "notes": d.get("notes", ""),
+        "user_id": str(d["user_id"]) if d.get("user_id") else None,
+        "source": d.get("source", ""),
+        "created_at": _iso(d.get("created_at", "")),
+        "updated_at": _iso(d.get("updated_at", "")),
+    }
+
+
+# Order statuses that count as "in-progress" (needs attention) vs "won" vs "closed"
+ORDER_TERMINAL_LOST = {"rejected", "cancelled"}
+
+
+ORDER_IN_PROGRESS = {"pending", "pending_payment", "awaiting_verification",
+                     "awaiting_quote", "payment_verified", "assigned", "provisioning"}
+
+
+ORDER_WON = {"active"}
+
+
+async def _crm_enrichment_by_uid(db, user_ids: list) -> dict:
+    """Return {user_id_str: {latest_order, active_orders_count, lifetime_value, in_progress_count}}
+    for the given user IDs, in one round-trip per collection."""
+    if not user_ids:
+        return {}
+    result = {}
+    # ---- Orders (grouped in-memory: small dataset per tenant) ----
+    orders_cur = db.orders.find(
+        {"user_id": {"$in": user_ids}},
+        {"user_id": 1, "status": 1, "created_at": 1, "product_name": 1,
+         "invoice_id": 1, "config": 1},
+    ).sort("created_at", -1)
+    async for o in orders_cur:
+        key = str(o["user_id"])
+        bucket = result.setdefault(key, {
+            "latest_order": None,
+            "active_orders_count": 0,
+            "in_progress_count": 0,
+            "won_orders_count": 0,
+            "lifetime_value": 0.0,
+        })
+        if bucket["latest_order"] is None:
+            bucket["latest_order"] = {
+                "id": str(o["_id"]),
+                "status": o.get("status", "pending"),
+                "product_name": o.get("product_name", ""),
+                "created_at": _iso(o.get("created_at", "")),
+                "invoice_id": str(o["invoice_id"]) if o.get("invoice_id") else None,
+            }
+        st = o.get("status", "pending")
+        if st not in ORDER_TERMINAL_LOST:
+            bucket["active_orders_count"] += 1
+        if st in ORDER_IN_PROGRESS:
+            bucket["in_progress_count"] += 1
+        if st in ORDER_WON:
+            bucket["won_orders_count"] += 1
+    # ---- Paid invoices → lifetime value ----
+    inv_cur = db.invoices.find(
+        {"user_id": {"$in": user_ids}, "status": "paid"},
+        {"user_id": 1, "total": 1, "number": 1},
+    )
+    async for inv in inv_cur:
+        key = str(inv["user_id"])
+        bucket = result.setdefault(key, {
+            "latest_order": None,
+            "active_orders_count": 0,
+            "in_progress_count": 0,
+            "won_orders_count": 0,
+            "lifetime_value": 0.0,
+        })
+        try:
+            bucket["lifetime_value"] += float(inv.get("total") or 0)
+        except Exception:
+            pass
+    return result
+
+
+@router.get("/admin/crm")
+async def crm_list(staff=Depends(get_current_staff)):
+    _deny_creative(staff)
+    db = await _get_db()
+    q = _sales_scope_filter(staff, key="user_id")
+    docs = await db.crm_customers.find(q).sort("updated_at", -1).to_list(2000)
+    # Collect user_ids for enrichment
+    uid_pairs = [(str(d.get("user_id")), d.get("user_id")) for d in docs if d.get("user_id")]
+    uids = [pair[1] for pair in uid_pairs]
+    enrich = await _crm_enrichment_by_uid(db, uids)
+    out = []
+    for d in docs:
+        row = _serialize_crm(d)
+        e = enrich.get(str(d.get("user_id"))) if d.get("user_id") else None
+        row["latest_order"] = (e or {}).get("latest_order")
+        row["active_orders_count"] = (e or {}).get("active_orders_count", 0)
+        row["in_progress_count"] = (e or {}).get("in_progress_count", 0)
+        row["won_orders_count"] = (e or {}).get("won_orders_count", 0)
+        row["lifetime_value"] = (e or {}).get("lifetime_value", 0.0)
+        # Warm-lead heuristic: any prospect / lead with an in-progress order,
+        # OR an existing customer with a fresh in-progress order (upsell signal)
+        row["is_warm"] = row["in_progress_count"] > 0
+        out.append(row)
+    return out
+
+
+@router.post("/admin/crm")
+async def crm_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    doc = {
+        "name": payload.get("name", ""),
+        "email": (payload.get("email") or "").lower(),
+        "phone": payload.get("phone", ""),
+        "company": payload.get("company", ""),
+        "position": payload.get("position", ""),
+        "industry": payload.get("industry", ""),
+        "status": payload.get("status", "prospect"),
+        "notes": payload.get("notes", ""),
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    r = await db.crm_customers.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_crm(doc)
+
+
+async def _assert_sales_can_touch_crm(db, staff: dict, cid: str) -> dict:
+    """Load a CRM row and 403 if `staff` is a sales user whose assigned
+    clients don't include the row's linked user_id."""
+    d = await db.crm_customers.find_one({"_id": _oid(cid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    if staff.get("role") == "sales":
+        assigned = {str(x) for x in (staff.get("assigned_client_ids") or [])}
+        if not (d.get("user_id") and str(d["user_id"]) in assigned):
+            raise HTTPException(status_code=403, detail="Not your client")
+    return d
+
+
+@router.put("/admin/crm/{cid}")
+async def crm_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    await _assert_sales_can_touch_crm(db, staff, cid)
+    payload = {k: v for k, v in payload.items() if k in {
+        "name", "email", "phone", "company", "position", "industry", "status", "notes"
+    }}
+    payload["updated_at"] = _now()
+    if "email" in payload and payload["email"]:
+        payload["email"] = payload["email"].lower()
+    await db.crm_customers.update_one({"_id": _oid(cid)}, {"$set": payload})
+    d = await db.crm_customers.find_one({"_id": _oid(cid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _serialize_crm(d)
+
+
+@router.delete("/admin/crm/{cid}")
+async def crm_delete(cid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    await _assert_sales_can_touch_crm(db, staff, cid)
+    r = await db.crm_customers.delete_one({"_id": _oid(cid)})
+    return {"deleted": r.deleted_count}
+
+
+# ---------- Projects ----------
+def _serialize_project(d):
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "customer_id": str(d.get("customer_id", "")) if d.get("customer_id") else None,
+        "customer_name": d.get("customer_name", ""),
+        "owner": d.get("owner", ""),
+        "status": d.get("status", "planning"),
+        "priority": d.get("priority", "medium"),
+        "progress": d.get("progress", 0),
+        "start_date": d.get("start_date", ""),
+        "target_date": d.get("target_date", ""),
+        "description": d.get("description", ""),
+        "tasks": d.get("tasks", []),
+        "created_at": _iso(d.get("created_at", "")),
+        "updated_at": _iso(d.get("updated_at", "")),
+    }
+
+
+@router.get("/admin/projects")
+async def projects_list(staff=Depends(get_current_staff)):
+    db = await _get_db()
+    docs = await db.projects.find({}).sort("updated_at", -1).to_list(1000)
+    return [_serialize_project(d) for d in docs]
+
+
+@router.post("/admin/projects")
+async def projects_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    doc = {
+        "name": payload.get("name", ""),
+        "customer_id": _oid(payload["customer_id"]) if payload.get("customer_id") else None,
+        "customer_name": payload.get("customer_name", ""),
+        "owner": payload.get("owner", ""),
+        "status": payload.get("status", "planning"),
+        "priority": payload.get("priority", "medium"),
+        "progress": int(payload.get("progress", 0)),
+        "start_date": payload.get("start_date", ""),
+        "target_date": payload.get("target_date", ""),
+        "description": payload.get("description", ""),
+        "tasks": payload.get("tasks", []),
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    r = await db.projects.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_project(doc)
+
+
+@router.put("/admin/projects/{pid}")
+async def projects_update(pid: str, payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    upd = {k: v for k, v in payload.items() if k in {
+        "name", "customer_name", "owner", "status", "priority", "progress",
+        "start_date", "target_date", "description", "tasks"
+    }}
+    if "customer_id" in payload:
+        upd["customer_id"] = _oid(payload["customer_id"]) if payload["customer_id"] else None
+    upd["updated_at"] = _now()
+    await db.projects.update_one({"_id": _oid(pid)}, {"$set": upd})
+    d = await db.projects.find_one({"_id": _oid(pid)})
+    return _serialize_project(d)
+
+
+@router.delete("/admin/projects/{pid}")
+async def projects_delete(pid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    r = await db.projects.delete_one({"_id": _oid(pid)})
+    return {"deleted": r.deleted_count}
+
+
+# ---------- Content Planner ----------
+def _serialize_content(d):
+    return {
+        "id": str(d["_id"]),
+        "title": d.get("title", ""),
+        "channel": d.get("channel", "blog"),
+        "type": d.get("type", "post"),
+        "status": d.get("status", "idea"),
+        "owner": d.get("owner", ""),
+        "publish_date": d.get("publish_date", ""),
+        "hook": d.get("hook", ""),
+        "url": d.get("url", ""),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/admin/content")
+async def content_list(staff=Depends(get_current_staff)):
+    db = await _get_db()
+    docs = await db.content_plan.find({}).sort("publish_date", 1).to_list(1000)
+    return [_serialize_content(d) for d in docs]
+
+
+@router.post("/admin/content")
+async def content_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    doc = {
+        "title": payload.get("title", ""),
+        "channel": payload.get("channel", "blog"),
+        "type": payload.get("type", "post"),
+        "status": payload.get("status", "idea"),
+        "owner": payload.get("owner", ""),
+        "publish_date": payload.get("publish_date", ""),
+        "hook": payload.get("hook", ""),
+        "url": payload.get("url", ""),
+        "created_at": _now(),
+    }
+    r = await db.content_plan.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_content(doc)
+
+
+@router.put("/admin/content/{cid}")
+async def content_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    upd = {k: v for k, v in payload.items() if k in {
+        "title", "channel", "type", "status", "owner", "publish_date", "hook", "url"
+    }}
+    await db.content_plan.update_one({"_id": _oid(cid)}, {"$set": upd})
+    d = await db.content_plan.find_one({"_id": _oid(cid)})
+    return _serialize_content(d)
+
+
+@router.delete("/admin/content/{cid}")
+async def content_delete(cid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    r = await db.content_plan.delete_one({"_id": _oid(cid)})
+    return {"deleted": r.deleted_count}
+
+
+# ---------- Follow-ups ----------
+def _serialize_followup(d):
+    return {
+        "id": str(d["_id"]),
+        "customer_id": str(d.get("customer_id", "")) if d.get("customer_id") else None,
+        "customer_name": d.get("customer_name", ""),
+        "task": d.get("task", ""),
+        "channel": d.get("channel", "whatsapp"),
+        "due_date": d.get("due_date", ""),
+        "done": bool(d.get("done", False)),
+        "owner": d.get("owner", ""),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+async def _sales_followup_filter(db, staff: dict) -> dict | None:
+    """Return a Mongo filter that restricts follow-ups to CRM rows the sales
+    staff can access. Returns {} for non-sales. Returns None if the caller is
+    a sales user with zero visible CRM rows (endpoint should short-circuit)."""
+    if staff.get("role") != "sales":
+        return {}
+    ids = await _sales_visible_crm_ids(db, staff)
+    if not ids:
+        return None
+    return {"customer_id": {"$in": ids}}
+
+
+async def _assert_sales_can_touch_followup(db, staff: dict, fid: str) -> dict:
+    d = await db.followups.find_one({"_id": _oid(fid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    if staff.get("role") == "sales":
+        visible = await _sales_visible_crm_ids(db, staff) or []
+        cust_id = d.get("customer_id")
+        if not (cust_id and any(str(cust_id) == str(x) for x in visible)):
+            raise HTTPException(status_code=403, detail="Not your follow-up")
+    return d
+
+
+@router.get("/admin/followups")
+async def followups_list(staff=Depends(get_current_staff)):
+    _deny_creative(staff)
+    db = await _get_db()
+    q = await _sales_followup_filter(db, staff)
+    if q is None:
+        return []
+    docs = await db.followups.find(q).sort("due_date", 1).to_list(1000)
+    return [_serialize_followup(d) for d in docs]
+
+
+@router.post("/admin/followups")
+async def followups_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    cust_id = _oid(payload["customer_id"]) if payload.get("customer_id") else None
+    if staff.get("role") == "sales":
+        visible = await _sales_visible_crm_ids(db, staff) or []
+        if not (cust_id and any(str(cust_id) == str(x) for x in visible)):
+            raise HTTPException(status_code=403, detail="Follow-up harus untuk pelanggan yang di-assign ke Anda")
+    doc = {
+        "customer_id": cust_id,
+        "customer_name": payload.get("customer_name", ""),
+        "task": payload.get("task", ""),
+        "channel": payload.get("channel", "whatsapp"),
+        "due_date": payload.get("due_date", ""),
+        "done": False,
+        "owner": payload.get("owner", staff["name"]),
+        "created_at": _now(),
+    }
+    r = await db.followups.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_followup(doc)
+
+
+@router.put("/admin/followups/{fid}")
+async def followups_update(fid: str, payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    await _assert_sales_can_touch_followup(db, staff, fid)
+    upd = {k: v for k, v in payload.items() if k in {"task", "channel", "due_date", "done", "owner", "customer_name"}}
+    await db.followups.update_one({"_id": _oid(fid)}, {"$set": upd})
+    d = await db.followups.find_one({"_id": _oid(fid)})
+    return _serialize_followup(d)
+
+
+@router.delete("/admin/followups/{fid}")
+async def followups_delete(fid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    await _assert_sales_can_touch_followup(db, staff, fid)
+    r = await db.followups.delete_one({"_id": _oid(fid)})
+    return {"deleted": r.deleted_count}
+
+
+# ---------- Documents (metadata + file upload lokal) ----------
+from pathlib import Path as _DocPath  # noqa: E402
+
+
+DOCS_DIR = _DocPath(__file__).resolve().parent.parent.parent / "uploads" / "documents"
+
+
+_DOC_ALLOWED_TYPES = {
+    "application/pdf", "image/png", "image/jpeg", "image/webp",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/zip", "application/x-zip-compressed", "text/plain", "text/csv",
+}
+
+
+_DOC_MAX_BYTES = 15 * 1024 * 1024  # 15 MB
+
+
+def _serialize_doc(d):
+    return {
+        "id": str(d["_id"]),
+        "title": d.get("title", ""),
+        "category": d.get("category", "contract"),
+        "customer_name": d.get("customer_name", ""),
+        "url": d.get("url", ""),
+        "notes": d.get("notes", ""),
+        "filename": d.get("filename", ""),
+        "size_bytes": d.get("size_bytes", 0),
+        "has_file": bool(d.get("stored_name")),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/admin/documents")
+async def docs_list(staff=Depends(get_current_staff)):
+    db = await _get_db()
+    docs = await db.documents.find({}).sort("created_at", -1).to_list(1000)
+    return [_serialize_doc(d) for d in docs]
+
+
+@router.post("/admin/documents")
+async def docs_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    doc = {
+        "title": payload.get("title", ""),
+        "category": payload.get("category", "contract"),
+        "customer_name": payload.get("customer_name", ""),
+        "url": payload.get("url", ""),
+        "notes": payload.get("notes", ""),
+        "created_at": _now(),
+    }
+    r = await db.documents.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_doc(doc)
+
+
+@router.delete("/admin/documents/{did}")
+async def docs_delete(did: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if d and d.get("stored_name"):
+        try:
+            (DOCS_DIR / d["stored_name"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+    r = await db.documents.delete_one({"_id": _oid(did)})
+    return {"deleted": r.deleted_count}
+
+
+@router.get("/documents/file/{did}")
+async def docs_file(did: str):
+    """Serve dokumen bisnis yang di-upload (URL ber-ObjectId, seperti media)."""
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if not d or not d.get("stored_name"):
+        raise HTTPException(status_code=404, detail="Document not found")
+    fp = DOCS_DIR / d["stored_name"]
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
+                        filename=d.get("filename") or d["stored_name"])
+
+
+# ============================================================
+# Backup / Restore
+# ============================================================
+# ---------- UTM link persistence ----------
+
+@router.get("/admin/utm-links")
+async def utm_links_list(staff=Depends(get_current_staff)):
+    db = await _get_db()
+    docs = await db.utm_links.find({}).sort("created_at", -1).to_list(200)
+    return [{"id": str(d["_id"]), "url": d.get("url", ""), "base": d.get("base", ""),
+             "params": d.get("params", {}), "label": d.get("label", ""),
+             "created_by": d.get("created_by", ""), "created_at": _iso(d.get("created_at", ""))}
+            for d in docs]
+
+
+@router.post("/admin/utm-links")
+async def utm_links_create(payload: dict, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    url = str(payload.get("url", "")).strip()
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="URL tidak valid")
+    doc = {"url": url, "base": payload.get("base", ""), "params": payload.get("params", {}),
+           "label": payload.get("label", ""), "created_by": staff.get("email", ""),
+           "created_at": _now()}
+    res = await db.utm_links.insert_one(doc)
+    return {"ok": True, "id": str(res.inserted_id)}
+
+
+@router.delete("/admin/utm-links/{lid}")
+async def utm_links_delete(lid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    await db.utm_links.delete_one({"_id": _oid(lid)})
+    return {"ok": True}
+
+
+# ---------- Content calendar: hari libur nasional ----------
+
+ID_HOLIDAYS_2026 = [
+    {"date": "2026-01-01", "name": "Tahun Baru Masehi"},
+    {"date": "2026-01-16", "name": "Isra Mikraj Nabi Muhammad SAW"},
+    {"date": "2026-02-17", "name": "Tahun Baru Imlek 2577"},
+    {"date": "2026-03-19", "name": "Hari Suci Nyepi"},
+    {"date": "2026-03-20", "name": "Idul Fitri 1447 H (perkiraan)"},
+    {"date": "2026-03-21", "name": "Idul Fitri 1447 H (hari kedua)"},
+    {"date": "2026-04-03", "name": "Wafat Isa Almasih"},
+    {"date": "2026-05-01", "name": "Hari Buruh Internasional"},
+    {"date": "2026-05-14", "name": "Kenaikan Isa Almasih"},
+    {"date": "2026-05-27", "name": "Idul Adha 1447 H (perkiraan)"},
+    {"date": "2026-05-31", "name": "Hari Raya Waisak"},
+    {"date": "2026-06-01", "name": "Hari Lahir Pancasila"},
+    {"date": "2026-06-16", "name": "Tahun Baru Islam 1448 H"},
+    {"date": "2026-08-17", "name": "Hari Kemerdekaan RI"},
+    {"date": "2026-08-25", "name": "Maulid Nabi Muhammad SAW"},
+    {"date": "2026-12-25", "name": "Hari Raya Natal"},
+]
+
+
+@router.get("/admin/content-calendar/holidays")
+async def content_calendar_holidays(year: int = 2026, staff=Depends(get_current_staff)):
+    return {"year": year, "holidays": [h for h in ID_HOLIDAYS_2026 if h["date"].startswith(str(year))]}
+
+
+# ============================================================
+# MEDIA LIBRARY - shared assets for the Digital Creative team
+# ============================================================
+from fastapi import UploadFile, File, Form  # noqa: E402
+
+
+from fastapi.responses import FileResponse  # noqa: E402
+
+
+import uuid as _uuid  # noqa: E402
+
+
+from pathlib import Path as _Path  # noqa: E402
+
+
+MEDIA_DIR = _Path(__file__).resolve().parent.parent.parent / "uploads" / "media"
+
+
+_MEDIA_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"}
+
+
+_MEDIA_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+
+
+async def _media_usage(db, media_id: str) -> list:
+    """Where is this asset referenced? Scans articles (cover/OG/body) and
+    branding/landing settings. Computed live so it never goes stale."""
+    needle = f"/media/file/{media_id}"
+    used = []
+    cur = db.articles.find({"$or": [
+        {"cover_image_url": {"$regex": needle}},
+        {"og_image_url": {"$regex": needle}},
+        {"body_html": {"$regex": needle}},
+    ]}, {"title": 1, "slug": 1})
+    async for a in cur:
+        used.append({"type": "article", "id": str(a["_id"]),
+                     "label": a.get("title") or a.get("slug") or "article"})
+    async for s in db.settings.find({"key": {"$in": ["branding", "landing_content"]}}):
+        if needle in str(s.get("value", "")):
+            used.append({"type": "settings", "id": s.get("key"),
+                         "label": f"Settings: {s.get('key')}"})
+    return used
+
+
+def _serialize_media(d: dict, used_in=None) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "filename": d.get("filename", ""),
+        "url": d.get("url", ""),
+        "content_type": d.get("content_type", ""),
+        "size_bytes": int(d.get("size_bytes") or 0),
+        "alt_text": d.get("alt_text", ""),
+        "tags": d.get("tags", []),
+        "uploaded_by": d.get("uploaded_by", ""),
+        "created_at": d.get("created_at", ""),
+        "used_in": used_in if used_in is not None else d.get("used_in", []),
+    }
+
+
+@router.get("/admin/media")
+async def media_list(staff=Depends(get_current_staff),
+                     tag: Optional[str] = None, q: Optional[str] = None):
+    db = await _get_db()
+    query: dict = {}
+    if tag:
+        query["tags"] = tag.strip().lower()
+    if q:
+        query["$or"] = [
+            {"filename": {"$regex": q.strip(), "$options": "i"}},
+            {"alt_text": {"$regex": q.strip(), "$options": "i"}},
+        ]
+    docs = await db.media_assets.find(query).sort("created_at", -1).to_list(500)
+    out = []
+    for d in docs:
+        used = await _media_usage(db, str(d["_id"]))
+        if used != d.get("used_in"):
+            await db.media_assets.update_one({"_id": d["_id"]}, {"$set": {"used_in": used}})
+        out.append(_serialize_media(d, used))
+    return out
+
+
+@router.post("/admin/media")
+async def media_upload(file: UploadFile = File(...),
+                       alt_text: str = Form(""),
+                       tags: str = Form(""),
+                       staff=Depends(get_current_content)):
+    db = await _get_db()
+    if file.content_type not in _MEDIA_ALLOWED_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"Unsupported type {file.content_type}. Allowed: PNG, JPEG, WebP, GIF, SVG.")
+    raw = await file.read()
+    if len(raw) > _MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File exceeds 8 MB limit")
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    ext = _Path(file.filename or "upload.bin").suffix.lower() or ".bin"
+    mid = ObjectId()
+    stored_name = f"{mid}{ext}"
+    (MEDIA_DIR / stored_name).write_bytes(raw)
+    doc = {
+        "_id": mid,
+        "filename": file.filename or stored_name,
+        "stored_name": stored_name,
+        "url": f"/api/portal/media/file/{mid}",
+        "content_type": file.content_type,
+        "size_bytes": len(raw),
+        "alt_text": (alt_text or "").strip(),
+        "tags": sorted({t.strip().lower() for t in (tags or "").split(",") if t.strip()}),
+        "uploaded_by": staff["email"],
+        "used_in": [],
+        "created_at": _now(),
+    }
+    await db.media_assets.insert_one(doc)
+    return _serialize_media(doc)
+
+
+@router.post("/admin/documents/upload")
+async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
+                      category: str = Form("contract"), customer_name: str = Form(""),
+                      notes: str = Form(""), staff=Depends(get_current_staff)):
+    """UAT-003: upload dokumen lokal (drag & drop) selain link URL."""
+    db = await _get_db()
+    ctype = file.content_type or "application/octet-stream"
+    if ctype not in _DOC_ALLOWED_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"Tipe file {ctype} tidak didukung. Gunakan PDF, Word, Excel, gambar, ZIP, atau teks.")
+    raw = await file.read()
+    if len(raw) > _DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Ukuran file melebihi 15 MB")
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    did = ObjectId()
+    ext = _DocPath(file.filename or "dokumen.bin").suffix.lower() or ".bin"
+    stored_name = f"{did}{ext}"
+    (DOCS_DIR / stored_name).write_bytes(raw)
+    doc = {
+        "_id": did,
+        "title": (title or "").strip() or (file.filename or "Dokumen"),
+        "category": category or "contract",
+        "customer_name": customer_name or "",
+        "url": f"/api/portal/documents/file/{did}",
+        "notes": notes or "",
+        "filename": file.filename or stored_name,
+        "stored_name": stored_name,
+        "content_type": ctype,
+        "size_bytes": len(raw),
+        "uploaded_by": staff["email"],
+        "created_at": _now(),
+    }
+    await db.documents.insert_one(doc)
+    return _serialize_doc(doc)
+
+
+@router.put("/admin/media/{mid}")
+async def media_update(mid: str, payload: dict, staff=Depends(get_current_content)):
+    db = await _get_db()
+    d = await db.media_assets.find_one({"_id": _oid(mid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Media not found")
+    upd: dict = {}
+    if "alt_text" in payload:
+        upd["alt_text"] = (payload.get("alt_text") or "").strip()
+    if "tags" in payload:
+        raw_tags = payload.get("tags") or []
+        if isinstance(raw_tags, str):
+            raw_tags = raw_tags.split(",")
+        upd["tags"] = sorted({str(t).strip().lower() for t in raw_tags if str(t).strip()})
+    if upd:
+        await db.media_assets.update_one({"_id": d["_id"]}, {"$set": upd})
+    d = await db.media_assets.find_one({"_id": d["_id"]})
+    return _serialize_media(d)
+
+
+@router.delete("/admin/media/{mid}")
+async def media_delete(mid: str, staff=Depends(get_current_content)):
+    db = await _get_db()
+    d = await db.media_assets.find_one({"_id": _oid(mid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Media not found")
+    used = await _media_usage(db, mid)
+    if used:
+        raise HTTPException(status_code=409, detail={
+            "message": "Asset is still in use - detach it first.",
+            "used_in": used,
+        })
+    try:
+        (MEDIA_DIR / d.get("stored_name", "")).unlink(missing_ok=True)
+    except Exception:
+        pass
+    await db.media_assets.delete_one({"_id": d["_id"]})
+    return {"deleted": 1}
+
+
+@router.get("/media/file/{mid}", include_in_schema=False)
+async def media_file(mid: str):
+    """Public file serve - media is referenced from public articles."""
+    db = await _get_db()
+    d = await db.media_assets.find_one({"_id": _oid(mid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Media not found")
+    fp = MEDIA_DIR / d.get("stored_name", "")
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ============================================================
+# CONTENT CALENDAR - plan articles / campaigns / social posts
+# ============================================================
+def _serialize_calendar(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "title": d.get("title", ""),
+        "type": d.get("type", "article"),
+        "scheduled_at": d.get("scheduled_at", ""),
+        "status": d.get("status", "draft"),
+        "linked_article_id": d.get("linked_article_id"),
+        "owner_id": d.get("owner_id"),
+        "notes": d.get("notes", ""),
+        "created_at": d.get("created_at", ""),
+    }
+
+
+_CAL_TYPES = {"article", "campaign", "social_post"}
+
+
+_CAL_STATUSES = {"draft", "scheduled", "published"}
+
+
+@router.get("/admin/content-calendar")
+async def calendar_list(staff=Depends(get_current_staff),
+                        date_from: Optional[str] = None,
+                        date_to: Optional[str] = None):
+    db = await _get_db()
+    query: dict = {}
+    if date_from or date_to:
+        rng: dict = {}
+        if date_from: rng["$gte"] = date_from
+        if date_to:   rng["$lte"] = date_to + "T23:59:59"
+        query["scheduled_at"] = rng
+    docs = await db.content_calendar.find(query).sort("scheduled_at", 1).to_list(1000)
+    return [_serialize_calendar(d) for d in docs]
+
+
+@router.post("/admin/content-calendar")
+async def calendar_create(payload: dict, staff=Depends(get_current_content)):
+    db = await _get_db()
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+    ctype = payload.get("type") or "article"
+    if ctype not in _CAL_TYPES:
+        raise HTTPException(status_code=400, detail=f"type must be one of {sorted(_CAL_TYPES)}")
+    status = payload.get("status") or "draft"
+    if status not in _CAL_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(_CAL_STATUSES)}")
+    doc = {
+        "title": title,
+        "type": ctype,
+        "scheduled_at": payload.get("scheduled_at") or _now(),
+        "status": status,
+        "linked_article_id": payload.get("linked_article_id"),
+        "owner_id": staff["id"],
+        "notes": payload.get("notes") or "",
+        "created_at": _now(),
+    }
+    r = await db.content_calendar.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_calendar(doc)
+
+
+@router.put("/admin/content-calendar/{cid}")
+async def calendar_update(cid: str, payload: dict, staff=Depends(get_current_content)):
+    db = await _get_db()
+    d = await db.content_calendar.find_one({"_id": _oid(cid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Calendar entry not found")
+    upd: dict = {}
+    for k in ("title", "scheduled_at", "linked_article_id", "notes"):
+        if k in payload:
+            upd[k] = payload[k]
+    if "type" in payload:
+        if payload["type"] not in _CAL_TYPES:
+            raise HTTPException(status_code=400, detail=f"type must be one of {sorted(_CAL_TYPES)}")
+        upd["type"] = payload["type"]
+    if "status" in payload:
+        if payload["status"] not in _CAL_STATUSES:
+            raise HTTPException(status_code=400, detail=f"status must be one of {sorted(_CAL_STATUSES)}")
+        upd["status"] = payload["status"]
+    if upd:
+        await db.content_calendar.update_one({"_id": d["_id"]}, {"$set": upd})
+    d = await db.content_calendar.find_one({"_id": d["_id"]})
+    return _serialize_calendar(d)
+
+
+@router.delete("/admin/content-calendar/{cid}")
+async def calendar_delete(cid: str, staff=Depends(get_current_content)):
+    db = await _get_db()
+    r = await db.content_calendar.delete_one({"_id": _oid(cid)})
+    if not r.deleted_count:
+        raise HTTPException(status_code=404, detail="Calendar entry not found")
+    return {"deleted": 1}
+
+
+async def _sync_article_calendar(db, article: dict, staff) -> None:
+    """When an article is published, upsert its calendar entry to published.
+    Fire-and-forget: never blocks the article save."""
+    try:
+        if not article or article.get("status") != "published":
+            return
+        aid = str(article["_id"])
+        await db.content_calendar.update_one(
+            {"linked_article_id": aid},
+            {"$set": {"title": article.get("title", ""),
+                      "type": "article",
+                      "status": "published",
+                      "scheduled_at": article.get("published_at") or _now(),
+                      "linked_article_id": aid},
+             "$setOnInsert": {"owner_id": staff.get("id"), "notes": "",
+                               "created_at": _now()}},
+            upsert=True,
+        )
+    except Exception:
+        logging.getLogger("portal.calendar").exception("calendar sync failed")

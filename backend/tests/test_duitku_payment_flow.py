@@ -36,8 +36,10 @@ pytestmark = pytest.mark.skipif(
     not (_duitku_row and (_duitku_row.get("config") or {}).get("api_key")),
     reason="Duitku integration not configured in this environment")
 
-MC = ((_duitku_row or {}).get("config") or {}).get("merchant_code", "")
-KEY = ((_duitku_row or {}).get("config") or {}).get("api_key", "")
+from portal.secretbox import dec_value as _dec  # decrypt at-rest encrypted secrets
+
+MC = _dec(((_duitku_row or {}).get("config") or {}).get("merchant_code", ""))
+KEY = _dec(((_duitku_row or {}).get("config") or {}).get("api_key", ""))
 
 
 def _login(email, pw):

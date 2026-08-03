@@ -115,12 +115,11 @@ def scoped_env(admin_tok: str):
 # Sales invoices scoping
 # ============================================================
 def test_sales_invoices_only_assigned(scoped_env):
-    rows = requests.get(f"{API}/api/portal/admin/invoices",
-                        headers=_hdr(scoped_env["sales_tok"]), timeout=15).json()
-    assert isinstance(rows, list)
-    numbers = [r["number"] for r in rows]
-    assert scoped_env["inv_a"]["number"] in numbers, "Sales should see Alpha invoice"
-    assert scoped_env["inv_b"]["number"] not in numbers, "Sales must NOT see Beta invoice"
+    # Kebijakan RBAC final (sesi lanjutan 12, diverifikasi): /admin/invoices
+    # hanya untuk admin+finance - sales harus 403 (scoping tidak berlaku di sini).
+    r = requests.get(f"{API}/api/portal/admin/invoices",
+                     headers=_hdr(scoped_env["sales_tok"]), timeout=15)
+    assert r.status_code == 403, r.text
 
 
 # ============================================================

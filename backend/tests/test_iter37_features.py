@@ -51,6 +51,12 @@ def test_proxmox_templates_returns_200_with_empty_list(h):
 
 
 def test_proxmox_create_no_template_returns_400_indonesian(h):
+    # GUARD: bila cluster punya template, endpoint akan meng-CLONE VM NYATA.
+    # Test ini hanya valid untuk cluster tanpa template - skip agar tidak
+    # pernah membuat VM sungguhan di server production.
+    tpl = requests.get(f"{BASE}/admin/proxmox/templates", headers=h, timeout=60)
+    if tpl.status_code == 200 and (tpl.json() or {}).get("templates"):
+        pytest.skip("Cluster punya template - create akan clone VM nyata, dilewati")
     r = requests.post(
         f"{BASE}/admin/provisioning/proxmox/create",
         headers=h,

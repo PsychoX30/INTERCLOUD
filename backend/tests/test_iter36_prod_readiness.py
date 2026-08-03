@@ -85,6 +85,11 @@ def test_provision_hosting_cpanel_returns_400_not_configured(admin_tok):
 
 
 def test_provision_proxmox_returns_400_honest(admin_tok):
+    # GUARD: bila cluster punya template, endpoint akan meng-CLONE VM NYATA
+    # (atau 409 bila hostname sudah ada). Skip agar tidak menyentuh server production.
+    tpl = requests.get(f"{API}/admin/proxmox/templates", headers=_h(admin_tok), timeout=60)
+    if tpl.status_code == 200 and (tpl.json() or {}).get("templates"):
+        pytest.skip("Cluster punya template - create akan clone VM nyata, dilewati")
     r = requests.post(
         f"{API}/admin/provisioning/proxmox/create",
         headers=_h(admin_tok),
