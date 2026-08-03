@@ -25,6 +25,29 @@ const STEPS = [
 
 const idr = (v) => "Rp" + Number(v || 0).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
+/* Spec dasar plan (product.provision) -> chip "1 vCPU • 1 GB RAM • 20 GB Storage" */
+const specParts = (prov) => {
+  const out = [];
+  if (Number(prov?.cores)) out.push(`${Number(prov.cores)} vCPU`);
+  if (Number(prov?.memory_mb)) out.push(`${+(Number(prov.memory_mb) / 1024).toFixed(1)} GB RAM`);
+  if (Number(prov?.disk_gb)) out.push(`${Number(prov.disk_gb)} GB Storage`);
+  return out;
+};
+
+const SpecChips = ({ prov, testid = "product-spec-chips" }) => {
+  const parts = specParts(prov || {});
+  if (!parts.length) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5" data-testid={testid}>
+      {parts.map((s) => (
+        <span key={s} className="inline-flex items-center text-[11px] font-bold text-[#0a2350] bg-[#0a2350]/5 border border-[#0a2350]/15 rounded-full px-2.5 py-0.5">
+          {s}
+        </span>
+      ))}
+    </div>
+  );
+};
+
 /* ============ Step 1 - pick a product from categories ============ */
 const StepPick = ({ products, categories, chosen, setChosen, onNext }) => {
   const [cat, setCat] = useState(categories[0]?.slug || "");
@@ -72,6 +95,8 @@ const StepPick = ({ products, categories, chosen, setChosen, onNext }) => {
                 </div>
                 {selected && <CheckCircle2 className="h-5 w-5 text-[#f5b120] flex-shrink-0" />}
               </div>
+
+              <SpecChips prov={p.provision} testid={`order-spec-${p.id}`} />
 
               <ul className="mt-3 space-y-1 text-xs text-slate-600">
                 {(p.features || []).slice(0, 4).map((f, i) => (
@@ -211,6 +236,7 @@ const StepConfigure = ({ product, selections, setSelections, osChoice, setOsChoi
         <Card className="p-6 text-slate-600">
           <div className="font-bold text-[#0a2350] mb-1">{needsOs ? "Fixed specs" : "No configuration needed"}</div>
           This product ships with fixed specs. Click Continue to review your order.
+          <SpecChips prov={product.provision} testid="configure-spec-chips" />
         </Card>
         <div className="mt-6 flex justify-between">
           <button onClick={onBack} className={btnSecondary}><ArrowLeft className="h-4 w-4" /> Back</button>

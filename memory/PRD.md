@@ -3,6 +3,14 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-06 (batch 9): SPESIFIKASI DASAR PLAN VPS/CLOUD (gaya WHMCS) - SELESAI & DITES
+Permintaan user: produk VPS/Cloud harus punya base plan spec (vCPU/RAM/Storage) yang dibaca auto-provisioning; opsi konfigurasi & add-on berperan sebagai PENAMBAH resource.
+
+1. **Backend TIDAK berubah** - engine sudah membaca `product.provision` {cores, memory_mb, disk_gb, template_vmid} sebagai spec dasar (provision.py ~732-736) + extras dari opsi/add-on (`_selection_extras`, `_order_resource_extras`). Yang hilang hanyalah UI admin.
+2. **AdminProducts.jsx**: seksi baru "Spesifikasi Dasar VM (auto-provisioning)" utk produk base kategori vps/cloud - input vCPU, RAM (GB, dikonversi ke memory_mb=GB*1024 MiB sesuai Proxmox), Storage (GB, label "Storage" bukan "SSD" per user), Template VMID opsional (kosong = klien pilih OS dari template server). Kolom "Spec" baru di tabel produk (base: "1 vCPU · 1 GB RAM · 20 GB"; add-on: prefiks +). data-testid: base-spec-cores/ram/disk/template, product-spec-{id}.
+3. **ClientOrder.jsx**: helper `SpecChips` - chip spec otomatis di kartu produk (order-spec-{id}) di atas daftar features + di kartu "Fixed specs" step configure (configure-spec-chips).
+4. **Verifikasi**: API roundtrip create product provision OK + tampil di /portal-public/products; matematika resolusi spec diuji (base 1c/1GB/20GB + opsi qty 2x1GB RAM -> 1 vCPU/3072 MiB/20GB); screenshot admin form (nilai ter-load, RAM GB dari memory_mb) & client order (chips tampil, OS picker load dari server). Produk uji dihapus. User akan mengisi plan ID-KVM-x sendiri via UI.
+
 ## Sesi 2026-06 (batch 8): REFACTOR ROUTES MONOLITIK -> PAKET MODULAR - SELESAI & DITES (iteration_42: 63/63 backend + 7/7 frontend PASS)
 Permintaan user: pecah routes.py 12.7k baris menjadi router modular.
 

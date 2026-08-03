@@ -13,6 +13,18 @@ import { DataTable } from "../../../components/ui/data-table";
    • Add-ons: is_addon flag + applies_to_categories / product_ids
    --------------------------------------------------------------- */
 
+// Ringkasan spec provisioning: "1 vCPU · 1 GB RAM · 20 GB" (add-on: prefiks +)
+const specText = (p) => {
+  const pr = p.provision || {};
+  const pre = p.is_addon ? "+" : "";
+  const parts = [];
+  if (Number(pr.cores)) parts.push(`${pre}${Number(pr.cores)} vCPU`);
+  if (Number(pr.memory_mb)) parts.push(`${pre}${+(Number(pr.memory_mb) / 1024).toFixed(1)} GB RAM`);
+  if (Number(pr.disk_gb)) parts.push(`${pre}${Number(pr.disk_gb)} GB`);
+  if (p.is_addon && Number(pr.ip)) parts.push(`+${Number(pr.ip)} IP`);
+  return parts.join(" · ");
+};
+
 const AdminProducts = () => {
   const location = useLocation();
   const initialFilter = location.pathname.endsWith("/addons") ? "addons" : "all";
@@ -79,6 +91,11 @@ const AdminProducts = () => {
             ) : (
               <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase bg-slate-100 text-slate-700 px-2 py-0.5 rounded"><Package className="h-3 w-3" /> Base</span>
             ) },
+          { key: "provision", label: "Spec", sortable: false,
+            render: (_v, p) => {
+              const s = specText(p);
+              return s ? <span className="text-xs font-semibold text-[#0a2350] whitespace-nowrap" data-testid={`product-spec-${p.id}`}>{s}</span> : <span className="text-xs text-slate-400">-</span>;
+            } },
           { key: "option_groups", label: "Options", sortable: false,
             render: (v) => <span className="text-xs text-slate-500">{(v || []).length > 0 ? `${v.length} groups` : "-"}</span> },
           { key: "price_monthly", label: "Monthly", sortable: true, align: "right",
@@ -145,7 +162,10 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
     applies_to_categories: p?.applies_to_categories || [],
     applies_to_product_ids: p?.applies_to_product_ids || [],
     option_groups: p?.option_groups || [],
-    provision: p?.provision || {},
+    provision: {
+      ...(p?.provision || {}),
+      ram_gb: p?.provision?.memory_mb ? +(p.provision.memory_mb / 1024).toFixed(1) : "",
+    },
     sort_order: p?.sort_order ?? 100,
   });
   const [busy, setBusy] = useState(false);
@@ -175,7 +195,7 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
       } : ["vps", "cloud"].includes(f.category) ? {
         template_vmid: Number(f.provision?.template_vmid) || null,
         cores: Number(f.provision?.cores) || null,
-        memory_mb: Number(f.provision?.memory_mb) || null,
+        memory_mb: Math.round((Number(f.provision?.ram_gb) || 0) * 1024) || null,
         disk_gb: Number(f.provision?.disk_gb) || null,
       } : {},
       sort_order: Number(f.sort_order) || 100,
@@ -235,6 +255,25 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
           <label className="col-span-2"><div className={labelClass}>Description</div><textarea rows={2} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} className={`${inputClass} h-auto py-2`} /></label>
           <label className="col-span-2"><div className={labelClass}>Features (one per line)</div><textarea rows={4} value={f.features} onChange={(e) => setF({ ...f, features: e.target.value })} className={`${inputClass} h-auto py-2 font-mono text-xs`} /></label>
         </div>
+
+        {/* ---------- Base VM spec (VPS / Cloud plans) ---------- */}
+        {!f.is_addon && ["vps", "cloud"].includes(f.category) && (
+          <div className="mt-5 border-t border-slate-200 pt-5" data-testid="base-spec-fields">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350] mb-1">Spesifikasi Dasar VM (auto-provisioning)</div>
+            <p className="text-xs text-slate-500 mb-3">
+              Spec plan ini dibaca engine provisioning saat invoice dibayar - VM dibuat persis sesuai angka di bawah
+              (contoh plan: 1 vCPU, 1 GB RAM, 20 GB Storage). Opsi konfigurasi & add-on otomatis <b>menambah</b> resource
+              di atas spec dasar ini. Template OS dipilih klien saat order dari template & cloud-init yang tersedia di
+              server - kosongkan Template VMID kecuali ingin memaksa satu template tertentu.
+            </p>
+            <div className="grid grid-cols-4 gap-3">
+              <label><div className={labelClass}>vCPU (core)</div><input type="number" min="0" value={f.provision?.cores || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, cores: e.target.value } })} className={inputClass} placeholder="1" data-testid="base-spec-cores" /></label>
+              <label><div className={labelClass}>RAM (GB)</div><input type="number" min="0" step="0.5" value={f.provision?.ram_gb ?? ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, ram_gb: e.target.value } })} className={inputClass} placeholder="1" data-testid="base-spec-ram" /></label>
+              <label><div className={labelClass}>Storage (GB)</div><input type="number" min="0" value={f.provision?.disk_gb || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, disk_gb: e.target.value } })} className={inputClass} placeholder="20" data-testid="base-spec-disk" /></label>
+              <label><div className={labelClass}>Template VMID (ops.)</div><input type="number" min="0" value={f.provision?.template_vmid || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, template_vmid: e.target.value } })} className={inputClass} placeholder="auto" data-testid="base-spec-template" /></label>
+            </div>
+          </div>
+        )}
 
         {/* ---------- Add-on attach settings ---------- */}
         {f.is_addon && (
