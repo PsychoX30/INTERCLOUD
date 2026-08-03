@@ -72,13 +72,14 @@ async def _get_db():
 
 
 async def _load_user(db, user_id: str) -> dict:
+    """Internal helper - callers must serialize via _user_public before returning."""
     try:
         u = await db.users.find_one({"_id": ObjectId(user_id)})
     except Exception:
         u = None
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    return u
+    return dict(u)
 
 
 def _oid(id_str: str) -> ObjectId:

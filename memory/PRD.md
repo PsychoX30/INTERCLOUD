@@ -3,6 +3,20 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-06 (batch 8): REFACTOR ROUTES MONOLITIK -> PAKET MODULAR - SELESAI & DITES (iteration_42: 63/63 backend + 7/7 frontend PASS)
+Permintaan user: pecah routes.py 12.7k baris menjadi router modular.
+
+1. **Struktur baru `backend/portal/routes/` (21 modul + __init__)**: shared (helpers/serializers/security utils), auth, client, orders, provision (engine Proxmox+SSH+IP), tickets, admin_core (dashboard/reports/backup/system), users (CRUD+webmail), catalog, billing (invoice/quotation/payment/webhook), integrations, business (CRM/media/calendar), dcim, finance (assets/ledger/credit notes), documents (PDF invoice/quotation), cms (branding/articles/SEO/status), domains (RNA), lifecycle (suspend/terminate), noc, security, email_admin. `__init__.py` merakit parent router prefix /api/portal dgn include order aman + re-export `_ip_in_whitelist` (kompat test). server.py TIDAK berubah (`from portal.routes import router`).
+2. **Metode mekanis (aman)**: split via ast per-statement dgn spec line-range (/tmp/gen_split.py), komentar section ikut blok berikutnya; import antar-modul di-resolve otomatis via pyflakes F821 + indeks simbol; graf dependensi diverifikasi ACYCLIC. **Paritas diverifikasi**: tabel route before/after IDENTIK (353 route) + zero shadowing static-vs-param (simulasi match starlette). flake8 kritis (E9,F63,F7,F82,F821,F811) = 0.
+3. **Regresi nyata yang ditemukan & difix**: path berbasis `__file__` bergeser 1 level - `repo_root` di admin_core (system update/version) + `DOCS_DIR`/`MEDIA_DIR` di business (upload) -> ditambah satu `.parent`/".." (diverifikasi kembali ke /app & /app/backend/uploads).
+4. **Perbaikan test suite (pre-existing, bukan regresi split)**:
+   - test_duitku_payment_flow: baca api_key MENTAH dari koleksi `integrations` yang kini TERENKRIPSI -> kini decrypt via portal.secretbox. PASS.
+   - test_iter36/iter37 proxmox create: BERBAHAYA - meng-clone VM NYATA bila cluster punya template. Kini di-guard: skip bila templates ada. **Debris dibersihkan dari server production**: VM 114 `tpl-test-vm` (dibuat run test hari ini) & VM 113 `test-vm-iter36` (sisa sesi lama) di-stop + qmdestroy purge. Server tinggal VM asli user + template 9000/9001.
+   - test_sales_scoping invoices: ekspektasi diselaraskan kebijakan RBAC final (sales=403 di /admin/invoices).
+   - Run pytest paralel MENGOTORI DB (duitku row terhapus, proxmox disabled saat test gagal di tengah) -> state direstore manual (duitku direkonstruksi dari legacy row terenkripsi). CATATAN: test_system_update me-restart backend di tengah run paralel -> flake connection error di file lain (karakteristik lama, pass saat serial).
+5. **Hasil test**: full pytest 496+ pass (sisa = flake paralel terverifikasi pass serial); testing_agent iteration_42: backend 63/63, frontend 7/7 halaman admin render, RBAC & PDF & public endpoints OK, no action items. File smoke baru: backend/tests/test_iter42_routes_split_smoke.py.
+CATATAN penting: `/admin/proxmox/vms` tanpa `?node=` mengembalikan [] bila options.default_node kosong (perilaku lama, bukan regresi). Password sales actual: Sales2026!.
+
 ## Sesi 2026-06 (batch 7): ENKRIPSI SECRET AT-REST + PANDUAN ROTASI KREDENSIAL - SELESAI & DITES
 Permintaan user: (a) rotasi semua secret bila backup pernah ter-push + purge history, (b) enkripsi at-rest `integration_settings` di DB.
 
