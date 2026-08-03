@@ -478,6 +478,7 @@ if [[ ! -f "$BACKEND_ENV" ]]; then
 MONGO_URL="${MONGO_URL_VALUE}"
 DB_NAME="intercloud_portal"
 JWT_SECRET="$(openssl rand -base64 48 | tr -d '=+/' | head -c 48)"
+SETTINGS_ENC_KEY="$(openssl rand -base64 48 | tr -d '=+/' | head -c 48)"
 CORS_ORIGINS="$CORS"
 EMERGENT_LLM_KEY="${EMERGENT_LLM_KEY}"
 ADMIN_EMAIL="${ADMIN_EMAIL}"
@@ -529,6 +530,12 @@ if grep -q '^REACT_APP_BACKEND_URL=' "$BACKEND_ENV" 2>/dev/null; then
   sed -i "s|^REACT_APP_BACKEND_URL=.*|REACT_APP_BACKEND_URL=\"$BACKEND_ORIGIN\"|" "$BACKEND_ENV"
 else
   echo "REACT_APP_BACKEND_URL=\"$BACKEND_ORIGIN\"" >> "$BACKEND_ENV"
+fi
+
+# At-rest encryption key for integration secrets. Idempotent: only added when
+# missing (older installs decrypt via JWT_SECRET-derived fallback until set).
+if ! grep -q '^SETTINGS_ENC_KEY=' "$BACKEND_ENV" 2>/dev/null; then
+  echo "SETTINGS_ENC_KEY=\"$(openssl rand -base64 48 | tr -d '=+/' | head -c 48)\"" >> "$BACKEND_ENV"
 fi
 
 sudo -u intercloud -H bash -c "

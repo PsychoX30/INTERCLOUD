@@ -22,19 +22,27 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from . import secretbox
+
 
 # ============================================================
-# Settings helpers
+# Settings helpers (secrets encrypted at-rest via secretbox)
 # ============================================================
 async def get_settings(db, provider: str) -> Optional[dict]:
-    return await db.integration_settings.find_one({"provider": provider})
+    doc = await db.integration_settings.find_one({"provider": provider})
+    if doc and isinstance(doc.get("credentials"), dict):
+        doc["credentials"] = secretbox.decrypt_credentials(doc["credentials"])
+    return doc
 
 
 async def upsert_settings(db, provider: str, payload: dict) -> dict:
     from datetime import datetime, timezone
     doc = {**payload, "provider": provider, "updated_at": datetime.now(timezone.utc).isoformat()}
     doc.pop("_id", None)
-    await db.integration_settings.update_one({"provider": provider}, {"$set": doc}, upsert=True)
+    stored = dict(doc)
+    if isinstance(stored.get("credentials"), dict):
+        stored["credentials"] = secretbox.encrypt_credentials(stored["credentials"])
+    await db.integration_settings.update_one({"provider": provider}, {"$set": stored}, upsert=True)
     return doc
 
 

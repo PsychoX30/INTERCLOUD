@@ -228,6 +228,14 @@ async def startup_seed():
         logger.info("Portal seed complete (users, products, sample data).")
     except Exception as e:
         logger.exception(f"Portal seed failed: {e}")
+    # At-rest encryption: migrate any legacy plaintext integration secrets.
+    try:
+        from portal import secretbox
+        changed = await secretbox.migrate_at_rest(db)
+        if any(changed.values()):
+            logger.info(f"Secret at-rest migration encrypted: {changed}")
+    except Exception as e:
+        logger.exception(f"Secret at-rest migration failed: {e}")
     # Email engine: seed default templates + start invoice-reminder scheduler.
     try:
         from portal import emails as _emails

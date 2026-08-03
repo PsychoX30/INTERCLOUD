@@ -21,6 +21,8 @@ from .auth import (
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
 from .audit import log_audit, serialize as _serialize_audit
+from .secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
+                        decrypt_config as _sb_dec_config)
 
 router = APIRouter(prefix="/api/portal")
 
@@ -1543,7 +1545,7 @@ async def _proxmox_settings(db) -> Optional[dict]:
     if s and s.get("enabled") and (s.get("credentials") or {}).get("host"):
         return s
     row = await db.integrations.find_one({"module": "proxmox", "status": "enabled"})
-    cfg = (row or {}).get("config") or {}
+    cfg = _sb_dec_config((row or {}).get("config") or {})
     if cfg.get("hostname"):
         proto = cfg.get("protocol") or "https"
         port = cfg.get("port") or 8006
@@ -1576,9 +1578,9 @@ def _px_server_to_settings(doc: dict) -> dict:
         "server_id": str(doc.get("_id") or ""),
         "credentials": {"host": doc.get("host") or "",
                         "token_id": doc.get("token_id") or "",
-                        "token_secret": doc.get("token_secret") or "",
+                        "token_secret": _sb_dec(doc.get("token_secret") or ""),
                         "username": doc.get("username") or "",
-                        "password": doc.get("password") or ""},
+                        "password": _sb_dec(doc.get("password") or "")},
         "options": {"default_node": doc.get("default_node") or "",
                     "default_storage": doc.get("default_storage") or "local-lvm",
                     "default_bridge": doc.get("default_bridge") or "vmbr0",
@@ -4741,13 +4743,21 @@ async def run_renewal_sweep_now(admin=Depends(get_current_admin)):
 # INTEGRATIONS (WHMCS-style module hub)
 # ============================================================
 from .integrations_registry import (
-    module_list, module_schema, redact,
+    module_list, module_schema, redact, SECRET_FIELD_TYPES,
 )
+
+
+def _cfg_encrypt(module: str, cfg: dict) -> dict:
+    """Encrypt schema-marked secret fields (type password) of a module-hub config."""
+    keys = {f["key"] for f in (module_schema(module) or {}).get("fields", [])
+            if f["type"] in SECRET_FIELD_TYPES}
+    return {k: (_sb_enc(v) if k in keys else v) for k, v in (cfg or {}).items()}
 
 
 def _iv2_settings_for_module(module: str, cfg: dict) -> dict:
     """Map a module-hub config (hostname/port/protocol/...) to the
     integrations_v2 settings shape ({credentials, options})."""
+    cfg = _sb_dec_config(cfg or {})
     proto = (cfg.get("protocol") or "https").lower()
     host = cfg.get("hostname") or ""
 
@@ -4895,7 +4905,7 @@ async def create_integration(payload: dict, admin=Depends(get_current_admin)):
     doc = {
         "name": payload.get("name") or f"{module_schema(module)['label']} {int(datetime.now(timezone.utc).timestamp())}",
         "module": module,
-        "config": payload.get("config", {}),
+        "config": _cfg_encrypt(module, payload.get("config", {})),
         "status": payload.get("status", "disabled"),
         "last_test_at": None,
         "last_test_result": None,
@@ -4927,7 +4937,7 @@ async def update_integration(iid: str, payload: dict, admin=Depends(get_current_
                 merged[f["key"]] = val
     upd = {
         "name": payload.get("name", existing["name"]),
-        "config": merged,
+        "config": _cfg_encrypt(existing["module"], merged),
         "status": payload.get("status", existing.get("status", "disabled")),
         "updated_at": _now(),
     }
@@ -8671,9 +8681,9 @@ async def admin_px_servers_create(payload: dict, request: Request, admin=Depends
     doc = {"name": (payload.get("name") or "").strip() or host,
            "host": host,
            "token_id": (payload.get("token_id") or "").strip(),
-           "token_secret": (payload.get("token_secret") or "").strip(),
+           "token_secret": _sb_enc((payload.get("token_secret") or "").strip()),
            "username": (payload.get("username") or "").strip(),
-           "password": payload.get("password") or "",
+           "password": _sb_enc(payload.get("password") or ""),
            "default_node": (payload.get("default_node") or "").strip(),
            "default_storage": (payload.get("default_storage") or "").strip() or "local-lvm",
            "default_bridge": (payload.get("default_bridge") or "").strip() or "vmbr0",
@@ -8702,9 +8712,9 @@ async def admin_px_servers_update(spid: str, payload: dict, request: Request,
             upd[k] = (payload.get(k) or "").strip()
     # Secret/password: kosong = pertahankan yang tersimpan
     if (payload.get("token_secret") or "").strip():
-        upd["token_secret"] = payload["token_secret"].strip()
+        upd["token_secret"] = _sb_enc(payload["token_secret"].strip())
     if payload.get("password"):
-        upd["password"] = payload["password"]
+        upd["password"] = _sb_enc(payload["password"])
     if "enabled" in payload:
         upd["enabled"] = payload.get("enabled") is not False
     if "sort_order" in payload:
@@ -9298,7 +9308,7 @@ async def _payment_settings(db, provider: str) -> Optional[dict]:
         return s
     row = await db.integrations.find_one({"module": provider, "status": "enabled"})
     if row and provider == "duitku":
-        cfg = row.get("config") or {}
+        cfg = _sb_dec_config(row.get("config") or {})
         if cfg.get("merchant_code") and cfg.get("api_key"):
             return {
                 "provider": "duitku",

@@ -3,6 +3,20 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-06 (batch 7): ENKRIPSI SECRET AT-REST + PANDUAN ROTASI KREDENSIAL - SELESAI & DITES
+Permintaan user: (a) rotasi semua secret bila backup pernah ter-push + purge history, (b) enkripsi at-rest `integration_settings` di DB.
+
+1. **Modul enkripsi `portal/secretbox.py`** (baru): Fernet (AES-CBC+HMAC) via MultiFernet. Kunci: env `SETTINGS_ENC_KEY` (utama) dgn fallback derive SHA-256 dari `JWT_SECRET` -> instalasi existing TIDAK butuh perubahan .env (update.sh cukup git pull); bila SETTINGS_ENC_KEY ditambahkan belakangan, data lama tetap terbaca (MultiFernet decrypt mencoba semua kunci). Format nilai `enc:v1:<token>`; plaintext legacy passthrough; dekripsi gagal (kunci berubah) -> "" + warning log (admin isi ulang).
+2. **Cakupan enkripsi (3 koleksi)**:
+   - `integration_settings.credentials`: SEMUA nilai string dienkripsi. Choke point: `iv2.get_settings` (decrypt on read) & `iv2.upsert_settings` (encrypt on write, return plaintext utk redact/audit).
+   - `proxmox_servers.token_secret/password`: encrypt di endpoint create/update (routes.py ~8674/8704), decrypt di `_px_server_to_settings`.
+   - `integrations` (module-hub legacy) `config`: field bertipe `password` per schema registry (SECRET_FIELD_TYPES) via helper `_cfg_encrypt` di create/update; decrypt di `_iv2_settings_for_module`, `_proxmox_settings` fallback, `_payment_settings` duitku fallback.
+3. **Migrasi otomatis** `secretbox.migrate_at_rest(db)` di server.py startup (idempotent, tiap boot). TERBUKTI di preview: run#1 encrypt 10 integration_settings, run#2 encrypt 1 legacy duitku row + 0 ulang (idempoten).
+4. **install.sh**: generate `SETTINGS_ENC_KEY` di backend/.env heredoc + blok upsert idempotent (hanya tambah bila belum ada). bash -n OK.
+5. **`SECURITY-ROTATION.md`** (root repo): tabel rotasi per provider (Proxmox token, Duitku, SMTP, reCAPTCHA, RNA/RDASH, password staf, MongoDB), perintah `git filter-repo`/BFG purge history + force push, catatan arsip backup lama plaintext harus dihapus setelah rotasi, cara menambah SETTINGS_ENC_KEY di server existing, catatan restore backup lintas server (butuh kunci sama).
+6. **DIVERIFIKASI end-to-end**: login admin OK (recaptcha read path), GET integrations-v2 masked dgn nilai ASLI terdekripsi, Proxmox test REAL sukses ("Proxmox VE 8.4.0" via token terenkripsi), Duitku test OK, PUT merge mempertahankan secret (dienkripsi ulang), proxmox_servers CRUD encrypt/decrypt OK, legacy duitku live-test + PUT masked-placeholder OK & DB tetap enc:v1. Pytest: test_secretbox.py (5, baru) + test_integrations_unified + test_real_integrations + test_security_hardening = 40 pass 1 skip. flake8 kritis 0.
+CATATAN: kredensial `mikrotik_devices` (password router per-device) & webmail cPanel per-staf BELUM dienkripsi (baca tersebar ~10 titik) -> backlog P1. RNA test 422 "IP not whitelisted" = expected (IP preview tidak di-whitelist RDASH, bukan bug enkripsi).
+
 ## Sesi 2026-06 (batch 6): PRODUCTION HARDENING & SECURITY AUDIT - SELESAI & DITES
 Permintaan user: siapkan real production install, pastikan kredensial tidak terekspos (public/GitHub), cek keamanan, stabilitas, celah & bug, perbaiki agar siap produksi. Dijalankan security_audit_agent (read-only) lalu fix + verifikasi (testing agent iteration_41: 13 passed, 1 skipped, 0 regresi).
 
