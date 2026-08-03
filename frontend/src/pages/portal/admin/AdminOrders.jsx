@@ -82,7 +82,7 @@ const AdminOrders = () => {
                   <button className={btnSecondary} onClick={() => setStatus(o.id, "rejected")}>Reject</button>
                 )}
                 {!["active", "rejected"].includes(o.status) && (
-                  <button className="text-red-600 hover:text-red-800 text-xs font-bold" onClick={() => setStatus(o.id, "rejected")}>
+                  <button className="text-red-600 hover:text-red-800 text-xs font-bold" onClick={() => setStatus(o.id, "rejected")} data-testid={`reject-order-${o.id}`}>
                     <XCircle className="h-3.5 w-3.5 inline" /> Reject
                   </button>
                 )}
