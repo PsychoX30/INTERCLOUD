@@ -60,6 +60,11 @@ const VMControls = ({ serviceId }) => {
           </span>
         )}
       </div>
+      {vm?.restart_required && (
+        <div data-testid="vm-restart-required" className="mb-3 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-semibold text-amber-800">
+          Upgrade spesifikasi berhasil. Silakan <b>Reboot</b> VM dari panel ini agar vCPU/RAM baru diterapkan sepenuhnya.
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-2">
         <button data-testid="vm-btn-start" className={btnSecondary} disabled={disabled || running} onClick={() => act("start")}>
           <Play className="h-4 w-4" /> {busy === "start" ? "..." : "Start"}
@@ -89,9 +94,17 @@ const VMControls = ({ serviceId }) => {
         <p className="mt-3 text-[11px] text-slate-500">Uptime {Math.floor(vm.uptime / 3600)} jam - node {vm.node} - VMID {vm.vmid}</p>
       )}
       {configured && <ResetPasswordPanel serviceId={serviceId} running={running} />}
-      {consoleOpen && <VncConsoleModal serviceId={serviceId} onClose={() => setConsoleOpen(false)} />}
+      {consoleOpen && <VncConsoleModal serviceId={serviceId} onClose={() => { setConsoleOpen(false); load(); }} />}
     </Card>
   );
+};
+
+// X11 keysyms untuk tombol spesial console
+const KS = {
+  Esc: 0xff1b, Tab: 0xff09, Enter: 0xff0d, Backspace: 0xff08, Delete: 0xffff,
+  Ctrl: 0xffe3, Alt: 0xffe9, Super: 0xffeb,
+  F1: 0xffbe, F2: 0xffbf, F3: 0xffc0, F4: 0xffc1, F5: 0xffc2, F6: 0xffc3,
+  F7: 0xffc4, F8: 0xffc5, F9: 0xffc6, F10: 0xffc7, F11: 0xffc8, F12: 0xffc9,
 };
 
 const VncConsoleModal = ({ serviceId, onClose }) => {
@@ -100,6 +113,10 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
   const [state, setState] = useState("connecting");
   const [err, setErr] = useState("");
   const [info, setInfo] = useState(null);
+  const [menu, setMenu] = useState(""); // "keys" | "power" | "paste" | ""
+  const [pasteText, setPasteText] = useState("");
+  const [pasting, setPasting] = useState(false);
+  const [powerMsg, setPowerMsg] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -134,10 +151,80 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
     };
   }, [serviceId]);
 
+  const sendKey = (keysym) => {
+    const rfb = rfbRef.current;
+    if (!rfb) return;
+    try { rfb.sendKey(keysym, null, true); rfb.sendKey(keysym, null, false); } catch { /* noop */ }
+    rfb.focus && rfb.focus();
+  };
+
+  const sendCombo = (mods, keysym) => {
+    const rfb = rfbRef.current;
+    if (!rfb) return;
+    try {
+      mods.forEach((m) => rfb.sendKey(m, null, true));
+      rfb.sendKey(keysym, null, true);
+      rfb.sendKey(keysym, null, false);
+      [...mods].reverse().forEach((m) => rfb.sendKey(m, null, false));
+    } catch { /* noop */ }
+    rfb.focus && rfb.focus();
+  };
+
+  const specialKeys = [
+    { label: "Ctrl+Alt+Del", run: () => { try { rfbRef.current?.sendCtrlAltDel(); } catch { /* noop */ } } },
+    { label: "Esc", run: () => sendKey(KS.Esc) },
+    { label: "Tab", run: () => sendKey(KS.Tab) },
+    { label: "Enter", run: () => sendKey(KS.Enter) },
+    ...["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"].map((f) => ({
+      label: f, run: () => sendKey(KS[f]),
+    })),
+    { label: "Ctrl+Alt+F2 (TTY2)", run: () => sendCombo([KS.Ctrl, KS.Alt], KS.F2) },
+  ];
+
+  // Paste-as-typing: kirim teks sebagai ketikan keyboard ke VM (clipboard 2 arah
+  // butuh agent dalam VM, tidak diperlukan untuk kasus umum).
+  const pasteToVm = async () => {
+    const rfb = rfbRef.current;
+    if (!rfb || !pasteText) return;
+    setPasting(true);
+    try {
+      for (const ch of pasteText) {
+        let ks;
+        if (ch === "\n") ks = KS.Enter;
+        else if (ch === "\t") ks = KS.Tab;
+        else {
+          const cp = ch.codePointAt(0);
+          ks = cp < 0x100 ? cp : 0x01000000 + cp;
+        }
+        rfb.sendKey(ks, null, true);
+        rfb.sendKey(ks, null, false);
+        await new Promise((r) => setTimeout(r, 12));
+      }
+      setMenu("");
+      setPasteText("");
+      rfb.focus && rfb.focus();
+    } finally { setPasting(false); }
+  };
+
+  const powerAction = async (action, label) => {
+    if (!window.confirm(`${label} VM ini sekarang?`)) return;
+    setPowerMsg("");
+    try {
+      await api.post(`/client/services/${serviceId}/vm/${action}`);
+      setPowerMsg(`Perintah ${label} terkirim.`);
+      setMenu("");
+    } catch (e) {
+      setPowerMsg(e?.response?.data?.detail || `Gagal menjalankan ${label}.`);
+    }
+  };
+
+  const menuBtn = "text-[11px] font-bold text-white/70 hover:text-white border border-white/20 rounded-lg px-2.5 py-1";
+  const itemBtn = "block w-full text-left px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10 rounded-lg";
+
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-2 sm:p-6" data-testid="vnc-console-modal">
       <div className="w-full max-w-5xl bg-[#0b0f19] rounded-2xl overflow-hidden shadow-2xl border border-white/10 flex flex-col" style={{ height: "min(80vh, 760px)" }}>
-        <div className="flex items-center justify-between px-4 py-2.5 bg-[#0a2350] text-white shrink-0">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-[#0a2350] text-white shrink-0 relative">
           <div className="flex items-center gap-2 text-sm font-bold">
             <Monitor className="h-4 w-4 text-[#f5b120]" />
             VM Console {info ? `- VMID ${info.vmid} @ ${info.node}` : ""}
@@ -149,22 +236,71 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              className="text-[11px] font-bold text-white/70 hover:text-white border border-white/20 rounded-lg px-2.5 py-1"
-              onClick={() => { try { rfbRef.current && rfbRef.current.sendCtrlAltDel(); } catch { /* noop */ } }}
-              data-testid="vnc-cad-btn"
-            >
-              Ctrl+Alt+Del
-            </button>
+            <div className="relative">
+              <button className={menuBtn} onClick={() => setMenu(menu === "keys" ? "" : "keys")} data-testid="vnc-keys-btn">
+                Keys ▾
+              </button>
+              {menu === "keys" && (
+                <div className="absolute right-0 top-8 z-20 w-44 max-h-72 overflow-y-auto bg-[#0b0f19] border border-white/15 rounded-xl p-1.5 shadow-2xl" data-testid="vnc-keys-menu">
+                  {specialKeys.map((k) => (
+                    <button key={k.label} className={itemBtn} onClick={() => { k.run(); setMenu(""); }} data-testid={`vnc-key-${k.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
+                      {k.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <button className={menuBtn} onClick={() => setMenu(menu === "paste" ? "" : "paste")} data-testid="vnc-paste-btn">
+                Paste ▾
+              </button>
+              {menu === "paste" && (
+                <div className="absolute right-0 top-8 z-20 w-72 bg-[#0b0f19] border border-white/15 rounded-xl p-3 shadow-2xl" data-testid="vnc-paste-panel">
+                  <p className="text-[10px] text-white/50 mb-2">Teks dikirim sebagai ketikan keyboard ke VM (klik dulu posisi kursor di console).</p>
+                  <textarea
+                    data-testid="vnc-paste-input"
+                    rows={3}
+                    value={pasteText}
+                    onChange={(e) => setPasteText(e.target.value)}
+                    placeholder="Tempel / ketik teks di sini…"
+                    className="w-full rounded-lg bg-white/10 border border-white/15 px-2 py-1.5 text-xs text-white font-mono"
+                  />
+                  <button
+                    data-testid="vnc-paste-send"
+                    className="mt-2 w-full rounded-lg bg-[#f5b120] text-[#0a2350] text-xs font-extrabold py-1.5 disabled:opacity-50"
+                    disabled={pasting || !pasteText}
+                    onClick={pasteToVm}
+                  >
+                    {pasting ? "Mengetik ke VM…" : "Kirim ke VM"}
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <button className={menuBtn} onClick={() => setMenu(menu === "power" ? "" : "power")} data-testid="vnc-power-btn">
+                Power ▾
+              </button>
+              {menu === "power" && (
+                <div className="absolute right-0 top-8 z-20 w-48 bg-[#0b0f19] border border-white/15 rounded-xl p-1.5 shadow-2xl" data-testid="vnc-power-menu">
+                  <button className={itemBtn} onClick={() => powerAction("start", "Start")} data-testid="vnc-power-start">Start</button>
+                  <button className={itemBtn} onClick={() => powerAction("shutdown", "Shutdown (ACPI)")} data-testid="vnc-power-shutdown">Shutdown (ACPI)</button>
+                  <button className={itemBtn} onClick={() => powerAction("reset", "Reset (paksa)")} data-testid="vnc-power-reset">Reset (paksa)</button>
+                  <button className={`${itemBtn} text-red-300 hover:bg-red-500/20`} onClick={() => powerAction("stop", "Power Off (paksa)")} data-testid="vnc-power-stop">Power Off (paksa)</button>
+                </div>
+              )}
+            </div>
             <button className="text-white/70 hover:text-white" onClick={onClose} data-testid="vnc-close-btn">
               <X className="h-5 w-5" />
             </button>
           </div>
         </div>
-        <div className="flex-1 relative min-h-0">
+        <div className="flex-1 relative min-h-0" onClick={() => menu && setMenu("")}>
           <div ref={screenRef} className="absolute inset-0" />
           {state === "connecting" && (
             <div className="absolute inset-0 flex items-center justify-center text-white/70 text-sm">Menghubungkan ke console…</div>
+          )}
+          {powerMsg && (
+            <div className="absolute inset-x-0 top-0 bg-[#0a2350]/90 text-white text-xs px-4 py-1.5" data-testid="vnc-power-msg">{powerMsg}</div>
           )}
           {err && (
             <div className="absolute inset-x-0 bottom-0 bg-red-600/90 text-white text-xs px-4 py-2" data-testid="vnc-error">{err}</div>
@@ -316,7 +452,7 @@ const UpgradePanel = ({ serviceId }) => {
       {done ? (
         <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4 text-sm" data-testid="upgrade-success">
           <div className="font-extrabold text-emerald-700">Invoice {done.number} dibuat - {money(done.total)}</div>
-          <p className="text-xs text-emerald-700/90 mt-1">Upgrade akan diterapkan setelah pembayaran. Bayar sekarang di halaman Invoices.</p>
+          <p className="text-xs text-emerald-700/90 mt-1">Upgrade diterapkan setelah pembayaran. Setelah lunas, restart VM dari panel ini agar spesifikasi baru aktif. Bayar sekarang di halaman Invoices.</p>
           <RLink to="/portal/client/invoices" className="inline-flex items-center gap-1 mt-2 text-xs font-bold text-[#0a2350] hover:text-[#f5b120]">Buka Invoices <ArrowRight className="h-3 w-3" /></RLink>
         </div>
       ) : opts.pending_upgrade ? (
@@ -605,8 +741,8 @@ const ServiceDetail = ({ service, onClose }) => {
             {s.category === "colocation" && <CopyRow label="Rack" value={s.config?.rack} />}
           </Card>
 
-          {isVPS && <VMControls serviceId={s.id} />}
-          {isVPS && <VmMetricsPanel serviceId={s.id} />}
+          {isVPS && s.status !== "terminated" && <VMControls serviceId={s.id} />}
+          {isVPS && s.status !== "terminated" && <VmMetricsPanel serviceId={s.id} />}
           {isVPS && s.status === "active" && <UpgradePanel serviceId={s.id} />}
           <AutoRenewToggle service={s} />
           <TerminateRequestPanel service={s} />

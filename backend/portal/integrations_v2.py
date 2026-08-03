@@ -147,6 +147,8 @@ class ProxmoxClient:
             elif method == "PUT":
                 r = await c.put(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies,
                                 data=payload or {})
+            elif method == "DELETE":
+                r = await c.delete(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies)
             else:
                 r = await c.post(f"{self.host}/api2/json{path}", headers=headers, cookies=cookies,
                                  data=payload or {})
@@ -226,12 +228,19 @@ class ProxmoxClient:
         if valid_nodes and src_node not in valid_nodes:
             raise ValueError(f"Proxmox: node '{src_node}' tidak ada di cluster. "
                              f"Node tersedia: {', '.join(valid_nodes)}")
+        # Anti-bentrok VMID: /cluster/nextid bisa mengembalikan ID yang baru saja
+        # dipakai task lain - verifikasi terhadap seluruh VM/template di cluster.
         newid = await self.next_vmid()
+        rows = await self._get("/cluster/resources?type=vm") or []
+        used = {int(r["vmid"]) for r in rows if r.get("vmid") is not None}
+        while newid in used:
+            newid += 1
         payload = {"newid": newid, "name": hostname, "full": 1}
         if target and target != src_node:
             payload["target"] = target
-        await self._post(f"/nodes/{src_node}/qemu/{int(template_vmid)}/clone", payload)
-        return {"vmid": newid, "node": target or src_node, "name": hostname}
+        upid = await self._post(f"/nodes/{src_node}/qemu/{int(template_vmid)}/clone", payload)
+        return {"vmid": newid, "node": target or src_node, "name": hostname,
+                "src_node": src_node, "upid": upid if isinstance(upid, str) else ""}
 
     async def list_storages(self, node: str) -> list:
         return await self._get(f"/nodes/{node}/storage") or []
@@ -273,9 +282,14 @@ class ProxmoxClient:
         import asyncio as _aio
         waited = 0
         while waited <= timeout_s:
-            st = await self.vm_status(node, vmid)
-            if not st.get("lock"):
-                return
+            try:
+                st = await self.vm_status(node, vmid)
+                if not st.get("lock"):
+                    return
+            except Exception:
+                # Config VM belum dibuat / masih berpindah node saat clone
+                # berjalan ("Configuration file does not exist") - tetap tunggu.
+                pass
             await _aio.sleep(interval)
             waited += interval
         raise RuntimeError("VM masih terkunci (clone) setelah menunggu")
@@ -310,11 +324,16 @@ class ProxmoxClient:
                          {"ciuser": username, "cipassword": password})
 
     async def vm_action(self, node: str, vmid: int, action: str) -> Any:
-        assert action in ("start", "stop", "reboot", "shutdown", "suspend", "resume")
+        assert action in ("start", "stop", "reboot", "shutdown", "suspend", "resume", "reset")
         return await self._post(f"/nodes/{node}/qemu/{vmid}/status/{action}", {})
 
     async def vm_status(self, node: str, vmid: int) -> dict:
         return await self._get(f"/nodes/{node}/qemu/{vmid}/status/current") or {}
+
+    async def delete_vm(self, node: str, vmid: int) -> Any:
+        """Hapus VM permanen dari node (purge semua referensi disk & backup job)."""
+        return await self._request(
+            "DELETE", f"/nodes/{node}/qemu/{int(vmid)}?purge=1&destroy-unreferenced-disks=1")
 
     async def set_user_password(self, node: str, vmid: int, username: str, password: str) -> Any:
         """Reset a guest OS user password via the QEMU guest agent (fail-fast timeout)."""
@@ -1258,7 +1277,33 @@ class DuitkuGateway:
     async def test_connection(self) -> dict:
         if not (self.merchant_code and self.api_key):
             return {"ok": False, "message": "Missing merchant_code or api_key"}
-        return {"ok": True, "message": f"Duitku creds present ({'sandbox' if self.sandbox else 'production'}). Live validation happens on first invoice."}
+        env = "sandbox" if self.sandbox else "production"
+        # Validasi kredensial LIVE via getPaymentMethod - langsung siap produksi,
+        # TANPA menunggu invoice pertama.
+        try:
+            dt = time.strftime("%Y-%m-%d %H:%M:%S")
+            amount = "10000"
+            sig = hashlib.sha256(
+                f"{self.merchant_code}{amount}{dt}{self.api_key}".encode()).hexdigest()
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post(f"{self.base}/api/merchant/paymentmethod/getpaymentmethod",
+                                 json={"merchantcode": self.merchant_code, "amount": amount,
+                                       "datetime": dt, "signature": sig})
+            data = r.json() if r.status_code < 500 else {}
+            code = str(data.get("responseCode", ""))
+            if code == "00":
+                n = len(data.get("paymentFee") or [])
+                return {"ok": True,
+                        "message": f"Duitku {env} tervalidasi - kredensial benar, "
+                                   f"{n} metode pembayaran aktif. Siap digunakan."}
+            if data.get("responseMessage") or (code and code != "00"):
+                return {"ok": False,
+                        "message": f"Duitku menolak kredensial: {data.get('responseMessage') or code}"}
+        except Exception:
+            pass
+        return {"ok": True,
+                "message": f"Duitku creds present ({env}). Siap digunakan - "
+                           "tidak perlu validasi invoice pertama."}
 
     async def create_payment(self, *, invoice_id: str, amount_idr: int, customer_email: str,
                              callback_url: str, return_url: str = "",

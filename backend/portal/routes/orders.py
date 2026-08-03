@@ -350,7 +350,55 @@ async def admin_update_order_status(
                                       "message": f"Admin set status to {payload.status}."}}},
     )
     d = await db.orders.find_one({"_id": _oid(oid)})
+    # Reject: invoice tertaut ikut ditutup agar tidak menggantung berstatus
+    # unpaid/paid. Sudah paid -> refunded (uang harus dikembalikan), selain itu -> cancelled.
+    if payload.status == "rejected" and d and d.get("invoice_id"):
+        inv = await db.invoices.find_one({"_id": d["invoice_id"]})
+        if inv and inv.get("status") not in ("cancelled", "refunded"):
+            new_status = "refunded" if inv.get("status") == "paid" else "cancelled"
+            await db.invoices.update_one({"_id": inv["_id"]}, {"$set": {"status": new_status}})
+            await db.orders.update_one({"_id": d["_id"]}, {"$push": {"provision_log": {
+                "at": _now(), "step": f"invoice_{new_status}",
+                "message": f"Invoice {inv.get('number', '')} ditandai {new_status} karena order ditolak."}}})
+            d = await db.orders.find_one({"_id": d["_id"]})
     return _serialize_order(d)
+
+
+@router.post("/admin/orders/{oid}/provision")
+async def admin_order_provision(oid: str, admin=Depends(get_current_admin)):
+    """Jalankan/ulangi auto-provisioning manual dari menu Orders admin.
+    Syarat: invoice tertaut sudah lunas. Aman diulang - tidak membuat service ganda."""
+    from .provision import _auto_provision, _vps_provision_task
+    db = await _get_db()
+    d = await db.orders.find_one({"_id": _oid(oid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if d.get("status") == "rejected":
+        raise HTTPException(status_code=400, detail="Order sudah ditolak - tidak bisa diprovision.")
+    inv = await db.invoices.find_one({"_id": d["invoice_id"]}) if d.get("invoice_id") else None
+    if not inv or inv.get("status") != "paid":
+        raise HTTPException(status_code=400,
+                            detail="Invoice order ini belum lunas - verifikasi pembayaran terlebih dahulu.")
+    if not d.get("service_id"):
+        # Belum pernah ada service (mis. percobaan sebelumnya gagal total) - jalankan penuh.
+        await db.orders.update_one({"_id": d["_id"]}, {
+            "$set": {"status": "payment_verified", "provisioning_started": True},
+            "$push": {"provision_log": {"at": _now(), "step": "manual_provision_triggered",
+                                        "message": f"Auto-provision dijalankan manual oleh {admin.get('name', 'admin')}."}}})
+        order = await db.orders.find_one({"_id": d["_id"]})
+        await _auto_provision(db, order)
+        return {"ok": True, "message": "Auto-provisioning dijalankan - pantau provision log."}
+    svc = await db.services.find_one({"_id": _oid(str(d["service_id"]))})
+    cfg = (svc or {}).get("config") or {}
+    if svc and svc.get("category") in ("vps", "cloud") and cfg.get("provision_status") != "provisioned":
+        await db.services.update_one({"_id": svc["_id"]},
+                                     {"$set": {"config.provision_status": "provisioning"}})
+        await db.orders.update_one({"_id": d["_id"]}, {"$push": {"provision_log": {
+            "at": _now(), "step": "manual_provision_retry",
+            "message": f"Provisioning VM diulang manual oleh {admin.get('name', 'admin')}."}}})
+        asyncio.create_task(_vps_provision_task(db, d["_id"], svc["_id"]))
+        return {"ok": True, "message": "Provisioning VM diulang di background - pantau provision log."}
+    raise HTTPException(status_code=400, detail="Service order ini sudah selesai diprovision.")
 
 
 # Client can flag a bank-transfer payment as sent; admin still needs to confirm.

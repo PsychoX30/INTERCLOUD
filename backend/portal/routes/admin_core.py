@@ -560,16 +560,32 @@ async def admin_dashboard(staff=Depends(get_current_staff)):
 
 # ---------- Backup history ----------
 
-BACKUP_DIR = "/app/backups"
+def _backup_dir() -> str:
+    """Direktori backup yang bisa ditulis: env BACKUP_DIR > /var/backups/intercloud
+    (lokasi produksi, sama dgn update.sh & cron) > /app/backups (preview) > /tmp."""
+    import os as _os
+    for cand in (_os.environ.get("BACKUP_DIR") or "", "/var/backups/intercloud",
+                 "/app/backups", "/tmp"):
+        if not cand:
+            continue
+        try:
+            _os.makedirs(cand, exist_ok=True)
+            probe = _os.path.join(cand, ".write_test")
+            open(probe, "w").close()
+            _os.remove(probe)
+            return cand
+        except Exception:
+            continue
+    return "/tmp"
 
 
 @router.post("/admin/backup/trigger")
 async def backup_trigger(request: Request, admin=Depends(get_current_admin)):
-    """Backup manual: mongodump ke file + catat di riwayat."""
-    import pathlib
+    """Backup manual: mongodump ke file + catat di riwayat. Retensi: 20 arsip
+    manual terbaru disimpan, sisanya dihapus (file + row riwayat)."""
+    import os as _os
     blob, filename = await _run_mongodump()
-    pathlib.Path(BACKUP_DIR).mkdir(parents=True, exist_ok=True)
-    path = f"{BACKUP_DIR}/{filename}"
+    path = _os.path.join(_backup_dir(), filename)
     with open(path, "wb") as f:
         f.write(blob)
     db = await _get_db()
@@ -577,6 +593,14 @@ async def backup_trigger(request: Request, admin=Depends(get_current_admin)):
         "filename": filename, "path": path, "size_bytes": len(blob),
         "kind": "manual", "by": admin.get("email", ""), "created_at": _now(),
     })
+    stale = await db.backup_history.find({"kind": "manual"}).sort(
+        "created_at", -1).skip(20).to_list(200)
+    for d in stale:
+        try:
+            _os.remove(d.get("path", ""))
+        except Exception:
+            pass
+        await db.backup_history.delete_one({"_id": d["_id"]})
     return {"ok": True, "id": str(res.inserted_id), "filename": filename, "size_bytes": len(blob)}
 
 
@@ -795,76 +819,136 @@ async def system_version(admin=Depends(get_current_admin)):
     }
 
 
+# ---------- System update (background job + status polling) ----------
+_UPDATE_STATUS_FILE = "/tmp/intercloud-update.status.json"
+
+
+def _update_log_path() -> str:
+    import os as _os
+    for cand in ("/var/log/intercloud-update.log", "/tmp/intercloud-update.log"):
+        try:
+            with open(cand, "a"):
+                return cand
+        except Exception:
+            continue
+    return "/tmp/intercloud-update.log"
+
+
+def _read_update_status() -> dict:
+    import json as _json
+    try:
+        with open(_UPDATE_STATUS_FILE) as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _pid_alive(pid: int) -> bool:
+    import os as _os
+    try:
+        _os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
 @router.post("/admin/system/update")
 async def system_update(admin=Depends(get_current_admin), confirm: str = ""):
-    """Run `scripts/update.sh` in the checkout - auto-backs up first, then
-    `git pull`, `pip install`, `yarn install && yarn build`, and restarts
-    supervisor. **Preserves both .env files and the live database**.
+    """Mulai `scripts/update.sh` sebagai proses DETACHED (session baru) lalu
+    kembali segera - progres dipantau via GET /admin/system/update/status.
 
-    Guarded by `?confirm=UPDATE` so a stray click cannot trigger an update.
-    Returns the STATUS line (`STATUS=ok OLD=<sha> NEW=<sha> BACKUP=<path>`)
-    and the last ~2 KB of the script's log for diagnostics.
+    Kenapa detached: supervisor production memakai stopasgroup/killasgroup,
+    sehingga saat update.sh me-restart backend, proses anak biasa ikut
+    terbunuh di tengah jalan. Session terpisah membuat update selesai utuh.
 
-    Uses a filesystem lock at `/tmp/intercloud-update.lock` so two concurrent
-    clicks return 409 instead of racing two `bash update.sh` invocations."""
+    Guard `?confirm=UPDATE`. Pre-check sinkron (dirty tree / no remote /
+    update sedang berjalan) agar error umum langsung terlihat di UI."""
     if confirm != "UPDATE":
         raise HTTPException(status_code=400,
                             detail="Confirmation required: pass ?confirm=UPDATE")
-    import asyncio as _asyncio, os as _os, fcntl as _fcntl
+    import json as _json, os as _os, subprocess as _sp
     repo_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "..", ".."))
     script = _os.path.join(repo_root, "scripts", "update.sh")
     if not _os.path.isfile(script):
         raise HTTPException(status_code=500,
                             detail=f"update.sh not found at {script}")
 
-    lock_path = "/tmp/intercloud-update.lock"
-    lock_fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR, 0o644)
-    try:
-        try:
-            _fcntl.flock(lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise HTTPException(status_code=409,
-                                detail="Another update is already running.")
+    st = _read_update_status()
+    if st.get("pid") and _pid_alive(st["pid"]):
+        raise HTTPException(status_code=409,
+                            detail="Another update is already running.")
 
-        proc = await _asyncio.create_subprocess_exec(
-            "/bin/bash", script,
-            cwd=repo_root,
-            stdout=_asyncio.subprocess.PIPE,
-            stderr=_asyncio.subprocess.STDOUT,
+    def _git(*a):
+        return _sp.run(["git", *a], cwd=repo_root, capture_output=True, text=True)
+
+    if _git("diff", "--quiet").returncode != 0 or _git("diff", "--cached", "--quiet").returncode != 0:
+        raise HTTPException(status_code=409,
+                            detail="Working tree has uncommitted changes; "
+                                   "commit or reset before updating.")
+    if not (_git("remote").stdout or "").strip():
+        raise HTTPException(status_code=422,
+                            detail="This checkout has no git remote - "
+                                   "cannot update. Deploy a proper git "
+                                   "clone (see docs/production.md).")
+
+    log_path = _update_log_path()
+    with open(log_path, "ab", buffering=0) as lf:
+        lf.write(f"\n===== UPDATE STARTED {_now()} by {admin.get('email', '')} =====\n".encode())
+        proc = _sp.Popen(
+            ["/bin/bash", "-c", f'bash "{script}"; echo "UPDATE_EXIT_CODE=$?"'],
+            cwd=repo_root, stdout=lf, stderr=_sp.STDOUT,
+            start_new_session=True,
         )
-        try:
-            stdout_b, _ = await _asyncio.wait_for(proc.communicate(), timeout=600)
-        except _asyncio.TimeoutError:
-            proc.kill()
-            raise HTTPException(status_code=504,
-                                detail="Update timed out after 10 min")
-        text = stdout_b.decode(errors="replace")
-        status_line = next((l for l in text.splitlines() if l.startswith("STATUS=")), "")
-        rc = proc.returncode
+    status = {"pid": proc.pid, "started_at": _now(), "log": log_path,
+              "by": admin.get("email", "")}
+    with open(_UPDATE_STATUS_FILE, "w") as f:
+        _json.dump(status, f)
+    return {"ok": True, "started": True, **status}
 
-        # Map well-known exit codes to distinct 4xx statuses so the UI can
-        # render a helpful message instead of a raw stderr traceback:
-        # 0 = ok/noop | 2 = backup failed | 3 = dirty tree | 4 = no remote
-        if rc == 0:
-            return {"ok": True, "status": status_line, "return_code": 0,
-                    "log_tail": text[-2400:]}
-        if rc == 3:
-            raise HTTPException(status_code=409,
-                                detail="Working tree has uncommitted changes; "
-                                       "commit or reset before updating. "
-                                       f"Log: {text[-800:]}")
-        if rc == 4:
-            raise HTTPException(status_code=422,
-                                detail="This checkout has no git remote - "
-                                       "cannot update. Deploy a proper git "
-                                       "clone (see docs/production.md).")
-        raise HTTPException(status_code=500,
-                            detail=f"update.sh exited {rc}: {text[-800:]}")
-    finally:
-        try: _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
-        except Exception: pass
-        try: _os.close(lock_fd)
-        except Exception: pass
+
+@router.get("/admin/system/update/status")
+async def system_update_status(admin=Depends(get_current_admin)):
+    """Status update yang sedang/terakhir berjalan: running/ok/failed + log tail.
+    Aman dipanggil berulang (dipakai polling UI setiap beberapa detik)."""
+    st = _read_update_status()
+    if not st:
+        return {"running": False, "state": "idle", "exit_code": None,
+                "status": "", "log_tail": "", "started_at": None, "by": ""}
+    running = bool(st.get("pid")) and _pid_alive(st["pid"])
+    tail = ""
+    try:
+        with open(st.get("log", ""), "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8000))
+            tail = f.read().decode(errors="replace")
+        idx = tail.rfind("===== UPDATE STARTED")
+        if idx >= 0:
+            tail = tail[idx:]
+    except Exception:
+        pass
+    exit_code, status_line = None, ""
+    for line in reversed(tail.splitlines()):
+        if exit_code is None and line.startswith("UPDATE_EXIT_CODE="):
+            try:
+                exit_code = int(line.split("=", 1)[1].strip())
+            except ValueError:
+                pass
+        if not status_line and line.startswith("STATUS="):
+            status_line = line
+        if exit_code is not None and status_line:
+            break
+    if running:
+        state = "running"
+    elif exit_code == 0:
+        state = "ok"
+    elif exit_code is not None:
+        state = "failed"
+    else:
+        state = "unknown"
+    return {"running": running, "state": state, "exit_code": exit_code,
+            "status": status_line, "log_tail": tail[-4000:],
+            "started_at": st.get("started_at"), "by": st.get("by", "")}
 
 
 # ============================================================

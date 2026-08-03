@@ -392,6 +392,28 @@ async def _auto_provision(db, order: dict) -> dict:
     return svc
 
 
+async def _provision_order_from_invoice(db, inv: dict) -> bool:
+    """Trigger auto-provisioning order tertaut saat invoice lunas (idempotent).
+    Dipakai semua jalur invoice -> paid: admin mark-paid, webhook Duitku,
+    dan pelunasan via credit note."""
+    if not inv.get("order_id"):
+        return False
+    try:
+        oid = _oid(str(inv["order_id"]))
+    except Exception:
+        return False
+    order = await db.orders.find_one_and_update(
+        {"_id": oid, "service_id": None, "provisioning_started": {"$ne": True}},
+        {"$set": {"status": "payment_verified", "provisioning_started": True},
+         "$push": {"provision_log": {"at": _now(), "step": "payment_verified",
+                                     "message": f"Payment received for invoice {inv.get('number', '')}."}}})
+    if not order:
+        return False
+    order = await db.orders.find_one({"_id": order["_id"]})
+    await _auto_provision(db, order)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # VPS/Cloud auto-provisioning: OS catalog, template matching & auto-build
 # ---------------------------------------------------------------------------
@@ -824,6 +846,12 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
             await _log("vm_cloned",
                        f"VM {vm['vmid']} di-clone dari template '{tpl['name']}' di node {vm['node']} - "
                        "menunggu clone selesai.")
+            # Tunggu TASK clone selesai dulu (config VM baru belum ada sebelum task
+            # rampung -> polling status/current terlalu dini memicu error 500
+            # "Configuration file does not exist").
+            if vm.get("upid"):
+                await px.wait_task(vm.get("src_node") or vm["node"], vm["upid"],
+                                   timeout_s=1800, interval=6)
             await px.wait_unlock(vm["node"], vm["vmid"], timeout_s=900)
             root_pw = secrets.token_urlsafe(12)
             conf = {"cores": cores, "memory": memory_mb, "ciuser": "root",
@@ -1122,8 +1150,10 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles(
     disk_gb = int(payload.get("disk") or 0)
     root_pw = secrets.token_urlsafe(12)
 
-    async def _configure_and_start(node, vmid):
+    async def _configure_and_start(node, vmid, upid=None, src_node=None):
         try:
+            if upid:
+                await px.wait_task(src_node or node, upid, timeout_s=1800, interval=6)
             await px.wait_unlock(node, vmid, timeout_s=900)
             conf = {
                 "cores": cores, "memory": memory_mb, "ciuser": "root",
@@ -1161,7 +1191,8 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles(
                     try:
                         t = await _autobuild_ci_template(px, entry)
                         vm = await px.clone_vm(hostname=vm_name, template_vmid=t["vmid"])
-                        await _configure_and_start(vm["node"], vm["vmid"])
+                        await _configure_and_start(vm["node"], vm["vmid"],
+                                                   upid=vm.get("upid"), src_node=vm.get("src_node"))
                     except Exception:
                         logging.getLogger("portal.provision").exception(
                             "autobuild+clone gagal untuk %s", vm_name)
@@ -1199,7 +1230,8 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles(
                                        "di cluster dan tidak ada di katalog cloud image.")
         vm = await px.clone_vm(hostname=vm_name, template_vmid=tpl["vmid"],
                                node=(payload.get("node") or "").strip() or None)
-        asyncio.create_task(_configure_and_start(vm["node"], vm["vmid"]))
+        asyncio.create_task(_configure_and_start(vm["node"], vm["vmid"],
+                                                 upid=vm.get("upid"), src_node=vm.get("src_node")))
         return {"ok": True, "vmid": vm["vmid"], "node": vm["node"], "name": vm["name"],
                 "root_password": root_pw,
                 "message": f"VM {vm['vmid']} di-clone dari template '{tpl.get('name', '')}' - "

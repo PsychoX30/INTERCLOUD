@@ -109,6 +109,46 @@ async def _service_vm_power(db, svc: dict, action: str) -> str:
         return f"VM {action} gagal: {str(e)[:80]}"
 
 
+async def _delete_service_vm(db, svc: dict) -> None:
+    """Hapus permanen VM Proxmox milik service yang diterminasi:
+    stop -> tunggu berhenti -> DELETE (purge disk). Berjalan di background."""
+    cfg = svc.get("config") or {}
+    node, vmid = cfg.get("node"), cfg.get("vmid")
+    if not (node and vmid):
+        return
+    s = await _proxmox_settings_for_service(db, svc)
+    if not s:
+        return
+    px = iv2.ProxmoxClient(s)
+    try:
+        try:
+            await px.vm_action(node, int(vmid), "stop")
+        except Exception:
+            pass
+        for _ in range(24):  # tunggu maks ~2 menit sampai VM benar-benar berhenti
+            try:
+                st = await px.vm_status(node, int(vmid))
+                if st.get("status") == "stopped" and not st.get("lock"):
+                    break
+            except Exception:
+                break
+            await asyncio.sleep(5)
+        await px.delete_vm(node, int(vmid))
+        await db.services.update_one({"_id": svc["_id"]}, {
+            "$set": {"config.vm_deleted_at": _now(), "config.deleted_vmid": int(vmid),
+                     "config.deleted_node": node},
+            "$unset": {"config.node": "", "config.vmid": ""},
+            "$push": {"self_service_log": {
+                "at": _now(), "action": "vm_deleted", "by": "system",
+                "message": f"VM {vmid} dihapus permanen dari node {node} (terminasi disetujui)."}}})
+    except Exception as e:
+        await db.services.update_one({"_id": svc["_id"]}, {"$push": {
+            "self_service_log": {"at": _now(), "action": "vm_delete_failed", "by": "system",
+                                 "message": f"Gagal menghapus VM {vmid}: {str(e)[:120]}"}}})
+        logging.getLogger("portal.lifecycle").warning(
+            "terminate cleanup gagal utk service %s: %s", svc.get("_id"), e)
+
+
 @router.post("/admin/services/{sid}/suspend")
 async def admin_service_suspend(sid: str, payload: dict, request: Request,
                                 staff=Depends(require_roles("admin", "support", "sales"))):
@@ -278,6 +318,14 @@ async def admin_terminate_approve(sid: str, payload: dict, request: Request,
         "status": "terminated", "terminated_at": _now(),
         "terminated_reason": req.get("reason") or "Permintaan klien disetujui",
         "auto_renew": False, "termination_request": req}})
+    # Hapus VM permanen dari node (stop -> delete purge) di background agar
+    # resource server langsung kembali & klien tidak bisa memakai VM lagi.
+    has_vm = (svc.get("category") in _VM_CATEGORIES
+              and (svc.get("config") or {}).get("node")
+              and (svc.get("config") or {}).get("vmid"))
+    if has_vm:
+        asyncio.create_task(_delete_service_vm(db, svc))
+        vm_note = f"{vm_note}; VM dihapus permanen dari server (berjalan di background)"
     await log_audit(db, actor=staff, action="service.terminate_approve", category="services",
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""), severity="warning",

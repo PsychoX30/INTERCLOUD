@@ -43,23 +43,58 @@ const AdminBackup = () => {
   const [version, setVersion] = useState(null);
   const [updating, setUpdating] = useState(false);
   const [updateLog, setUpdateLog] = useState("");
+  const pollRef = useRef(null);
 
   useEffect(() => { api.get("/admin/system/version").then(({ data }) => setVersion(data)).catch(() => {}); }, []);
+
+  const pollOnce = async () => {
+    try {
+      const { data } = await api.get("/admin/system/update/status");
+      if (data.log_tail) setUpdateLog(data.log_tail);
+      if (data.running) return true;
+      setUpdating(false);
+      if (data.state === "ok") {
+        setMsg({ kind: "ok", text: `Update selesai. ${data.status || ""}` });
+      } else if (data.state === "failed") {
+        setMsg({ kind: "error", text: `Update gagal (exit ${data.exit_code}). Lihat log di bawah.` });
+      }
+      api.get("/admin/system/version").then(({ data: v }) => setVersion(v)).catch(() => {});
+      return false;
+    } catch {
+      return true; // backend sedang restart di tengah update - terus polling
+    }
+  };
+
+  const startPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      const keep = await pollOnce();
+      if (!keep && pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    }, 3000);
+  };
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  // Resume tampilan bila update masih berjalan (mis. halaman di-refresh)
+  useEffect(() => {
+    api.get("/admin/system/update/status").then(({ data }) => {
+      if (data.running) { setUpdating(true); setUpdateLog(data.log_tail || ""); startPolling(); }
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const runUpdate = async () => {
     if (!window.confirm("This will git-pull the latest release, install any new dependencies, rebuild the frontend, and restart the backend. A full DB backup is taken automatically before anything changes. Continue?")) return;
     setUpdating(true); setMsg(null); setUpdateLog("");
     try {
-      const { data } = await api.post("/admin/system/update?confirm=UPDATE");
-      setUpdateLog(data.log_tail || data.status || "");
-      setMsg({ kind: "ok", text: `Update complete. ${data.status || ""}` });
-      const v = await api.get("/admin/system/version");
-      setVersion(v.data);
+      await api.post("/admin/system/update?confirm=UPDATE");
+      startPolling();
     } catch (e) {
       const detail = e?.response?.data?.detail || e.message;
       setUpdateLog(typeof detail === "string" ? detail : JSON.stringify(detail));
-      setMsg({ kind: "error", text: `Update failed. See log below.` });
-    } finally { setUpdating(false); }
+      setMsg({ kind: "error", text: `Update failed to start. See log below.` });
+      setUpdating(false);
+    }
   };
   // ---------------------------------
 

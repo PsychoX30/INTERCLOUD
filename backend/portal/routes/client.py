@@ -152,7 +152,7 @@ async def client_service_auto_renew(sid: str, payload: dict, user=Depends(get_cu
 
 
 # ---------------- Client self-service VM control ----------------
-_CLIENT_VM_ACTIONS = ("start", "stop", "reboot")
+_CLIENT_VM_ACTIONS = ("start", "stop", "reboot", "shutdown", "reset")
 
 
 _VM_CATEGORIES = ("vps", "cloud", "dedicated")
@@ -211,16 +211,19 @@ async def client_vm_status(sid: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Service not found")
     cfg = svc.get("config") or {}
     s = await _proxmox_settings_for_service(db, svc)
+    restart_required = bool(cfg.get("restart_required"))
     if not (s and cfg.get("node") and cfg.get("vmid")):
-        return {"configured": False, "status": "unknown"}
+        return {"configured": False, "status": "unknown", "restart_required": restart_required}
     try:
         st = await iv2.ProxmoxClient(s).vm_status(cfg["node"], int(cfg["vmid"]))
         return {"configured": True, "status": st.get("status", "unknown"),
                 "uptime": st.get("uptime"), "cpu": st.get("cpu"),
                 "mem": st.get("mem"), "maxmem": st.get("maxmem"),
-                "node": cfg["node"], "vmid": int(cfg["vmid"])}
+                "node": cfg["node"], "vmid": int(cfg["vmid"]),
+                "restart_required": restart_required}
     except Exception as e:
-        return {"configured": True, "status": "unreachable", "error": str(e)[:200]}
+        return {"configured": True, "status": "unreachable", "error": str(e)[:200],
+                "restart_required": restart_required}
 
 
 @router.get("/client/services/{sid}/vm/metrics")
@@ -268,6 +271,8 @@ async def client_vm_console_info(sid: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Service not found")
     if svc.get("category") not in _VM_CATEGORIES:
         raise HTTPException(status_code=400, detail="Layanan ini bukan VM")
+    if svc.get("status") == "terminated":
+        raise HTTPException(status_code=403, detail="Layanan sudah diterminasi - console dinonaktifkan.")
     if svc.get("status") == "suspended":
         raise HTTPException(status_code=403, detail="Layanan sedang disuspend")
     cfg = svc.get("config") or {}
@@ -306,7 +311,8 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
         svc = None
     cfg = (svc or {}).get("config") or {}
     s = await _proxmox_settings_for_service(db, svc) if svc else None
-    if not (svc and svc.get("category") in _VM_CATEGORIES and svc.get("status") != "suspended"
+    if not (svc and svc.get("category") in _VM_CATEGORIES
+            and svc.get("status") not in ("suspended", "terminated")
             and cfg.get("node") and cfg.get("vmid") and s and port and vncticket):
         await ws.close(code=4403)
         return
@@ -381,6 +387,8 @@ async def client_vm_reset_password(sid: str, payload: dict, request: Request, us
         raise HTTPException(status_code=404, detail="Service not found")
     if svc.get("category") not in _VM_CATEGORIES:
         raise HTTPException(status_code=400, detail="Layanan ini bukan VM")
+    if svc.get("status") == "terminated":
+        raise HTTPException(status_code=403, detail="Layanan sudah diterminasi - kontrol VM dinonaktifkan.")
     if svc.get("status") == "suspended":
         raise HTTPException(status_code=403, detail="Layanan ditangguhkan. Lunasi tagihan untuk mengaktifkan kembali.")
     cfg = svc.get("config") or {}
@@ -447,6 +455,8 @@ async def client_vm_action(sid: str, action: str, request: Request, user=Depends
         raise HTTPException(status_code=404, detail="Service not found")
     if svc.get("category") not in _VM_CATEGORIES:
         raise HTTPException(status_code=400, detail="Layanan ini bukan VM")
+    if svc.get("status") == "terminated":
+        raise HTTPException(status_code=403, detail="Layanan sudah diterminasi - kontrol VM dinonaktifkan.")
     if svc.get("status") == "suspended":
         raise HTTPException(status_code=403, detail="Layanan ditangguhkan. Lunasi tagihan untuk mengaktifkan kembali.")
     cfg = svc.get("config") or {}
@@ -464,9 +474,11 @@ async def client_vm_action(sid: str, action: str, request: Request, user=Depends
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""),
                     metadata={"node": node, "vmid": int(vmid)}, request=request)
-    await db.services.update_one(
-        {"_id": svc["_id"]},
-        {"$push": {"self_service_log": {"at": _now(), "action": action, "by": user["email"]}}})
+    ops = {"$push": {"self_service_log": {"at": _now(), "action": action, "by": user["email"]}}}
+    if action in ("start", "reboot", "reset"):
+        # Restart menerapkan spesifikasi upgrade -> hapus penanda "restart diperlukan".
+        ops["$unset"] = {"config.restart_required": ""}
+    await db.services.update_one({"_id": svc["_id"]}, ops)
     return {"ok": True, "action": action, "task": result}
 
 

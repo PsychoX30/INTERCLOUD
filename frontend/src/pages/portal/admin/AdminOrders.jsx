@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, Card } from "../ui";
-import { CheckCircle2, XCircle, Eye } from "lucide-react";
+import { CheckCircle2, XCircle, Eye, PlayCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 
 const AdminOrders = () => {
   const [rows, setRows] = useState(null);
   const [active, setActive] = useState(null);
   const [verifying, setVerifying] = useState(null);
+  const [provisioning, setProvisioning] = useState(null);
   const load = () => api.get("/admin/orders").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
   if (!rows) return <Loading />;
@@ -21,6 +22,19 @@ const AdminOrders = () => {
       await api.put(`/admin/invoices/${o.invoice_id}/status`, { status: "paid", payment_method: "bank_transfer" });
       await load();
     } finally { setVerifying(null); }
+  };
+
+  const runProvision = async (o) => {
+    if (provisioning) return;
+    if (!window.confirm(`Jalankan auto-provision untuk order "${o.product_name}"?`)) return;
+    setProvisioning(o.id);
+    try {
+      const { data } = await api.post(`/admin/orders/${o.id}/provision`);
+      alert(data.message || "Provisioning dijalankan.");
+      await load();
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal menjalankan provisioning.");
+    } finally { setProvisioning(null); }
   };
 
   const setStatus = async (id, status) => {
@@ -57,6 +71,11 @@ const AdminOrders = () => {
                 {(o.status === "awaiting_verification" || o.status === "pending_payment") && o.invoice_id && (
                   <button className={btnPrimary} onClick={() => verifyPayment(o)} disabled={verifying === o.id} data-testid={`verify-payment-${o.id}`}>
                     <CheckCircle2 className="h-4 w-4" /> {verifying === o.id ? "Memproses…" : "Verify Payment & Provision"}
+                  </button>
+                )}
+                {["payment_verified", "provisioning"].includes(o.status) && o.invoice_id && (
+                  <button className={btnPrimary} onClick={() => runProvision(o)} disabled={provisioning === o.id} data-testid={`run-provision-${o.id}`}>
+                    <PlayCircle className="h-4 w-4" /> {provisioning === o.id ? "Menjalankan…" : "Jalankan Auto-Provision"}
                   </button>
                 )}
                 {o.status === "awaiting_quote" && (

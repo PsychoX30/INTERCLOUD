@@ -27,6 +27,7 @@ from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
 from .billing import _apply_pending_upgrade  # noqa: E402
+from .provision import _provision_order_from_invoice  # noqa: E402
 from .documents import _idr, _long_date, _render_pdf_bytes  # noqa: E402
 from .shared import _get_db, _iso, _next_number, _now, _oid, _sum_applied_credit  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
@@ -1291,6 +1292,13 @@ async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
         await _apply_pending_upgrade(db, invoice)
     except Exception:
         pass
+    # Invoice order yang dilunasi credit note juga harus memicu auto-provisioning
+    # (sama seperti webhook Duitku / admin mark-paid) agar service muncul di klien.
+    try:
+        await _provision_order_from_invoice(db, invoice)
+    except Exception:
+        logging.getLogger("portal.finance").exception(
+            "auto-provision setelah pelunasan credit note gagal")
     await log_audit(db, actor=admin, action="invoice.settled_by_credit", category="billing",
                     target_type="invoice", target_id=str(invoice["_id"]),
                     target_label=inv_no,

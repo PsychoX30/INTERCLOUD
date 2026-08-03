@@ -3,6 +3,16 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-06 (batch 10): FIX UPDATE VIA PORTAL + BACKUP SCALABLE - SELESAI & DITES
+Masalah: update.sh gagal di production - `emergentintegrations==0.2.0` (paket internal pod, tidak ada di PyPI, tidak di-import) ada di requirements.txt; install.sh memfilter, update.sh tidak.
+1. Root cause fix: emergentintegrations + litellm privat DIHAPUS dari requirements.txt -> klik Update berikutnya di production langsung beres walau masih pakai update.sh lama.
+2. update.sh ditulis ulang (phased, self-update-safe): fase-1 backup atomic -> dirty(3)/no-remote(4) -> pull -> exec script BARU utk fase-2 (pip requirements TERFILTER, yarn build, restart, patch nginx). Prune >30 hari. Divalidasi e2e dgn fake bare remote (noop + fast-forward + re-exec).
+3. Endpoint update ASYNC-DETACHED (admin_core.py): POST pre-check sinkron (400/409 dirty|running/422 no-remote) lalu Popen start_new_session=True (supervisor prod killasgroup=true membunuh anak biasa saat restart backend). Log /var/log/intercloud-update.log, status /tmp/intercloud-update.status.json. BARU: GET /admin/system/update/status {running,state,exit_code,status,log_tail}.
+4. AdminBackup.jsx: Update -> polling 3 dtk log live, toleran fetch error saat restart, resume setelah refresh halaman.
+5. Backup: _backup_dir() env BACKUP_DIR > /var/backups/intercloud > /app/backups > /tmp; retensi 20 arsip manual. Restore tak berubah.
+6. Test: test_system_update.py diadaptasi (async start+poll) 17 pass; backup trigger/history via curl OK; screenshot UI OK.
+CATATAN: update PERTAMA di production masih via endpoint lama (sinkron) - bisa tampak error/timeout di UI saat restart padahal sukses; cek versi setelah refresh.
+
 ## Sesi 2026-06 (batch 9): SPESIFIKASI DASAR PLAN VPS/CLOUD (gaya WHMCS) - SELESAI & DITES
 Permintaan user: produk VPS/Cloud harus punya base plan spec (vCPU/RAM/Storage) yang dibaca auto-provisioning; opsi konfigurasi & add-on berperan sebagai PENAMBAH resource.
 

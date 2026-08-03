@@ -27,7 +27,8 @@ from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
 from .domains import _apply_domain_renewal, _auto_register_domain  # noqa: E402
-from .provision import _auto_provision, _proxmox_settings_for_service  # noqa: E402
+from .provision import (_provision_order_from_invoice,  # noqa: E402
+                        _proxmox_settings_for_service)
 from .shared import BILLING_SETTING_DEFAULTS, _EXTRA_PAYMENT_MODULES, _get_db, _get_setting_value, _iso, _load_user, _mark_overdue, _next_number, _now, _oid, _sales_scope_filter, _serialize_invoice, _set_setting_value, _sum_applied_credit  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 from .users import _paginate  # noqa: E402
@@ -143,7 +144,8 @@ async def _apply_pending_upgrade(db, inv: dict) -> bool:
     new_disk = _num(cfg.get("disk_gb")) + int(up.get("disk_gb") or 0)
     await db.services.update_one(
         {"_id": svc["_id"]},
-        {"$set": {"config.cpu": new_cpu, "config.ram_gb": new_ram, "config.disk_gb": new_disk},
+        {"$set": {"config.cpu": new_cpu, "config.ram_gb": new_ram, "config.disk_gb": new_disk,
+                  "config.restart_required": True},
          "$inc": {"price_monthly": float(up.get("monthly_delta") or 0)},
          "$unset": {"pending_upgrade": ""},
          "$push": {"self_service_log": {"at": _now(), "action": "upgrade_applied",
@@ -185,19 +187,12 @@ async def admin_update_invoice_status(
     if not d:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    # If payment just confirmed AND invoice is linked to an order → auto-provision.
-    # Atomic guard on the order: hanya satu request yang boleh memulai provisioning.
-    if just_paid and d.get("order_id"):
-        order = await db.orders.find_one_and_update(
-            {"_id": _oid(d["order_id"]), "service_id": None,
-             "provisioning_started": {"$ne": True}},
-            {"$set": {"status": "payment_verified", "provisioning_started": True},
-             "$push": {"provision_log": {"at": _now(), "step": "payment_verified",
-                                          "message": f"Payment received for invoice {d['number']}."}}},
-        )
-        if order:
-            order = await db.orders.find_one({"_id": order["_id"]})
-            await _auto_provision(db, order)
+    # Invoice lunas + tertaut order → auto-provision (guard atomic di helper:
+    # hanya satu request yang boleh memulai provisioning). Juga berlaku bila
+    # invoice SUDAH paid sebelumnya (mis. dilunasi via credit note) tapi order
+    # belum pernah diprovision - klik "Verify Payment" admin tetap memicu provisioning.
+    if payload.status == "paid" and d.get("status") == "paid" and d.get("order_id"):
+        await _provision_order_from_invoice(db, d)
 
     # Eksekusi upgrade resource yang menunggu pembayaran invoice ini.
     if just_paid:
@@ -609,12 +604,10 @@ async def payment_webhook(provider: str, request: Request):
 
     # 2) Auto-provision the linked order (same hook as manual admin mark-paid)
     if inv and inv.get("order_id"):
-        order = await db.orders.find_one({"_id": _oid(inv["order_id"])})
-        if order and not order.get("service_id"):
-            try:
-                await _auto_provision(db, order)
-            except Exception:
-                pass
+        try:
+            await _provision_order_from_invoice(db, inv)
+        except Exception:
+            pass
 
     # 2b) Eksekusi upgrade resource yang menunggu pembayaran invoice ini
     if inv:
