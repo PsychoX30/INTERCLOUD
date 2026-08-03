@@ -570,8 +570,8 @@ cat > /etc/nginx/sites-available/intercloud <<NGINX
 # NOTE: kept as a static string, NOT an nginx 'map' directive, because
 # not every nginx build supports \$var interpolation inside add_header.
 
-# Maps $http_upgrade to the Connection header value so WebSocket upgrades
-# (noVNC VM console) are proxied correctly while normal requests keep
+# Maps the client Upgrade header to the Connection header value so WebSocket
+# upgrades (noVNC VM console) are proxied correctly while normal requests keep
 # keep-alive. Placed in http context (sites-enabled is included there).
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
