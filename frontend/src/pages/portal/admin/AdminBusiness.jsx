@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, shortDate, fullDateTime } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame, MessageCircle, Phone, Mail } from "lucide-react";
+import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame, MessageCircle, Phone, Mail, Upload, Download } from "lucide-react";
 
 /* ============ Small generic modal ============ */
 const Modal = ({ children, onClose, title }) => (
@@ -49,6 +49,8 @@ export const AdminCRM = () => {
   const [statusF, setStatusF] = useState("");
   const [warmOnly, setWarmOnly] = useState(false);
   const [editing, setEditing] = useState(null); // null | 'new' | obj
+  const [importing, setImporting] = useState(false); // modal import xlsx
+  const [exporting, setExporting] = useState(false);
   const load = () => api.get("/admin/crm").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
   if (!rows) return <Loading />;
@@ -63,12 +65,33 @@ export const AdminCRM = () => {
 
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/crm/${id}`); load(); } };
 
+  const exportXlsx = async () => {
+    setExporting(true);
+    try {
+      const res = await api.get("/admin/crm/export.xlsx", { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = "customer-database.xlsx"; a.click();
+      URL.revokeObjectURL(url);
+    } catch { alert("Gagal export XLSX."); } finally { setExporting(false); }
+  };
+
   return (
     <div>
       <PageHeader
         title="Customer Database (CRM)"
         subtitle="Prospects, partnerships, existing & past clients - all in one directory."
-        actions={<button className={btnPrimary} onClick={() => setEditing("new")} data-testid="new-crm-btn"><Plus className="h-4 w-4" /> Add Contact</button>}
+        actions={
+          <div className="flex gap-2 flex-wrap">
+            <button className={btnSecondary} onClick={() => setImporting(true)} data-testid="crm-import-btn">
+              <Upload className="h-4 w-4" /> Import XLSX
+            </button>
+            <button className={btnSecondary} onClick={exportXlsx} disabled={exporting} data-testid="crm-export-btn">
+              <Download className="h-4 w-4" /> {exporting ? "Menyiapkan…" : "Export XLSX"}
+            </button>
+            <button className={btnPrimary} onClick={() => setEditing("new")} data-testid="new-crm-btn"><Plus className="h-4 w-4" /> Add Contact</button>
+          </div>
+        }
       />
 
       {/* KPI strip */}
@@ -212,7 +235,74 @@ export const AdminCRM = () => {
         </div>
       )}
       {editing && <CrmForm c={editing === "new" ? null : editing} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
+      {importing && <CrmImportModal onClose={() => setImporting(false)} onDone={() => { setImporting(false); load(); }} />}
     </div>
+  );
+};
+
+const CrmImportModal = ({ onClose, onDone }) => {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [err, setErr] = useState("");
+
+  const upload = async () => {
+    if (!file) return;
+    setBusy(true); setErr(""); setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await api.post("/admin/crm/import", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setResult(data);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal onClose={onClose} title="Import Customer DB (.xlsx)">
+      <div data-testid="crm-import-modal">
+        <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+          Format kolom mengikuti template <b>Database Marketing</b>: <b>Nama</b>, <b>Nomor Telp</b>, <b>E-Mail</b>,
+          <b> Perusahaan</b>, <b>Jabatan</b>, <b>Segmen Industri</b>, <b>Status</b> (PROSPECT / POSSIBLE PARTNERSHIP /
+          EXISTING CLIENT / EX CLIENT). Kontak yang sudah ada (berdasarkan email, atau nama+telp) akan di-update, sisanya dibuat baru.
+        </p>
+        {err && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2" data-testid="crm-import-error">{err}</div>}
+        {result ? (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 mb-4" data-testid="crm-import-result">
+            <div className="text-sm font-bold text-emerald-700 mb-1">Import selesai</div>
+            <div className="text-xs text-slate-600 space-y-0.5">
+              <div>Baris diproses: <b>{result.total_rows}</b></div>
+              <div>Kontak baru: <b className="text-emerald-700">{result.created}</b></div>
+              <div>Di-update: <b className="text-sky-700">{result.updated}</b></div>
+              <div>Dilewati (kosong): <b>{result.skipped}</b></div>
+              {(result.errors || []).length > 0 && (
+                <div className="text-red-600 mt-1">
+                  {result.errors.length} baris error: {result.errors.slice(0, 3).map((e) => `baris ${e.row}`).join(", ")}…
+                </div>
+              )}
+            </div>
+            <div className="mt-3"><button className={btnPrimary} onClick={onDone} data-testid="crm-import-done">Tutup & muat ulang</button></div>
+          </div>
+        ) : (
+          <>
+            <input
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-xl file:border-0 file:bg-[#0a2350] file:px-4 file:py-2 file:text-white file:text-sm file:font-bold hover:file:bg-[#0a2350]/90 cursor-pointer"
+              data-testid="crm-import-file"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button className={btnSecondary} onClick={onClose}>Batal</button>
+              <button className={btnPrimary} onClick={upload} disabled={!file || busy} data-testid="crm-import-submit">
+                {busy ? "Mengimpor…" : "Import"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 };
 

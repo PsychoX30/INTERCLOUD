@@ -207,6 +207,189 @@ async def crm_delete(cid: str, staff=Depends(get_current_staff)):
     return {"deleted": r.deleted_count}
 
 
+# ---------- CRM import/export XLSX ----------
+from fastapi import UploadFile as _UploadFile, File as _File  # noqa: E402
+
+_CRM_XLSX_HEADERS = ["Nama", "Nomor Telp", "E-Mail", "Perusahaan", "Jabatan",
+                     "Segmen Industri", "Status"]
+_CRM_STATUS_EXPORT = {"prospect": "PROSPECT", "partnership": "POSSIBLE PARTNERSHIP",
+                      "existing": "EXISTING CLIENT", "ex_client": "EX CLIENT"}
+
+
+def _crm_status_import(v) -> str:
+    s = re.sub(r"[^a-z]+", " ", str(v or "").lower()).strip()
+    if not s:
+        return ""
+    if "partner" in s:
+        return "partnership"
+    if s.startswith("ex ") or s.startswith("ex") and "exist" not in s:
+        return "ex_client"
+    if "exist" in s or s in ("client", "customer", "active"):
+        return "existing"
+    return "prospect"
+
+
+def _cell_str(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+@router.get("/admin/crm/export.xlsx")
+async def crm_export_xlsx(staff=Depends(get_current_staff)):
+    """Export Customer DB ke .xlsx dengan format template Database Marketing
+    (Nama, Nomor Telp, E-Mail, Perusahaan, Jabatan, Segmen Industri, Status)."""
+    _deny_creative(staff)
+    db = await _get_db()
+    q = _sales_scope_filter(staff, key="user_id")
+    docs = await db.crm_customers.find(q).sort("name", 1).to_list(20000)
+
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Database Marketing"
+    header_fill = PatternFill("solid", fgColor="1E7145")
+    status_style = {"prospect": ("9DC3E6", "000000"), "partnership": ("FFD966", "000000"),
+                    "existing": ("A9D08E", "000000"), "ex_client": ("FF0000", "FFFFFF")}
+    for col, h in enumerate(_CRM_XLSX_HEADERS, start=1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center")
+    for i, w in enumerate([24, 18, 32, 36, 40, 26, 24], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    for r, d in enumerate(docs, start=2):
+        ws.cell(row=r, column=1, value=d.get("name", ""))
+        ws.cell(row=r, column=2, value=d.get("phone", ""))
+        ws.cell(row=r, column=3, value=d.get("email", ""))
+        ws.cell(row=r, column=4, value=d.get("company", ""))
+        ws.cell(row=r, column=5, value=d.get("position", ""))
+        ws.cell(row=r, column=6, value=d.get("industry", ""))
+        st = d.get("status", "prospect")
+        c = ws.cell(row=r, column=7, value=_CRM_STATUS_EXPORT.get(st, str(st).upper()))
+        fill, fg = status_style.get(st, (None, None))
+        if fill:
+            c.fill = PatternFill("solid", fgColor=fill)
+            c.font = Font(bold=True, color=fg)
+            c.alignment = Alignment(horizontal="center")
+    buf = io.BytesIO()
+    wb.save(buf)
+    from fastapi.responses import Response
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="customer-database.xlsx"'})
+
+
+@router.post("/admin/crm/import")
+async def crm_import_xlsx(file: _UploadFile = _File(...), staff=Depends(get_current_staff)):
+    """Import kontak dari .xlsx (format Database Marketing). Header dicocokkan
+    fleksibel (Nama/Name, Nomor Telp/Phone, E-Mail, Perusahaan/Company, Jabatan,
+    Segmen Industri, Status); tanpa header -> urutan kolom A-G. Upsert by email
+    (fallback: nama+telepon)."""
+    _deny_creative(staff)
+    db = await _get_db()
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File terlalu besar (maks 10 MB)")
+    import io
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="File bukan .xlsx yang valid")
+    ws = wb.active
+    all_rows = []
+    for row in ws.iter_rows(values_only=True):
+        all_rows.append(list(row or []))
+        if len(all_rows) > 20000:
+            raise HTTPException(status_code=400, detail="Maksimal 20.000 baris per import")
+
+    def _col_key(h):
+        h = str(h or "").strip().lower()
+        if not h:
+            return None
+        if "nama" in h or h == "name":
+            return "name"
+        if "telp" in h or "phone" in h or "telepon" in h or h in ("hp", "wa"):
+            return "phone"
+        if "mail" in h:
+            return "email"
+        if "perusahaan" in h or "company" in h:
+            return "company"
+        if "jabatan" in h or "position" in h or "title" in h:
+            return "position"
+        if "industri" in h or "industry" in h or "segmen" in h:
+            return "industry"
+        if "status" in h:
+            return "status"
+        return None
+
+    # Cari baris header di 10 baris pertama (template punya baris judul dulu)
+    col_map, start_idx = None, 0
+    for i, row in enumerate(all_rows[:10]):
+        keys = {}
+        for ci, cell in enumerate(row):
+            k = _col_key(cell)
+            if k and k not in keys:
+                keys[k] = ci
+        if "name" in keys and ("email" in keys or "phone" in keys):
+            col_map, start_idx = keys, i + 1
+            break
+    if col_map is None:
+        # Tanpa header: pakai posisi kolom A-G sesuai template
+        col_map = {"name": 0, "phone": 1, "email": 2, "company": 3,
+                   "position": 4, "industry": 5, "status": 6}
+
+    created = updated = skipped = 0
+    errors = []
+    for rn, row in enumerate(all_rows[start_idx:], start=start_idx + 1):
+        try:
+            vals = {k: _cell_str(row[ci]) if ci < len(row) else ""
+                    for k, ci in col_map.items()}
+            name = vals.get("name", "")
+            email = vals.get("email", "").lower()
+            if not name and not email:
+                skipped += 1
+                continue
+            status = _crm_status_import(vals.get("status"))
+            fields = {k: vals.get(k, "") for k in
+                      ("name", "phone", "company", "position", "industry")}
+            fields["email"] = email
+            query = {"email": email} if email else {"name": name, "phone": vals.get("phone", "")}
+            existing = await db.crm_customers.find_one(query)
+            if existing:
+                upd = {k: v for k, v in fields.items() if v}
+                if status:
+                    upd["status"] = status
+                upd["updated_at"] = _now()
+                await db.crm_customers.update_one({"_id": existing["_id"]}, {"$set": upd})
+                updated += 1
+            else:
+                await db.crm_customers.insert_one({
+                    **fields, "status": status or "prospect", "notes": "",
+                    "source": "xlsx_import",
+                    "created_at": _now(), "updated_at": _now()})
+                created += 1
+        except Exception as e:
+            errors.append({"row": rn, "error": str(e)[:120]})
+            if len(errors) >= 20:
+                break
+    await log_audit(db, actor=staff, action="crm.import_xlsx", category="crm",
+                    target_type="crm", target_id="bulk", target_label=file.filename or "xlsx",
+                    metadata={"created": created, "updated": updated, "skipped": skipped,
+                              "errors": len(errors)})
+    return {"ok": True, "created": created, "updated": updated,
+            "skipped": skipped, "errors": errors,
+            "total_rows": max(0, len(all_rows) - start_idx)}
+
+
 # ---------- Projects ----------
 def _serialize_project(d):
     return {

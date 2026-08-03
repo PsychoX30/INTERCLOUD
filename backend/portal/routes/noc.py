@@ -89,6 +89,7 @@ def _serialize_device(d: dict) -> dict:
         "port": int(d.get("port") or 8728),
         "username": d.get("username", ""),
         "use_tls": bool(d.get("use_tls", False)),
+        "main_interface": d.get("main_interface", ""),
         "site": d.get("site", ""),
         "notes": d.get("notes", ""),
         "created_at": d.get("created_at"),
@@ -123,6 +124,7 @@ async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin
         "username": (payload.get("username") or "").strip(),
         "password": payload.get("password") or "",
         "use_tls": bool(payload.get("use_tls", False)),
+        "main_interface": (payload.get("main_interface") or "").strip(),
         "site": payload.get("site") or "",
         "notes": payload.get("notes") or "",
         "created_at": _now(),
@@ -137,7 +139,7 @@ async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin
 @router.put("/admin/mikrotik/devices/{did}")
 async def mikrotik_devices_update(did: str, payload: dict, admin=Depends(get_current_admin)):
     db = await _get_db()
-    allowed = {"name", "host", "port", "username", "password", "use_tls", "site", "notes"}
+    allowed = {"name", "host", "port", "username", "password", "use_tls", "main_interface", "site", "notes"}
     upd = {k: v for k, v in (payload or {}).items() if k in allowed}
     if "port" in upd: upd["port"] = int(upd["port"] or 8728)
     if "use_tls" in upd: upd["use_tls"] = bool(upd["use_tls"])
@@ -289,38 +291,75 @@ async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100,
 @router.get("/admin/noc/netflow/sankey")
 async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
                              admin=Depends(require_roles("admin", "support"))):
-    """Data agregat arus trafik (torch MikroTik live) untuk Diagram Sankey:
-    flows = [{src, dst, gbps}] top-N berdasarkan rate."""
+    """Data agregat arus trafik (torch MikroTik live) untuk Diagram Sankey.
+
+    - Menggabungkan perangkat `mikrotik_devices` DAN integrasi MikroTik legacy
+      dari menu Integrations (dulu perangkat legacy tidak pernah di-sampling).
+    - Interface: pakai `main_interface` perangkat bila di-set; kalau kosong,
+      pilih otomatis 2 interface running tersibuk (dulu hardcoded ether1).
+    """
     db = await _get_db()
     limit = max(3, min(limit, 50))
-    devices = ([await _get_mikrotik_device(db, device_id)] if device_id
-               else await db.mikrotik_devices.find({}).to_list(50))
+    import asyncio as _a
+    loop = _a.get_event_loop()
+    if device_id:
+        devices = [await _get_mikrotik_device(db, None if device_id == "legacy" else device_id)]
+    else:
+        devices = await db.mikrotik_devices.find({}).to_list(50)
+        legacy = await iv2.get_settings(db, "mikrotik")
+        if legacy and legacy.get("enabled") and (legacy.get("credentials") or {}).get("host"):
+            devices.append({"_id": None, "name": "Legacy (Integrations)",
+                            **(legacy.get("credentials") or {})})
     agg: dict = {}
     sampled = 0
+    sampled_interfaces: list = []
+    errors: list = []
     for d in devices:
         if not d:
             continue
-        iface = d.get("main_interface") or d.get("interface") or "ether1"
-        try:
-            import asyncio as _a
-            client = iv2.MikrotikClient(d)
-            res = await _a.get_event_loop().run_in_executor(
-                None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
-        except Exception:
-            continue
-        if not res.get("ok"):
-            continue
-        sampled += 1
-        for f in res.get("rows", []):
-            src = (f.get("src_address") or "").split("/")[0]
-            dst = (f.get("dst_address") or "").split("/")[0]
-            if not src or not dst or src == dst:
+        name = d.get("name") or d.get("host") or "device"
+        client = iv2.MikrotikClient(d)
+        iface_cfg = (d.get("main_interface") or d.get("interface") or "").strip()
+        if iface_cfg:
+            ifaces = [iface_cfg]
+        else:
+            rows = await loop.run_in_executor(None, client.list_interfaces)
+            running = [r for r in rows
+                       if str(r.get("running", "")).lower() in ("true", "yes")
+                       and str(r.get("disabled", "")).lower() not in ("true", "yes")]
+            running.sort(key=lambda r: int(r.get("rx-byte") or 0) + int(r.get("tx-byte") or 0),
+                         reverse=True)
+            ifaces = [r.get("name") for r in running if r.get("name")][:2] or ["ether1"]
+            if not rows:
+                errors.append({"device": name, "interface": "-",
+                               "error": "Tidak bisa membaca daftar interface (cek host/kredensial API)"})
+        dev_ok = False
+        for iface in ifaces:
+            try:
+                res = await loop.run_in_executor(
+                    None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
+            except Exception as e:
+                errors.append({"device": name, "interface": iface, "error": str(e)[:160]})
                 continue
-            agg[(src, dst)] = agg.get((src, dst), 0) + f.get("rx_rate", 0) + f.get("tx_rate", 0)
-    flows = sorted(({"src": k[0], "dst": k[1], "gbps": round(v / 1e9, 3)}
+            if not res.get("ok"):
+                errors.append({"device": name, "interface": iface,
+                               "error": str(res.get("error") or "torch gagal")[:160]})
+                continue
+            dev_ok = True
+            sampled_interfaces.append(f"{name}/{iface}")
+            for f in res.get("rows", []):
+                src = (f.get("src_address") or "").split("/")[0]
+                dst = (f.get("dst_address") or "").split("/")[0]
+                if not src or not dst or src == dst:
+                    continue
+                agg[(src, dst)] = agg.get((src, dst), 0) + f.get("rx_rate", 0) + f.get("tx_rate", 0)
+        if dev_ok:
+            sampled += 1
+    flows = sorted(({"src": k[0], "dst": k[1], "bps": int(v), "gbps": round(v / 1e9, 3)}
                     for k, v in agg.items() if v > 0),
-                   key=lambda x: x["gbps"], reverse=True)[:limit]
+                   key=lambda x: x["bps"], reverse=True)[:limit]
     return {"live": sampled > 0, "devices_sampled": sampled,
+            "interfaces": sampled_interfaces, "errors": errors[:10],
             "flows": flows, "sampled_at": _now()}
 
 

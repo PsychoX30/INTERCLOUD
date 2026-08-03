@@ -479,72 +479,132 @@ async def admin_user_profile(uid: str, admin=Depends(require_roles("admin", "sal
 
 
 # ============================================================
-# WEBMAIL (staff-only) - SMTP for sending, IMAP for inbox.
-# Currently backed by MongoDB (mock) so the UX works end-to-end.
-# When an SMTP + IMAP integration is enabled under /admin/integrations,
-# these endpoints can be swapped to real IMAP/SMTP calls.
+# WEBMAIL (staff-only) - full IMAP webmail: folders, HTML+attachments,
+# send (cc/bcc/attachments), drafts, delete, mark read/unread.
 # ============================================================
 
-@router.get("/admin/mail/inbox")
-async def admin_mail_inbox(staff=Depends(get_current_staff)):
-    db = await _get_db()
-    # ---- F1: Per-admin inbox - use the caller's OWN email_settings ----
-    user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
-    my_settings = (user_doc or {}).get("email_settings") or {}
-    my_imap = my_settings.get("imap") or {}
-    if my_imap.get("credentials", {}).get("host") and my_imap.get("credentials", {}).get("username"):
-        try:
-            live = iv2.IMAPClient(my_imap).fetch_recent()
-        except iv2.IMAPConnectionError as e:
-            # Personal IMAP creds are set but the mailbox can't be reached -
-            # tell the operator exactly why so they can fix it.
-            return {"not_setup": True, "reason": "connection_failed",
-                    "message": f"IMAP tidak bisa terhubung. {e}",
-                    "detail": str(e)}
-        return [{
-            "id": f"imap-{msg['id']}",
-            "from_name": msg["from"].split("<")[0].strip(" \""),
-            "from_email": (msg["from"].split("<")[-1].rstrip(">") if "<" in msg["from"] else msg["from"]),
-            "subject": msg["subject"],
-            "preview": msg["preview"],
-            "received_at": msg["date"],
-            "unread": False,
-            "starred": False,
-            "_live": True,
-        } for msg in live]
+def _sanitize_email_html(html: str) -> str:
+    """Sanitasi HTML email untuk dirender di iframe sandbox (nh3/ammonia).
+    Mengizinkan tabel/gambar/inline-style agar layout email tetap utuh,
+    tapi membuang script/handler berbahaya."""
+    if not html:
+        return ""
+    import nh3
+    tags = set(nh3.ALLOWED_TAGS) | {"img", "table", "thead", "tbody", "tfoot", "tr", "td",
+                                    "th", "center", "font", "span", "div", "style", "u",
+                                    "big", "small", "section", "article", "button"}
+    attrs = {k: set(v) for k, v in nh3.ALLOWED_ATTRIBUTES.items()}
+    attrs.setdefault("*", set()).update({"style", "align", "valign", "bgcolor", "width",
+                                         "height", "border", "cellpadding", "cellspacing",
+                                         "color", "dir", "class"})
+    attrs.setdefault("img", set()).update({"src", "alt", "width", "height", "title"})
+    attrs.setdefault("a", set()).update({"href", "title", "target"})
+    attrs.setdefault("font", set()).update({"face", "size", "color"})
+    clean_content = set(nh3.CLEAN_CONTENT_TAGS) - {"style"}
+    return nh3.clean(html, tags=tags, attributes=attrs,
+                     url_schemes={"http", "https", "mailto", "data", "cid", "tel"},
+                     clean_content_tags=clean_content,
+                     link_rel="noopener noreferrer")
 
-    # No personal creds → surface an actionable "click to setup" hint.
-    # Frontend AdminMail.jsx renders a big card with a Configure button.
-    return {"not_setup": True, "reason": "no_credentials",
-            "message": "Email pribadi Anda belum di-setup. Klik untuk konfigurasi IMAP + SMTP cPanel Anda."}
+
+def _split_from(raw: str) -> tuple:
+    raw = raw or ""
+    if "<" in raw:
+        return raw.split("<")[0].strip(" \""), raw.split("<")[-1].rstrip(">").strip()
+    return "", raw.strip()
+
+
+_MAIL_NOT_SETUP = {"not_setup": True, "reason": "no_credentials",
+                   "message": "Email pribadi Anda belum di-setup. Klik untuk konfigurasi IMAP + SMTP cPanel Anda."}
+
+
+async def _my_email_settings(staff) -> dict:
+    db = await _get_db()
+    user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
+    return (user_doc or {}).get("email_settings") or {}
+
+
+def _imap_ready(my_imap: dict) -> bool:
+    c = (my_imap or {}).get("credentials") or {}
+    return bool(c.get("host") and c.get("username"))
+
+
+@router.get("/admin/mail/folders")
+async def admin_mail_folders(staff=Depends(get_current_staff)):
+    """Daftar folder IMAP (Inbox/Sent/Drafts/Junk/Trash/custom) + jumlah unread."""
+    st = await _my_email_settings(staff)
+    my_imap = st.get("imap") or {}
+    if not _imap_ready(my_imap):
+        return dict(_MAIL_NOT_SETUP)
+    try:
+        return await asyncio.to_thread(lambda: iv2.IMAPClient(my_imap).list_folders())
+    except iv2.IMAPConnectionError as e:
+        return {"not_setup": True, "reason": "connection_failed",
+                "message": f"IMAP tidak bisa terhubung. {e}", "detail": str(e)}
+
+
+@router.get("/admin/mail/inbox")
+async def admin_mail_inbox(folder: str = "INBOX", staff=Depends(get_current_staff)):
+    """Daftar pesan sebuah folder (default INBOX) - pakai kredensial IMAP pribadi caller."""
+    st = await _my_email_settings(staff)
+    my_imap = st.get("imap") or {}
+    if not _imap_ready(my_imap):
+        return dict(_MAIL_NOT_SETUP)
+    try:
+        live = await asyncio.to_thread(
+            lambda: iv2.IMAPClient(my_imap).fetch_recent(folder=folder))
+    except iv2.IMAPConnectionError as e:
+        return {"not_setup": True, "reason": "connection_failed",
+                "message": f"IMAP tidak bisa terhubung. {e}", "detail": str(e)}
+    out = []
+    for msg in live:
+        fname, femail = _split_from(msg.get("from", ""))
+        out.append({
+            "id": f"imap-{msg['id']}",
+            "from_name": fname, "from_email": femail,
+            "to": msg.get("to", ""),
+            "subject": msg.get("subject", ""),
+            "preview": msg.get("preview", ""),
+            "received_at": msg.get("date"),
+            "unread": bool(msg.get("unread")),
+            "has_attachments": bool(msg.get("has_attachments")),
+            "starred": False, "_live": True,
+        })
+    return out
 
 
 @router.get("/admin/mail/messages/{mid}")
-async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
+async def admin_mail_message(mid: str, folder: str = "INBOX", staff=Depends(get_current_staff)):
     db = await _get_db()
-    # ---- IMAP live message (id prefixed with "imap-") - uses caller's own creds ----
+    # ---- IMAP live message (id prefixed "imap-{uid}") ----
     if mid.startswith("imap-"):
         uid = mid[len("imap-"):]
-        user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
-        my_imap = ((user_doc or {}).get("email_settings") or {}).get("imap") or {}
-        if my_imap.get("credentials", {}).get("host"):
-            try:
-                for msg in iv2.IMAPClient(my_imap).fetch_recent():
-                    if str(msg.get("id")) == uid:
-                        return {
-                            "id": mid,
-                            "from_name": msg["from"].split("<")[0].strip(" \""),
-                            "from_email": (msg["from"].split("<")[-1].rstrip(">") if "<" in msg["from"] else msg["from"]),
-                            "subject": msg.get("subject", ""),
-                            "body": msg.get("body") or msg.get("preview") or "",
-                            "received_at": msg.get("date"),
-                            "starred": False,
-                        }
-            except iv2.IMAPConnectionError as e:
-                raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
-        raise HTTPException(status_code=404, detail="IMAP message no longer available (mailbox may have been re-synced)")
+        st = await _my_email_settings(staff)
+        my_imap = st.get("imap") or {}
+        if not _imap_ready(my_imap):
+            raise HTTPException(status_code=400, detail="IMAP belum di-setup")
+        try:
+            data = await asyncio.to_thread(
+                lambda: iv2.IMAPClient(my_imap).fetch_message(uid, folder=folder))
+        except iv2.IMAPConnectionError as e:
+            raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
+        if not data:
+            raise HTTPException(status_code=404,
+                                detail="Pesan tidak ditemukan (mailbox mungkin berubah)")
+        fname, femail = _split_from(data.get("from", ""))
+        return {
+            "id": mid, "folder": folder,
+            "from_name": fname, "from_email": femail,
+            "to": data.get("to", ""), "cc": data.get("cc", ""),
+            "subject": data.get("subject", ""),
+            "body": data.get("body", ""),
+            "body_html": _sanitize_email_html(data.get("body_html", "")),
+            "attachments": data.get("attachments", []),
+            "received_at": data.get("date"),
+            "unread": False, "starred": False,
+        }
 
-    # ---- Mongo-backed message (legacy seeded demo - no per-user creds path) ----
+    # ---- Mongo-backed message (legacy seeded demo) ----
     try:
         oid = _oid(mid)
     except Exception:
@@ -560,9 +620,73 @@ async def admin_mail_message(mid: str, staff=Depends(get_current_staff)):
         "from_email": d.get("from_email", ""),
         "subject": d.get("subject", ""),
         "body": d.get("body", ""),
+        "body_html": "", "attachments": [],
         "received_at": d.get("received_at"),
         "starred": bool(d.get("starred", False)),
     }
+
+
+@router.get("/admin/mail/messages/{mid}/attachments/{idx}")
+async def admin_mail_attachment(mid: str, idx: int, folder: str = "INBOX",
+                                staff=Depends(get_current_staff)):
+    """Unduh lampiran ke-idx dari sebuah pesan IMAP."""
+    from fastapi.responses import Response
+    if not mid.startswith("imap-"):
+        raise HTTPException(status_code=404, detail="Attachment hanya tersedia utk pesan IMAP")
+    uid = mid[len("imap-"):]
+    st = await _my_email_settings(staff)
+    my_imap = st.get("imap") or {}
+    if not _imap_ready(my_imap):
+        raise HTTPException(status_code=400, detail="IMAP belum di-setup")
+    try:
+        att = await asyncio.to_thread(
+            lambda: iv2.IMAPClient(my_imap).fetch_attachment(uid, int(idx), folder=folder))
+    except iv2.IMAPConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
+    if not att:
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan")
+    fname, mime, blob = att
+    return Response(content=blob, media_type=mime or "application/octet-stream",
+                    headers={"Content-Disposition":
+                             f"attachment; filename*=UTF-8''{quote(fname or 'attachment')}"})
+
+
+@router.post("/admin/mail/messages/{mid}/read")
+async def admin_mail_mark_read(mid: str, payload: dict = None, folder: str = "INBOX",
+                               staff=Depends(get_current_staff)):
+    """Tandai pesan dibaca/belum dibaca. Body: {read: true|false}."""
+    read = bool((payload or {}).get("read", True))
+    if not mid.startswith("imap-"):
+        raise HTTPException(status_code=400, detail="Hanya untuk pesan IMAP")
+    uid = mid[len("imap-"):]
+    st = await _my_email_settings(staff)
+    my_imap = st.get("imap") or {}
+    if not _imap_ready(my_imap):
+        raise HTTPException(status_code=400, detail="IMAP belum di-setup")
+    try:
+        await asyncio.to_thread(
+            lambda: iv2.IMAPClient(my_imap).set_read(uid, folder=folder, read=read))
+    except iv2.IMAPConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
+    return {"ok": True, "read": read}
+
+
+@router.delete("/admin/mail/messages/{mid}")
+async def admin_mail_delete(mid: str, folder: str = "INBOX", staff=Depends(get_current_staff)):
+    """Hapus pesan: dipindah ke folder Trash (atau expunge bila sudah di Trash)."""
+    if not mid.startswith("imap-"):
+        raise HTTPException(status_code=400, detail="Hanya untuk pesan IMAP")
+    uid = mid[len("imap-"):]
+    st = await _my_email_settings(staff)
+    my_imap = st.get("imap") or {}
+    if not _imap_ready(my_imap):
+        raise HTTPException(status_code=400, detail="IMAP belum di-setup")
+    try:
+        res = await asyncio.to_thread(
+            lambda: iv2.IMAPClient(my_imap).delete_message(uid, folder=folder))
+    except iv2.IMAPConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
+    return res
 
 
 @router.post("/admin/mail/messages/{mid}/toggle-star")
@@ -575,25 +699,50 @@ async def admin_mail_toggle_star(mid: str, staff=Depends(get_current_staff)):
     return {"starred": not d.get("starred", False)}
 
 
+def _decode_attachments(payload: dict) -> list:
+    """Decode lampiran compose [{filename, mime, content_base64}] -> [(name, bytes, mime)].
+    Batas total 15 MB (di bawah limit umum SMTP 25 MB setelah encoding)."""
+    import base64
+    atts, total = [], 0
+    for a in payload.get("attachments") or []:
+        b64 = (a.get("content_base64") or "").split(",")[-1]
+        try:
+            blob = base64.b64decode(b64)
+        except Exception:
+            raise HTTPException(status_code=400,
+                                detail=f"Lampiran '{a.get('filename', '?')}' tidak valid (base64)")
+        total += len(blob)
+        if total > 15 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Total lampiran melebihi 15 MB")
+        atts.append((a.get("filename") or "attachment", blob,
+                     a.get("mime") or "application/octet-stream"))
+    return atts
+
+
+def _compose_html(body: str) -> tuple:
+    """Body compose plain-text -> (text, html). Jika user menulis HTML, pakai apa adanya."""
+    import html as _h
+    body = body or ""
+    if re.search(r"<[a-z][^>]*>", body, re.I):
+        return "", body
+    return body, _h.escape(body).replace("\n", "<br>")
+
+
 @router.post("/admin/mail/send")
 async def admin_mail_send(payload: dict, staff=Depends(get_current_staff)):
-    """Send outgoing email using the *caller's own* SMTP credentials.
-
-    Every staff member configures their personal cPanel SMTP under
-    Settings ▸ Email; the outbox uses those creds so replies come back to
-    the same mailbox they read from. If no personal SMTP is configured,
-    we hard-fail with 400 so the user is nudged to set it up.
-    """
+    """Kirim email via SMTP pribadi caller. Mendukung cc/bcc + lampiran.
+    Salinan di-APPEND ke folder Sent IMAP (best-effort) agar muncul di webmail."""
     db = await _get_db()
-    to = payload.get("to", "")
+    to = (payload.get("to") or "").strip()
+    cc = (payload.get("cc") or "").strip()
+    bcc = (payload.get("bcc") or "").strip()
     subject = payload.get("subject", "")
     body = payload.get("body", "")
     if not to or not subject:
         raise HTTPException(status_code=400, detail="to and subject are required")
+    atts = _decode_attachments(payload)
 
-    # ---- Load caller's personal SMTP settings ----
-    user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
-    my_settings = (user_doc or {}).get("email_settings") or {}
+    my_settings = await _my_email_settings(staff)
     my_smtp = my_settings.get("smtp") or {}
     smtp_creds = my_smtp.get("credentials") or {}
     if not (smtp_creds.get("host") and smtp_creds.get("username") and smtp_creds.get("password")):
@@ -601,9 +750,6 @@ async def admin_mail_send(payload: dict, staff=Depends(get_current_staff)):
             status_code=400,
             detail="Silakan setup SMTP dulu di Settings ▸ Email sebelum mengirim.",
         )
-
-    # Build a settings dict compatible with SMTPMailer, merging in the
-    # caller's display name / from-address from the per-user config.
     smtp_settings = {
         "credentials": smtp_creds,
         "options": {
@@ -612,40 +758,60 @@ async def admin_mail_send(payload: dict, staff=Depends(get_current_staff)):
             "from_name":  my_settings.get("from_name")  or staff.get("name") or "Intercloud",
         },
     }
-
-    delivered = False
-    delivered_via = "queued"
-    from_email = smtp_settings["options"]["from_email"]
-    from_name  = smtp_settings["options"]["from_name"]
+    text, html = _compose_html(body)
     try:
-        await asyncio.to_thread(iv2.SMTPMailer(smtp_settings).send,
-                                to=to, subject=subject, html=body or "")
-        delivered = True
-        delivered_via = "smtp"
+        raw_msg = await asyncio.to_thread(
+            lambda: iv2.SMTPMailer(smtp_settings).send(
+                to=to, cc=cc, bcc=bcc, subject=subject, html=html, text=text,
+                attachments=atts))
     except Exception as e:
-        # Surface the underlying reason to the caller so the UI can show a
-        # meaningful error instead of a silent "queued".
-        raise HTTPException(
-            status_code=502,
-            detail=f"SMTP kirim gagal ({type(e).__name__}): {e}",
-        )
+        raise HTTPException(status_code=502,
+                            detail=f"SMTP kirim gagal ({type(e).__name__}): {e}")
+
+    saved_to_sent = False
+    my_imap = my_settings.get("imap") or {}
+    if _imap_ready(my_imap):
+        try:
+            await asyncio.to_thread(
+                lambda: iv2.IMAPClient(my_imap).append_message("sent", raw_msg, "\\Seen"))
+            saved_to_sent = True
+        except Exception:
+            pass
 
     doc = {
-        "from_email": from_email or "no-reply@intercloud-digital.com",
-        "from_name": from_name,
-        "to": to, "subject": subject, "body": body,
+        "from_email": smtp_settings["options"]["from_email"] or "no-reply@intercloud-digital.com",
+        "from_name": smtp_settings["options"]["from_name"],
+        "to": to, "cc": cc, "bcc": bcc, "subject": subject, "body": body,
+        "attachment_count": len(atts),
         "sent_at": _now(),
         "sent_by_id": staff["id"], "sent_by_name": staff["name"],
-        "delivered": delivered, "delivered_via": delivered_via,
+        "delivered": True, "delivered_via": "smtp",
     }
     r = await db.mail_sent.insert_one(doc)
-    doc["_id"] = r.inserted_id
-    return {
-        "id": str(doc["_id"]),
-        "delivered": doc["delivered"],
-        "delivered_via": doc["delivered_via"],
-        "sent_at": doc["sent_at"],
-    }
+    return {"id": str(r.inserted_id), "delivered": True, "delivered_via": "smtp",
+            "saved_to_sent_folder": saved_to_sent, "sent_at": doc["sent_at"]}
+
+
+@router.post("/admin/mail/drafts")
+async def admin_mail_save_draft(payload: dict, staff=Depends(get_current_staff)):
+    """Simpan draft ke folder Drafts IMAP (APPEND dengan flag \\Draft)."""
+    st = await _my_email_settings(staff)
+    my_imap = st.get("imap") or {}
+    if not _imap_ready(my_imap):
+        raise HTTPException(status_code=400, detail="IMAP belum di-setup")
+    atts = _decode_attachments(payload)
+    text, html = _compose_html(payload.get("body", ""))
+    raw = iv2.build_email_message(
+        from_email=st.get("from_email") or (my_imap.get("credentials") or {}).get("username", ""),
+        from_name=st.get("from_name") or staff.get("name", ""),
+        to=payload.get("to", ""), cc=payload.get("cc", ""),
+        subject=payload.get("subject", ""), html=html, text=text, attachments=atts)
+    try:
+        res = await asyncio.to_thread(
+            lambda: iv2.IMAPClient(my_imap).append_message("drafts", raw, "\\Draft \\Seen"))
+    except iv2.IMAPConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"IMAP tidak bisa terhubung: {e}")
+    return {"ok": True, **(res or {})}
 
 
 @router.get("/admin/mail/sent")
@@ -656,6 +822,7 @@ async def admin_mail_sent(staff=Depends(get_current_staff)):
         "id": str(d["_id"]),
         "from_email": d.get("from_email"),
         "to": d.get("to"),
+        "cc": d.get("cc", ""),
         "subject": d.get("subject"),
         "body": d.get("body"),
         "sent_at": d.get("sent_at"),

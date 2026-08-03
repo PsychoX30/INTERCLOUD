@@ -1624,29 +1624,18 @@ class SMTPMailer:
         except Exception as e:
             return {"ok": False, "message": f"{type(e).__name__}: {e}"}
 
-    def send(self, *, to: str, subject: str, html: str, text: str = "",
-             attachments: list = None) -> None:
-        """attachments: list of (filename, bytes, mime_subtype) tuples."""
+    def send(self, *, to, subject: str, html: str, text: str = "",
+             cc=None, bcc=None, attachments: list = None) -> str:
+        """to/cc/bcc: string (dipisah koma) atau list. attachments: [(filename, bytes, mime)].
+        Return MIME message lengkap (string) agar caller bisa APPEND ke folder Sent via IMAP."""
         import smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-        from email.mime.application import MIMEApplication
-        alt = MIMEMultipart("alternative")
-        if text:
-            alt.attach(MIMEText(text, "plain"))
-        alt.attach(MIMEText(html, "html"))
-        if attachments:
-            msg = MIMEMultipart("mixed")
-            msg.attach(alt)
-            for fname, blob, mime in attachments:
-                part = MIMEApplication(blob, _subtype=(mime or "octet-stream").split("/")[-1])
-                part.add_header("Content-Disposition", "attachment", filename=fname)
-                msg.attach(part)
-        else:
-            msg = alt
-        msg["From"] = f"{self.from_name} <{self.from_email}>"
-        msg["To"] = to
-        msg["Subject"] = subject
+        to_l, cc_l, bcc_l = _addr_list(to), _addr_list(cc), _addr_list(bcc)
+        msg = build_email_message(from_email=self.from_email, from_name=self.from_name,
+                                  to=to_l, cc=cc_l, subject=subject, html=html,
+                                  text=text, attachments=attachments)
+        rcpt = to_l + cc_l + bcc_l
+        if not rcpt:
+            raise ValueError("No recipients")
         if self.use_ssl:
             s = smtplib.SMTP_SSL(self.host, self.port, timeout=15)
         else:
@@ -1655,14 +1644,57 @@ class SMTPMailer:
                 s.starttls()
         if self.username:
             s.login(self.username, self.password)
-        s.sendmail(self.from_email, [to], msg.as_string())
+        s.sendmail(self.from_email, rcpt, msg)
         s.quit()
+        return msg
+
+
+def _addr_list(v) -> list:
+    if not v:
+        return []
+    if isinstance(v, str):
+        v = v.replace(";", ",").split(",")
+    return [a.strip() for a in v if a and str(a).strip()]
+
+
+def build_email_message(*, from_email, from_name="", to=None, cc=None, subject="",
+                        html="", text="", attachments=None) -> str:
+    """Rakit MIME message lengkap (text+html multipart + attachments).
+    Dipakai kirim SMTP dan simpan Draft/Sent via IMAP APPEND."""
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
+    from email.utils import formatdate, make_msgid
+    alt = MIMEMultipart("alternative")
+    if text:
+        alt.attach(MIMEText(text, "plain"))
+    alt.attach(MIMEText(html or "", "html"))
+    if attachments:
+        msg = MIMEMultipart("mixed")
+        msg.attach(alt)
+        for fname, blob, mime in attachments:
+            part = MIMEApplication(blob, _subtype=(mime or "octet-stream").split("/")[-1])
+            part.add_header("Content-Disposition", "attachment", filename=fname)
+            msg.attach(part)
+    else:
+        msg = alt
+    msg["From"] = f"{from_name} <{from_email}>" if from_name else (from_email or "")
+    msg["To"] = ", ".join(_addr_list(to))
+    if cc:
+        msg["Cc"] = ", ".join(_addr_list(cc))
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+    return msg.as_string()
 
 
 # ============================================================
 # IMAP - read inbox for the Webmail tab
 # ============================================================
 class IMAPClient:
+    """Full IMAP client untuk tab Webmail: folder, baca (HTML+lampiran),
+    tandai dibaca, hapus (pindah Trash), APPEND draft/Sent."""
+
     def __init__(self, settings: dict):
         c = settings.get("credentials") or {}
         o = settings.get("options") or {}
@@ -1683,6 +1715,29 @@ class IMAPClient:
         m.login(self.username, self.password)
         return m
 
+    def _open(self):
+        try:
+            return self._connect()
+        except Exception as e:
+            raise IMAPConnectionError(f"IMAP connect failed: {type(e).__name__}: {e}") from e
+
+    @staticmethod
+    def _quote(folder: str) -> str:
+        return '"' + str(folder).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    @staticmethod
+    def _dec_hdr(s) -> str:
+        from email.header import decode_header, make_header
+        try:
+            return str(make_header(decode_header(s or "")))
+        except Exception:
+            return str(s or "")
+
+    def _select(self, m, folder, readonly=True):
+        typ, _ = m.select(self._quote(folder or self.mailbox), readonly=readonly)
+        if typ != "OK":
+            raise IMAPConnectionError(f"IMAP SELECT {folder!r} rejected")
+
     def test_connection(self) -> dict:
         try:
             m = self._connect()
@@ -1694,79 +1749,311 @@ class IMAPClient:
         except Exception as e:
             return {"ok": False, "message": f"{type(e).__name__}: {e}"}
 
-    def fetch_recent(self, limit: int | None = None) -> list[dict]:
-        """Return the most recent messages (newest first).
+    # ---------------- folders ----------------
+    @staticmethod
+    def _role_for(folder_id: str, delimiter: str, flags: str = "") -> str:
+        if folder_id.upper() == "INBOX":
+            return "inbox"
+        leaf = folder_id.split(delimiter)[-1] if delimiter else folder_id
+        low = f"{flags} {leaf}".lower()
+        for key, role in (("sent", "sent"), ("draft", "drafts"), ("junk", "junk"),
+                          ("spam", "junk"), ("trash", "trash"), ("deleted", "trash"),
+                          ("archive", "archive")):
+            if key in low:
+                return role
+        return "custom"
 
-        Distinguishes two failure modes:
-          * **Connection / auth failure** → raises `IMAPConnectionError` so the
-            HTTP layer can respond with a `connection_failed` hint instead of
-            a misleading "empty inbox".
-          * **Per-message parse failure** → the offending message is skipped
-            silently; the rest of the inbox still comes back.
+    def _folders_raw(self, m) -> list[dict]:
+        """Parse hasil LIST (tanpa STATUS) -> [{id, delimiter, flags}]."""
+        typ, rows = m.list()
+        if typ != "OK":
+            raise IMAPConnectionError("IMAP LIST failed")
+        out = []
+        for raw in rows or []:
+            s = raw.decode(errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            mt = re.match(r'\((?P<flags>[^)]*)\)\s+(?:"(?P<d1>[^"]*)"|(?P<d2>\S+))\s+(?P<name>.+)$', s)
+            if not mt:
+                continue
+            flags = (mt.group("flags") or "").lower()
+            if "\\noselect" in flags:
+                continue
+            name = mt.group("name").strip()
+            if name.startswith('"') and name.endswith('"'):
+                name = name[1:-1]
+            delim = mt.group("d1") or mt.group("d2") or "."
+            if delim.upper() == "NIL":
+                delim = ""
+            out.append({"id": name, "delimiter": delim, "flags": flags})
+        return out
 
-        An empty inbox (no messages) legitimately returns `[]`.
+    def list_folders(self) -> list[dict]:
+        m = self._open()
+        try:
+            folders = self._folders_raw(m)
+            for f in folders:
+                f["role"] = self._role_for(f["id"], f["delimiter"], f["flags"])
+                leaf = f["id"].split(f["delimiter"])[-1] if f["delimiter"] else f["id"]
+                f["name"] = "Inbox" if f["role"] == "inbox" else leaf
+                f["total"], f["unread"] = 0, 0
+                try:
+                    typ, st = m.status(self._quote(f["id"]), "(MESSAGES UNSEEN)")
+                    txt = st[0].decode(errors="replace") if st and isinstance(st[0], (bytes, bytearray)) else str(st[0] if st else "")
+                    mm = re.search(r"MESSAGES\s+(\d+)", txt)
+                    uu = re.search(r"UNSEEN\s+(\d+)", txt)
+                    f["total"] = int(mm.group(1)) if mm else 0
+                    f["unread"] = int(uu.group(1)) if uu else 0
+                except Exception:
+                    pass
+                f.pop("flags", None)
+            order = {"inbox": 0, "drafts": 1, "sent": 2, "junk": 3, "trash": 4, "archive": 5}
+            folders.sort(key=lambda x: (order.get(x["role"], 9), x["name"].lower()))
+            return folders
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
+
+    def _find_role_folder(self, m, role: str) -> str | None:
+        for f in self._folders_raw(m):
+            if self._role_for(f["id"], f["delimiter"], f["flags"]) == role:
+                return f["id"]
+        return None
+
+    # ---------------- messages ----------------
+    @staticmethod
+    def _walk_parts(msg):
+        """Yield (part, is_attachment, filename, content_id) utk semua leaf part."""
+        for part in msg.walk():
+            if part.get_content_maintype() == "multipart":
+                continue
+            fname = part.get_filename()
+            disp = (part.get("Content-Disposition") or "").lower()
+            cid = (part.get("Content-ID") or "").strip("<> ")
+            is_att = bool(fname) or disp.startswith("attachment")
+            yield part, is_att, fname, cid
+
+    def _parse_bodies(self, msg) -> tuple:
+        text, html = "", ""
+        for part, is_att, _fname, _cid in self._walk_parts(msg):
+            if is_att:
+                continue
+            ctype = part.get_content_type()
+            if ctype not in ("text/plain", "text/html"):
+                continue
+            payload = (part.get_payload(decode=True) or b"").decode(
+                part.get_content_charset() or "utf-8", errors="replace")
+            if ctype == "text/plain" and not text:
+                text = payload
+            elif ctype == "text/html" and not html:
+                html = payload
+        return text, html
+
+    def fetch_recent(self, limit: int | None = None, folder: str | None = None) -> list[dict]:
+        """Pesan terbaru sebuah folder (UID-based, newest first).
+
+        * Kegagalan koneksi/auth -> raise IMAPConnectionError.
+        * Kegagalan parse per-pesan -> pesan dilewati.
+        * Mailbox kosong -> [].
         """
         import email
-        from email.header import decode_header, make_header
+        import imaplib
         limit = int(limit or self.fetch_limit)
-
-        # ---- 1. Connect + select mailbox (any failure ⇒ connection error) ----
+        m = self._open()
         try:
-            m = self._connect()
-        except Exception as e:
-            raise IMAPConnectionError(f"IMAP connect failed: {type(e).__name__}: {e}") from e
-        try:
-            typ, _ = m.select(self.mailbox, readonly=True)
-            if typ != "OK":
-                try: m.logout()
-                except Exception: pass
-                raise IMAPConnectionError(f"IMAP SELECT {self.mailbox!r} rejected")
-            typ, data = m.search(None, "ALL")
-            if typ != "OK":
-                try: m.logout()
-                except Exception: pass
-                raise IMAPConnectionError("IMAP SEARCH failed")
-        except IMAPConnectionError:
-            raise
-        except Exception as e:
-            try: m.logout()
-            except Exception: pass
-            raise IMAPConnectionError(f"IMAP command failed: {type(e).__name__}: {e}") from e
-
-        # ---- 2. Fetch + parse each message (per-message errors → skip) ----
-        ids = data[0].split()[-limit:][::-1]
-        out = []
-        for i in ids:
             try:
-                typ, msg_data = m.fetch(i, "(RFC822)")
-                if typ != "OK" or not msg_data or not msg_data[0]:
+                self._select(m, folder or self.mailbox, readonly=True)
+                typ, data = m.uid("search", None, "ALL")
+                if typ != "OK":
+                    raise IMAPConnectionError("IMAP SEARCH failed")
+            except IMAPConnectionError:
+                raise
+            except Exception as e:
+                raise IMAPConnectionError(f"IMAP command failed: {type(e).__name__}: {e}") from e
+            ids = data[0].split()[-limit:][::-1]
+            out = []
+            for uid in ids:
+                try:
+                    typ, md = m.uid("fetch", uid, "(FLAGS BODY.PEEK[])")
+                    if typ != "OK" or not md or not md[0] or not isinstance(md[0], tuple):
+                        continue
+                    flags = imaplib.ParseFlags(md[0][0]) or ()
+                    msg = email.message_from_bytes(md[0][1])
+                    text, html = self._parse_bodies(msg)
+                    preview = text or re.sub(r"<[^>]+>", " ", html)
+                    preview = re.sub(r"\s+", " ", preview).strip()[:220]
+                    out.append({
+                        "id": uid.decode() if isinstance(uid, bytes) else str(uid),
+                        "from": self._dec_hdr(msg.get("From")),
+                        "to": self._dec_hdr(msg.get("To")),
+                        "subject": self._dec_hdr(msg.get("Subject")),
+                        "date": msg.get("Date") or "",
+                        "preview": preview,
+                        "body": text,
+                        "unread": b"\\Seen" not in flags,
+                        "has_attachments": any(ia for _, ia, _, _ in self._walk_parts(msg)),
+                    })
+                except Exception:
                     continue
-                msg = email.message_from_bytes(msg_data[0][1])
-                subj = str(make_header(decode_header(msg.get("Subject") or "")))
-                from_ = str(make_header(decode_header(msg.get("From") or "")))
-                date_ = msg.get("Date") or ""
-                # Best-effort text body extraction
-                body = ""
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == "text/plain":
-                            body = (part.get_payload(decode=True) or b"").decode(
-                                part.get_content_charset() or "utf-8", errors="replace")
-                            break
-                else:
-                    body = (msg.get_payload(decode=True) or b"").decode(
-                        msg.get_content_charset() or "utf-8", errors="replace")
-                out.append({
-                    "id": i.decode(), "from": from_, "subject": subj,
-                    "date": date_, "preview": body[:220].replace("\n", " "),
-                    "body": body,
-                })
+            return out
+        finally:
+            try:
+                m.logout()
             except Exception:
-                # skip this message; keep going with the rest
-                continue
-        try: m.logout()
-        except Exception: pass
-        return out
+                pass
+
+    def fetch_message(self, uid, folder: str | None = None, mark_read: bool = True) -> dict | None:
+        """Ambil 1 pesan lengkap: text + html (gambar inline cid: -> data URI)
+        + metadata lampiran. Menandai \\Seen bila mark_read."""
+        import email
+        import base64 as _b64
+        m = self._open()
+        try:
+            self._select(m, folder or self.mailbox, readonly=not mark_read)
+            typ, md = m.uid("fetch", str(uid), "(BODY.PEEK[])")
+            if typ != "OK" or not md or not md[0] or not isinstance(md[0], tuple):
+                return None
+            msg = email.message_from_bytes(md[0][1])
+            text, html = self._parse_bodies(msg)
+            atts, cid_map, idx = [], {}, 0
+            for part, is_att, fname, cid in self._walk_parts(msg):
+                blob = part.get_payload(decode=True) or b""
+                if is_att:
+                    atts.append({"index": idx,
+                                 "filename": self._dec_hdr(fname) or f"attachment-{idx}",
+                                 "mime": part.get_content_type(),
+                                 "size": len(blob)})
+                    idx += 1
+                if cid and part.get_content_maintype() == "image" and len(blob) <= 3_000_000:
+                    cid_map[cid] = f"data:{part.get_content_type()};base64,{_b64.b64encode(blob).decode()}"
+            for cid, data_uri in cid_map.items():
+                html = html.replace(f"cid:{cid}", data_uri)
+            if mark_read:
+                try:
+                    m.uid("store", str(uid), "+FLAGS", "(\\Seen)")
+                except Exception:
+                    pass
+            return {
+                "id": str(uid),
+                "from": self._dec_hdr(msg.get("From")),
+                "to": self._dec_hdr(msg.get("To")),
+                "cc": self._dec_hdr(msg.get("Cc")),
+                "subject": self._dec_hdr(msg.get("Subject")),
+                "date": msg.get("Date") or "",
+                "body": text, "body_html": html,
+                "attachments": atts,
+            }
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
+
+    def fetch_attachment(self, uid, index: int, folder: str | None = None):
+        """Return (filename, mime, bytes) lampiran ke-index, atau None."""
+        import email
+        m = self._open()
+        try:
+            self._select(m, folder or self.mailbox, readonly=True)
+            typ, md = m.uid("fetch", str(uid), "(BODY.PEEK[])")
+            if typ != "OK" or not md or not md[0] or not isinstance(md[0], tuple):
+                return None
+            msg = email.message_from_bytes(md[0][1])
+            idx = 0
+            for part, is_att, fname, _cid in self._walk_parts(msg):
+                if not is_att:
+                    continue
+                if idx == int(index):
+                    return (self._dec_hdr(fname) or f"attachment-{idx}",
+                            part.get_content_type(),
+                            part.get_payload(decode=True) or b"")
+                idx += 1
+            return None
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
+
+    def set_read(self, uid, folder: str | None = None, read: bool = True) -> dict:
+        m = self._open()
+        try:
+            self._select(m, folder or self.mailbox, readonly=False)
+            m.uid("store", str(uid), "+FLAGS" if read else "-FLAGS", "(\\Seen)")
+            return {"ok": True}
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
+
+    def delete_message(self, uid, folder: str | None = None) -> dict:
+        """Pindahkan pesan ke Trash (COPY + \\Deleted + EXPUNGE).
+        Bila sudah di Trash / Trash tidak ada -> hapus permanen."""
+        cur = folder or self.mailbox
+        m = self._open()
+        try:
+            self._select(m, cur, readonly=False)
+            trash = None
+            try:
+                trash = self._find_role_folder(m, "trash")
+            except Exception:
+                trash = None
+            moved = None
+            if trash and trash != cur:
+                typ, _ = m.uid("copy", str(uid), self._quote(trash))
+                if typ == "OK":
+                    moved = trash
+            m.uid("store", str(uid), "+FLAGS", "(\\Deleted)")
+            m.expunge()
+            return {"ok": True, "moved_to": moved}
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
+
+    def append_message(self, folder_or_role: str, message: str, flags: str = "\\Seen") -> dict:
+        """APPEND pesan MIME ke folder. `folder_or_role` bisa nama folder eksplisit
+        atau role ('sent'/'drafts') yang dicari otomatis (dibuat bila belum ada)."""
+        import imaplib
+        import time as _t
+        m = self._open()
+        try:
+            target = None
+            names = self._folders_raw(m)
+            for f in names:
+                if f["id"].lower() == str(folder_or_role).lower():
+                    target = f["id"]
+                    break
+            if not target and folder_or_role in ("sent", "drafts", "junk", "trash", "archive"):
+                for f in names:
+                    if self._role_for(f["id"], f["delimiter"], f["flags"]) == folder_or_role:
+                        target = f["id"]
+                        break
+            if not target:
+                # Buat folder baru mengikuti gaya namespace INBOX.Xxx bila ada
+                base_name = folder_or_role.capitalize() if folder_or_role.islower() else folder_or_role
+                delim = next((f["delimiter"] for f in names if f["id"].upper() == "INBOX"), ".")
+                candidates = [f"INBOX{delim}{base_name}", base_name] if delim else [base_name]
+                for cand in candidates:
+                    try:
+                        typ, _ = m.create(self._quote(cand))
+                        if typ == "OK":
+                            target = cand
+                            break
+                    except Exception:
+                        continue
+                target = target or base_name
+            m.append(self._quote(target), f"({flags})",
+                     imaplib.Time2Internaldate(_t.time()),
+                     message.encode() if isinstance(message, str) else message)
+            return {"ok": True, "folder": target}
+        finally:
+            try:
+                m.logout()
+            except Exception:
+                pass
 
 
 class IMAPConnectionError(RuntimeError):

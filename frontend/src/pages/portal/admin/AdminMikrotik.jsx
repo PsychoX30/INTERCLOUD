@@ -80,7 +80,7 @@ const DevicesTab = ({ devices, reload }) => {
   const [editing, setEditing] = useState(null);
   const [testResult, setTestResult] = useState({});
 
-  const empty = { name: "", host: "", port: 8728, username: "", password: "", use_tls: false, site: "", notes: "" };
+  const empty = { name: "", host: "", port: 8728, username: "", password: "", use_tls: false, main_interface: "", site: "", notes: "" };
   const save = async (form) => {
     if (form.id) await api.put(`/admin/mikrotik/devices/${form.id}`, form);
     else         await api.post("/admin/mikrotik/devices", form);
@@ -159,6 +159,7 @@ const DeviceForm = ({ value, onSave, onClose }) => {
           <label><div className={labelClass}>Port</div><input type="number" value={f.port} onChange={(e) => set("port", e.target.value)} className={inputClass} /></label>
           <label><div className={labelClass}>Username</div><input required value={f.username} onChange={(e) => set("username", e.target.value)} className={inputClass} data-testid="mt-device-user" /></label>
           <label><div className={labelClass}>Password {f.id && <span className="text-slate-400 font-normal">(leave blank to keep)</span>}</div><input type="password" value={f.password} onChange={(e) => set("password", e.target.value)} className={inputClass} data-testid="mt-device-pass" /></label>
+          <label className="col-span-2"><div className={labelClass}>Main Interface (sampling trafik / Sankey - opsional)</div><input value={f.main_interface || ""} onChange={(e) => set("main_interface", e.target.value)} className={inputClass} placeholder="mis. sfp-sfpplus1 - kosong = pilih otomatis interface tersibuk" data-testid="mt-device-main-interface" /></label>
           <label className="col-span-2 flex items-center gap-2"><input type="checkbox" checked={!!f.use_tls} onChange={(e) => set("use_tls", e.target.checked)} /> <span className="text-sm">Use TLS (api-ssl, port 8729)</span></label>
         </div>
         <div className="flex justify-end gap-2 pt-2">
