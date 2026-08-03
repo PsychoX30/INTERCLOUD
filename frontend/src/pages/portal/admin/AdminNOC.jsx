@@ -90,6 +90,10 @@ const AdminNOC = () => {
         </Card>
       )}
 
+      {/* Sankey selalu dirender - sumber datanya juga mencakup integrasi
+          MikroTik legacy (menu Integrations), bukan hanya devices Ops. */}
+      <NetflowSankey />
+
       {devices.length > 0 && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
@@ -98,8 +102,6 @@ const AdminNOC = () => {
                           tickets={tickets.filter((t) => t.related_device_id === d.id)} />
             ))}
           </div>
-
-          <NetflowSankey />
 
           <DDoSPanel devices={devices} />
 
