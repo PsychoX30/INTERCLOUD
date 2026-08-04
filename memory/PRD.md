@@ -3,6 +3,12 @@
 ## Original Problem Statement
 Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
 
+## Sesi 2026-06 (batch 13): CONTENT PLANNER <-> CONTENT CALENDAR TERHUBUNG - SELESAI & DITES (curl + screenshot UI)
+- Root cause: planner menyimpan ke `content_plan` (channel/publish_date/status idea..published), kalender membaca `content_calendar` - dua koleksi terpisah tanpa sinkronisasi.
+- Fix (business.py `calendar_list`): kalender kini MENGGABUNGKAN item `content_plan` yang punya `publish_date` dalam rentang tanggal. Helper `_planner_as_calendar` (id `plan-{oid}`, source "planner", mapping channel->type: blog->article, email_campaign->campaign, ig/li/yt/tiktok->social_post; status idea/draft->draft). `_serialize_calendar` sekarang menyertakan `source: "calendar"`.
+- Frontend AdminContentCalendar.jsx: entri planner ditandai border dashed + tag "PL"; klik entri membuka modal dgn catatan sumber Planner, channel read-only, dan save/delete diarahkan ke endpoint planner (`PUT/DELETE /admin/content/{planner_id}`, field publish_date/hook) sehingga tetap sinkron dua arah.
+- Teruji: curl (create planner scheduled -> muncul di calendar_list; edit tanggal/status via planner -> kalender ikut; delete ok) + screenshot UI (chip tampil di tgl 17 Agu, modal planner-note OK). Debris pytest lama di content_calendar (judul "Pytest article"/"SEO Test seo-test-") dibersihkan dari preview DB (70 entri).
+
 ## Sesi 2026-06 (batch 12): WEBMAIL LENGKAP + FIX NETFLOW SANKEY + CRM XLSX - SELESAI & DITES (iteration_44: 8/8 UI flow PASS + backend curl e2e vs dovecot lokal)
 1. **Webmail lengkap** (permintaan: cc/bcc, attachment, baca HTML+gambar, folder Sent/Drafts/dll):
    - `IMAPClient` (integrations_v2.py) di-rework total UID-based: `list_folders()` (LIST+STATUS, role detection inbox/sent/drafts/junk/trash), `fetch_recent(folder)` (flags unread + has_attachments), `fetch_message` (text+html, gambar inline cid:->data URI maks 3MB, metadata lampiran), `fetch_attachment`, `set_read`, `delete_message` (COPY ke Trash + \Deleted + EXPUNGE), `append_message` (APPEND ke folder by-role, auto-create INBOX.Sent style).

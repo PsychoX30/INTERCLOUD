@@ -971,6 +971,7 @@ async def media_file(mid: str):
 def _serialize_calendar(d: dict) -> dict:
     return {
         "id": str(d["_id"]),
+        "source": "calendar",
         "title": d.get("title", ""),
         "type": d.get("type", "article"),
         "scheduled_at": d.get("scheduled_at", ""),
@@ -979,6 +980,31 @@ def _serialize_calendar(d: dict) -> dict:
         "owner_id": d.get("owner_id"),
         "notes": d.get("notes", ""),
         "created_at": d.get("created_at", ""),
+    }
+
+
+# Mapping Content Planner (content_plan) -> entri Content Calendar agar apa
+# yang di-schedule di planner otomatis muncul di kalender.
+_PLANNER_TYPE_MAP = {"blog": "article", "email_campaign": "campaign",
+                     "instagram": "social_post", "linkedin": "social_post",
+                     "youtube": "social_post", "tiktok": "social_post"}
+_PLANNER_STATUS_MAP = {"idea": "draft", "draft": "draft",
+                       "scheduled": "scheduled", "published": "published"}
+
+
+def _planner_as_calendar(d: dict) -> dict:
+    return {
+        "id": f"plan-{d['_id']}",
+        "planner_id": str(d["_id"]),
+        "source": "planner",
+        "title": d.get("title", ""),
+        "type": _PLANNER_TYPE_MAP.get(d.get("channel", "blog"), "article"),
+        "channel": d.get("channel", "blog"),
+        "scheduled_at": f"{d.get('publish_date', '')}T09:00:00",
+        "status": _PLANNER_STATUS_MAP.get(d.get("status", "idea"), "draft"),
+        "owner": d.get("owner", ""),
+        "notes": d.get("hook", ""),
+        "created_at": _iso(d.get("created_at", "")),
     }
 
 
@@ -1000,7 +1026,17 @@ async def calendar_list(staff=Depends(get_current_staff),
         if date_to:   rng["$lte"] = date_to + "T23:59:59"
         query["scheduled_at"] = rng
     docs = await db.content_calendar.find(query).sort("scheduled_at", 1).to_list(1000)
-    return [_serialize_calendar(d) for d in docs]
+    out = [_serialize_calendar(d) for d in docs]
+    # Gabungkan item Content Planner yang punya publish_date (yyyy-mm-dd)
+    prng: dict = {"$ne": ""}
+    if date_from:
+        prng["$gte"] = date_from[:10]
+    if date_to:
+        prng["$lte"] = date_to[:10]
+    pdocs = await db.content_plan.find({"publish_date": prng}).sort("publish_date", 1).to_list(1000)
+    out.extend(_planner_as_calendar(d) for d in pdocs)
+    out.sort(key=lambda x: x.get("scheduled_at") or "")
+    return out
 
 
 @router.post("/admin/content-calendar")

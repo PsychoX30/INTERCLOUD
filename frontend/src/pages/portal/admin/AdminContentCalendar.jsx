@@ -60,7 +60,7 @@ const AdminContentCalendar = () => {
     <div data-testid="content-calendar-page">
       <PageHeader
         title="Content Calendar"
-        subtitle="Plan articles, campaigns, and social posts. Publishing an article automatically marks its calendar entry as published."
+        subtitle="Plan articles, campaigns, and social posts. Item Content Planner yang punya tanggal publish otomatis tampil di sini (ditandai PL)."
         actions={
           <button className={btnPrimary} onClick={() => setEditing("new")} data-testid="calendar-new-btn">
             <Plus className="h-4 w-4" /> Plan content
@@ -102,13 +102,15 @@ const AdminContentCalendar = () => {
                 <div className="space-y-1">
                   {entries.map((e) => {
                     const meta = TYPE_META[e.type] || TYPE_META.article;
+                    const fromPlanner = e.source === "planner";
                     return (
                       <button key={e.id} onClick={() => setEditing(e)}
-                              className={`w-full text-left px-1.5 py-1 rounded-md border text-[10px] font-semibold truncate flex items-center gap-1 ${meta.chip} focus-visible:ring-2 focus-visible:ring-[#f5b120]`}
-                              title={`${meta.label} · ${e.status} - ${e.title}`}
+                              className={`w-full text-left px-1.5 py-1 rounded-md border text-[10px] font-semibold truncate flex items-center gap-1 ${meta.chip} ${fromPlanner ? "border-dashed" : ""} focus-visible:ring-2 focus-visible:ring-[#f5b120]`}
+                              title={`${fromPlanner ? `Planner · ${e.channel} · ` : `${meta.label} · `}${e.status} - ${e.title}`}
                               data-testid={`calendar-entry-${e.id}`}>
                         <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[e.status] || "bg-slate-400"}`} />
                         <span className="truncate">{e.title}</span>
+                        {fromPlanner && <span className="ml-auto flex-shrink-0 text-[8px] font-extrabold uppercase opacity-60" data-testid={`calendar-planner-tag-${e.id}`}>PL</span>}
                       </button>
                     );
                   })}
@@ -151,6 +153,7 @@ const AdminContentCalendar = () => {
 };
 
 const EntryModal = ({ entry, onClose, onDone }) => {
+  const fromPlanner = entry?.source === "planner";
   const [f, setF] = useState({
     title: entry?.title || "",
     type: entry?.type || "article",
@@ -163,12 +166,17 @@ const EntryModal = ({ entry, onClose, onDone }) => {
     e.preventDefault();
     setBusy(true);
     try {
-      const payload = { ...f, scheduled_at: `${f.scheduled_at}T09:00:00` };
-      if (entry) {
-        await api.put(`/admin/content-calendar/${entry.id}`, payload);
+      if (fromPlanner) {
+        // Item milik Content Planner - update ke sumbernya agar tetap sinkron.
+        await api.put(`/admin/content/${entry.planner_id}`, {
+          title: f.title, status: f.status, publish_date: f.scheduled_at, hook: f.notes,
+        });
+        toast.success("Planner item updated");
+      } else if (entry) {
+        await api.put(`/admin/content-calendar/${entry.id}`, { ...f, scheduled_at: `${f.scheduled_at}T09:00:00` });
         toast.success("Calendar entry updated");
       } else {
-        await api.post("/admin/content-calendar", payload);
+        await api.post("/admin/content-calendar", { ...f, scheduled_at: `${f.scheduled_at}T09:00:00` });
         toast.success("Content planned");
       }
       onDone();
@@ -177,27 +185,42 @@ const EntryModal = ({ entry, onClose, onDone }) => {
     } finally { setBusy(false); }
   };
   const remove = async () => {
-    if (!window.confirm("Delete this calendar entry?")) return;
-    await api.delete(`/admin/content-calendar/${entry.id}`);
-    toast.success("Calendar entry deleted");
+    if (!window.confirm(fromPlanner ? "Hapus item ini dari Content Planner juga?" : "Delete this calendar entry?")) return;
+    if (fromPlanner) {
+      await api.delete(`/admin/content/${entry.planner_id}`);
+      toast.success("Planner item deleted");
+    } else {
+      await api.delete(`/admin/content-calendar/${entry.id}`);
+      toast.success("Calendar entry deleted");
+    }
     onDone();
   };
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <form onSubmit={save} onClick={(e) => e.stopPropagation()} className="w-full max-w-lg bg-white rounded-3xl p-6" data-testid="calendar-entry-modal">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-extrabold text-[#0a2350]">{entry ? "Edit planned content" : "Plan content"}</h3>
+          <h3 className="text-lg font-extrabold text-[#0a2350]">{fromPlanner ? "Edit planned content (Planner)" : entry ? "Edit planned content" : "Plan content"}</h3>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="h-5 w-5" /></button>
         </div>
+        {fromPlanner && (
+          <div className="mb-3 rounded-xl bg-sky-50 border border-sky-200 px-3 py-2 text-[11px] font-semibold text-sky-800" data-testid="calendar-planner-note">
+            Item ini berasal dari <b>Content Planner</b> (channel: {entry.channel}). Perubahan di sini otomatis tersimpan kembali ke planner.
+          </div>
+        )}
         <label className="block mb-3"><div className={labelClass}>Title *</div>
           <input required value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} className={inputClass} data-testid="calendar-title-input" /></label>
         <div className="grid grid-cols-2 gap-3 mb-3">
-          <label><div className={labelClass}>Type</div>
-            <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })} className={inputClass} data-testid="calendar-type-select">
-              <option value="article">Article</option>
-              <option value="campaign">Campaign</option>
-              <option value="social_post">Social Post</option>
-            </select></label>
+          {fromPlanner ? (
+            <label><div className={labelClass}>Channel</div>
+              <input value={entry.channel} disabled className={`${inputClass} opacity-60`} data-testid="calendar-channel-readonly" /></label>
+          ) : (
+            <label><div className={labelClass}>Type</div>
+              <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })} className={inputClass} data-testid="calendar-type-select">
+                <option value="article">Article</option>
+                <option value="campaign">Campaign</option>
+                <option value="social_post">Social Post</option>
+              </select></label>
+          )}
           <label><div className={labelClass}>Status</div>
             <select value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })} className={inputClass} data-testid="calendar-status-select">
               <option value="draft">Draft</option>
