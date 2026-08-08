@@ -605,6 +605,7 @@ class RdashClient:
     Docs: https://docs.rdash.id/developer/api - Basic Auth (reseller_id:api_key)."""
 
     BASE = "https://api.rdash.id/v1"
+    MARKUP_PCT = 7.0  # markup ke klien di atas harga reseller
 
     def __init__(self, settings: dict):
         creds = settings.get("credentials") or {}
@@ -645,6 +646,21 @@ class RdashClient:
     async def prices(self) -> list:
         data = await self._req("GET", "/account/prices")
         return data.get("data") or []
+
+    async def prices_with_markup(self) -> dict:
+        """Fetch reseller prices and apply 7% markup. Returns {tld: {register, renew, transfer}}."""
+        raw = await self.prices()
+        result = {}
+        for item in raw:
+            tld = item.get("tld", "")
+            if not tld:
+                continue
+            result[tld] = {
+                "register": int(round((float(item.get("register", 0)) or 0) * (1 + self.MARKUP_PCT / 100))),
+                "renew":    int(round((float(item.get("renew", 0)) or 0) * (1 + self.MARKUP_PCT / 100))),
+                "transfer": int(round((float(item.get("transfer", 0)) or 0) * (1 + self.MARKUP_PCT / 100))),
+            }
+        return result
 
     async def availability(self, domain: str, include_premium: bool = False) -> list:
         data = await self._req("GET", "/domains/availability",

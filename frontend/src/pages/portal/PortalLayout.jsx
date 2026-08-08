@@ -69,6 +69,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "provisioning", to: "/portal/admin/provisioning", label: "Provisioning", icon: Cloud,          testid: "nav-provisioning", roles: ["admin", "support"] },
       { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
       { key: "dcim",         to: "/portal/admin/dcim",         label: "DCIM & IPAM",  icon: HardDrive,      testid: "nav-dcim",         roles: ["admin", "support"] },
+      { key: "domains",      to: "/portal/admin/domains",      label: "Domain Management", icon: Globe2, testid: "nav-admin-domains", roles: ["admin", "support"] },
       { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
       { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
     ],

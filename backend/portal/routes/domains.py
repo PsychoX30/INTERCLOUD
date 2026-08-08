@@ -360,6 +360,8 @@ async def _apply_domain_renewal(db, inv: dict) -> bool:
 
 
 def _serialize_domain(d: dict) -> dict:
+    user_name = d.get("user_name", "")
+    user_email = d.get("user_email", "")
     return {
         "id": str(d["_id"]),
         "domain": d.get("domain", ""),
@@ -377,6 +379,8 @@ def _serialize_domain(d: dict) -> dict:
         "renewal_invoice_id": (d.get("pending_renewal") or {}).get("invoice_id"),
         "provision_note": d.get("provision_note", ""),
         "created_at": _iso(d.get("created_at", "")),
+        "user_name": user_name,
+        "user_email": user_email,
     }
 
 
@@ -401,3 +405,210 @@ async def client_domain_check(domain: str, user=Depends(get_current_user)):
         names = [f"{base}{tld}" for tld in _TLD_PRICES_IDR]
     results = await _check_domains_availability(db, names)
     return {"live": True, "query": raw, "results": results}
+
+
+# ------------------------------------------------------------
+# Domain pricing & admin endpoints
+# ------------------------------------------------------------
+
+@router.get("/client/domains/pricing")
+async def client_domain_pricing(user=Depends(get_current_user), db=Depends(_get_db)):
+    """Get domain pricing with RDASH live prices + 7% markup. Falls back to hardcoded."""
+    rna = await _rna_client(db)
+    if rna:
+        try:
+            prices = await rna.prices_with_markup()
+            if prices:
+                return {"live": True, "prices": prices}
+        except Exception:
+            pass
+    return {"live": False, "prices": _TLD_PRICES_IDR}
+
+
+@router.get("/admin/domains")
+async def admin_domains_list(staff=Depends(get_current_staff)):
+    """Admin: list all domains (all users)."""
+    db = await _get_db()
+    cursor = db.domains.find({}).sort("created_at", -1)
+    docs = []
+    async for d in cursor:
+        u = await db.users.find_one({"_id": d["user_id"]}, {"name": 1, "email": 1})
+        d["user_name"] = u.get("name", "") if u else ""
+        d["user_email"] = u.get("email", "") if u else ""
+        docs.append(d)
+    return [_serialize_domain(d) for d in docs]
+
+
+@router.post("/admin/domains/sync-pricing")
+async def admin_domain_sync_pricing(admin=Depends(get_current_admin)):
+    """Sync pricing from RDASH and cache in db.settings. Requires admin."""
+    db = await _get_db()
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    try:
+        prices = await rna.prices_with_markup()
+        await db.settings.update_one(
+            {"key": "domain_pricing"},
+            {"$set": {"value": {"prices": prices, "synced_at": _now()}}},
+            upsert=True,
+        )
+        return {"ok": True, "prices": prices, "count": len(prices)}
+    except Exception as e:
+        raise HTTPException(502, f"Gagal sync pricing: {e}")
+
+
+@router.put("/admin/domains/{did}/ns")
+async def admin_domain_ns_update(did: str, payload: dict, staff=Depends(get_current_staff)):
+    """Admin: update nameservers for a domain."""
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did)})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    ns = payload.get("ns") or []
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    try:
+        await rna.update_ns(doc.get("order_ref") or "", ns)
+        await db.domains.update_one({"_id": _oid(did)}, {"$set": {"nameservers": ns}})
+        return {"ok": True, "ns": ns}
+    except Exception as e:
+        raise HTTPException(502, f"Gagal update nameserver: {e}")
+
+
+@router.post("/admin/domains/sync-all")
+async def admin_domain_sync_all(admin=Depends(get_current_admin)):
+    """Admin: sync all domain statuses from RDASH."""
+    db = await _get_db()
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    docs = await db.domains.find({"status": {"$ne": "terminated"}}).to_list(500)
+    updated = 0
+    failed = 0
+    for d in docs:
+        try:
+            details = await rna.domain_details(d["domain"])
+            if details:
+                await db.domains.update_one({"_id": d["_id"]}, {"$set": {
+                    "status": details.get("status", d.get("status")),
+                    "expires_at": details.get("expires_at"),
+                    "nameservers": details.get("nameservers") or [],
+                }})
+                updated += 1
+        except Exception:
+            failed += 1
+    return {"ok": True, "updated": updated, "failed": failed, "total": len(docs)}
+
+
+# ------------------------------------------------------------
+# Domain manager: DNS records, parking, forwarding
+# ------------------------------------------------------------
+
+@router.get("/client/domains/{did}/dns")
+async def client_domain_dns(did: str, user=Depends(get_current_user)):
+    """Get DNS records for a domain owned by the user."""
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did), "user_id": ObjectId(user["id"])})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    try:
+        dns = await rna._req("GET", f"/domains/{doc.get('order_ref')}/dns")
+        return {"domain": doc["domain"], "records": dns.get("data") or dns.get("records") or []}
+    except Exception as e:
+        raise HTTPException(502, f"Gagal mengambil DNS: {e}")
+
+
+@router.put("/client/domains/{did}/dns")
+async def client_domain_dns_update(did: str, payload: dict, user=Depends(get_current_user)):
+    """Update DNS records for a domain owned by the user."""
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did), "user_id": ObjectId(user["id"])})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    records = payload.get("records") or []
+    try:
+        await rna._req("PUT", f"/domains/{doc.get('order_ref')}/dns", data={"records": records})
+        return {"ok": True, "domain": doc["domain"], "records": records}
+    except Exception as e:
+        raise HTTPException(502, f"Gagal update DNS: {e}")
+
+
+@router.post("/client/domains/{did}/park")
+async def client_domain_park(did: str, payload: dict, user=Depends(get_current_user)):
+    """Park a domain (set A record to parking IP)."""
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did), "user_id": ObjectId(user["id"])})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    parking_ip = payload.get("ip", "157.20.32.183")
+    records = [
+        {"type": "A", "name": "@", "value": parking_ip, "ttl": 300},
+        {"type": "A", "name": "www", "value": parking_ip, "ttl": 300},
+    ]
+    try:
+        await rna._req("PUT", f"/domains/{doc.get('order_ref')}/dns", data={"records": records})
+        await db.domains.update_one({"_id": _oid(did)}, {"$set": {"parked": True, "parking_ip": parking_ip}})
+        return {"ok": True, "domain": doc["domain"], "parked_to": parking_ip}
+    except Exception as e:
+        raise HTTPException(502, f"Gagal park domain: {e}")
+
+
+@router.post("/client/domains/{did}/forward")
+async def client_domain_forward(did: str, payload: dict, user=Depends(get_current_user)):
+    """Set URL forwarding for a domain (CNAME atau A record ke target)."""
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did), "user_id": ObjectId(user["id"])})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    target = str(payload.get("target", "")).strip()
+    if not target:
+        raise HTTPException(400, "Target URL/IP diperlukan")
+    fwd_type = payload.get("type", "url")  # url → CNAME, ip → A
+    records = [
+        {"type": "CNAME" if fwd_type == "url" else "A", "name": "@", "value": target, "ttl": 300},
+    ]
+    try:
+        await rna._req("PUT", f"/domains/{doc.get('order_ref')}/dns", data={"records": records})
+        await db.domains.update_one({"_id": _oid(did)}, {"$set": {"forwarded": True, "forward_target": target}})
+        return {"ok": True, "domain": doc["domain"], "forwarded_to": target, "type": fwd_type}
+    except Exception as e:
+        raise HTTPException(502, f"Gagal set forwarding: {e}")
+
+
+@router.post("/client/domains/{did}/email-forward")
+async def client_domain_email_forward(did: str, payload: dict, user=Depends(get_current_user)):
+    """Set email forwarding (MX record + forward target)."""
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did), "user_id": ObjectId(user["id"])})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    rna = await _rna_client(db)
+    if not rna:
+        raise HTTPException(503, "Integrasi RNA.id tidak aktif")
+    mx_host = str(payload.get("mx_host", "mail.intercloud-digital.com")).strip()
+    forward_to = str(payload.get("forward_to", "")).strip()
+    if not forward_to:
+        raise HTTPException(400, "Email tujuan forwarding diperlukan")
+    records = [{"type": "MX", "name": "@", "value": mx_host, "priority": 10, "ttl": 300}]
+    try:
+        await rna._req("PUT", f"/domains/{doc.get('order_ref')}/dns", data={"records": records})
+        await db.domains.update_one({"_id": _oid(did)}, {"$set": {
+            "email_forwarding": True, "email_forward_target": forward_to, "mx_host": mx_host,
+        }})
+        return {"ok": True, "domain": doc["domain"], "mx": mx_host, "forward_to": forward_to}
+    except Exception as e:
+        raise HTTPException(502, f"Gagal set email forwarding: {e}")

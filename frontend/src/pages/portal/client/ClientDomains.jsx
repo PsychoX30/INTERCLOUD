@@ -86,7 +86,13 @@ const WhoisCard = () => {
   );
 };
 
-const SuggestionList = ({ items, onRegister, busyDomain }) => {
+const domainPrice = (domain, fallback, prices) => {
+  const tld = "." + String(domain || "").split(".").slice(1).join(".");
+  const p = prices?.[tld];
+  return p?.register ?? fallback;
+};
+
+const SuggestionList = ({ items, onRegister, busyDomain, prices }) => {
   if (!items || items.length === 0) return null;
   return (
     <div className="mt-4 rounded-xl border border-dashed border-[#f5b120]/60 bg-[#f5b120]/5 p-4" data-testid="domain-suggestions">
@@ -101,7 +107,7 @@ const SuggestionList = ({ items, onRegister, busyDomain }) => {
               ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
               : <XCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />}
             <span className={`font-semibold truncate ${r.available ? "text-[#0a2350]" : "text-slate-400 line-through"}`}>{r.domain}</span>
-            <span className="ml-auto text-xs font-bold text-[#0a2350] shrink-0">{idr(r.price)}</span>
+            <span className="ml-auto text-xs font-bold text-[#0a2350] shrink-0">{idr(domainPrice(r.domain, r.price, prices))}</span>
             <button
               className={`text-[10px] font-bold px-2 py-1 rounded-md border shrink-0 ${r.available ? "border-[#f5b120] text-[#0a2350] hover:bg-[#f5b120]/10" : "border-slate-200 text-slate-300 cursor-not-allowed"}`}
               disabled={!r.available || busyDomain === r.domain}
@@ -157,9 +163,11 @@ const ClientDomains = () => {
   const [notice, setNotice] = useState(null);
   const [errMsg, setErrMsg] = useState("");
   const [busyDomain, setBusyDomain] = useState("");
+  const [prices, setPrices] = useState(null);
 
   const load = () => api.get("/client/domains").then((r) => setDomains(r.data)).catch(() => setDomains([]));
-  useEffect(() => { load(); }, []);
+  const loadPrices = () => api.get("/client/domains/pricing").then((r) => setPrices(r.data.prices || {})).catch(() => setPrices({}));
+  useEffect(() => { load(); loadPrices(); }, []);
 
   const flash = (msg) => {
     setNotice(msg);
@@ -253,7 +261,7 @@ const ClientDomains = () => {
                 <span className={`text-xs font-bold ${r.available ? "text-emerald-600" : "text-red-500"}`}>
                   {r.available === null ? "Tidak diketahui" : r.available ? "Tersedia" : "Tidak tersedia"}
                 </span>
-                <span className="ml-auto font-extrabold text-[#0a2350]">{idr(r.price)}<span className="text-[10px] font-semibold text-slate-500">/thn</span></span>
+                <span className="ml-auto font-extrabold text-[#0a2350]">{idr(domainPrice(r.domain, r.price, prices))}<span className="text-[10px] font-semibold text-slate-500">/thn</span></span>
                 <button
                   className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition-colors ${r.available ? "border-[#f5b120] text-[#0a2350] hover:bg-[#f5b120]/10" : "border-slate-200 text-slate-400 cursor-not-allowed"}`}
                   disabled={!r.available || busyDomain === r.domain}
@@ -267,7 +275,7 @@ const ClientDomains = () => {
             <p className="pt-3 text-[11px] text-slate-500">Pengecekan live (RNA.id bila aktif, fallback DNS). Registrasi diproses otomatis setelah invoice lunas.</p>
           </div>
         )}
-        {results && <SuggestionList items={suggestions} onRegister={register} busyDomain={busyDomain} />}
+        {results && <SuggestionList items={suggestions} onRegister={register} busyDomain={busyDomain} prices={prices} />}
       </Card>
 
       <WhoisCard />

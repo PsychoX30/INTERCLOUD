@@ -58,6 +58,7 @@ const AdminSecurity     = lazy(() => import("./pages/portal/admin/AdminSecurity"
 const AdminBranding     = lazy(() => import("./pages/portal/admin/AdminBranding"));
 const AdminSiteContent  = lazy(() => import("./pages/portal/admin/AdminSiteContent"));
 const AdminBackup       = lazy(() => import("./pages/portal/admin/AdminBackup"));
+const AdminDomains      = lazy(() => import("./pages/portal/admin/AdminDomains"));
 const AdminMail         = lazy(() => import("./pages/portal/admin/AdminMail"));
 const AdminServices     = lazy(() => import("./pages/portal/admin/AdminServices"));
 const AdminServiceRequests = lazy(() => import("./pages/portal/admin/AdminServiceRequests"));
@@ -184,6 +185,7 @@ function App() {
                   <Route path="branding" element={<AdminBranding />} />
                   <Route path="site-content" element={<AdminSiteContent />} />
                   <Route path="backup" element={<AdminBackup />} />
+                  <Route path="domains" element={<AdminDomains />} />
                   <Route path="real-integrations" element={<Navigate to="/portal/admin/integrations" replace />} />
                   <Route path="settings/password" element={<ChangePassword />} />
                 </Route>
