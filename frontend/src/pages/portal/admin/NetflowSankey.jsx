@@ -17,19 +17,36 @@ export const fmtBps = (bps) => {
 };
 
 const buildSankey = (flows) => {
-  const names = [];
-  const idx = (n) => {
-    let i = names.indexOf(n);
-    if (i === -1) { names.push(n); i = names.length - 1; }
-    return i;
+  // Recharts 3.6.0 crashes (RangeError: Maximum call stack size exceeded)
+  // when a node has no incident link, or when there are fewer than 2 nodes.
+  // Filter to only nodes that actually appear in a link, and drop self-loops.
+  const valid = (flows || []).filter(
+    (f) => f && f.src && f.dst && f.src !== f.dst
+  );
+  if (valid.length < 2) {
+    return { nodes: [], links: [] };
+  }
+  // Keep source and destination namespaces separate. A live network can have
+  // traffic in both directions (A -> B and B -> A); sharing the same node for
+  // both sides creates a cycle and Recharts 3.6.0 recursively overflows in
+  // Sankey.js. The displayed label remains the original IP.
+  const nodes = [];
+  const indexes = new Map();
+  const idx = (side, name) => {
+    const key = `${side}:${name}`;
+    if (!indexes.has(key)) {
+      indexes.set(key, nodes.length);
+      nodes.push({ name, side });
+    }
+    return indexes.get(key);
   };
-  // value dalam Kbps (min 0.001) supaya link kecil tetap tergambar
-  const links = flows.map((f) => ({
-    source: idx(f.src), target: idx(f.dst),
+  // value dalam Kbps (min 0.001) supaya trafik kecil tetap tergambar
+  const links = valid.map((f) => ({
+    source: idx("source", f.src), target: idx("destination", f.dst),
     value: Math.max((f.bps ?? (f.gbps || 0) * 1e9) / 1e3, 0.001),
     bps: f.bps ?? (f.gbps || 0) * 1e9,
   }));
-  return { nodes: names.map((name) => ({ name })), links };
+  return { nodes, links };
 };
 
 const SankeyNode = ({ x, y, width, height, payload }) => (
@@ -79,6 +96,10 @@ export const NetflowSankey = () => {
   const errors = payload?.errors || [];
   const interfaces = payload?.interfaces || [];
   const data = useMemo(() => buildSankey(flows), [flows]);
+  // Render the chart only when it has enough valid nodes/links; otherwise fall
+  // through to the empty state instead of feeding empty data to Recharts
+  // (which throws RangeError: Maximum call stack size exceeded on 3.6.0).
+  const hasChart = data.nodes.length >= 2 && data.links.length >= 1;
 
   return (
     <Card className="overflow-hidden mb-6" data-testid="netflow-sankey">
@@ -128,11 +149,11 @@ export const NetflowSankey = () => {
           <div className="h-full flex items-center justify-center text-sm text-slate-400" data-testid="sankey-loading">
             Mengambil sampel trafik live…
           </div>
-        ) : !live ? (
+        ) : !hasChart ? (
           <div className="h-full flex flex-col items-center justify-center text-center px-6 overflow-y-auto" data-testid="sankey-empty">
             <Network className="h-10 w-10 text-slate-300 mb-3" />
             <div className="font-bold text-[#0a2350] text-sm">
-              {payload?.live ? "Perangkat tersambung, belum ada arus trafik terdeteksi" : "Belum ada data trafik live"}
+              {live ? "Data trafik tersedia namun belum cukup untuk diagram" : (payload?.live ? "Perangkat tersambung, belum ada arus trafik terdeteksi" : "Belum ada data trafik live")}
             </div>
             <p className="mt-1 text-xs text-slate-500 max-w-md leading-relaxed">
               {payload?.live

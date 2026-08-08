@@ -111,9 +111,35 @@ async def _service_vm_power(db, svc: dict, action: str) -> str:
 
 async def _delete_service_vm(db, svc: dict) -> None:
     """Hapus permanen VM Proxmox milik service yang diterminasi:
-    stop -> tunggu berhenti -> DELETE (purge disk). Berjalan di background."""
+    stop -> tunggu berhenti -> DELETE (purge disk) -> release IP. Berjalan di background."""
     cfg = svc.get("config") or {}
     node, vmid = cfg.get("node"), cfg.get("vmid")
+
+    # --- Release IP addresses from DCIM (primary + extra) ---
+    released_ips = []
+    ip_addrs = []
+    if cfg.get("ip"):
+        ip_addrs.append(str(cfg["ip"]).split("/")[0])
+    for extra in (cfg.get("extra_ips") or []):
+        ip_addrs.append(str(extra).split("/")[0])
+    for ip in ip_addrs:
+        doc = await db.dcim_ips.find_one({"address": ip})
+        if doc:
+            prefix_id = doc.get("prefix_id")
+            await db.dcim_ips.delete_one({"_id": doc["_id"]})
+            if prefix_id:
+                try:
+                    from .dcim import _recompute_prefix_usage
+                    await _recompute_prefix_usage(db, prefix_id)
+                except Exception:
+                    count = await db.dcim_ips.count_documents({"prefix_id": prefix_id})
+                    await db.dcim_prefixes.update_one({"_id": prefix_id}, {"$set": {"usage": count}})
+            released_ips.append(ip)
+    if released_ips:
+        logging.getLogger("portal.lifecycle").info(
+            "Released %d IP(s) from DCIM for terminated service %s: %s",
+            len(released_ips), svc.get("_id"), ", ".join(released_ips))
+
     if not (node and vmid):
         return
     s = await _proxmox_settings_for_service(db, svc)

@@ -32,6 +32,15 @@ from .shared import _get_db, _now, _oid  # noqa: E402
 router = APIRouter()
 
 
+async def _recompute_prefix_usage(db, prefix_id) -> int:
+    """Usage = jumlah record dcim_ips yang menunjuk ke prefix ini. Update field
+    `usage` agar konsisten dengan alokasi nyata (dan auto-calculate, bukan input
+    manual). Dipanggil di setiap titik mutasi IP."""
+    count = await db.dcim_ips.count_documents({"prefix_id": prefix_id})
+    await db.dcim_prefixes.update_one({"_id": prefix_id}, {"$set": {"usage": count}})
+    return count
+
+
 @router.post("/admin/dcim/prefixes/{pid}/allocate")
 async def dcim_prefix_allocate(pid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
@@ -52,9 +61,9 @@ async def dcim_prefix_utilization(pid: str, staff=Depends(get_current_staff)):
     p = await db.dcim_prefixes.find_one({"_id": _oid(pid)})
     if not p:
         raise HTTPException(status_code=404, detail="Prefix not found")
-    allocated = await db.dcim_ips.count_documents({"prefix_id": p["_id"]})
+    allocated = await _recompute_prefix_usage(db, p["_id"])
     capacity = int(p.get("capacity", 0)) or 1
-    usage = int(p.get("usage", 0))
+    usage = allocated
     return {"prefix": p.get("prefix", ""), "capacity": capacity, "usage": usage,
             "allocated_records": allocated,
             "utilization_pct": round(min(100.0, usage / capacity * 100), 2)}
@@ -97,7 +106,12 @@ async def dcim_prefixes(staff=Depends(get_current_staff)):
         for s in seed:
             await db.dcim_prefixes.insert_one({**s, "created_at": _now()})
         docs = await db.dcim_prefixes.find({}).to_list(500)
-    return [{"id": str(d["_id"]), **{k: v for k, v in d.items() if k != "_id"}} for d in docs]
+    out = []
+    for d in docs:
+        usage = await _recompute_prefix_usage(db, d["_id"])
+        out.append({"id": str(d["_id"]), "usage": usage,
+                    **{k: v for k, v in d.items() if k not in ("_id", "usage")}})
+    return out
 
 
 @router.post("/admin/dcim/racks")
@@ -142,15 +156,19 @@ async def dcim_rack_delete(rid: str, staff=Depends(get_current_staff)):
 @router.put("/admin/dcim/prefixes/{pid}")
 async def dcim_prefix_update(pid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
-    upd = {k: v for k, v in payload.items() if k in {"prefix", "usage", "capacity", "vlan", "site", "family", "description"}}
-    for k in ("usage", "capacity", "family"):
+    # `usage` tidak lagi bisa di-override manual: selalu dihitung dari record
+    # dcim_ips. Payload yang membawa `usage` diabaikan.
+    upd = {k: v for k, v in payload.items() if k in {"prefix", "capacity", "vlan", "site", "family", "description", "gateway", "reserved", "vps_provision"}}
+    for k in ("capacity", "family"):
         if k in upd:
             upd[k] = int(upd[k] or 0)
     await db.dcim_prefixes.update_one({"_id": _oid(pid)}, {"$set": upd})
     d = await db.dcim_prefixes.find_one({"_id": _oid(pid)})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
-    return {"id": str(d["_id"]), **{k: v for k, v in d.items() if k != "_id"}}
+    usage = await _recompute_prefix_usage(db, d["_id"])
+    return {"id": str(d["_id"]), "usage": usage,
+            **{k: v for k, v in d.items() if k not in ("_id", "usage")}}
 
 
 # IP Addresses (within a prefix)
@@ -179,6 +197,8 @@ async def dcim_ip_create(payload: dict, staff=Depends(get_current_staff)):
         "created_at": _now(),
     }
     r = await db.dcim_ips.insert_one(doc)
+    if doc.get("prefix_id"):
+        await _recompute_prefix_usage(db, doc["prefix_id"])
     doc["_id"] = r.inserted_id
     return {"id": str(doc["_id"]), "prefix_id": str(doc["prefix_id"]) if doc.get("prefix_id") else None,
             **{k: v for k, v in doc.items() if k not in ("_id", "prefix_id")}}
@@ -187,11 +207,17 @@ async def dcim_ip_create(payload: dict, staff=Depends(get_current_staff)):
 @router.put("/admin/dcim/ips/{ipid}")
 async def dcim_ip_update(ipid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
+    before = await db.dcim_ips.find_one({"_id": _oid(ipid)})
+    if not before:
+        raise HTTPException(status_code=404, detail="Not found")
     upd = {k: v for k, v in payload.items() if k in {"address", "status", "role", "hostname", "customer", "description"}}
     if "prefix_id" in payload:
         upd["prefix_id"] = _oid(payload["prefix_id"]) if payload["prefix_id"] else None
     await db.dcim_ips.update_one({"_id": _oid(ipid)}, {"$set": upd})
     d = await db.dcim_ips.find_one({"_id": _oid(ipid)})
+    for prefix_id in {before.get("prefix_id"), d.get("prefix_id")}:
+        if prefix_id:
+            await _recompute_prefix_usage(db, prefix_id)
     return {"id": str(d["_id"]), "prefix_id": str(d.get("prefix_id", "")) if d.get("prefix_id") else None,
             **{k: v for k, v in d.items() if k not in ("_id", "prefix_id")}}
 
@@ -199,7 +225,10 @@ async def dcim_ip_update(ipid: str, payload: dict, staff=Depends(get_current_sta
 @router.delete("/admin/dcim/ips/{ipid}")
 async def dcim_ip_delete(ipid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
+    before = await db.dcim_ips.find_one({"_id": _oid(ipid)})
     r = await db.dcim_ips.delete_one({"_id": _oid(ipid)})
+    if before and before.get("prefix_id"):
+        await _recompute_prefix_usage(db, before["prefix_id"])
     return {"deleted": r.deleted_count}
 
 
