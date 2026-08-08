@@ -5,7 +5,7 @@ import {
 } from "../ui";
 import {
   Save, Zap, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp,
-  Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck, Send,
+  Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck, Send, Globe2,
 } from "lucide-react";
 import { ProxmoxServersCard } from "./ProxmoxServersCard";
 
@@ -18,14 +18,16 @@ const PROVIDER_ICON = {
   midtrans: CreditCard, xendit: CreditCard, duitku: CreditCard,
   smtp: Mail, imap: Inbox,
   cpanel: Globe, plesk: HardDrive,
+  rna: Globe2,
   recaptcha: ShieldCheck,
 };
 
-const CATEGORY_ORDER = ["virtualization", "network", "provisioning", "payment", "mail", "security"];
+const CATEGORY_ORDER = ["virtualization", "network", "provisioning", "domain", "payment", "mail", "security"];
 const CATEGORY_LABEL = {
   virtualization: "Virtualization & Compute",
   network: "Network",
   provisioning: "Hosting Provisioning",
+  domain: "Domain Registrar",
   payment: "Payment Gateways",
   mail: "Email (SMTP & IMAP)",
   security: "Security & Anti-bot",
@@ -63,7 +65,7 @@ const AdminIntegrations = () => {
     <div>
       <PageHeader
         title="Integrations"
-        subtitle="Every third-party credential in one place - virtualization (Proxmox), network (MikroTik), hosting provisioning (cPanel / Plesk), payment gateways, and email (SMTP outbound + IMAP inbound). Paste credentials, hit Test, then Save."
+        subtitle="Every third-party credential in one place - virtualization (Proxmox), network (MikroTik), domain registrar (RNA.id/RDASH), hosting provisioning (cPanel / Plesk), payment gateways, and email (SMTP outbound + IMAP inbound). Paste credentials, hit Test, then Save."
       />
 
       <div className="mb-5 grid sm:grid-cols-3 gap-3">
