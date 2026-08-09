@@ -105,13 +105,24 @@ async def client_domain_whois(domain: str, user=Depends(get_current_user)):
             "registrant": "REDACTED FOR PRIVACY", **data}
 
 
-_TLD_PRICES_IDR = {".com": 165000, ".id": 250000, ".co.id": 300000, ".net": 185000,
-                   ".org": 175000, ".my.id": 25000, ".web.id": 55000, ".biz.id": 55000}
+_TLD_PRICES_IDR: dict[str, dict[str, int]] = {
+    ".com":    {"register": 165000, "renew": 165000, "transfer": 165000},
+    ".id":     {"register": 250000, "renew": 250000, "transfer": 250000},
+    ".co.id":  {"register": 300000, "renew": 300000, "transfer": 300000},
+    ".net":    {"register": 185000, "renew": 185000, "transfer": 185000},
+    ".org":    {"register": 175000, "renew": 175000, "transfer": 175000},
+    ".my.id":  {"register":  25000, "renew":  25000, "transfer":  25000},
+    ".web.id": {"register":  55000, "renew":  55000, "transfer":  55000},
+    ".biz.id": {"register":  55000, "renew":  55000, "transfer":  55000},
+}
 
 
 def _tld_price(name: str) -> int:
     tld = next((t for t in sorted(_TLD_PRICES_IDR, key=len, reverse=True) if name.endswith(t)), None)
-    return _TLD_PRICES_IDR.get(tld, 95000)
+    entry = _TLD_PRICES_IDR.get(tld)
+    if isinstance(entry, dict):
+        return entry.get("register", 95000)
+    return entry if isinstance(entry, (int, float)) else 95000
 
 
 async def _domain_price_map(db, *, refresh=False, markup_pct: float | None = None) -> dict:
