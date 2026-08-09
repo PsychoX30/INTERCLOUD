@@ -1374,30 +1374,60 @@ async def run_ddos_detection_sweep(db) -> dict:
     if not rules:
         return {"at": now_iso, "skipped": "no enabled rules"}
     devices = await db.mikrotik_devices.find({}).to_list(100)
+    # Include legacy single-device integration (same as Sankey) so DDoS detection
+    # also covers deployments that only configure MikroTik via Integrations.
+    legacy = await _iv2.get_settings(db, "mikrotik")
+    if legacy and legacy.get("enabled") and (legacy.get("credentials") or {}).get("host"):
+        devices.append({"_id": None, "name": "Legacy (Integrations)",
+                        **(legacy.get("credentials") or {})})
 
     # ---- Sample per-target traffic via torch (aggregate dst_address) ----
     targets: dict = {}   # ip -> {bps, pps, flow, device_name}
     sampled_devices = 0
     for d in devices:
-        iface = d.get("main_interface") or d.get("interface") or "ether1"
+        if not d:
+            continue
+        name = d.get("name") or d.get("host") or "device"
         try:
             client = _iv2.MikrotikClient(d)
-            res = await _a.get_event_loop().run_in_executor(
-                None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
         except Exception:
             continue
-        if not res.get("ok"):
-            continue
-        sampled_devices += 1
-        for f in res.get("rows", []):
-            ip = (f.get("dst_address") or "").split("/")[0]
-            if not ip or ip in ("0.0.0.0", "255.255.255.255"):
+        # Pick configured main_interface, else the busiest running interfaces
+        # (never just hardcode ether1 - it may be down / have no traffic).
+        iface_cfg = (d.get("main_interface") or d.get("interface") or "").strip()
+        if iface_cfg:
+            ifaces = [iface_cfg]
+        else:
+            try:
+                rows = await _a.get_event_loop().run_in_executor(None, client.list_interfaces)
+                running = [r for r in rows
+                           if str(r.get("running", "")).lower() in ("true", "yes")
+                           and str(r.get("disabled", "")).lower() not in ("true", "yes")]
+                running.sort(key=lambda r: int(r.get("rx-byte") or 0) + int(r.get("tx-byte") or 0),
+                             reverse=True)
+                ifaces = [r.get("name") for r in running if r.get("name")][:2]
+            except Exception:
+                ifaces = []
+            if not ifaces:
+                ifaces = ["ether1"]
+        for iface in ifaces:
+            try:
+                res = await _a.get_event_loop().run_in_executor(
+                    None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
+            except Exception:
                 continue
-            t = targets.setdefault(ip, {"bps": 0, "pps": 0, "flow": f,
-                                        "device": d.get("name") or "unnamed",
-                                        "device_doc": d})
-            t["bps"] += f.get("rx_rate", 0) + f.get("tx_rate", 0)
-            t["pps"] += f.get("rx_packets", 0) + f.get("tx_packets", 0)
+            if not res.get("ok"):
+                continue
+            sampled_devices += 1
+            for f in res.get("rows", []):
+                ip = (f.get("dst_address") or "").split("/")[0]
+                if not ip or ip in ("0.0.0.0", "255.255.255.255"):
+                    continue
+                t = targets.setdefault(ip, {"bps": 0, "pps": 0, "flow": f,
+                                            "device": name,
+                                            "device_doc": d})
+                t["bps"] += f.get("rx_rate", 0) + f.get("tx_rate", 0)
+                t["pps"] += f.get("rx_packets", 0) + f.get("tx_packets", 0)
 
     # ---- Evaluate rules against samples ----
     opened, blackholed = 0, 0

@@ -64,12 +64,16 @@ DEFAULT_CATEGORIES = [
     {"slug": "firewall",     "label": "Firewall",     "icon": "Shield",      "sort_order": 60},
     {"slug": "interconnect", "label": "Interconnect", "icon": "Network",     "sort_order": 70},
     {"slug": "lease",        "label": "Lease-to-Own", "icon": "Package",     "sort_order": 80},
-    {"slug": "domain",       "label": "Domains",      "icon": "Globe2",      "sort_order": 90},
     {"slug": "other",        "label": "Other",        "icon": "Boxes",       "sort_order": 999},
 ]
 
 
 async def _ensure_default_categories(db):
+    # Retire the legacy catalog-only domain category. Domain registration is
+    # handled by the dedicated RDASH flow, not catalog product provisioning.
+    # Keep it if data still references it so no product is orphaned.
+    if not await db.products.count_documents({"category": "domain"}):
+        await db.categories.delete_one({"slug": "domain"})
     for c in DEFAULT_CATEGORIES:
         if not await db.categories.find_one({"slug": c["slug"]}):
             await db.categories.insert_one({

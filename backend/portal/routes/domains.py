@@ -114,6 +114,37 @@ def _tld_price(name: str) -> int:
     return _TLD_PRICES_IDR.get(tld, 95000)
 
 
+async def _domain_price_map(db, *, refresh=False, markup_pct: float | None = None) -> dict:
+    """Return the synced selling prices (with admin markup), with optional live refresh.
+
+    This is the single source of truth for all client-facing domain prices:
+    check, suggestion, order, renewal, and the /pricing endpoint.
+
+    When `markup_pct` is supplied it overrides the integration option for this fetch
+    (used after the admin changes markup so the re-sync uses the new value, not the
+    stale integration option).
+    """
+    cached = await db.settings.find_one({"key": "domain_pricing"})
+    cached_prices = (cached or {}).get("value", {}).get("prices") or {}
+    if cached_prices and not refresh:
+        return cached_prices
+    rna = await _rna_client(db)
+    if rna:
+        if markup_pct is not None:
+            rna.markup_pct = float(markup_pct)
+        try:
+            prices = await rna.prices_with_markup()
+            if prices:
+                await db.settings.update_one(
+                    {"key": "domain_pricing"},
+                    {"$set": {"value": {"prices": prices, "markup_pct": rna.markup_pct,
+                                         "synced_at": _now()}}}, upsert=True)
+                return prices
+        except Exception:
+            pass
+    return cached_prices or _TLD_PRICES_IDR
+
+
 async def _dns_domain_taken(name: str) -> bool:
     """DNS fallback: NXDOMAIN on the NS query means the domain is very likely available."""
     import dns.asyncresolver
@@ -148,8 +179,11 @@ async def _check_domains_availability(db, names: list) -> list:
             return {"domain": n, "available": None, "source": "dns"}
 
     out = list(await asyncio.gather(*(_one(n) for n in names)))
+    prices = await _domain_price_map(db)
     for r in out:
-        r["price"] = _tld_price(r["domain"])
+        tld = "." + str(r["domain"]).split(".", 1)[1]
+        p = prices.get(tld)
+        r["price"] = (p.get("register") if isinstance(p, dict) else p) or _tld_price(r["domain"])
     return out
 
 
@@ -178,20 +212,11 @@ async def client_domain_order(payload: m.DomainOrderIn, request: Request, user=D
     chk = (await _check_domains_availability(db, [name]))[0]
     if chk["available"] is False:
         raise HTTPException(status_code=400, detail="Domain tidak tersedia untuk registrasi")
-    # Use live/markup price from RDASH (or cache) instead of hardcoded
-    rna = await _rna_client(db)
-    price = None
-    if rna:
-        try:
-            prices = await rna.prices_with_markup()
-            tld = "." + name.split(".", 1)[1]
-            price = prices.get(tld, {}).get("register")
-        except Exception:
-            pass
-    if price is None:
-        # Fallback to hardcoded
-        price = _tld_price(name)
-    price *= payload.years
+    # Use cached synced price (or live RDASH if no cache) instead of hardcoded
+    prices = await _domain_price_map(db)
+    tld = "." + name.split(".", 1)[1]
+    p = prices.get(tld)
+    price = ((p.get("register") if isinstance(p, dict) else p) or _tld_price(name)) * payload.years
     tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
     tax = round(price * tax_percent / 100.0, 2)
     due = (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat()
@@ -293,20 +318,11 @@ async def client_domain_renew(did: str, payload: m.DomainRenewIn, request: Reque
     if dom.get("pending_renewal"):
         raise HTTPException(status_code=400, detail="Masih ada perpanjangan yang menunggu pembayaran")
     name = dom["domain"]
-    # Use live/markup price from RDASH (or cache) instead of hardcoded
-    rna = await _rna_client(db)
-    price = None
-    if rna:
-        try:
-            prices = await rna.prices_with_markup()
-            tld = "." + name.split(".", 1)[1]
-            price = prices.get(tld, {}).get("renew")
-        except Exception:
-            pass
-    if price is None:
-        # Fallback to hardcoded
-        price = _tld_price(name)
-    price *= payload.years
+    # Use cached synced price (or live RDASH if no cache) instead of hardcoded
+    prices = await _domain_price_map(db)
+    tld = "." + name.split(".", 1)[1]
+    p = prices.get(tld)
+    price = ((p.get("renew") if isinstance(p, dict) else p) or _tld_price(name)) * payload.years
     tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
     tax = round(price * tax_percent / 100.0, 2)
     due = (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
@@ -439,30 +455,21 @@ async def client_domain_check(domain: str, user=Depends(get_current_user)):
 
 @router.get("/client/domains/pricing")
 async def client_domain_pricing(user=Depends(get_current_user), db=Depends(_get_db)):
-    """Get domain pricing.
+    """Get domain pricing from the admin-synced cache (source of truth).
 
     Priority:
       1. Cached synced prices (db.settings key `domain_pricing` from admin sync-pricing).
       2. Live RDASH prices (with configured markup) if RNA active.
       3. Hardcoded fallback.
     """
-    # 1. Use the admin-synced cache first (fast, offline-safe, reflects markup).
-    cached = await db.settings.find_one({"key": "domain_pricing"})
-    if cached and (cached.get("value") or {}).get("prices"):
-        v = cached["value"]
-        return {"live": False, "source": "cache",
-                "prices": v["prices"], "synced_at": v.get("synced_at")}
-    # 2. Live RDASH with markup.
-    rna = await _rna_client(db)
-    if rna:
-        try:
-            prices = await rna.prices_with_markup()
-            if prices:
-                return {"live": True, "source": "rna", "prices": prices}
-        except Exception:
-            pass
-    # 3. Hardcoded fallback.
-    return {"live": False, "source": "fallback", "prices": _TLD_PRICES_IDR}
+    doc = await db.settings.find_one({"key": "domain_pricing"})
+    v = (doc or {}).get("value", {})
+    prices = await _domain_price_map(db)
+    src = "cache" if v.get("synced_at") else ("rna" if v.get("prices") else "fallback")
+    return {"live": src == "rna", "source": src,
+            "prices": prices,
+            "synced_at": v.get("synced_at"),
+            "markup_pct": v.get("markup_pct")}
 
 
 @router.get("/admin/domains")
@@ -490,12 +497,51 @@ async def admin_domain_sync_pricing(admin=Depends(get_current_admin)):
         prices = await rna.prices_with_markup()
         await db.settings.update_one(
             {"key": "domain_pricing"},
-            {"$set": {"value": {"prices": prices, "synced_at": _now()}}},
+            {"$set": {"value": {"prices": prices, "markup_pct": rna.markup_pct,
+                                 "synced_at": _now()}}},
             upsert=True,
         )
-        return {"ok": True, "prices": prices, "count": len(prices)}
+        return {"ok": True, "prices": prices, "count": len(prices),
+                "markup_pct": rna.markup_pct}
     except Exception as e:
         raise HTTPException(502, f"Gagal sync pricing: {e}")
+
+
+@router.get("/admin/domains/markup")
+async def admin_domain_markup_get(admin=Depends(get_current_admin)):
+    """Get current markup percentage."""
+    db = await _get_db()
+    doc = await db.settings.find_one({"key": "domain_pricing"})
+    v = (doc or {}).get("value", {})
+    return {"markup_pct": v.get("markup_pct", 7.0)}
+
+
+@router.put("/admin/domains/markup")
+async def admin_domain_markup_set(payload: dict, admin=Depends(get_current_admin)):
+    """Set markup percentage and optionally re-sync pricing."""
+    db = await _get_db()
+    new_markup = float(payload.get("markup_pct", 7.0))
+    if new_markup < 0 or new_markup > 100:
+        raise HTTPException(400, "markup_pct harus 0-100")
+    # Update integration_settings so RdashClient reads it next time
+    s = await iv2.get_settings(db, "rna")
+    if s:
+        opts = dict(s.get("options") or {})
+        opts["markup_pct"] = new_markup
+        await iv2.upsert_settings(db, "rna", {**s, "options": opts})
+    # Also update the cached domain_pricing
+    doc = await db.settings.find_one({"key": "domain_pricing"})
+    v = (doc or {}).get("value", {})
+    v["markup_pct"] = new_markup
+    await db.settings.update_one(
+        {"key": "domain_pricing"},
+        {"$set": {"value": v}}, upsert=True)
+    # Optionally re-sync with new markup
+    if payload.get("re_sync", True):
+        prices = await _domain_price_map(db, refresh=True)
+    else:
+        prices = v.get("prices", {})
+    return {"ok": True, "markup_pct": new_markup, "count": len(prices)}
 
 
 @router.put("/admin/domains/{did}/ns")
@@ -540,6 +586,9 @@ async def admin_domain_sync_all(admin=Depends(get_current_admin)):
         except Exception:
             failed += 1
     return {"ok": True, "updated": updated, "failed": failed, "total": len(docs)}
+
+
+
 
 
 # ------------------------------------------------------------

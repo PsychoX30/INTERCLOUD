@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { RefreshCw, Server, Globe2, Search } from "lucide-react";
+import { RefreshCw, Server, Globe2, Search, Percent } from "lucide-react";
 import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, Card } from "../ui";
 
@@ -10,22 +10,42 @@ const AdminDomains = () => {
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
+  const [markup, setMarkup] = useState(7.0);
+  const [markupBusy, setMarkupBusy] = useState(false);
 
   const load = async () => {
     const { data } = await api.get("/admin/domains");
     setRows(data);
   };
 
-  useEffect(() => { load().catch(() => setRows([])); }, []);
+  const loadMarkup = async () => {
+    try {
+      const { data } = await api.get("/admin/domains/markup");
+      if (data.markup_pct != null) setMarkup(data.markup_pct);
+    } catch {}
+  };
+
+  useEffect(() => { load().catch(() => setRows([])); loadMarkup(); }, []);
 
   const syncPricing = async () => {
     if (busy) return;
     setBusy("pricing"); setMessage("");
     try {
       const { data } = await api.post("/admin/domains/sync-pricing");
-      setMessage(`Pricing tersinkronisasi: ${data.count || 0} TLD.`);
+      setMessage(`Pricing tersinkronisasi: ${data.count || 0} TLD (markup ${data.markup_pct || markup}%).`);
+      if (data.markup_pct != null) setMarkup(data.markup_pct);
     } catch (e) { setMessage(e?.response?.data?.detail || "Gagal sync pricing."); }
     finally { setBusy(""); }
+  };
+
+  const saveMarkup = async () => {
+    if (markupBusy) return;
+    setMarkupBusy(true); setMessage("");
+    try {
+      const { data } = await api.post("/admin/domains/markup", { markup_pct: markup });
+      setMessage(`Markup disimpan: ${data.markup_pct}% (${data.count || 0} TLD).`);
+    } catch (e) { setMessage(e?.response?.data?.detail || "Gagal menyimpan markup."); }
+    finally { setMarkupBusy(false); }
   };
 
   const syncAll = async () => {
@@ -59,6 +79,25 @@ const AdminDomains = () => {
           <Server className={`h-4 w-4 ${busy === "domains" ? "animate-spin" : ""}`} /> Sync Status Domain
         </button>
         <button className={btnSecondary} onClick={() => load()} disabled={!!busy}>Refresh</button>
+      </div>
+      <div className="mb-5 flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-4">
+        <Percent className="h-5 w-5 text-slate-400" />
+        <span className="text-sm font-semibold text-slate-700">Markup Harga Domain:</span>
+        <input
+          type="number"
+          className="w-20 rounded border border-slate-200 px-2 py-1 text-sm text-center"
+          value={markup}
+          min={0}
+          max={100}
+          step={0.1}
+          onChange={(e) => setMarkup(parseFloat(e.target.value) || 0)}
+          data-testid="domain-markup-input"
+        />
+        <span className="text-sm text-slate-500">%</span>
+        <button className={btnPrimary} onClick={saveMarkup} disabled={markupBusy} data-testid="save-domain-markup">
+          Simpan Markup
+        </button>
+        <span className="text-xs text-slate-400">Harga jual = harga reseller + markup ini. Sync pricing akan otomatis pakai nilai terbaru.</span>
       </div>
       {message && <div className="mb-4 rounded-lg bg-slate-100 px-4 py-3 text-sm text-slate-700">{message}</div>}
       <div className="mb-4 flex gap-2">
