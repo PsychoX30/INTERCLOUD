@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { RefreshCw, Server, Globe2, Search, Percent, Trash2, XCircle } from "lucide-react";
+import { RefreshCw, Server, Globe2, Search, Percent, Trash2, XCircle, RotateCcw } from "lucide-react";
 import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, Card } from "../ui";
 
@@ -70,6 +70,21 @@ const AdminDomains = () => {
       await load();
     } catch (e) {
       setMessage(e?.response?.data?.detail || "Gagal menghapus domain.");
+    } finally { setBusy(""); }
+  };
+
+  const retryRegistration = async (d) => {
+    if (busy) return;
+    setBusy(`retry-${d.id}`); setMessage("");
+    try {
+      const { data } = await api.post(`/admin/domains/${d.id}/retry-registration`);
+      setMessage(data.fallback
+        ? `Domain ${d.domain} berhasil didaftarkan under Intercloud (customer fallback ${data.customer_id || "35284"}).`
+        : `Domain ${d.domain} berhasil didaftarkan.`);
+      await load();
+    } catch (e) {
+      setMessage(e?.response?.data?.detail || "Retry registrasi domain gagal.");
+      await load();
     } finally { setBusy(""); }
   };
 
@@ -158,8 +173,21 @@ const AdminDomains = () => {
                 <div className="font-bold text-[#0a2350]">{money(d.price || 0)}</div>
                 <div className="text-[10px] text-slate-500">{d.years || 1} tahun</div>
               </div>
-              {canDelete(d) && (
-                <div className="shrink-0">
+              {(d.status === "pending" || canDelete(d)) && (
+                <div className="shrink-0 flex flex-wrap justify-end gap-2">
+                  {d.status === "pending" && (
+                    <button
+                      className="text-[10px] font-bold px-2 py-1.5 rounded border border-amber-300 text-amber-700 hover:bg-amber-50 inline-flex items-center gap-1"
+                      onClick={() => retryRegistration(d)}
+                      disabled={!!busy}
+                      data-testid={`domain-retry-registration-${d.id}`}
+                    >
+                      <RotateCcw className={`h-3 w-3 ${busy === `retry-${d.id}` ? "animate-spin" : ""}`} />
+                      {busy === `retry-${d.id}` ? "Memproses..." : "Retry Registrasi"}
+                    </button>
+                  )}
+                  {canDelete(d) && (
+                  <div>
                   {deleteConfirm === d.id ? (
                     <div className="flex items-center gap-1.5">
                       <button
@@ -186,6 +214,8 @@ const AdminDomains = () => {
                     >
                       <Trash2 className="h-3 w-3" /> Hapus
                     </button>
+                  )}
+                  </div>
                   )}
                 </div>
               )}

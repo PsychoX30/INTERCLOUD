@@ -292,7 +292,13 @@ def _country_code_for(country: str) -> str:
 
 
 async def _resolve_rna_customer(db, rna, user_id) -> dict:
-    """Reuse or create an RDASH customer; otherwise use reseller fallback."""
+    """Reuse or create an RDASH customer; otherwise use reseller fallback.
+
+    Fallback order (hard requirement): if the user's profile is incomplete OR
+    customer lookup/creation fails for any reason, ALWAYS fall back to the
+    reseller's default customer_id so the domain can still be registered under
+    Intercloud. Never let a missing/partial profile block registration.
+    """
     try:
         user_doc = await db.users.find_one({"_id": ObjectId(user_id)})
     except Exception:
@@ -317,6 +323,8 @@ async def _resolve_rna_customer(db, rna, user_id) -> dict:
     if phone and not 9 <= len(phone) <= 20:
         missing.append("phone_length")
     if not user_doc or missing:
+        if rna.customer_id:
+            return {"customer_id": rna.customer_id, "fallback": True, "reason": "integration_customer_id"}
         return {"customer_id": "35284", "fallback": True, "reason": "incomplete_profile:" + ",".join(missing or ["user"])}
     try:
         password = secrets.token_urlsafe(12)
@@ -331,30 +339,39 @@ async def _resolve_rna_customer(db, rna, user_id) -> dict:
         cid = created.get("id") or created.get("customer_id")
         if cid:
             return {"customer_id": str(cid), "fallback": False, "reason": "created"}
-        return {"customer_id": "35284", "fallback": True, "reason": "create_no_id"}
+        return {"customer_id": rna.customer_id or "35284", "fallback": True, "reason": "create_no_id"}
     except Exception as exc:
+        if rna.customer_id:
+            return {"customer_id": rna.customer_id, "fallback": True, "reason": "create_failed->integration_customer_id:" + str(exc)[:120]}
         return {"customer_id": "35284", "fallback": True, "reason": "create_failed:" + str(exc)[:120]}
 
 
-async def _auto_register_domain(db, inv: dict) -> bool:
-    """Registrasi domain otomatis di RNA.id setelah invoice registrasi lunas. Idempotent
-    (hanya memproses domain berstatus pending)."""
-    if not inv.get("domain_id"):
-        return False
-    try:
-        dom = await db.domains.find_one({"_id": _oid(inv["domain_id"]), "status": "pending"})
-    except Exception:
-        return False
-    if not dom:
-        return False
+async def _provision_domain_registration(db, dom: dict) -> dict:
+    """Register a single pending domain at RNA.id/RDASH. Returns a result dict.
+
+    This is the shared provisioning routine used by both the invoice-paid hook
+    (`_auto_register_domain`) and the admin manual retry endpoint. It is
+    idempotent: only acts when the domain is still `pending`. On success the
+    domain is marked `active`; on failure it stays `pending` with a
+    `provision_note` describing the error so the admin can retry.
+
+    Fallback guarantee: customer resolution always yields a customer_id (it
+    falls back to the reseller default 35284 when the profile is incomplete or
+    RDASH customer creation fails), so registration is never blocked by a
+    missing customer.
+    """
+    if dom.get("status") != "pending":
+        return {"ok": False, "skipped": True, "reason": "status_not_pending"}
+    name = dom.get("domain", "")
+    years = int(dom.get("years", 1) or 1)
     now = datetime.now(timezone.utc)
-    fallback_expiry = (now + timedelta(days=365 * int(dom.get("years", 1)))).date().isoformat()
+    fallback_expiry = (now + timedelta(days=365 * years)).date().isoformat()
     rna = await _rna_client(db)
     if rna:
         try:
             cust = await _resolve_rna_customer(db, rna, dom.get("user_id"))
             customer_id = cust["customer_id"]
-            res = await rna.register(dom["domain"], int(dom.get("years", 1)), customer_id=customer_id)
+            res = await rna.register(name, years, customer_id=customer_id)
             ns = [res.get(f"nameserver_{i}") for i in range(1, 6) if res.get(f"nameserver_{i}")]
             update = {
                 "status": "active",
@@ -373,12 +390,12 @@ async def _auto_register_domain(db, inv: dict) -> bool:
                     "Lengkapi profil untuk pindah ke akun sendiri."
                 )
             await db.domains.update_one({"_id": dom["_id"]}, {"$set": update})
-            return True
+            return {"ok": True, "customer_id": customer_id, "fallback": bool(cust.get("fallback"))}
         except Exception as e:
             await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
                 "provision_note": f"Registrasi RNA.id gagal: {str(e)[:150]}. Perlu tindak lanjut manual.",
             }})
-            return False
+            return {"ok": False, "error": str(e)[:150]}
     await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
         "status": "active",
         "registered_at": now.date().isoformat(),
@@ -386,7 +403,22 @@ async def _auto_register_domain(db, inv: dict) -> bool:
         "nameservers": ["ns1.intercloud-digital.com", "ns2.intercloud-digital.com"],
         "provision_note": "Integrasi RNA.id belum aktif - dicatat internal, submit manual ke registrar.",
     }})
-    return True
+    return {"ok": True, "offline_fallback": True}
+
+
+async def _auto_register_domain(db, inv: dict) -> bool:
+    """Registrasi domain otomatis di RNA.id setelah invoice registrasi lunas. Idempotent
+    (hanya memproses domain berstatus pending)."""
+    if not inv.get("domain_id"):
+        return False
+    try:
+        dom = await db.domains.find_one({"_id": _oid(inv["domain_id"]), "status": "pending"})
+    except Exception:
+        return False
+    if not dom:
+        return False
+    res = await _provision_domain_registration(db, dom)
+    return bool(res.get("ok"))
 
 
 @router.post("/client/domains/{did}/renew")
@@ -711,6 +743,41 @@ async def admin_domain_delete(did: str, staff=Depends(get_current_staff)):
         raise HTTPException(409, "Domain aktif tidak dapat dihapus dari sini; lakukan terminasi registrar terlebih dahulu")
     await db.domains.delete_one({"_id": doc["_id"]})
     return {"ok": True, "deleted": did}
+
+
+@router.post("/admin/domains/{did}/retry-registration")
+async def admin_domain_retry_registration(did: str, request: Request,
+                                          staff=Depends(get_current_staff)):
+    """Retry RNA.id/RDASH registration for a pending domain that failed to
+    auto-provision when its invoice was paid. Idempotent and safe to re-run.
+
+    Only `pending` domains can be retried. On success the domain becomes
+    `active`; on failure it stays `pending` with an updated `provision_note`
+    describing the error. Customer resolution always falls back to the reseller
+    default (35284) when the client profile is incomplete or RDASH customer
+    creation fails, so a missing/partial profile never blocks registration.
+    """
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did)})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    if doc.get("status") != "pending":
+        raise HTTPException(409, "Hanya domain berstatus pending yang bisa di-retry registrasinya")
+    res = await _provision_domain_registration(db, doc)
+    if res.get("ok"):
+        await log_audit(db, actor=staff, action="domain.retry_registration",
+                        category="domain", target_id=str(doc["_id"]),
+                        target_label=doc.get("domain", ""),
+                        metadata={"customer_id": res.get("customer_id"), "fallback": res.get("fallback")},
+                        request=request)
+        return {"ok": True, "domain": doc.get("domain"), "customer_id": res.get("customer_id"),
+                "fallback": bool(res.get("fallback")), "offline_fallback": bool(res.get("offline_fallback"))}
+    await log_audit(db, actor=staff, action="domain.retry_registration",
+                    category="domain", target_id=str(doc["_id"]),
+                    target_label=doc.get("domain", ""),
+                    metadata={"error": res.get("error", "unknown")},
+                    request=request)
+    raise HTTPException(502, f"Retry registrasi gagal: {res.get('error', 'unknown error')}")
 
 
 # ------------------------------------------------------------
