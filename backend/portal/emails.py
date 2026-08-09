@@ -662,6 +662,20 @@ def _fmt_idr(v: float | int) -> str:
         return f"Rp {v}"
 
 
+def _cc_from_user(user: dict) -> list:
+    """Return valid, deduplicated billing CC addresses excluding primary email."""
+    primary = (user.get("email") or "").strip().lower()
+    out = []
+    for address in user.get("billing_emails") or []:
+        if not isinstance(address, str):
+            continue
+        address = address.strip().lower()
+        if (re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", address)
+                and address != primary and address not in out):
+            out.append(address)
+    return out
+
+
 def build_context(*, user: dict = None, invoice: dict = None, order: dict = None,
                   extra: dict = None) -> dict:
     ctx: dict = {}
@@ -727,7 +741,8 @@ async def send_via_template(db, *, event_key: str, to_email: str, ctx: dict,
                             invoice_id: Optional[str] = None,
                             order_id: Optional[str] = None,
                             user_id: Optional[str] = None,
-                            attachments: list = None) -> dict:
+                            attachments: list = None,
+                            cc_emails: Optional[list] = None) -> dict:
     """Resolve the event_key → active template, render, send via SMTP, log the outcome.
 
     Never raises - returns a dict `{status, delivered_via, error}` so callers
@@ -747,14 +762,15 @@ async def send_via_template(db, *, event_key: str, to_email: str, ctx: dict,
         db, to_email=to_email, subject=subject, body_html=body,
         event_key=event_key, template_id=tpl_id,
         invoice_id=invoice_id, order_id=order_id, user_id=user_id,
-        attachments=attachments,
+        attachments=attachments, cc_emails=cc_emails,
     )
 
 
 async def deliver(db, *, to_email: str, subject: str, body_html: str,
                   event_key: str = "manual", template_id: Optional[str] = None,
                   invoice_id: Optional[str] = None, order_id: Optional[str] = None,
-                  user_id: Optional[str] = None, attachments: list = None) -> dict:
+                  user_id: Optional[str] = None, attachments: list = None,
+                  cc_emails: Optional[list] = None) -> dict:
     """Low-level dispatch (SMTP or skip). Writes to `email_logs`."""
     smtp = await iv2.get_settings(db, "smtp")
     if not smtp or not smtp.get("enabled"):
@@ -767,7 +783,7 @@ async def deliver(db, *, to_email: str, subject: str, body_html: str,
     try:
         await asyncio.to_thread(iv2.SMTPMailer(smtp).send,
                                 to=to_email, subject=subject, html=body_html,
-                                attachments=attachments)
+                                cc=cc_emails, attachments=attachments)
         await _log_send(db, event_key=event_key, template_id=template_id, to_email=to_email,
                         subject=subject, status="sent", delivered_via="smtp",
                         invoice_id=invoice_id, order_id=order_id, user_id=user_id)
@@ -811,11 +827,13 @@ async def on_invoice_generated(db, invoice_doc: dict, user_doc: dict,
                                order_doc: dict = None) -> None:
     await ensure_pay_token(db, invoice_doc)
     ctx = build_context(user=user_doc, invoice=invoice_doc, order=order_doc)
+    cc = _cc_from_user(user_doc)
     await send_via_template(db, event_key="invoice_generated",
                             to_email=user_doc["email"], ctx=ctx,
                             invoice_id=str(invoice_doc.get("_id") or ""),
                             order_id=str(order_doc.get("_id") or "") if order_doc else None,
-                            user_id=str(user_doc.get("_id") or ""))
+                            user_id=str(user_doc.get("_id") or ""),
+                            cc_emails=cc)
 
 
 async def on_password_reset(db, user_doc: dict, reset_url: str) -> None:
@@ -858,10 +876,12 @@ async def on_invoice_paid(db, invoice_doc: dict, user_doc: dict) -> None:
     other flow that marks an invoice paid and wants the client notified)."""
     await ensure_pay_token(db, invoice_doc)
     ctx = build_context(user=user_doc, invoice=invoice_doc)
+    cc = _cc_from_user(user_doc)
     await send_via_template(db, event_key="payment_received",
                             to_email=user_doc["email"], ctx=ctx,
                             invoice_id=str(invoice_doc.get("_id") or ""),
-                            user_id=str(user_doc.get("_id") or ""))
+                            user_id=str(user_doc.get("_id") or ""),
+                            cc_emails=cc)
 
 
 async def on_service_lifecycle(db, user_doc: dict, service_doc: dict,
@@ -875,9 +895,11 @@ async def on_service_lifecycle(db, user_doc: dict, service_doc: dict,
         "reason": reason or "-",
         "note": note or "-",
     })
+    cc = _cc_from_user(user_doc)
     await send_via_template(db, event_key=event_key,
                             to_email=user_doc["email"], ctx=ctx,
-                            user_id=str(user_doc.get("_id") or ""))
+                            user_id=str(user_doc.get("_id") or ""),
+                            cc_emails=cc)
 
 
 # ============================================================
@@ -954,9 +976,11 @@ async def _run_invoice_reminder_sweep_inner(db, *, now: Optional[datetime] = Non
                 continue
             await ensure_pay_token(db, inv)
             ctx = build_context(user=user, invoice=inv)
+            cc = _cc_from_user(user)
             res = await send_via_template(
                 db, event_key=event_key, to_email=user["email"], ctx=ctx,
                 invoice_id=iid, user_id=str(user["_id"]),
+                cc_emails=cc,
             )
             if res.get("status") in ("sent", "skipped"):
                 fired[event_key] += 1

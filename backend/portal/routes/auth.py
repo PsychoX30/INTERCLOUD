@@ -243,6 +243,14 @@ async def _upsert_crm_from_user(db, u: dict, *, status: str = "prospect", extra_
         "email": email,
         "phone": u.get("phone", ""),
         "company": u.get("company", ""),
+        "attention": u.get("attention", ""),
+        "address_line1": u.get("address_line1", ""),
+        "address_line2": u.get("address_line2", ""),
+        "city": u.get("city", ""),
+        "province": u.get("province", ""),
+        "postal_code": u.get("postal_code", ""),
+        "country": u.get("country", ""),
+        "npwp": u.get("npwp", ""),
         "updated_at": now,
     }
     if existing:

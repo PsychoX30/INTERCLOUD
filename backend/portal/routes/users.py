@@ -378,6 +378,13 @@ async def admin_update_user(uid: str, payload: m.UserUpdateIn, request: Request,
                         before={"is_active": existing.get("is_active")},
                         after={"is_active": u.get("is_active")},
                         severity="warning", request=request)
+    # Mirror updated contact/billing fields to CRM
+    if u.get("role") == "client":
+        try:
+            from .auth import _upsert_crm_from_user as _crm_upsert
+            await _crm_upsert(db, u, status="existing")
+        except Exception:
+            pass
     return _user_public(u)
 
 
@@ -455,8 +462,9 @@ async def admin_user_profile(uid: str, admin=Depends(require_roles("admin", "sal
         dunning_level = "clear"
     return {
         "user": {"id": str(u["_id"]), "name": u.get("name", ""), "email": u.get("email", ""),
-                 "company": u.get("company", ""), "phone": u.get("phone", ""),
-                 "role": u.get("role", "client"), "created_at": _iso(u.get("created_at", ""))},
+                         "company": u.get("company", ""), "phone": u.get("phone", ""),
+                         "role": u.get("role", "client"), "created_at": _iso(u.get("created_at", "")),
+                         "billing_emails": list(u.get("billing_emails") or [])},
         "services": services,
         "hosting_accounts": [s for s in services if s.get("category") == "hosting"],
         "stats": {

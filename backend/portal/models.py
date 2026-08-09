@@ -125,7 +125,7 @@ class UserUpdateIn(BaseModel):
     company: Optional[str] = None
     phone: Optional[str] = None
     assigned_client_ids: Optional[List[str]] = None
-    billing_emails: Optional[List[str]] = None
+    billing_emails: Optional[List[EmailStr]] = None
     password: Optional[str] = None
     attention: Optional[str] = None
     address_line1: Optional[str] = None

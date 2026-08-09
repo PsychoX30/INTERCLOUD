@@ -520,11 +520,13 @@ async def admin_invoice_resend_email(iid: str, request: Request,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gagal membuat PDF: {type(e).__name__}: {e}")
     ctx = _emails.build_context(user=u, invoice=d)
+    cc = _emails._cc_from_user(u)
     event_key = "payment_received" if d.get("status") == "paid" else "invoice_generated"
     result = await _emails.send_via_template(
         db, event_key=event_key, to_email=u["email"], ctx=ctx,
         invoice_id=str(d["_id"]), user_id=str(u["_id"]),
-        attachments=[(f"Invoice-{d.get('number', 'invoice')}.pdf", pdf_bytes, "pdf")])
+        attachments=[(f"Invoice-{d.get('number', 'invoice')}.pdf", pdf_bytes, "pdf")],
+        cc_emails=cc)
     await log_audit(db, actor=staff, action="invoice.resend_email", category="billing",
                     target_type="invoice", target_id=iid, target_label=d.get("number", ""),
                     metadata={"to": u["email"], "delivery": result.get("status"),

@@ -187,9 +187,32 @@ const AdminUsers = () => {
 /* ==== Client 360 profile modal - hosting accounts + billing summary ==== */
 const ClientProfileModal = ({ userId, onClose }) => {
   const [d, setD] = useState(null);
+  const [billingEmails, setBillingEmails] = useState([]);
+  const [newBillingEmail, setNewBillingEmail] = useState("");
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
   useEffect(() => {
-    api.get(`/admin/users/${userId}/profile`).then((r) => setD(r.data)).catch(() => setD(false));
+    api.get(`/admin/users/${userId}/profile`).then((r) => {
+      setD(r.data);
+      setBillingEmails(r.data?.user?.billing_emails || []);
+    }).catch(() => setD(false));
   }, [userId]);
+
+  const addBillingEmail = () => {
+    const v = newBillingEmail.trim().toLowerCase();
+    if (!v || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return;
+    setBillingEmails((prev) => [...new Set([...prev, v])]);
+    setNewBillingEmail("");
+  };
+  const saveBillingEmails = async () => {
+    setSaveBusy(true); setSaveMsg("");
+    try {
+      await api.put(`/admin/users/${userId}`, { billing_emails: billingEmails });
+      setSaveMsg("Tersimpan");
+    } catch (e) {
+      setSaveMsg(e?.response?.data?.detail || "Gagal menyimpan");
+    } finally { setSaveBusy(false); }
+  };
 
   const money = (v) => `Rp ${Number(v || 0).toLocaleString("id-ID")}`;
 
@@ -206,6 +229,40 @@ const ClientProfileModal = ({ userId, onClose }) => {
         </div>
         {d && (
           <div className="p-6 overflow-y-auto space-y-4">
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-2">Detail Klien</div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div><span className="text-slate-500">Telepon:</span> {d.user.phone || "-"}</div>
+                <div><span className="text-slate-500">Peran:</span> <span className="uppercase font-bold">{d.user.role}</span></div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <div className="text-sm font-extrabold text-[#0a2350] mb-2 flex items-center justify-between">
+                <span>Email Penerima Invoice (CC)</span>
+                <div className="flex items-center gap-2">
+                  {saveMsg && <span className={`text-xs font-bold ${saveMsg === "Tersimpan" ? "text-emerald-600" : "text-red-600"}`}>{saveMsg}</span>}
+                  <button onClick={saveBillingEmails} disabled={saveBusy} className="text-xs font-bold text-[#0a2350] bg-[#f5b120] hover:bg-[#e0a010] px-3 py-1 rounded-lg">
+                    {saveBusy ? "Menyimpan..." : "Simpan"}
+                  </button>
+                </div>
+              </div>
+              <div className="flex gap-2 mb-2">
+                <input type="email" value={newBillingEmail} onChange={(e) => setNewBillingEmail(e.target.value)} className={inputClass} placeholder="keuangan@perusahaan.com" data-testid="profile-modal-billingemail-input" />
+                <button onClick={addBillingEmail} className={btnPrimary} data-testid="profile-modal-billingemail-add">Tambah</button>
+              </div>
+              {billingEmails.length > 0 ? (
+                <div className="divide-y divide-slate-200">
+                  {billingEmails.map((em, i) => (
+                    <div key={em} className="py-2 flex items-center justify-between text-sm">
+                      <span>{em}</span>
+                      <button onClick={() => setBillingEmails((prev) => prev.filter((x) => x !== em))} className="text-xs text-red-600 hover:text-red-800 font-bold" data-testid={`profile-modal-billingemail-remove-${i}`}>Hapus</button>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="text-xs text-slate-500">Belum ada email tambahan.</p>}
+            </div>
+
             <div className="grid grid-cols-4 gap-3 text-center">
               {[["Services", d.services.length], ["Orders", d.stats.orders], ["Invoices", d.stats.invoices], ["Tickets", d.stats.tickets]].map(([l, v]) => (
                 <div key={l} className="rounded-xl bg-slate-50 border border-slate-200 p-3">
@@ -507,10 +564,18 @@ const NewUserModal = ({ onClose, onDone }) => {
   const [f, setF] = useState({
     email: "", password: "", name: "", role: "client", company: "", phone: "",
     attention: "", address_line1: "", address_line2: "", city: "", province: "",
-    postal_code: "", country: "Indonesia", npwp: "",
+    postal_code: "", country: "Indonesia", npwp: "", billing_emails: [],
   });
+  const [newEmail, setNewEmail] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const addEmail = () => {
+    const v = newEmail.trim().toLowerCase();
+    if (!v || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return;
+    setF((prev) => ({ ...prev, billing_emails: [...new Set([...prev.billing_emails, v])] }));
+    setNewEmail("");
+  };
+  const removeEmail = (e) => setF((prev) => ({ ...prev, billing_emails: prev.billing_emails.filter((x) => x !== e) }));
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
@@ -558,6 +623,24 @@ const NewUserModal = ({ onClose, onDone }) => {
             <F label="Country" onChange={(v) => setF({ ...f, country: v })} val={f.country} testid="u-country" />
             <F label="NPWP (tax ID)" onChange={(v) => setF({ ...f, npwp: v })} val={f.npwp} testid="u-npwp" full />
           </div>
+        </div>
+
+        <div className="mt-6">
+          <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-2">Billing CC emails</div>
+          <div className="flex gap-2 mb-2">
+            <input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} className={inputClass} placeholder="keuangan@perusahaan.com" data-testid="u-billingemail-input" />
+            <button type="button" onClick={addEmail} className={btnPrimary} data-testid="u-billingemail-add">Add</button>
+          </div>
+          {f.billing_emails.length > 0 && (
+            <div className="divide-y divide-slate-200">
+              {f.billing_emails.map((em, i) => (
+                <div key={em} className="py-2 flex items-center justify-between text-sm">
+                  <span>{em}</span>
+                  <button type="button" onClick={() => removeEmail(em)} className="text-xs text-red-600 hover:text-red-800 font-bold" data-testid={`u-billingemail-remove-${i}`}>Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="mt-5 flex justify-end gap-2">

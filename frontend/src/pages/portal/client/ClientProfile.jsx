@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../../portal/api";
 import { useAuth } from "../../../portal/AuthContext";
 import { PageHeader, Card, btnPrimary, inputClass, labelClass } from "../ui";
-import { User, Building2, Phone, MapPin, Hash, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
+import { User, Building2, Phone, MapPin, Hash, CheckCircle2, XCircle, AlertTriangle, Plus, Trash2 } from "lucide-react";
 
 const ClientProfile = () => {
   const { user, refresh } = useAuth();
@@ -12,7 +12,9 @@ const ClientProfile = () => {
     address_line1: "", address_line2: "", city: "",
     province: "", postal_code: "", country: "Indonesia",
     npwp: "",
+    billing_emails: [],
   });
+  const [billingEmail, setBillingEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -31,11 +33,21 @@ const ClientProfile = () => {
         postal_code: user.postal_code || "",
         country: user.country || "Indonesia",
         npwp: user.npwp || "",
+        billing_emails: user.billing_emails || [],
       });
     }
   }, [user]);
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const addBillingEmail = () => {
+    const v = billingEmail.trim().toLowerCase();
+    if (!v) return;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return;
+    setForm((f) => ({ ...f, billing_emails: [...new Set([...(f.billing_emails || []), v])] }));
+    setBillingEmail("");
+  };
+  const removeBillingEmail = (e) => setForm((f) => ({ ...f, billing_emails: (f.billing_emails || []).filter((x) => x !== e) }));
 
   const save = async () => {
     setBusy(true); setMsg(""); setErr("");
@@ -156,6 +168,30 @@ const ClientProfile = () => {
             <input value={form.attention} onChange={set("attention")} className={inputClass} placeholder={form.name || "Contact person"} data-testid="profile-attention" />
           </label>
         </div>
+      </Card>
+
+      <Card className="p-6 mt-4">
+        <div className="flex items-center gap-2 mb-4">
+          <Plus className="h-5 w-5 text-[#0a2350]" />
+          <h2 className="text-lg font-extrabold text-[#0a2350]">Email Penerima Invoice</h2>
+        </div>
+        <p className="text-xs text-slate-500 mb-3">Email yang ditambahkan akan menerima salinan notifikasi dan invoice (CC).</p>
+        <div className="flex gap-2">
+          <input value={billingEmail} onChange={(e) => setBillingEmail(e.target.value)} className={inputClass} placeholder="keuangan@perusahaan.com" data-testid="profile-billingemail-input" />
+          <button onClick={addBillingEmail} className={btnPrimary} data-testid="profile-billingemail-add">Tambah</button>
+        </div>
+        {(form.billing_emails || []).length > 0 && (
+          <div className="mt-3 divide-y divide-slate-200">
+            {form.billing_emails.map((email, idx) => (
+              <div key={email} className="py-2 flex items-center justify-between">
+                <span className="text-sm">{email}</span>
+                <button onClick={() => removeBillingEmail(email)} className="text-xs text-red-600 hover:text-red-800 font-semibold" data-testid={`profile-billingemail-remove-${idx}`}>
+                  <Trash2 className="h-3.5 w-3.5 inline mr-1" />Hapus
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       {!isComplete && (
