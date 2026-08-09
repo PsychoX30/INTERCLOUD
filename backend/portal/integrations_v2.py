@@ -619,6 +619,11 @@ class RdashClient:
             self.markup_pct = float(opts.get("markup_pct", self.MARKUP_PCT) or self.MARKUP_PCT)
         except (TypeError, ValueError):
             self.markup_pct = self.MARKUP_PCT
+        # Separate SSL markup — defaults to same as domain markup when unset
+        try:
+            self.ssl_markup_pct = float(opts.get("ssl_markup_pct", self.markup_pct) or self.markup_pct)
+        except (TypeError, ValueError):
+            self.ssl_markup_pct = self.markup_pct
 
     def _auth(self):
         return (self.reseller_id, self.api_key)
@@ -839,15 +844,23 @@ class RdashClient:
         data = await self._req("POST", "/ssl/csr/generate", data=form_fields)
         return data.get("data") or {}
 
-    def ssl_prices_with_markup(self, raw_prices: list) -> list:
+    def ssl_prices_with_markup(self, raw_prices: list, markup_pct: float | None = None) -> list:
         """Normalize SSL price rows and apply portal-side markup.
+
+        ``markup_pct`` is intentionally separate from domain markup so SSL
+        pricing can be administered independently. When omitted, use the
+        client SSL setting as a compatibility fallback.
 
         RDASH returns rows like:
           {"product": {"id": 1, "name": "...", ...}, "1": "80000", "2": "144000"}
-        where the numeric keys are term lengths in YEARS.  We convert to months
+        where the numeric keys are term lengths in YEARS. We convert to months
         (12/24/36) so they match the SSLOrderIn.period_months field.
         """
-        multiplier = 1 + self.markup_pct / 100
+        try:
+            effective_markup = float(self.ssl_markup_pct if markup_pct is None else markup_pct)
+        except (TypeError, ValueError):
+            effective_markup = self.ssl_markup_pct
+        multiplier = 1 + effective_markup / 100
         result = []
         for row in raw_prices:
             if not isinstance(row, dict):

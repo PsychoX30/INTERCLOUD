@@ -2,10 +2,13 @@ import React, { useEffect, useState } from "react";
 import { RefreshCw, Server, Globe2, Search, Percent, Trash2, XCircle, RotateCcw } from "lucide-react";
 import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, Card } from "../ui";
+import { useAuth } from "../../../portal/AuthContext";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID");
 
 const AdminDomains = () => {
+  const { user: me } = useAuth();
+  const isAdmin = me?.role === "admin";
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
@@ -26,7 +29,7 @@ const AdminDomains = () => {
     } catch {}
   };
 
-  useEffect(() => { load().catch(() => setRows([])); loadMarkup(); }, []);
+  useEffect(() => { load().catch(() => setRows([])); if (isAdmin) loadMarkup(); }, []);
 
   const syncPricing = async () => {
     if (busy) return;
@@ -103,14 +106,17 @@ const AdminDomains = () => {
     <div>
       <PageHeader title="Domain Management" subtitle="Kelola domain klien, status registrar, nameserver, dan sinkronisasi RDASH." />
       <div className="flex flex-wrap gap-2 mb-5">
-        <button className={btnPrimary} onClick={syncPricing} disabled={!!busy} data-testid="sync-domain-pricing">
-          <RefreshCw className={`h-4 w-4 ${busy === "pricing" ? "animate-spin" : ""}`} /> Sync Pricing RDASH
-        </button>
+        {isAdmin && (
+          <button className={btnPrimary} onClick={syncPricing} disabled={!!busy} data-testid="sync-domain-pricing">
+            <RefreshCw className={`h-4 w-4 ${busy === "pricing" ? "animate-spin" : ""}`} /> Sync Pricing RDASH
+          </button>
+        )}
         <button className={btnSecondary} onClick={syncAll} disabled={!!busy} data-testid="sync-domain-status">
           <Server className={`h-4 w-4 ${busy === "domains" ? "animate-spin" : ""}`} /> Sync Status Domain
         </button>
         <button className={btnSecondary} onClick={() => load()} disabled={!!busy}>Refresh</button>
       </div>
+      {isAdmin && (
       <div className="mb-5 flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-4">
         <Percent className="h-5 w-5 text-slate-400" />
         <span className="text-sm font-semibold text-slate-700">Markup Harga Domain:</span>
@@ -130,6 +136,7 @@ const AdminDomains = () => {
         </button>
         <span className="text-xs text-slate-400">Harga jual = harga reseller + markup ini. Sync pricing akan otomatis pakai nilai terbaru.</span>
       </div>
+      )}
       {message && <div className="mb-4 rounded-lg bg-slate-100 px-4 py-3 text-sm text-slate-700">{message}</div>}
       <div className="mb-4 flex gap-2">
         <div className="relative flex-1">

@@ -2,14 +2,22 @@ import React, { useEffect, useState } from "react";
 import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, Card, btnPrimary, btnSecondary } from "../ui";
 import { ShieldCheck, Search } from "lucide-react";
+import { useAuth } from "../../../portal/AuthContext";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID");
 
 const AdminSSL = () => {
+  const { user: me } = useAuth();
+  const isAdmin = me?.role === "admin";
   const [orders, setOrders] = useState(null);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
+
+  // SSL-specific markup (admin only)
+  const [markup, setMarkup] = useState(7.0);
+  const [markupConfigured, setMarkupConfigured] = useState(false);
+  const [markupBusy, setMarkupBusy] = useState(false);
 
   const load = async () => {
     try {
@@ -18,7 +26,27 @@ const AdminSSL = () => {
     } catch { setOrders([]); }
   };
 
-  useEffect(() => { load(); }, []);
+  const loadMarkup = async () => {
+    try {
+      const { data } = await api.get("/admin/ssl/markup");
+      if (data.markup_pct != null) setMarkup(data.markup_pct);
+      setMarkupConfigured(!!data.configured);
+    } catch {}
+  };
+
+  useEffect(() => { load(); if (isAdmin) loadMarkup(); }, []);
+
+  const saveMarkup = async () => {
+    if (markupBusy) return;
+    setMarkupBusy(true); setMessage("");
+    try {
+      const { data } = await api.post("/admin/ssl/markup", { markup_pct: markup });
+      setMessage(`Markup SSL disimpan: ${data.markup_pct}%.`);
+      setMarkupConfigured(true);
+    } catch (e) {
+      setMessage(e?.response?.data?.detail || "Gagal menyimpan markup SSL.");
+    } finally { setMarkupBusy(false); }
+  };
 
   const updateStatus = async (id, status) => {
     setBusy(id); setMessage("");
@@ -45,6 +73,42 @@ const AdminSSL = () => {
         <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700" data-testid="ssl-admin-message">
           {message}
         </div>
+      )}
+
+      {isAdmin && (
+        <Card className="mb-4 p-4" data-testid="ssl-markup-card">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex-1 min-w-[200px]">
+              <div className="text-sm font-bold text-[#0a2350]">Markup Harga SSL</div>
+              <div className="text-[11px] text-slate-500">
+                {markupConfigured
+                  ? "Persentase markup di atas harga reseller RNA.id, khusus SSL (terpisah dari markup domain)."
+                  : "Belum diatur — saat ini mengikuti markup domain. Set nilai khusus SSL di sini."}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                className="w-24 rounded border border-slate-200 px-2 py-1.5 text-sm text-center outline-none focus:border-[#f5b120]"
+                value={markup}
+                min={0}
+                max={100}
+                step="0.1"
+                onChange={(e) => setMarkup(e.target.value)}
+                data-testid="ssl-markup-input"
+              />
+              <span className="text-sm text-slate-500">%</span>
+              <button
+                className={btnPrimary}
+                onClick={saveMarkup}
+                disabled={markupBusy}
+                data-testid="ssl-markup-save"
+              >
+                {markupBusy ? "Menyimpan..." : "Simpan"}
+              </button>
+            </div>
+          </div>
+        </Card>
       )}
 
       <div className="flex gap-2 mb-4">

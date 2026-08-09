@@ -26,6 +26,23 @@ async def _rna_client(db):
     return None
 
 
+_SSL_PRICING_KEY = "ssl_pricing"
+_SSL_DEFAULT_MARKUP_PCT = 7.0
+
+
+async def _ssl_markup_pct(db) -> float:
+    """Return the SSL-specific markup percentage, or domain markup as fallback."""
+    doc = await db.settings.find_one({"key": _SSL_PRICING_KEY})
+    if doc and doc.get("value", {}).get("markup_pct") is not None:
+        return float(doc["value"]["markup_pct"])
+    # Fallback: inherit the domain markup so the two stay in sync when SSL markup
+    # has never been explicitly configured.
+    domain_doc = await db.settings.find_one({"key": "domain_pricing"})
+    if domain_doc and domain_doc.get("value", {}).get("markup_pct") is not None:
+        return float(domain_doc["value"]["markup_pct"])
+    return _SSL_DEFAULT_MARKUP_PCT
+
+
 # ---------------------------------------------------------------------------
 #  Client endpoints
 # ---------------------------------------------------------------------------
@@ -39,7 +56,8 @@ async def client_ssl_catalog(request: Request, user=Depends(get_current_user)):
         return {"products": [], "source": "offline"}
     try:
         raw = await rna.ssl_prices(limit=50)
-        priced = rna.ssl_prices_with_markup(raw)
+        markup = await _ssl_markup_pct(db)
+        priced = rna.ssl_prices_with_markup(raw, markup_pct=markup)
         return {"products": priced, "source": "rna"}
     except Exception as e:
         logging.getLogger("portal.ssl").warning("SSL catalog fetch failed: %s", e)
@@ -58,7 +76,8 @@ async def client_ssl_order(payload: m.SSLOrderIn, request: Request,
 
     # Resolve product price from RNA
     raw = await rna.ssl_prices(limit=50)
-    priced = rna.ssl_prices_with_markup(raw)
+    markup = await _ssl_markup_pct(db)
+    priced = rna.ssl_prices_with_markup(raw, markup_pct=markup)
     product = next((p for p in priced if p["product_id"] == payload.product_id), None)
     if not product:
         raise HTTPException(400, "Produk SSL tidak ditemukan.")
@@ -164,6 +183,43 @@ async def client_ssl_order_detail(oid: str, user=Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 #  Admin endpoints
 # ---------------------------------------------------------------------------
+
+@router.get("/admin/ssl/markup")
+async def admin_ssl_markup_get(admin=Depends(get_current_admin)):
+    """Return the SSL-specific markup. Restricted to role=admin."""
+    db = await _get_db()
+    doc = await db.settings.find_one({"key": _SSL_PRICING_KEY})
+    configured = bool(doc and doc.get("value", {}).get("markup_pct") is not None)
+    return {"markup_pct": await _ssl_markup_pct(db), "configured": configured}
+
+
+@router.post("/admin/ssl/markup")
+async def admin_ssl_markup_set(payload: dict, request: Request,
+                               admin=Depends(get_current_admin)):
+    """Set SSL markup independently from domain markup. Admin only."""
+    try:
+        markup = float(payload.get("markup_pct"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "markup_pct wajib berupa angka")
+    if markup < 0 or markup > 100:
+        raise HTTPException(400, "markup_pct harus 0-100")
+
+    db = await _get_db()
+    previous = await _ssl_markup_pct(db)
+    await db.settings.update_one(
+        {"key": _SSL_PRICING_KEY},
+        {"$set": {"value": {"markup_pct": markup, "updated_at": _now(),
+                             "updated_by": str(admin["id"])}}},
+        upsert=True,
+    )
+    await log_audit(
+        db, actor=admin, action="ssl.markup_updated", category="ssl",
+        target_type="setting", target_id=_SSL_PRICING_KEY,
+        target_label="SSL pricing markup",
+        before={"markup_pct": previous}, after={"markup_pct": markup},
+        request=request,
+    )
+    return {"ok": True, "markup_pct": markup}
 
 @router.get("/admin/ssl/orders")
 async def admin_ssl_orders(admin=Depends(get_current_admin)):
