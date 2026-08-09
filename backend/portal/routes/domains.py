@@ -284,6 +284,7 @@ async def client_domain_order(payload: m.DomainOrderIn, request: Request, user=D
 
 
 _RDASH_CUSTOMER_REQUIRED = ["name", "email", "phone", "organization", "address_line1", "city", "province", "postal_code"]
+_RNA_FALLBACK_CUSTOMER_ID = "35284"
 
 
 def _country_code_for(country: str) -> str:
@@ -323,9 +324,7 @@ async def _resolve_rna_customer(db, rna, user_id) -> dict:
     if phone and not 9 <= len(phone) <= 20:
         missing.append("phone_length")
     if not user_doc or missing:
-        if rna.customer_id:
-            return {"customer_id": rna.customer_id, "fallback": True, "reason": "integration_customer_id"}
-        return {"customer_id": "35284", "fallback": True, "reason": "incomplete_profile:" + ",".join(missing or ["user"])}
+        return {"customer_id": _RNA_FALLBACK_CUSTOMER_ID, "fallback": True, "reason": "incomplete_profile:" + ",".join(missing or ["user"])}
     try:
         password = secrets.token_urlsafe(12)
         created = await rna.create_customer(
@@ -339,11 +338,9 @@ async def _resolve_rna_customer(db, rna, user_id) -> dict:
         cid = created.get("id") or created.get("customer_id")
         if cid:
             return {"customer_id": str(cid), "fallback": False, "reason": "created"}
-        return {"customer_id": rna.customer_id or "35284", "fallback": True, "reason": "create_no_id"}
+        return {"customer_id": _RNA_FALLBACK_CUSTOMER_ID, "fallback": True, "reason": "create_no_id"}
     except Exception as exc:
-        if rna.customer_id:
-            return {"customer_id": rna.customer_id, "fallback": True, "reason": "create_failed->integration_customer_id:" + str(exc)[:120]}
-        return {"customer_id": "35284", "fallback": True, "reason": "create_failed:" + str(exc)[:120]}
+        return {"customer_id": _RNA_FALLBACK_CUSTOMER_ID, "fallback": True, "reason": "create_failed:" + str(exc)[:120]}
 
 
 async def _provision_domain_registration(db, dom: dict) -> dict:

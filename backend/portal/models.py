@@ -299,6 +299,13 @@ class DomainRenewIn(BaseModel):
     years: int = Field(default=1, ge=1, le=10)
 
 
+class DomainTransferIn(BaseModel):
+    domain: str = Field(min_length=4, max_length=253)
+    auth_code: str = Field(min_length=1, max_length=255)
+    years: int = Field(default=1, ge=1, le=10)
+    buy_whois_protection: bool = False
+
+
 class DomainNameserversIn(BaseModel):
     nameservers: List[str] = Field(min_length=2, max_length=4)
 

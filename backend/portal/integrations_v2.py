@@ -771,6 +771,22 @@ class RdashClient:
                                data={"period": str(period), "current_date": current_date})
         return data.get("data") or {}
 
+    async def transfer(self, name: str, auth_code: str, period: int,
+                       customer_id: str = None, nameservers: list = None,
+                       buy_whois_protection: bool = False) -> dict:
+        form = {"name": name, "auth_code": auth_code, "period": str(period),
+                "customer_id": str(customer_id or self.customer_id),
+                "buy_whois_protection": str(buy_whois_protection).lower()}
+        for i, ns in enumerate((nameservers or self.default_ns)[:5]):
+            form[f"nameserver[{i}]"] = ns
+        data = await self._req("POST", "/domains/transfer", data=form)
+        return data.get("data") or {}
+
+    async def transfer_cancel(self, domain_id: str, period: int, current_date: str) -> dict:
+        data = await self._req("POST", f"/domains/{domain_id}/transfer/cancel",
+                               data={"period": str(period), "current_date": current_date})
+        return data.get("data") or {}
+
     async def update_ns(self, domain_id: str, nameservers: list) -> dict:
         form = {f"nameserver[{i}]": ns for i, ns in enumerate(nameservers[:5])}
         data = await self._req("PUT", f"/domains/{domain_id}/ns", data=form)
