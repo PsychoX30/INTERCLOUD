@@ -653,17 +653,54 @@ class RdashClient:
         return data.get("data") or []
 
     async def prices_with_markup(self) -> dict:
-        """Fetch reseller prices and apply configurable markup. Returns {tld: {register, renew, transfer}}."""
+        """Fetch reseller prices and apply configurable markup.
+
+        RDASH currently returns rows shaped like::
+
+            {"domain_extension": {"extension": ".com"},
+             "registration": {"1": 205000, ...},
+             "renewal": {"1": 205000, ...},
+             "transfer": "205000.00"}
+
+        Older API payloads used flat ``tld``, ``register`` and ``renew`` keys.
+        Accept both forms so a harmless provider schema change cannot silently
+        turn the synchronized price map into an empty object.
+        """
         raw = await self.prices()
         result = {}
+        multiplier = 1 + self.markup_pct / 100
+
+        def amount(value) -> float:
+            try:
+                return float(value or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
         for item in raw:
-            tld = item.get("tld", "")
+            if not isinstance(item, dict):
+                continue
+            extension = item.get("domain_extension") or {}
+            tld = str(item.get("tld") or extension.get("extension") or "").strip().lower()
             if not tld:
                 continue
+            if not tld.startswith("."):
+                tld = f".{tld}"
+
+            registration = item.get("registration") or item.get("register") or {}
+            renewal = item.get("renewal") or item.get("renew") or {}
+            register_price = registration.get("1") if isinstance(registration, dict) else registration
+            renew_price = renewal.get("1") if isinstance(renewal, dict) else renewal
+            transfer_price = item.get("transfer")
+
+            # Exclude malformed/provider-disabled rows instead of publishing a
+            # misleading IDR 0 price. A zero transfer price is valid only when
+            # RDASH explicitly returns it; registration must always be positive.
+            if amount(register_price) <= 0 or amount(renew_price) <= 0:
+                continue
             result[tld] = {
-                "register": int(round((float(item.get("register", 0)) or 0) * (1 + self.markup_pct / 100))),
-                "renew":    int(round((float(item.get("renew", 0)) or 0) * (1 + self.markup_pct / 100))),
-                "transfer": int(round((float(item.get("transfer", 0)) or 0) * (1 + self.markup_pct / 100))),
+                "register": int(round(amount(register_price) * multiplier)),
+                "renew": int(round(amount(renew_price) * multiplier)),
+                "transfer": int(round(amount(transfer_price) * multiplier)),
             }
         return result
 
