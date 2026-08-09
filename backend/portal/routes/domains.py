@@ -134,6 +134,12 @@ async def _domain_price_map(db, *, refresh=False, markup_pct: float | None = Non
     When `markup_pct` is supplied it overrides the integration option for this fetch
     (used after the admin changes markup so the re-sync uses the new value, not the
     stale integration option).
+
+    Resolution priority:
+      1. Cached synced prices (db.settings.domain_pricing.prices) — source of truth.
+      2. Live RDASH prices with the configured markup.
+      3. Admin-editable fallback prices (db.settings.domain_pricing.fallback_prices).
+      4. Hardcoded fallback (_TLD_PRICES_IDR).
     """
     cached = await db.settings.find_one({"key": "domain_pricing"})
     cached_prices = (cached or {}).get("value", {}).get("prices") or {}
@@ -153,6 +159,9 @@ async def _domain_price_map(db, *, refresh=False, markup_pct: float | None = Non
                 return prices
         except Exception:
             pass
+    admin_fallback = ((cached or {}).get("value", {}) or {}).get("fallback_prices")
+    if admin_fallback and isinstance(admin_fallback, dict):
+        return admin_fallback
     return cached_prices or _TLD_PRICES_IDR
 
 
@@ -428,9 +437,16 @@ def _serialize_domain(d: dict) -> dict:
         "nameservers": d.get("nameservers", []),
         "price": d.get("price", 0),
         "invoice_id": d.get("invoice_id"),
+        "order_ref": d.get("order_ref"),
         "pending_renewal": bool(d.get("pending_renewal")),
         "renewal_invoice_id": (d.get("pending_renewal") or {}).get("invoice_id"),
+        "parked": bool(d.get("parked")),
+        "parking_ip": d.get("parking_ip"),
+        "forwarded": bool(d.get("forwarded")),
+        "forward_target": d.get("forward_target"),
         "provision_note": d.get("provision_note", ""),
+        "cancelled_at": d.get("cancelled_at"),
+        "cancelled_reason": d.get("cancelled_reason"),
         "created_at": _iso(d.get("created_at", "")),
         "user_name": user_name,
         "user_email": user_email,
@@ -476,7 +492,13 @@ async def client_domain_pricing(user=Depends(get_current_user), db=Depends(_get_
     doc = await db.settings.find_one({"key": "domain_pricing"})
     v = (doc or {}).get("value", {})
     prices = await _domain_price_map(db)
-    src = "cache" if v.get("synced_at") else ("rna" if v.get("prices") else "fallback")
+    if v.get("prices"):
+        src = "cache"
+    elif v.get("synced_at") and not v.get("prices"):
+        # Sync pernah jalan tapi harga kosong (RNA tidak memberi data)
+        src = "stale"
+    else:
+        src = "fallback"
     return {"live": src == "rna", "source": src,
             "prices": prices,
             "synced_at": v.get("synced_at"),
@@ -506,30 +528,34 @@ async def admin_domain_sync_pricing(admin=Depends(get_current_admin)):
         raise HTTPException(503, "Integrasi RNA.id tidak aktif")
     try:
         prices = await rna.prices_with_markup()
-        await db.settings.update_one(
-            {"key": "domain_pricing"},
-            {"$set": {"value": {"prices": prices, "markup_pct": rna.markup_pct,
-                                 "synced_at": _now()}}},
-            upsert=True,
-        )
-        return {"ok": True, "prices": prices, "count": len(prices),
-                "markup_pct": rna.markup_pct}
     except Exception as e:
         raise HTTPException(502, f"Gagal sync pricing: {e}")
+    if not prices:
+        raise HTTPException(502, "RNA.id mengembalikan daftar harga kosong; periksa kredensial / saldo / koneksi reseller")
+    await db.settings.update_one(
+        {"key": "domain_pricing"},
+        {"$set": {"value": {"prices": prices, "markup_pct": rna.markup_pct,
+                             "synced_at": _now()}}},
+        upsert=True,
+    )
+    return {"ok": True, "prices": prices, "count": len(prices),
+            "markup_pct": rna.markup_pct}
 
 
 @router.get("/admin/domains/markup")
 async def admin_domain_markup_get(admin=Depends(get_current_admin)):
-    """Get current markup percentage."""
+    """Get current markup percentage and fallback price overrides."""
     db = await _get_db()
     doc = await db.settings.find_one({"key": "domain_pricing"})
     v = (doc or {}).get("value", {})
-    return {"markup_pct": v.get("markup_pct", 7.0)}
+    return {"markup_pct": v.get("markup_pct", 7.0),
+            "fallback_prices": v.get("fallback_prices") or _TLD_PRICES_IDR,
+            "synced_at": v.get("synced_at")}
 
 
 @router.post("/admin/domains/markup")
 async def admin_domain_markup_set(payload: dict, admin=Depends(get_current_admin)):
-    """Set markup percentage and optionally re-sync pricing."""
+    """Set markup percentage and optional fallback price overrides, then optionally re-sync."""
     db = await _get_db()
     new_markup = float(payload.get("markup_pct", 7.0))
     if new_markup < 0 or new_markup > 100:
@@ -544,6 +570,8 @@ async def admin_domain_markup_set(payload: dict, admin=Depends(get_current_admin
     doc = await db.settings.find_one({"key": "domain_pricing"})
     v = (doc or {}).get("value", {})
     v["markup_pct"] = new_markup
+    if "fallback_prices" in payload and isinstance(payload["fallback_prices"], dict):
+        v["fallback_prices"] = payload["fallback_prices"]
     await db.settings.update_one(
         {"key": "domain_pricing"},
         {"$set": {"value": v}}, upsert=True)
@@ -600,6 +628,23 @@ async def admin_domain_sync_all(admin=Depends(get_current_admin)):
 
 
 
+
+
+@router.delete("/admin/domains/{did}")
+async def admin_domain_delete(did: str, staff=Depends(get_current_staff)):
+    """Remove an unprovisioned or cancelled local domain order.
+
+    Active registrar domains are deliberately protected: deleting the local
+    record must never imply deletion at the registrar.
+    """
+    db = await _get_db()
+    doc = await db.domains.find_one({"_id": _oid(did)})
+    if not doc:
+        raise HTTPException(404, "Domain not found")
+    if doc.get("status") not in ("pending", "cancelled"):
+        raise HTTPException(409, "Domain aktif tidak dapat dihapus dari sini; lakukan terminasi registrar terlebih dahulu")
+    await db.domains.delete_one({"_id": doc["_id"]})
+    return {"ok": True, "deleted": did}
 
 
 # ------------------------------------------------------------

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { RefreshCw, Server, Globe2, Search, Percent } from "lucide-react";
+import { RefreshCw, Server, Globe2, Search, Percent, Trash2, XCircle } from "lucide-react";
 import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, Card } from "../ui";
 
@@ -12,6 +12,7 @@ const AdminDomains = () => {
   const [search, setSearch] = useState("");
   const [markup, setMarkup] = useState(7.0);
   const [markupBusy, setMarkupBusy] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   const load = async () => {
     const { data } = await api.get("/admin/domains");
@@ -59,6 +60,19 @@ const AdminDomains = () => {
     finally { setBusy(""); }
   };
 
+  const doDelete = async (d) => {
+    if (busy) return;
+    setBusy(`del-${d.id}`); setMessage("");
+    try {
+      await api.delete(`/admin/domains/${d.id}`);
+      setMessage(`Domain ${d.domain} dihapus.`);
+      setDeleteConfirm(null);
+      await load();
+    } catch (e) {
+      setMessage(e?.response?.data?.detail || "Gagal menghapus domain.");
+    } finally { setBusy(""); }
+  };
+
   if (!rows) return <Loading />;
 
   const filtered = search.trim()
@@ -67,6 +81,8 @@ const AdminDomains = () => {
         (d.user_email || "").toLowerCase().includes(search.toLowerCase()) ||
         (d.user_name || "").toLowerCase().includes(search.toLowerCase()))
     : rows;
+
+  const canDelete = (d) => d.status === "pending" || d.status === "cancelled";
 
   return (
     <div>
@@ -123,6 +139,7 @@ const AdminDomains = () => {
                   <StatusBadge status={d.status} />
                   {d.parked && <span className="text-[10px] font-bold uppercase bg-slate-100 text-slate-600 rounded-full px-2 py-0.5">Parked</span>}
                   {d.forwarded && <span className="text-[10px] font-bold uppercase bg-blue-100 text-blue-700 rounded-full px-2 py-0.5">Forwarded</span>}
+                  {d.pending_renewal && <span className="text-[10px] font-bold uppercase bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">Renewal pending</span>}
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
                   {(d.user_name || d.user_email) ? `${d.user_name || ""} ${d.user_email ? "· " + d.user_email : ""}` : "—"} · {d.registrar || "RNA"} · dibuat {fullDateTime(d.created_at)}
@@ -131,11 +148,47 @@ const AdminDomains = () => {
                 <div className="mt-1 text-xs text-slate-500">
                   NS: {(d.nameservers || []).join(", ") || "belum tersedia"}
                 </div>
+                {d.cancelled_at && (
+                  <div className="mt-1 text-xs text-red-600">
+                    Dibatalkan {d.cancelled_at}: {d.cancelled_reason || "(tanpa alasan)"}
+                  </div>
+                )}
               </div>
               <div className="text-right shrink-0">
                 <div className="font-bold text-[#0a2350]">{money(d.price || 0)}</div>
                 <div className="text-[10px] text-slate-500">{d.years || 1} tahun</div>
               </div>
+              {canDelete(d) && (
+                <div className="shrink-0">
+                  {deleteConfirm === d.id ? (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        className="text-[10px] font-bold px-2 py-1.5 rounded bg-red-600 text-white hover:bg-red-700"
+                        onClick={() => doDelete(d)}
+                        disabled={!!busy}
+                        data-testid={`domain-delete-confirm-${d.id}`}
+                      >
+                        {busy === `del-${d.id}` ? "..." : "Ya, hapus"}
+                      </button>
+                      <button
+                        className="text-[10px] font-bold px-2 py-1.5 rounded border border-slate-200 text-slate-600"
+                        onClick={() => setDeleteConfirm(null)}
+                        data-testid={`domain-delete-cancel-${d.id}`}
+                      >
+                        Tidak
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="text-[10px] font-bold px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 inline-flex items-center gap-1"
+                      onClick={() => setDeleteConfirm(d.id)}
+                      data-testid={`domain-delete-btn-${d.id}`}
+                    >
+                      <Trash2 className="h-3 w-3" /> Hapus
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             {d.provision_note && <div className="mt-3 border-t pt-2 text-xs text-slate-500">{d.provision_note}</div>}
           </Card>

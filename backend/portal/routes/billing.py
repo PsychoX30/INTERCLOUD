@@ -200,7 +200,44 @@ async def admin_update_invoice_status(
         await _auto_register_domain(db, d)
         await _apply_domain_renewal(db, d)
 
+    # Invoice dibatalkan → batalkan order domain yang masih menunggu (pending)
+    # dan perpanjangan yang belum dibayar, agar tidak muncul sebagai "pending
+    # payment" selamanya di sisi klien.
+    if payload.status == "cancelled" and d.get("status") == "cancelled":
+        await _cancel_domain_for_invoice(db, d)
+
     return await _serialize_invoice(db, d)
+
+
+async def _cancel_domain_for_invoice(db, inv: dict) -> None:
+    """Batal records domain yang terkait invoice yang dibatalkan.
+
+    - Registrasi (domain_id): domain berstatus pending dibatalkan (status
+      -> cancelled) supaya tidak lagi muncul sebagai order menunggu bayar.
+    - Perpanjangan (domain_renewal): pending_renewal dihapus supaya domain
+      kembali bisa diperpanjang.
+    """
+    if not inv:
+        return
+    did = inv.get("domain_id")
+    if did:
+        try:
+            await db.domains.update_many(
+                {"_id": _oid(did), "status": "pending"},
+                {"$set": {"status": "cancelled",
+                          "cancelled_at": _now(),
+                          "cancelled_reason": f"Invoice {inv.get('number','')} dibatalkan"}})
+        except Exception:
+            pass
+    ren = inv.get("domain_renewal") or {}
+    ren_did = ren.get("domain_id")
+    if ren_did:
+        try:
+            await db.domains.update_one(
+                {"_id": _oid(ren_did), "pending_renewal.invoice_id": str(inv["_id"])},
+                {"$unset": {"pending_renewal": ""}})
+        except Exception:
+            pass
 
 
 # Quotations

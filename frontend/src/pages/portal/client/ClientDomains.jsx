@@ -1,90 +1,159 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { api } from "../../../portal/api";
-import { PageHeader, Card, StatusBadge, Loading, btnPrimary, inputClass } from "../ui";
-import { Globe, Search, RefreshCw, CheckCircle2, XCircle, FileSearch, Lightbulb, AlertTriangle } from "lucide-react";
+import { PageHeader, Loading, EmptyState, StatusBadge, Card, btnPrimary, btnSecondary, inputClass } from "../ui";
+import { Globe, Settings, Server, ArrowRight, Mail, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID");
 
-const WhoisCard = () => {
-  const [q, setQ] = useState("");
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState("");
+const ClientDomainManager = ({ domain }) => {
+  const [tab, setTab] = useState("dns");
+  const [dns, setDns] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
 
-  const lookup = async () => {
-    if (!q.trim() || !q.includes(".")) return;
-    setBusy(true); setErr(""); setData(null);
+  const loadDns = async () => {
     try {
-      const { data: w } = await api.get("/client/domains/whois", { params: { domain: q.trim().toLowerCase() } });
-      setData(w);
-    } catch (e) {
-      setErr(e?.response?.data?.detail || "Lookup gagal");
-    } finally { setBusy(false); }
+      const { data } = await api.get(`/client/domains/${domain.id}/dns`);
+      setDns(data.records || []);
+    } catch { setDns([]); }
   };
 
-  return (
-    <Card className="p-6 mt-6" data-testid="whois-card">
-      <div className="text-sm font-extrabold text-[#0a2350] mb-1">WHOIS Lookup</div>
-      <p className="text-[11px] text-slate-500 mb-3">Lihat informasi registrasi domain yang sudah terdaftar (data live).</p>
-      <div className="flex gap-2">
-        <input
-          data-testid="whois-input"
-          className={`${inputClass} flex-1`}
-          placeholder="contoh: intercloud-digital.com"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && lookup()}
-        />
-        <button data-testid="whois-btn" className={btnPrimary} onClick={lookup} disabled={busy || !q.includes(".")}>
-          <FileSearch className="h-4 w-4" /> {busy ? "Mencari..." : "Lookup"}
-        </button>
+  useEffect(() => {
+    if (domain.status === "active" && domain.order_ref) loadDns();
+  }, [domain.id]);
+
+  const tabs = [
+    { key: "dns", label: "DNS Records", icon: Server },
+    { key: "park", label: "Parking", icon: Globe },
+    { key: "forward", label: "URL Forwarding", icon: ArrowRight },
+    { key: "email", label: "Email Forwarding", icon: Mail },
+  ];
+
+  const doPark = async () => {
+    setBusy(true); setMsg("");
+    try {
+      await api.post(`/client/domains/${domain.id}/park`, { ip: "157.20.32.183" });
+      setMsg("Domain berhasil diparkir ke 157.20.32.183");
+    } catch (e) { setMsg(e?.response?.data?.detail || "Gagal park domain"); }
+    finally { setBusy(false); }
+  };
+
+  const doForward = async () => {
+    const target = prompt("Masukkan URL / IP target forwarding:");
+    if (!target) return;
+    setBusy(true); setMsg("");
+    try {
+      await api.post(`/client/domains/${domain.id}/forward`, { target, type: target.includes("://") || target.includes(".") ? "url" : "ip" });
+      setMsg(`Domain diforward ke ${target}`);
+    } catch (e) { setMsg(e?.response?.data?.detail || "Gagal set forwarding"); }
+    finally { setBusy(false); }
+  };
+
+  const doEmailFwd = async () => {
+    const target = prompt("Masukkan email tujuan forwarding (contoh: user@gmail.com):");
+    if (!target) return;
+    setBusy(true); setMsg("");
+    try {
+      await api.post(`/client/domains/${domain.id}/email-forward`, { target });
+      setMsg(`Email forwarding diatur ke ${target}`);
+    } catch (e) { setMsg(e?.response?.data?.detail || "Gagal set email forwarding"); }
+    finally { setBusy(false); }
+  };
+
+  if (!domain.order_ref || domain.status !== "active") {
+    return (
+      <div className="mt-4 p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800 flex items-center gap-3">
+        <AlertTriangle className="h-5 w-5 shrink-0" />
+        <span>Domain management hanya tersedia untuk domain yang sudah aktif dan terdaftar di registrar.</span>
       </div>
-      {err && <div className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2" data-testid="whois-error">{err}</div>}
-      {data && (
-        <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 p-4" data-testid="whois-result">
-          <div className="text-sm font-extrabold text-[#0a2350] mb-2">{data.domain}</div>
-          {data.registered === false ? (
-            <div className="text-sm text-emerald-700 font-semibold" data-testid="whois-unregistered">
-              Domain ini belum terdaftar - tersedia untuk registrasi.
-            </div>
-          ) : (
-            <>
-              <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
-                {[["Registrar", data.registrar || "-"],
-                  ["Registrant", data.registrant || "-"],
-                  ["Dibuat", data.created || "-"],
-                  ["Diperbarui", data.updated || "-"],
-                  ["Kadaluarsa", data.expiry || "-"],
-                  ["DNSSEC", data.dnssec || "-"]].map(([l, v]) => (
-                  <div key={l} className="flex justify-between gap-3">
-                    <span className="text-xs uppercase tracking-widest text-slate-500 font-semibold shrink-0">{l}</span>
-                    <span className="font-semibold text-[#0a2350] text-right truncate">{v}</span>
-                  </div>
-                ))}
+    );
+  }
+
+  return (
+    <div className="mt-4 border border-slate-200 rounded-xl overflow-hidden" data-testid={`domain-manager-${domain.id}`}>
+      <div className="flex border-b border-slate-200 bg-slate-50">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold transition-colors ${tab === t.key ? "bg-white text-[#0a2350] border-b-2 border-[#f5b120] -mb-[2px]" : "text-slate-500 hover:text-slate-700"}`}
+            onClick={() => setTab(t.key)}
+            data-testid={`domain-mgr-tab-${t.key}`}
+          >
+            <t.icon className="h-3.5 w-3.5" /> {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="p-4">
+        {msg && (
+          <div className={`mb-3 rounded-lg px-3 py-2 text-xs font-semibold ${msg.includes("Gagal") ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
+            {msg}
+          </div>
+        )}
+
+        {tab === "dns" && (
+          <div>
+            <div className="text-xs font-semibold text-slate-500 mb-2">DNS Records (read-only via RNA.id)</div>
+            {dns === null ? <Loading /> : dns.length === 0 ? (
+              <div className="text-xs text-slate-400">Belum ada DNS records.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="pb-1.5 font-semibold">Type</th>
+                      <th className="pb-1.5 font-semibold">Name</th>
+                      <th className="pb-1.5 font-semibold">Value</th>
+                      <th className="pb-1.5 font-semibold">TTL</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dns.map((r, i) => (
+                      <tr key={i} className="border-t border-slate-100">
+                        <td className="py-1.5 font-bold text-[#0a2350]">{r.type || "-"}</td>
+                        <td className="py-1.5 font-mono">{r.name || "@"}</td>
+                        <td className="py-1.5 font-mono text-slate-600">{r.value || r.content || "-"}</td>
+                        <td className="py-1.5 text-slate-500">{r.ttl || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div className="mt-3 pt-3 border-t border-slate-200">
-                <div className="text-xs uppercase tracking-widest text-slate-500 font-semibold mb-1">Nameservers</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {(data.nameservers || []).map((ns) => (
-                    <span key={ns} className="font-mono text-xs bg-white border border-slate-200 rounded-lg px-2 py-1">{ns}</span>
-                  ))}
-                  {(data.nameservers || []).length === 0 && <span className="text-xs text-slate-400">-</span>}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(data.status || []).map((st) => (
-                    <span key={st} className="text-[10px] font-bold uppercase bg-[#0a2350] text-white rounded-full px-2 py-0.5">{st}</span>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-          <p className="mt-3 text-[11px] text-slate-500">Sumber: {data.source === "rna" ? "RNA.id (RDASH)" : "RDAP publik"} - data live.</p>
-        </div>
-      )}
-    </Card>
+            )}
+          </div>
+        )}
+
+        {tab === "park" && (
+          <div className="text-sm space-y-3">
+            <p className="text-slate-600">Parkir domain akan mengarahkan domain ke IP server parking (157.20.32.183) dengan halaman "Coming Soon".</p>
+            <button className={btnPrimary} onClick={doPark} disabled={busy} data-testid="domain-park-btn">
+              <Globe className="h-4 w-4" /> {busy ? "Memproses..." : "Parkir Domain"}
+            </button>
+          </div>
+        )}
+
+        {tab === "forward" && (
+          <div className="text-sm space-y-3">
+            <p className="text-slate-600">URL forwarding akan mengarahkan pengunjung domain ke alamat lain (contoh: https://tokoonline.com).</p>
+            <button className={btnPrimary} onClick={doForward} disabled={busy} data-testid="domain-forward-btn">
+              <ArrowRight className="h-4 w-4" /> {busy ? "Memproses..." : "Set Forwarding"}
+            </button>
+          </div>
+        )}
+
+        {tab === "email" && (
+          <div className="text-sm space-y-3">
+            <p className="text-slate-600">Email forwarding akan meneruskan email yang dikirim ke domain Anda ke alamat email lain.</p>
+            <button className={btnPrimary} onClick={doEmailFwd} disabled={busy} data-testid="domain-email-fwd-btn">
+              <Mail className="h-4 w-4" /> {busy ? "Memproses..." : "Set Email Forwarding"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
+
+/* ---------- Main ClientDomains (updated) ---------- */
 
 const domainPrice = (domain, fallback, prices) => {
   const tld = "." + String(domain || "").split(".").slice(1).join(".");
@@ -92,14 +161,13 @@ const domainPrice = (domain, fallback, prices) => {
   return p?.register ?? fallback;
 };
 
+const daysUntil = (dateStr) => Math.ceil((new Date(dateStr) - new Date()) / 86400000);
+
 const SuggestionList = ({ items, onRegister, busyDomain, prices }) => {
   if (!items || items.length === 0) return null;
   return (
     <div className="mt-4 rounded-xl border border-dashed border-[#f5b120]/60 bg-[#f5b120]/5 p-4" data-testid="domain-suggestions">
-      <div className="flex items-center gap-2 mb-2">
-        <Lightbulb className="h-4 w-4 text-[#f5b120]" />
-        <span className="text-sm font-extrabold text-[#0a2350]">Saran nama alternatif</span>
-      </div>
+      <div className="text-sm font-extrabold text-[#0a2350] mb-2">Saran nama alternatif</div>
       <div className="grid sm:grid-cols-2 gap-x-6 divide-y sm:divide-y-0 divide-slate-100">
         {items.map((r) => (
           <div key={r.domain} className="py-2 flex items-center gap-2.5 text-sm min-w-0" data-testid={`suggestion-${r.domain}`}>
@@ -123,37 +191,6 @@ const SuggestionList = ({ items, onRegister, busyDomain, prices }) => {
   );
 };
 
-const daysUntil = (dateStr) => Math.ceil((new Date(dateStr) - new Date()) / 86400000);
-
-const ExpiryReminder = ({ domains }) => {
-  const expiring = (domains || [])
-    .filter((d) => d.expires_at && d.status !== "pending")
-    .map((d) => ({ ...d, days: daysUntil(d.expires_at) }))
-    .filter((d) => d.days <= 30);
-  if (expiring.length === 0) return null;
-  return (
-    <div className="mb-5 space-y-2" data-testid="expiry-reminders">
-      {expiring.map((d) => (
-        <div
-          key={d.id}
-          className={`rounded-2xl border p-4 flex items-center gap-3 text-sm ${
-            d.days < 0 ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800"
-          }`}
-          data-testid={`expiry-reminder-${d.domain}`}
-        >
-          <AlertTriangle className="h-5 w-5 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <span className="font-extrabold">{d.domain}</span>{" "}
-            {d.days < 0
-              ? <>sudah kadaluarsa sejak <b>{d.expires_at}</b>. Perpanjang sekarang sebelum masuk masa redemption.</>
-              : <>akan kadaluarsa dalam <b>{d.days} hari</b> ({d.expires_at}). Perpanjang untuk menghindari downtime.</>}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 const ClientDomains = () => {
   const [q, setQ] = useState("");
   const [results, setResults] = useState(null);
@@ -164,9 +201,14 @@ const ClientDomains = () => {
   const [errMsg, setErrMsg] = useState("");
   const [busyDomain, setBusyDomain] = useState("");
   const [prices, setPrices] = useState(null);
+  const [priceSource, setPriceSource] = useState("");
+  const [expandedManager, setExpandedManager] = useState(null);
 
   const load = () => api.get("/client/domains").then((r) => setDomains(r.data)).catch(() => setDomains([]));
-  const loadPrices = () => api.get("/client/domains/pricing").then((r) => setPrices(r.data.prices || {})).catch(() => setPrices({}));
+  const loadPrices = () =>
+    api.get("/client/domains/pricing")
+      .then((r) => { setPrices(r.data.prices || {}); setPriceSource(r.data.source || ""); })
+      .catch(() => { setPrices({}); setPriceSource(""); });
   useEffect(() => { load(); loadPrices(); }, []);
 
   const flash = (msg) => {
@@ -212,26 +254,48 @@ const ClientDomains = () => {
     } finally { setBusyDomain(""); }
   };
 
+  const activeDomains = (domains || []).filter(d => d.status === "active" || d.status === "expiring" || d.status === "expired");
+  const pendingDomains = (domains || []).filter(d => d.status === "pending");
+
   return (
     <div>
       <PageHeader
         title="Domain"
-        subtitle="Cek ketersediaan, daftarkan domain baru, dan kelola perpanjangan domain Anda."
+        subtitle="Cek ketersediaan, daftarkan domain baru, dan kelola domain Anda."
       />
-
-      <ExpiryReminder domains={domains} />
 
       {notice && (
         <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 p-4 flex items-center gap-3 text-sm" data-testid="domain-success-notice">
           <CheckCircle2 className="h-5 w-5 shrink-0" />
           <span className="font-semibold">{notice}</span>
-          <Link to="/portal/client/invoices" className="ml-auto shrink-0 text-xs font-bold underline hover:text-emerald-950" data-testid="domain-notice-invoice-link">Lihat invoice →</Link>
         </div>
       )}
       {errMsg && (
         <div className="mb-5 rounded-2xl border border-red-200 bg-red-50 text-red-800 p-4 flex items-center gap-3 text-sm" data-testid="domain-error-notice">
           <XCircle className="h-5 w-5 shrink-0" />
           <span className="font-semibold">{errMsg}</span>
+        </div>
+      )}
+
+      {/* Pending orders */}
+      {pendingDomains.length > 0 && (
+        <div className="mb-5">
+          <div className="text-sm font-extrabold text-[#0a2350] mb-2">Menunggu Pembayaran</div>
+          <div className="space-y-2">
+            {pendingDomains.map((d) => (
+              <Card key={d.id} className="p-4 flex items-center gap-3" data-testid={`pending-domain-${d.id}`}>
+                <div className="h-8 w-8 rounded-lg bg-amber-100 flex items-center justify-center">
+                  <Globe className="h-4 w-4 text-amber-600" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-bold text-[#0a2350]">{d.domain}</div>
+                  <div className="text-[11px] text-slate-500">Menunggu pembayaran invoice — registrasi diproses setelah lunas</div>
+                </div>
+                <StatusBadge status="pending" />
+                <div className="text-sm font-bold text-[#0a2350]">{idr(d.price)}</div>
+              </Card>
+            ))}
+          </div>
         </div>
       )}
 
@@ -247,7 +311,7 @@ const ClientDomains = () => {
             onKeyDown={(e) => e.key === "Enter" && check()}
           />
           <button data-testid="domain-search-btn" className={btnPrimary} onClick={check} disabled={checking || !q.trim()}>
-            <Search className="h-4 w-4" /> {checking ? "Mengecek..." : "Cek Ketersediaan"}
+            {checking ? "Mengecek..." : "Cek Ketersediaan"}
           </button>
         </div>
         {results && (
@@ -278,20 +342,25 @@ const ClientDomains = () => {
         {results && <SuggestionList items={suggestions} onRegister={register} busyDomain={busyDomain} prices={prices} />}
       </Card>
 
-      <WhoisCard />
+      {priceSource && priceSource !== "cache" && (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 flex items-center gap-2" data-testid="price-source-notice">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {priceSource === "fallback" && "Harga yang ditampilkan adalah harga default internal. Aktifkan integrasi RNA.id dan sync pricing untuk harga live registrar."}
+          {priceSource === "stale" && "Sinkronisasi pricing terakhir tidak mengembalikan data dari RNA.id. Hubungi admin untuk memperbaiki integrasi."}
+        </div>
+      )}
 
-      <DomainOrders domains={domains} />
-
+      {/* My Active Domains with Management */}
       <div className="mt-6">
         <div className="text-sm font-extrabold text-[#0a2350] mb-3">Domain Saya</div>
         {domains === null && <Loading />}
-        {domains !== null && domains.length === 0 && (
+        {domains !== null && activeDomains.length === 0 && pendingDomains.length === 0 && (
           <Card className="p-8 text-center text-sm text-slate-500" data-testid="my-domains-empty">
             Belum ada domain. Cari dan daftarkan domain pertama Anda di atas.
           </Card>
         )}
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="my-domains">
-          {(domains || []).map((d) => (
+          {activeDomains.map((d) => (
             <Card key={d.id} className="p-5 min-w-0" data-testid={`domain-card-${d.domain}`}>
               <div className="flex items-start justify-between gap-2">
                 <div className="h-10 w-10 rounded-xl bg-[#0a2350] flex items-center justify-center shrink-0">
@@ -308,66 +377,29 @@ const ClientDomains = () => {
                   <span className={`text-xs font-bold ${d.auto_renew ? "text-emerald-600" : "text-slate-400"}`}>{d.auto_renew ? "Aktif" : "Nonaktif"}</span>
                 </div>
               </div>
-              <button
-                className="mt-4 w-full text-xs font-bold py-2 rounded-lg border border-slate-200 text-[#0a2350] hover:border-[#f5b120] transition-colors inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
-                data-testid={`domain-renew-${d.domain}`}
-                disabled={d.status === "pending" || d.pending_renewal || busyDomain === d.domain}
-                onClick={() => renew(d)}
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                {d.status === "pending" ? "Menunggu pembayaran" : d.pending_renewal ? "Perpanjangan menunggu bayar" : busyDomain === d.domain ? "Memproses..." : "Perpanjang"}
-              </button>
+              <div className="mt-3 flex gap-2">
+                <button
+                  className="flex-1 text-xs font-bold py-2 rounded-lg border border-slate-200 text-[#0a2350] hover:border-[#f5b120] transition-colors inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+                  data-testid={`domain-renew-${d.domain}`}
+                  disabled={d.status === "pending" || d.pending_renewal || busyDomain === d.domain}
+                  onClick={() => renew(d)}
+                >
+                  {d.pending_renewal ? "Menunggu bayar" : busyDomain === d.domain ? "Memproses..." : "Perpanjang"}
+                </button>
+                <button
+                  className={`text-xs font-bold px-3 py-2 rounded-lg border transition-colors ${expandedManager === d.id ? "border-[#f5b120] bg-[#f5b120]/10 text-[#0a2350]" : "border-slate-200 text-slate-500 hover:border-slate-300"}`}
+                  onClick={() => setExpandedManager(expandedManager === d.id ? null : d.id)}
+                  data-testid={`domain-manage-${d.domain}`}
+                >
+                  <Settings className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {expandedManager === d.id && <ClientDomainManager domain={d} />}
             </Card>
           ))}
         </div>
       </div>
     </div>
-  );
-};
-
-const ORDER_STEPS = ["unpaid", "processing", "active"];
-const ORDER_STEP_LABELS = { unpaid: "Menunggu pembayaran", processing: "Diproses registrar", active: "Aktif" };
-
-const DomainOrders = ({ domains }) => {
-  const orders = [];
-  (domains || []).forEach((d) => {
-    if (d.status === "pending") {
-      orders.push({ id: `${d.id}-reg`, domain: d.domain, type: "registrasi", price: d.price, status: "unpaid" });
-    }
-    if (d.pending_renewal) {
-      orders.push({ id: `${d.id}-ren`, domain: d.domain, type: "perpanjangan", price: d.price, status: "unpaid" });
-    }
-  });
-  if (orders.length === 0) return null;
-  return (
-    <Card className="p-6 mt-6" data-testid="domain-orders">
-      <div className="text-sm font-extrabold text-[#0a2350] mb-1">Status Order Domain</div>
-      <p className="text-[11px] text-slate-500 mb-3">
-        Registrasi & perpanjangan yang menunggu pembayaran. Diproses otomatis begitu invoice lunas.{" "}
-        <Link to="/portal/client/invoices" className="font-bold text-[#f5b120]">Bayar invoice →</Link>
-      </p>
-      <div className="divide-y divide-slate-100">
-        {orders.map((o) => {
-          const stepIdx = ORDER_STEPS.indexOf(o.status);
-          return (
-            <div key={o.id} className="py-3" data-testid={`domain-order-${o.domain}`}>
-              <div className="flex items-center gap-3 text-sm">
-                <span className="font-bold text-[#0a2350]">{o.domain}</span>
-                <span className="text-[10px] font-bold uppercase text-[#f5b120]">{o.type}</span>
-                <span className="ml-auto font-semibold">{idr(o.price)}</span>
-                <StatusBadge status={o.status} />
-              </div>
-              <div className="mt-2 flex items-center gap-1.5">
-                {ORDER_STEPS.map((s, i) => (
-                  <span key={s} className={`h-1.5 flex-1 rounded-full ${i <= stepIdx ? "bg-[#f5b120]" : "bg-slate-200"}`} />
-                ))}
-              </div>
-              <div className="mt-1 text-[10px] text-slate-500">{ORDER_STEP_LABELS[o.status]}</div>
-            </div>
-          );
-        })}
-      </div>
-    </Card>
   );
 };
 
