@@ -516,7 +516,7 @@ async def admin_domain_markup_get(admin=Depends(get_current_admin)):
     return {"markup_pct": v.get("markup_pct", 7.0)}
 
 
-@router.put("/admin/domains/markup")
+@router.post("/admin/domains/markup")
 async def admin_domain_markup_set(payload: dict, admin=Depends(get_current_admin)):
     """Set markup percentage and optionally re-sync pricing."""
     db = await _get_db()
