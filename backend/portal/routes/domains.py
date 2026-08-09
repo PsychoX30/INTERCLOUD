@@ -403,6 +403,70 @@ async def _provision_domain_registration(db, dom: dict) -> dict:
     return {"ok": True, "offline_fallback": True}
 
 
+async def _provision_domain_transfer(db, dom: dict) -> dict:
+    """Submit a pending transfer order to RDASH. Mirrors _provision_domain_registration."""
+    if dom.get("status") != "pending":
+        return {"ok": False, "skipped": True, "reason": "status_not_pending"}
+    if not dom.get("transfer_order"):
+        return {"ok": False, "skipped": True, "reason": "not_transfer"}
+    name = dom.get("domain", "")
+    years = int(dom.get("years", 1) or 1)
+    now = datetime.now(timezone.utc)
+    rna = await _rna_client(db)
+    if rna:
+        try:
+            cust = await _resolve_rna_customer(db, rna, dom.get("user_id"))
+            customer_id = cust["customer_id"]
+            auth_code = _sb_dec(dom.get("transfer_auth_code") or "")
+            res = await rna.transfer(
+                name=name, auth_code=auth_code, period=years,
+                customer_id=customer_id,
+                buy_whois_protection=bool(dom.get("transfer_whois_protection")),
+            )
+            ns = [res.get(f"nameserver_{i}") for i in range(1, 6) if res.get(f"nameserver_{i}")]
+            update = {
+                "status": "pending", "transfer_submitted": True,
+                "registered_at": None,
+                "expires_at": (res.get("expired_at") or "")[:10] or None,
+                "nameservers": ns or rna.default_ns,
+                "order_ref": str(res.get("id") or ""),
+                "rna_customer_id": customer_id,
+                "provision_note": "Transfer dikirim ke RNA.id (RDASH), menunggu konfirmasi registrar.",
+            }
+            if cust.get("fallback"):
+                update["registered_under_intercloud"] = True
+                update["rna_customer_reason"] = cust.get("reason", "fallback")
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": update})
+            return {"ok": True, "customer_id": customer_id, "fallback": bool(cust.get("fallback"))}
+        except Exception as e:
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+                "provision_note": f"Transfer RNA.id gagal: {str(e)[:150]}. Perlu tindak lanjut manual.",
+            }})
+            return {"ok": False, "error": str(e)[:150]}
+    await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+        "status": "pending", "transfer_submitted": True,
+        "registered_at": None,
+        "expires_at": (now + timedelta(days=365*years)).date().isoformat(),
+        "nameservers": ["ns1.intercloud-digital.com", "ns2.intercloud-digital.com"],
+        "provision_note": "Integrasi RNA.id belum aktif - transfer dicatat internal.",
+    }})
+    return {"ok": True, "offline_fallback": True}
+
+
+async def _apply_domain_transfer(db, inv: dict) -> bool:
+    """Invoice-paid hook for domain transfer orders. Idempotent."""
+    if not inv.get("domain_transfer"):
+        return False
+    try:
+        dom = await db.domains.find_one({"_id": _oid(inv["domain_id"]), "status": "pending"})
+    except Exception:
+        return False
+    if not dom:
+        return False
+    res = await _provision_domain_transfer(db, dom)
+    return bool(res.get("ok"))
+
+
 async def _auto_register_domain(db, inv: dict) -> bool:
     """Registrasi domain otomatis di RNA.id setelah invoice registrasi lunas. Idempotent
     (hanya memproses domain berstatus pending)."""
@@ -465,6 +529,75 @@ async def client_domain_renew(did: str, payload: m.DomainRenewIn, request: Reque
                     request=request)
     return {"ok": True, "domain_id": str(dom["_id"]), "invoice_id": str(inv["_id"]),
             "number": inv["number"], "total": inv["total"], "due_date": due}
+
+
+@router.post("/client/domains/transfer")
+async def client_domain_transfer(payload: m.DomainTransferIn, request: Request,
+                                 user=Depends(get_current_user)):
+    """Create a paid transfer order. The EPP code is encrypted at rest and
+    only sent to RDASH from the invoice-paid provisioning hook."""
+    db = await _get_db()
+    name = payload.domain.strip().lower()
+    if not _DOMAIN_NAME_RE.match(name):
+        raise HTTPException(400, "Nama domain tidak valid")
+    existing = await db.domains.find_one({"domain": name, "status": {"$in": ["pending", "active", "expiring"]}})
+    if existing:
+        raise HTTPException(400, "Domain sudah terdaftar dalam sistem")
+    prices = await _domain_price_map(db)
+    tld = "." + name.split(".", 1)[1]
+    p = prices.get(tld)
+    price = ((p.get("transfer") if isinstance(p, dict) else p) or _tld_price(name)) * payload.years
+    tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
+    tax = round(price * tax_percent / 100.0, 2)
+    due = (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat()
+    dom = {
+        "user_id": ObjectId(user["id"]), "domain": name,
+        "tld": tld, "status": "pending", "registrar": "rna",
+        "years": payload.years, "auto_renew": True,
+        "registered_at": None, "expires_at": None, "nameservers": [],
+        "price": price, "invoice_id": None, "order_ref": None,
+        "transfer_order": True, "transfer_auth_code": _sb_enc(payload.auth_code),
+        "transfer_whois_protection": payload.buy_whois_protection, "created_at": _now(),
+    }
+    dr = await db.domains.insert_one(dom)
+    inv = await _insert_numbered(db, "invoices", "INV", {
+        "user_id": ObjectId(user["id"]),
+        "items": [{"description": f"Transfer domain {name} ({payload.years} tahun)", "qty": 1, "price": price, "total": price}],
+        "subtotal": price, "tax_percent": tax_percent, "tax_amount": tax,
+        "total": round(price + tax, 2), "due_date": due, "status": "unpaid",
+        "payment_method": None, "paid_at": None,
+        "notes": f"Transfer domain {name} - diproses otomatis setelah pembayaran.",
+        "domain_id": str(dr.inserted_id), "domain_transfer": True, "created_at": _now(),
+    })
+    await db.domains.update_one({"_id": dr.inserted_id}, {"$set": {"invoice_id": str(inv["_id"])}})
+    await log_audit(db, actor=user, action="client_domain.transfer_requested", category="domains",
+                    target_type="domain", target_id=str(dr.inserted_id), target_label=name,
+                    metadata={"invoice": inv["number"], "total": inv["total"], "years": payload.years}, request=request)
+    return {"ok": True, "domain_id": str(dr.inserted_id), "invoice_id": str(inv["_id"]),
+            "number": inv["number"], "total": inv["total"], "due_date": due}
+
+
+@router.get("/client/domains/{did}/info")
+async def client_domain_info(did: str, user=Depends(get_current_user)):
+    db = await _get_db()
+    dom = await db.domains.find_one({"_id": _oid(did), "user_id": ObjectId(user["id"])})
+    if not dom:
+        raise HTTPException(404, "Domain tidak ditemukan")
+    info = {"local": _serialize_domain(dom)}
+    rna = await _rna_client(db)
+    if rna and dom.get("order_ref"):
+        try:
+            info["registrar"] = await rna.domain_details(dom["domain"])
+            info["source"] = "rna"
+        except Exception:
+            pass
+    if "registrar" not in info:
+        try:
+            info["registrar"] = await _rdap_lookup(dom["domain"])
+            info["source"] = "rdap"
+        except Exception:
+            info["source"] = "local"
+    return info
 
 
 def _add_years(date_str: str, years: int) -> str:
@@ -545,6 +678,8 @@ def _serialize_domain(d: dict) -> dict:
         "user_email": user_email,
         "registered_under_intercloud": bool(d.get("registered_under_intercloud")),
         "rna_customer_reason": d.get("rna_customer_reason", ""),
+        "transfer_submitted": bool(d.get("transfer_submitted")),
+        "transfer_whois_protection": bool(d.get("transfer_whois_protection")),
     }
 
 

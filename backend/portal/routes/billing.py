@@ -26,7 +26,8 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .domains import _apply_domain_renewal, _auto_register_domain  # noqa: E402
+from .domains import _apply_domain_renewal, _auto_register_domain, _apply_domain_transfer  # noqa: E402
+from .ssl import _provision_ssl_order  # noqa: E402
 from .provision import (_provision_order_from_invoice,  # noqa: E402
                         _proxmox_settings_for_service)
 from .shared import BILLING_SETTING_DEFAULTS, _EXTRA_PAYMENT_MODULES, _get_db, _get_setting_value, _iso, _load_user, _mark_overdue, _next_number, _now, _oid, _sales_scope_filter, _serialize_invoice, _set_setting_value, _sum_applied_credit  # noqa: E402
@@ -199,12 +200,15 @@ async def admin_update_invoice_status(
         await _apply_pending_upgrade(db, d)
         await _auto_register_domain(db, d)
         await _apply_domain_renewal(db, d)
+        await _apply_domain_transfer(db, d)
+        await _provision_ssl_order(db, d)
 
     # Invoice dibatalkan → batalkan order domain yang masih menunggu (pending)
     # dan perpanjangan yang belum dibayar, agar tidak muncul sebagai "pending
     # payment" selamanya di sisi klien.
     if payload.status == "cancelled" and d.get("status") == "cancelled":
         await _cancel_domain_for_invoice(db, d)
+        await _cancel_ssl_for_invoice(db, d)
 
     return await _serialize_invoice(db, d)
 
@@ -238,6 +242,23 @@ async def _cancel_domain_for_invoice(db, inv: dict) -> None:
                 {"$unset": {"pending_renewal": ""}})
         except Exception:
             pass
+
+
+async def _cancel_ssl_for_invoice(db, inv: dict) -> None:
+    """Batal SSL order yang terkait invoice yang dibatalkan (idempotent)."""
+    if not inv or not inv.get("ssl_order"):
+        return
+    ssl_id = inv.get("ssl_order_id")
+    if not ssl_id:
+        return
+    try:
+        await db.ssl_orders.update_one(
+            {"_id": _oid(ssl_id), "status": "pending"},
+            {"$set": {"status": "cancelled",
+                      "cancelled_at": _now(),
+                      "cancelled_reason": f"Invoice {inv.get('number','')} dibatalkan"}})
+    except Exception:
+        pass
 
 
 # Quotations
@@ -653,11 +674,13 @@ async def payment_webhook(provider: str, request: Request):
         except Exception:
             pass
 
-    # 2c) Registrasi domain otomatis (RNA.id) untuk invoice registrasi domain
+    # 2c) Registrasi domain otomatis (RNA.id) untuk invoice registrasi domain / renew / transfer
     if inv:
         try:
             await _auto_register_domain(db, inv)
             await _apply_domain_renewal(db, inv)
+            await _apply_domain_transfer(db, inv)
+            await _provision_ssl_order(db, inv)
         except Exception:
             pass
 

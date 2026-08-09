@@ -38,6 +38,7 @@ const ClientTickets   = lazy(() => import("./pages/portal/client/ClientTickets")
 const ClientOrder     = lazy(() => import("./pages/portal/client/ClientOrder"));
 const ClientTraffic   = lazy(() => import("./pages/portal/client/ClientTraffic"));
 const ClientDomains   = lazy(() => import("./pages/portal/client/ClientDomains"));
+const ClientSSL       = lazy(() => import("./pages/portal/client/ClientSSL"));
 const ClientGuide     = lazy(() => import("./pages/portal/client/ClientGuide"));
 const ClientProfile   = lazy(() => import("./pages/portal/client/ClientProfile"));
 
@@ -60,6 +61,7 @@ const AdminBranding     = lazy(() => import("./pages/portal/admin/AdminBranding"
 const AdminSiteContent  = lazy(() => import("./pages/portal/admin/AdminSiteContent"));
 const AdminBackup       = lazy(() => import("./pages/portal/admin/AdminBackup"));
 const AdminDomains      = lazy(() => import("./pages/portal/admin/AdminDomains"));
+const AdminSSL          = lazy(() => import("./pages/portal/admin/AdminSSL"));
 const AdminMail         = lazy(() => import("./pages/portal/admin/AdminMail"));
 const AdminServices     = lazy(() => import("./pages/portal/admin/AdminServices"));
 const AdminServiceRequests = lazy(() => import("./pages/portal/admin/AdminServiceRequests"));
@@ -137,6 +139,7 @@ function App() {
                   <Route path="order" element={<ClientOrder />} />
                   <Route path="traffic" element={<ClientTraffic />} />
                   <Route path="domains" element={<ClientDomains />} />
+                  <Route path="ssl" element={<ClientSSL />} />
                   <Route path="guide" element={<ClientGuide />} />
                   <Route path="profile" element={<ClientProfile />} />
                   <Route path="settings/password" element={<ChangePassword />} />
@@ -188,6 +191,7 @@ function App() {
                   <Route path="site-content" element={<AdminSiteContent />} />
                   <Route path="backup" element={<AdminBackup />} />
                   <Route path="domains" element={<AdminDomains />} />
+                  <Route path="ssl" element={<AdminSSL />} />
                   <Route path="real-integrations" element={<Navigate to="/portal/admin/integrations" replace />} />
                   <Route path="settings/password" element={<ChangePassword />} />
                 </Route>

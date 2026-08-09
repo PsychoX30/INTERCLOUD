@@ -310,6 +310,20 @@ class DomainNameserversIn(BaseModel):
     nameservers: List[str] = Field(min_length=2, max_length=4)
 
 
+# ---------- SSL (resale via RNA.id/RDASH) ----------
+class SSLOrderIn(BaseModel):
+    product_id: str
+    period_months: int = Field(default=12, ge=1, le=36)
+    domain: str = Field(min_length=4, max_length=253)
+    dcv_method: Literal["dns", "http", "https", "email"] = "dns"
+    dcv_email: Optional[str] = None
+    csr_code: str = Field(min_length=10)
+
+
+class SSLStatusIn(BaseModel):
+    status: Literal["pending", "active", "failed", "cancelled"]
+
+
 class DomainOut(BaseModel):
     id: str
     user_id: str

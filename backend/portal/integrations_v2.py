@@ -795,6 +795,84 @@ class RdashClient:
     async def list_domains(self, **params) -> dict:
         return await self._req("GET", "/domains", params=params or None)
 
+    # ---------- SSL ----------
+    async def ssl_products(self, **params) -> list:
+        data = await self._req("GET", "/ssl/", params=params or None)
+        return data.get("data") or []
+
+    async def ssl_prices(self, **params) -> list:
+        data = await self._req("GET", "/ssl/prices", params=params or None)
+        return data.get("data") or []
+
+    async def ssl_orders_list(self, **params) -> list:
+        data = await self._req("GET", "/ssl/orders/", params=params or None)
+        return data.get("data") or []
+
+    async def ssl_order_detail(self, order_id: str) -> dict:
+        data = await self._req("GET", f"/ssl/orders/{order_id}")
+        return data.get("data") or {}
+
+    async def ssl_order_create(self, **form_fields) -> dict:
+        data = await self._req("POST", "/ssl/orders/", data=form_fields)
+        return data.get("data") or {}
+
+    async def ssl_order_cancel(self, order_id: str) -> dict:
+        data = await self._req("DELETE", f"/ssl/orders/{order_id}")
+        return data.get("data") or {}
+
+    async def ssl_order_download(self, order_id: str) -> dict:
+        data = await self._req("GET", f"/ssl/orders/{order_id}/download")
+        return data.get("data") or {}
+
+    async def ssl_change_dcv(self, order_id: str, dcv_method: str, dcv_email: str = None) -> dict:
+        form = {"dcv_method": dcv_method}
+        if dcv_email:
+            form["dcv_email"] = dcv_email
+        data = await self._req("PUT", f"/ssl/orders/{order_id}", data=form)
+        return data.get("data") or {}
+
+    async def ssl_revalidate(self, order_id: str) -> dict:
+        data = await self._req("POST", f"/ssl/orders/{order_id}/revalidate")
+        return data.get("data") or {}
+
+    async def ssl_csr_generate(self, **form_fields) -> dict:
+        data = await self._req("POST", "/ssl/csr/generate", data=form_fields)
+        return data.get("data") or {}
+
+    def ssl_prices_with_markup(self, raw_prices: list) -> list:
+        """Normalize SSL price rows and apply portal-side markup.
+
+        RDASH returns rows like:
+          {"product": {"id": 1, "name": "...", ...}, "1": "80000", "2": "144000"}
+        where the numeric keys are term lengths in YEARS.  We convert to months
+        (12/24/36) so they match the SSLOrderIn.period_months field.
+        """
+        multiplier = 1 + self.markup_pct / 100
+        result = []
+        for row in raw_prices:
+            if not isinstance(row, dict):
+                continue
+            product = row.get("product") or {}
+            terms = {}
+            for k, v in row.items():
+                if k.isdigit():
+                    try:
+                        month_key = str(int(k) * 12)
+                        terms[month_key] = int(round(float(v) * multiplier))
+                    except (TypeError, ValueError):
+                        pass
+            if not terms:
+                continue
+            result.append({
+                "product_id": str(product.get("id") or ""),
+                "name": product.get("name") or "",
+                "brand": product.get("brand") or "",
+                "validation": product.get("validation") or "DV",
+                "is_wildcard": bool(product.get("is_wildcard")),
+                "terms": terms,
+            })
+        return result
+
 
 class MikrotikClient:
     """Wraps librouteros for BGP/interface/traffic reads.

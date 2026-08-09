@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, Card, btnPrimary, btnSecondary, inputClass } from "../ui";
-import { Globe, Settings, Server, ArrowRight, Mail, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
+import { Globe, Settings, Server, ArrowRight, Mail, AlertTriangle, CheckCircle2, XCircle, ShieldCheck } from "lucide-react";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID");
 
@@ -161,7 +161,20 @@ const domainPrice = (domain, fallback, prices) => {
   return p?.register ?? fallback;
 };
 
-const daysUntil = (dateStr) => Math.ceil((new Date(dateStr) - new Date()) / 86400000);
+const daysUntil = (dateStr) => {
+  if (!dateStr) return null;
+  const value = new Date(`${String(dateStr).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(value.getTime())) return null;
+  return Math.ceil((value - new Date()) / 86400000);
+};
+
+const expirySummary = (dateStr) => {
+  const days = daysUntil(dateStr);
+  if (days === null) return "Tanggal belum tersedia";
+  if (days < 0) return `Lewat ${Math.abs(days)} hari`;
+  if (days === 0) return "Berakhir hari ini";
+  return `${days} hari lagi`;
+};
 
 const SuggestionList = ({ items, onRegister, busyDomain, prices }) => {
   if (!items || items.length === 0) return null;
@@ -203,6 +216,9 @@ const ClientDomains = () => {
   const [prices, setPrices] = useState(null);
   const [priceSource, setPriceSource] = useState("");
   const [expandedManager, setExpandedManager] = useState(null);
+  const [transferDomain, setTransferDomain] = useState("");
+  const [transferAuthCode, setTransferAuthCode] = useState("");
+  const [transferBusy, setTransferBusy] = useState(false);
 
   const load = () => api.get("/client/domains").then((r) => setDomains(r.data)).catch(() => setDomains([]));
   const loadPrices = () =>
@@ -342,6 +358,30 @@ const ClientDomains = () => {
         {results && <SuggestionList items={suggestions} onRegister={register} busyDomain={busyDomain} prices={prices} />}
       </Card>
 
+      {/* Transfer domain from another registrar */}
+      <Card className="p-6 mt-4" data-testid="domain-transfer-card">
+        <div className="text-sm font-extrabold text-[#0a2350] mb-1">Transfer Domain</div>
+        <p className="text-xs text-slate-500 mb-3">
+          Pindahkan domain yang saat ini dikelola di registrar lain ke Intercloud. Siapkan EPP/Auth Code dari registrar saat ini.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            data-testid="domain-transfer-input"
+            className={`${inputClass} flex-1`}
+            placeholder="namadomain.com"
+            value={transferDomain}
+            onChange={(e) => setTransferDomain(e.target.value)}
+          />
+          <button
+            className={btnSecondary}
+            data-testid="domain-transfer-open"
+            onClick={() => setTransferDomain(transferDomain.trim() || "namadomain.com")}
+          >
+            Mulai Transfer
+          </button>
+        </div>
+      </Card>
+
       {priceSource && priceSource !== "cache" && (
         <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 flex items-center gap-2" data-testid="price-source-notice">
           <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -389,13 +429,26 @@ const ClientDomains = () => {
                   </div>
                 </div>
               )}
-              <div className="mt-3 space-y-1 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">Terdaftar</span><span className="font-semibold">{d.registered_at || "-"}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Kadaluarsa</span><span className={`font-semibold ${d.status === "expired" ? "text-red-600" : ""}`}>{d.expires_at || "-"}</span></div>
+              <div className="mt-3 space-y-1.5 text-sm" data-testid={`domain-lifecycle-${d.domain}`}>
+                <div className="flex justify-between gap-3"><span className="text-slate-500">Registrar</span><span className="font-semibold uppercase text-right">{d.registrar || "-"}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-slate-500">Terdaftar</span><span className="font-semibold text-right">{d.registered_at || "-"}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-slate-500">Kedaluwarsa</span><span className={`font-semibold text-right ${daysUntil(d.expires_at) !== null && daysUntil(d.expires_at) <= 30 ? "text-red-600" : ""}`}>{d.expires_at || "-"}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-slate-500">Sisa masa aktif</span><span className={`text-xs font-bold text-right ${daysUntil(d.expires_at) !== null && daysUntil(d.expires_at) <= 30 ? "text-red-600" : "text-emerald-600"}`}>{expirySummary(d.expires_at)}</span></div>
                 <div className="flex justify-between items-center">
                   <span className="text-slate-500">Auto-renew</span>
                   <span className={`text-xs font-bold ${d.auto_renew ? "text-emerald-600" : "text-slate-400"}`}>{d.auto_renew ? "Aktif" : "Nonaktif"}</span>
                 </div>
+                <div className="pt-1">
+                  <div className="text-slate-500 mb-1">Nameserver</div>
+                  {(d.nameservers || []).length > 0 ? (
+                    <div className="space-y-0.5">
+                      {d.nameservers.map((ns) => <div key={ns} className="font-mono text-[11px] text-slate-700 break-all">{ns}</div>)}
+                    </div>
+                  ) : <div className="text-xs text-slate-400">Belum tersinkron</div>}
+                </div>
+                {d.order_ref && (
+                  <div className="flex justify-between gap-3 pt-1"><span className="text-slate-500">Ref. registrar</span><span className="font-mono text-[11px] text-right break-all">{d.order_ref}</span></div>
+                )}
               </div>
               <div className="mt-3 flex gap-2">
                 <button
@@ -419,6 +472,48 @@ const ClientDomains = () => {
           ))}
         </div>
       </div>
+
+      {/* Transfer domain dialog */}
+      {transferDomain && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" data-testid="transfer-dialog">
+          <Card className="w-full max-w-md p-6 mx-4">
+            <div className="text-base font-extrabold text-[#0a2350] mb-2">Transfer Domain</div>
+            <p className="text-sm text-slate-600 mb-4">
+              Transfer <span className="font-mono font-bold">{transferDomain}</span> dari registrar lain ke Intercloud.
+              Pastikan Anda memiliki EPP/Auth Code dari registrar saat ini.
+            </p>
+            <label className="text-xs font-bold text-slate-500 mb-1 block">EPP / Authorization Code</label>
+            <input
+              data-testid="transfer-auth-code-input"
+              className={`${inputClass} mb-4`}
+              placeholder="Masukkan EPP code"
+              value={transferAuthCode}
+              onChange={(e) => setTransferAuthCode(e.target.value)}
+            />
+            <div className="flex gap-2 justify-end">
+              <button className={btnSecondary} onClick={() => setTransferDomain("")}>Batal</button>
+              <button
+                className={btnPrimary}
+                data-testid="transfer-submit-btn"
+                disabled={!transferAuthCode.trim() || transferBusy}
+                onClick={async () => {
+                  setTransferBusy(true);
+                  try {
+                    const { data } = await api.post("/client/domains/transfer", { domain: transferDomain, auth_code: transferAuthCode, years: 1 });
+                    flash(`Order transfer ${transferDomain} dibuat - Invoice ${data.number} (${idr(data.total)}). Selesaikan pembayaran untuk memproses.`);
+                    setTransferDomain("");
+                    load();
+                  } catch (e) {
+                    setErrMsg(e?.response?.data?.detail || "Gagal membuat order transfer");
+                  } finally { setTransferBusy(false); }
+                }}
+              >
+                {transferBusy ? "Memproses..." : "Buat Invoice Transfer"}
+              </button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 };
