@@ -283,6 +283,59 @@ async def client_domain_order(payload: m.DomainOrderIn, request: Request, user=D
             "number": inv["number"], "total": inv["total"], "due_date": due}
 
 
+_RDASH_CUSTOMER_REQUIRED = ["name", "email", "phone", "organization", "address_line1", "city", "province", "postal_code"]
+
+
+def _country_code_for(country: str) -> str:
+    c = str(country or "Indonesia").strip().lower()
+    return {"indonesia": "ID", "id": "ID", "singapore": "SG", "sg": "SG", "malaysia": "MY", "my": "MY", "australia": "AU", "au": "AU", "japan": "JP", "jp": "JP"}.get(c, c.upper() if len(c) == 2 else "ID")
+
+
+async def _resolve_rna_customer(db, rna, user_id) -> dict:
+    """Reuse or create an RDASH customer; otherwise use reseller fallback."""
+    try:
+        user_doc = await db.users.find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        user_doc = None
+    email = str((user_doc or {}).get("email") or "").strip().lower()
+    if email:
+        try:
+            matches = await rna.list_customers(email=email)
+            if matches and (matches[0].get("id") or matches[0].get("customer_id")):
+                return {"customer_id": str(matches[0].get("id") or matches[0].get("customer_id")), "fallback": False, "reason": "existing"}
+        except Exception:
+            pass
+    missing = []
+    for f in _RDASH_CUSTOMER_REQUIRED:
+        if f == "organization":
+            val = str((user_doc or {}).get("company") or "").strip()
+        else:
+            val = str((user_doc or {}).get(f) or "").strip()
+        if not val:
+            missing.append(f)
+    phone = str((user_doc or {}).get("phone") or "").strip()
+    if phone and not 9 <= len(phone) <= 20:
+        missing.append("phone_length")
+    if not user_doc or missing:
+        return {"customer_id": "35284", "fallback": True, "reason": "incomplete_profile:" + ",".join(missing or ["user"])}
+    try:
+        password = secrets.token_urlsafe(12)
+        created = await rna.create_customer(
+            name=str(user_doc["name"]).strip(), email=email, password=password,
+            organization=str(user_doc.get("company") or user_doc["name"]).strip(),
+            street_1=str(user_doc["address_line1"]).strip(), street_2=str(user_doc.get("address_line2") or "").strip(),
+            city=str(user_doc["city"]).strip(), state=str(user_doc["province"]).strip(),
+            country_code=_country_code_for(user_doc.get("country")), postal_code=str(user_doc["postal_code"]).strip(),
+            voice=phone,
+        )
+        cid = created.get("id") or created.get("customer_id")
+        if cid:
+            return {"customer_id": str(cid), "fallback": False, "reason": "created"}
+        return {"customer_id": "35284", "fallback": True, "reason": "create_no_id"}
+    except Exception as exc:
+        return {"customer_id": "35284", "fallback": True, "reason": "create_failed:" + str(exc)[:120]}
+
+
 async def _auto_register_domain(db, inv: dict) -> bool:
     """Registrasi domain otomatis di RNA.id setelah invoice registrasi lunas. Idempotent
     (hanya memproses domain berstatus pending)."""
@@ -299,16 +352,27 @@ async def _auto_register_domain(db, inv: dict) -> bool:
     rna = await _rna_client(db)
     if rna:
         try:
-            res = await rna.register(dom["domain"], int(dom.get("years", 1)))
+            cust = await _resolve_rna_customer(db, rna, dom.get("user_id"))
+            customer_id = cust["customer_id"]
+            res = await rna.register(dom["domain"], int(dom.get("years", 1)), customer_id=customer_id)
             ns = [res.get(f"nameserver_{i}") for i in range(1, 6) if res.get(f"nameserver_{i}")]
-            await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
+            update = {
                 "status": "active",
                 "registered_at": now.date().isoformat(),
                 "expires_at": (res.get("expired_at") or "")[:10] or fallback_expiry,
                 "nameservers": ns or rna.default_ns,
                 "order_ref": str(res.get("id") or ""),
+                "rna_customer_id": customer_id,
                 "provision_note": "Registered live via RNA.id (RDASH).",
-            }})
+            }
+            if cust.get("fallback"):
+                update["registered_under_intercloud"] = True
+                update["rna_customer_reason"] = cust.get("reason", "fallback")
+                update["provision_note"] = (
+                    "Registered under Intercloud (RNA customer fallback). "
+                    "Lengkapi profil untuk pindah ke akun sendiri."
+                )
+            await db.domains.update_one({"_id": dom["_id"]}, {"$set": update})
             return True
         except Exception as e:
             await db.domains.update_one({"_id": dom["_id"]}, {"$set": {
@@ -450,6 +514,8 @@ def _serialize_domain(d: dict) -> dict:
         "created_at": _iso(d.get("created_at", "")),
         "user_name": user_name,
         "user_email": user_email,
+        "registered_under_intercloud": bool(d.get("registered_under_intercloud")),
+        "rna_customer_reason": d.get("rna_customer_reason", ""),
     }
 
 

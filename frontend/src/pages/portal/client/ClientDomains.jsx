@@ -369,6 +369,26 @@ const ClientDomains = () => {
                 <StatusBadge status={d.status} />
               </div>
               <div className="mt-3 text-base font-extrabold text-[#0a2350] truncate">{d.domain}</div>
+              {d.registered_under_intercloud && (
+                <div
+                  className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 leading-snug"
+                  data-testid={`domain-intercloud-notice-${d.domain}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5 text-amber-700" />
+                    <div>
+                      <div className="font-extrabold">
+                        Domain <span className="font-mono">{d.domain}</span> Anda didaftarkan atas nama Intercloud.
+                      </div>
+                      <div className="mt-1 text-amber-800">
+                        Karena kelengkapan data profil belum mencukupi. Untuk merubahnya menjadi atas nama Anda sendiri,
+                        lengkapi <span className="font-bold">Profil</span> dan kirim ticket dengan judul
+                        <span className="font-mono"> Pelengkapan Data Untuk {d.domain}</span>.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="mt-3 space-y-1 text-sm">
                 <div className="flex justify-between"><span className="text-slate-500">Terdaftar</span><span className="font-semibold">{d.registered_at || "-"}</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">Kadaluarsa</span><span className={`font-semibold ${d.status === "expired" ? "text-red-600" : ""}`}>{d.expires_at || "-"}</span></div>

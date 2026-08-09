@@ -727,6 +727,45 @@ class RdashClient:
         data = await self._req("POST", "/domains", data=form)
         return data.get("data") or {}
 
+    async def list_customers(self, *, email: str = None, name: str = None) -> list:
+        """List RDASH customers, optionally filtered by email/name (read-only)."""
+        params = {}
+        if email:
+            params["email"] = email
+        if name:
+            params["name"] = name
+        data = await self._req("GET", "/customers", params=params or None)
+        return data.get("data") or []
+
+    async def create_customer(self, *, name: str, email: str, password: str,
+                              organization: str, street_1: str, city: str,
+                              state: str, country_code: str, postal_code: str,
+                              voice: str, street_2: str = "", fax: str = "") -> dict:
+        """Create a customer on RDASH. Returns the created customer dict (with id).
+
+        All required RDASH fields are validated by the caller before this is
+        invoked; if any required field is missing the caller falls back to the
+        reseller's default customer instead of calling this.
+        """
+        form = {
+            "name": name,
+            "email": email,
+            "password": password,
+            "password_confirmation": password,
+            "organization": organization,
+            "street_1": street_1,
+            "street_2": street_2 or "",
+            "city": city,
+            "state": state,
+            "country_code": country_code,
+            "postal_code": postal_code,
+            "voice": voice,
+            "fax": fax or "",
+        }
+        data = await self._req("POST", "/customers", data=form)
+        return data.get("data") or {}
+
+
     async def renew(self, domain_id: str, period: int, current_date: str) -> dict:
         data = await self._req("POST", f"/domains/{domain_id}/renew",
                                data={"period": str(period), "current_date": current_date})

@@ -336,6 +336,29 @@ async def me(user=Depends(get_current_user)):
     return _user_public(user)
 
 
+@router.put("/auth/me", response_model=m.UserOut)
+async def update_me(payload: m.UserUpdateIn, user=Depends(get_current_user)):
+    """Update profil sendiri (name, company, phone, address, dll)."""
+    db = await _get_db()
+    upd = {}
+    for k in ("name", "company", "phone", "attention", "address_line1",
+              "address_line2", "city", "province", "postal_code",
+              "country", "npwp", "billing_emails"):
+        v = getattr(payload, k, None)
+        if v is not None:
+            upd[k] = v
+    if not upd:
+        return _user_public(user)
+    await db.users.update_one({"_id": ObjectId(user["id"])}, {"$set": upd})
+    updated = await db.users.find_one({"_id": ObjectId(user["id"])})
+    # Mirror to CRM
+    try:
+        await _upsert_crm_from_user(db, updated, status="existing")
+    except Exception:
+        pass
+    return _user_public(updated)
+
+
 # ============================================================
 # Password lifecycle - change / admin-reset / forgot / reset
 # ============================================================
