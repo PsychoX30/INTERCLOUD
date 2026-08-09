@@ -614,6 +614,11 @@ class RdashClient:
         self.api_key = creds.get("api_key") or ""
         self.customer_id = str(opts.get("customer_id") or "")
         self.default_ns = [ns.strip() for ns in str(opts.get("default_ns") or "").split(",") if ns.strip()]
+        # Markup percent customizable via integration options (default 7.0)
+        try:
+            self.markup_pct = float(opts.get("markup_pct", self.MARKUP_PCT) or self.MARKUP_PCT)
+        except (TypeError, ValueError):
+            self.markup_pct = self.MARKUP_PCT
 
     def _auth(self):
         return (self.reseller_id, self.api_key)
@@ -648,7 +653,7 @@ class RdashClient:
         return data.get("data") or []
 
     async def prices_with_markup(self) -> dict:
-        """Fetch reseller prices and apply 7% markup. Returns {tld: {register, renew, transfer}}."""
+        """Fetch reseller prices and apply configurable markup. Returns {tld: {register, renew, transfer}}."""
         raw = await self.prices()
         result = {}
         for item in raw:
@@ -656,9 +661,9 @@ class RdashClient:
             if not tld:
                 continue
             result[tld] = {
-                "register": int(round((float(item.get("register", 0)) or 0) * (1 + self.MARKUP_PCT / 100))),
-                "renew":    int(round((float(item.get("renew", 0)) or 0) * (1 + self.MARKUP_PCT / 100))),
-                "transfer": int(round((float(item.get("transfer", 0)) or 0) * (1 + self.MARKUP_PCT / 100))),
+                "register": int(round((float(item.get("register", 0)) or 0) * (1 + self.markup_pct / 100))),
+                "renew":    int(round((float(item.get("renew", 0)) or 0) * (1 + self.markup_pct / 100))),
+                "transfer": int(round((float(item.get("transfer", 0)) or 0) * (1 + self.markup_pct / 100))),
             }
         return result
 
@@ -1065,13 +1070,15 @@ class MikrotikClient:
         Uses a bounded `duration` (2s default, 10s max) so the API socket does
         not stream indefinitely.  All arguments are validated by the caller -
         `interface` is required, everything else defaults to a wildcard.
+        RouterOS expects duration in format "2s" (seconds).
         """
         try:
             duration = max(1, min(int(duration or 2), 10))
         except (TypeError, ValueError):
             duration = 2
 
-        params: dict = {"interface": interface, "duration": str(duration)}
+        # RouterOS /tool/torch expects duration like "2s", "5s", "10s"
+        params: dict = {"interface": interface, "duration": f"{duration}s"}
         # RouterOS uses hyphenated keys
         if src_address and src_address != "0.0.0.0/0":
             params["src-address"] = src_address
@@ -1577,6 +1584,8 @@ INTEGRATION_SCHEMA = {
             {"key": "customer_id", "label": "Default customer ID (dipakai saat registrasi domain)", "type": "text"},
             {"key": "default_ns", "label": "Default nameservers (pisahkan dengan koma)", "type": "text",
              "default": "ns1.intercloud-digital.com,ns2.intercloud-digital.com"},
+            {"key": "markup_pct", "label": "Markup harga jual ke klien (%)", "type": "number",
+             "default": 7.0, "min": 0, "max": 100},
         ],
     },
     "telegram": {

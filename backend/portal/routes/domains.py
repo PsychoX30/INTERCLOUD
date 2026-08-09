@@ -178,7 +178,20 @@ async def client_domain_order(payload: m.DomainOrderIn, request: Request, user=D
     chk = (await _check_domains_availability(db, [name]))[0]
     if chk["available"] is False:
         raise HTTPException(status_code=400, detail="Domain tidak tersedia untuk registrasi")
-    price = _tld_price(name) * payload.years
+    # Use live/markup price from RDASH (or cache) instead of hardcoded
+    rna = await _rna_client(db)
+    price = None
+    if rna:
+        try:
+            prices = await rna.prices_with_markup()
+            tld = "." + name.split(".", 1)[1]
+            price = prices.get(tld, {}).get("register")
+        except Exception:
+            pass
+    if price is None:
+        # Fallback to hardcoded
+        price = _tld_price(name)
+    price *= payload.years
     tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
     tax = round(price * tax_percent / 100.0, 2)
     due = (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat()
@@ -280,7 +293,20 @@ async def client_domain_renew(did: str, payload: m.DomainRenewIn, request: Reque
     if dom.get("pending_renewal"):
         raise HTTPException(status_code=400, detail="Masih ada perpanjangan yang menunggu pembayaran")
     name = dom["domain"]
-    price = _tld_price(name) * payload.years
+    # Use live/markup price from RDASH (or cache) instead of hardcoded
+    rna = await _rna_client(db)
+    price = None
+    if rna:
+        try:
+            prices = await rna.prices_with_markup()
+            tld = "." + name.split(".", 1)[1]
+            price = prices.get(tld, {}).get("renew")
+        except Exception:
+            pass
+    if price is None:
+        # Fallback to hardcoded
+        price = _tld_price(name)
+    price *= payload.years
     tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
     tax = round(price * tax_percent / 100.0, 2)
     due = (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
@@ -413,16 +439,30 @@ async def client_domain_check(domain: str, user=Depends(get_current_user)):
 
 @router.get("/client/domains/pricing")
 async def client_domain_pricing(user=Depends(get_current_user), db=Depends(_get_db)):
-    """Get domain pricing with RDASH live prices + 7% markup. Falls back to hardcoded."""
+    """Get domain pricing.
+
+    Priority:
+      1. Cached synced prices (db.settings key `domain_pricing` from admin sync-pricing).
+      2. Live RDASH prices (with configured markup) if RNA active.
+      3. Hardcoded fallback.
+    """
+    # 1. Use the admin-synced cache first (fast, offline-safe, reflects markup).
+    cached = await db.settings.find_one({"key": "domain_pricing"})
+    if cached and (cached.get("value") or {}).get("prices"):
+        v = cached["value"]
+        return {"live": False, "source": "cache",
+                "prices": v["prices"], "synced_at": v.get("synced_at")}
+    # 2. Live RDASH with markup.
     rna = await _rna_client(db)
     if rna:
         try:
             prices = await rna.prices_with_markup()
             if prices:
-                return {"live": True, "prices": prices}
+                return {"live": True, "source": "rna", "prices": prices}
         except Exception:
             pass
-    return {"live": False, "prices": _TLD_PRICES_IDR}
+    # 3. Hardcoded fallback.
+    return {"live": False, "source": "fallback", "prices": _TLD_PRICES_IDR}
 
 
 @router.get("/admin/domains")
