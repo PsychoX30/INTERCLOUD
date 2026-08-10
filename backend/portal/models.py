@@ -707,7 +707,9 @@ class TransactionOut(BaseModel):
     method: Optional[str] = None
     status: str
     paid_at: Optional[str] = None
+    verified: bool = False
     verified_at: Optional[str] = None
+    verified_by: Optional[str] = None
     invoice_date: Optional[str] = None
     due_date: Optional[str] = None
     reference: Optional[str] = None

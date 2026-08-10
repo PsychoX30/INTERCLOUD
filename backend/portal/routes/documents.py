@@ -480,9 +480,18 @@ async def render_invoice_pdf(iid: str, format: str = "html", user=Depends(get_cu
     d = await db.invoices.find_one({"_id": _oid(iid)})
     if not d:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    # Access: owner or staff
-    if user["role"] == "client" and str(d["user_id"]) != str(user["id"]):
-        raise HTTPException(status_code=403, detail="Not your invoice")
+    # Access: owner (client) or staff (sales scoped to assigned clients)
+    if user["role"] == "client":
+        if str(d["user_id"]) != str(user["id"]):
+            raise HTTPException(status_code=403, detail="Not your invoice")
+    else:
+        # Staff path: apply sales scope so sales can only access assigned clients' invoices
+        if user.get("role") == "sales":
+            scoped = _sales_scope_filter(user, key="user_id")
+            if not scoped:
+                raise HTTPException(status_code=403, detail="No assigned clients")
+            if str(d.get("user_id")) not in {str(x) for x in scoped.get("user_id", {}).get("$in", [])}:
+                raise HTTPException(status_code=403, detail="Not your client's invoice")
     u = await db.users.find_one({"_id": d["user_id"]}) or {}
 
     html = await _invoice_document_html(db, d, u, for_pdf=(format == "pdf"))
