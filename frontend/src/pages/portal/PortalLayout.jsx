@@ -39,6 +39,7 @@ const ADMIN_NAV_GROUPS = [
     items: [
       { key: "orders",     to: "/portal/admin/orders",     label: "Orders",     icon: ShoppingCart, testid: "nav-orders",     roles: ["admin", "sales", "finance"] },
       { key: "invoices",   to: "/portal/admin/invoices",   label: "Invoices",   icon: Receipt,      testid: "nav-invoices",   roles: ["admin", "finance"] },
+      { key: "transactions", to: "/portal/admin/transactions", label: "Transactions", icon: ReceiptText, testid: "nav-transactions", roles: ["admin", "finance", "sales"] },
       { key: "quotations", to: "/portal/admin/quotations", label: "Quotations", icon: FileText,     testid: "nav-quotations", roles: ["admin", "sales", "finance"] },
       { key: "finance",    to: "/portal/admin/finance",    label: "Finance",    icon: Wallet,       testid: "nav-finance",    roles: ["admin", "finance"] },
       { key: "assets",     to: "/portal/admin/assets",     label: "Assets",     icon: HardDrive,    testid: "nav-assets",     roles: ["admin", "finance"] },
@@ -75,6 +76,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "ssl",          to: "/portal/admin/ssl",          label: "SSL Orders", icon: ShieldCheck,   testid: "nav-admin-ssl", roles: ["admin", "support"] },
       { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
       { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
+      { key: "sla",          to: "/portal/admin/sla",          label: "SLA & Incidents", icon: Activity,   testid: "nav-sla",          roles: ["admin", "support", "finance", "sales"] },
     ],
   },
   {

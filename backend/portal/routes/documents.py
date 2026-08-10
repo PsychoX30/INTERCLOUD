@@ -26,7 +26,7 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .shared import _get_db, _oid  # noqa: E402
+from .shared import _get_db, _oid, _sales_scope_filter  # noqa: E402
 from portal import emails as _emails  # noqa: E402
 
 router = APIRouter()
@@ -537,7 +537,7 @@ async def admin_invoice_resend_email(iid: str, request: Request,
 @router.get("/documents/quotation/{qid}")
 async def render_quotation_pdf(qid: str, format: str = "html", staff=Depends(get_current_staff)):
     db = await _get_db()
-    d = await db.quotations.find_one({"_id": _oid(qid)})
+    d = await db.quotations.find_one({"_id": _oid(qid), **_sales_scope_filter(staff, key="user_id")})
     if not d:
         raise HTTPException(status_code=404, detail="Quotation not found")
     u = await db.users.find_one({"_id": d["user_id"]}) or {}

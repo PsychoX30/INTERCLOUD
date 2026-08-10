@@ -21,6 +21,7 @@ const AdminArticles = () => {
   const [rows, setRows] = useState(null);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
   const [tagFilter, setTagFilter] = useState("");
   const [tagFacet, setTagFacet] = useState([]);
   const [editing, setEditing] = useState(null);
@@ -30,6 +31,7 @@ const AdminArticles = () => {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (statusFilter) params.set("status", statusFilter);
+    if (typeFilter) params.set("type", typeFilter);
     if (tagFilter) params.set("tag", tagFilter);
     const [r, t] = await Promise.all([
       api.get(`/admin/articles?${params.toString()}`),
@@ -38,7 +40,7 @@ const AdminArticles = () => {
     setRows(r.data);
     setTagFacet(t.data);
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [q, statusFilter, tagFilter]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [q, statusFilter, typeFilter, tagFilter]);
 
   const openEditor = (article) => setEditing(article || newArticle());
 
@@ -68,6 +70,11 @@ const AdminArticles = () => {
           <option value="draft">Draft</option>
           <option value="published">Published</option>
           <option value="archived">Archived</option>
+        </select>
+        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className={`${inputClass} w-auto min-w-[140px]`} data-testid="articles-type-filter">
+          <option value="">All types</option>
+          <option value="blog">Blog / Marketing</option>
+          <option value="kb">Knowledge Base</option>
         </select>
         <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} className={`${inputClass} w-auto min-w-[140px]`} data-testid="articles-tag-filter">
           <option value="">All tags</option>
@@ -134,7 +141,7 @@ const AdminArticles = () => {
 const newArticle = () => ({
   title: "", slug: "", excerpt: "", body_html: "",
   cover_image_url: "", cover_image_alt: "", video_url: "", author_name: "",
-  tags: [], category: "", status: "draft", published_at: null,
+  tags: [], category: "", type: "blog", kb_section: "", status: "draft", published_at: null,
   meta_title: "", meta_description: "", meta_keywords: [], og_image_url: "",
   is_featured: false,
 });
@@ -182,6 +189,8 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
         meta_keywords: (typeof form.meta_keywords === "string" ? form.meta_keywords.split(/[,\n]+/) : form.meta_keywords || []).map((t) => t.trim()).filter(Boolean),
         og_image_url: form.og_image_url || "",
         is_featured: !!form.is_featured,
+        type: form.type || "blog",
+        kb_section: form.kb_section || "",
       };
       if (isNew) await api.post("/admin/articles", payload);
       else await api.put(`/admin/articles/${article.id}`, payload);
@@ -347,6 +356,19 @@ const ArticleEditor = ({ article, onClose, onSaved }) => {
           <div className="space-y-3">
             <Card className="p-4">
               <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Publish</div>
+              <label className="block mb-3">
+                <div className={labelClass}>Type</div>
+                <select value={form.type} onChange={(e) => set("type", e.target.value)} className={inputClass} data-testid="editor-type">
+                  <option value="blog">Blog / Marketing</option>
+                  <option value="kb">Knowledge Base</option>
+                </select>
+              </label>
+              {form.type === "kb" && (
+                <label className="block mb-3">
+                  <div className={labelClass}>KB Section <span className="ml-1 text-slate-400 normal-case">(e.g. Billing, Layanan, Jaringan)</span></div>
+                  <input value={form.kb_section} onChange={(e) => set("kb_section", e.target.value)} className={inputClass} placeholder="Billing" data-testid="editor-kb-section" />
+                </label>
+              )}
               <label className="block mb-3">
                 <div className={labelClass}>Status</div>
                 <select value={form.status} onChange={(e) => set("status", e.target.value)} className={inputClass} data-testid="editor-status">

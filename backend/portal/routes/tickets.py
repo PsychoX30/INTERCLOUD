@@ -26,7 +26,7 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .shared import _get_db, _iso, _next_number, _now, _oid  # noqa: E402
+from .shared import _get_db, _iso, _next_number, _now, _oid, _sales_scope_filter  # noqa: E402
 from .users import _paginate  # noqa: E402
 
 router = APIRouter()
@@ -149,7 +149,7 @@ async def client_close_ticket(tid: str, user=Depends(get_current_user)):
 async def admin_ticket_status(tid: str, payload: m.TicketStatusIn, staff=Depends(get_current_staff)):
     """UAT-011: staf dapat mengubah status tiket (termasuk close/resolve)."""
     db = await _get_db()
-    d = await db.tickets.find_one({"_id": _oid(tid)})
+    d = await db.tickets.find_one({"_id": _oid(tid), **_sales_scope_filter(staff, key="user_id")})
     if not d:
         raise HTTPException(status_code=404, detail="Ticket not found")
     now = _now()
@@ -182,6 +182,7 @@ async def admin_list_tickets(staff=Depends(get_current_staff),
         query["status"] = {"$ne": "closed"}
     elif view == "archive":
         query["status"] = "closed"
+    query.update(_sales_scope_filter(staff, key="user_id"))
     docs = await db.tickets.find(query).sort("updated_at", -1).to_list(2000)
     return _paginate([await _serialize_ticket(db, d) for d in docs], page, limit)
 
@@ -189,7 +190,7 @@ async def admin_list_tickets(staff=Depends(get_current_staff),
 @router.post("/admin/tickets/{tid}/replies")
 async def admin_reply_ticket(tid: str, payload: m.TicketReplyIn, staff=Depends(get_current_staff)):
     db = await _get_db()
-    d = await db.tickets.find_one({"_id": _oid(tid)})
+    d = await db.tickets.find_one({"_id": _oid(tid), **_sales_scope_filter(staff, key="user_id")})
     if not d:
         raise HTTPException(status_code=404, detail="Ticket not found")
     reply = {
@@ -215,7 +216,7 @@ async def admin_reply_ticket(tid: str, payload: m.TicketReplyIn, staff=Depends(g
 async def admin_ticket_timeline(tid: str, staff=Depends(get_current_staff)):
     """Timeline gabungan: pembuatan tiket, balasan (internal + publik), dan perubahan status."""
     db = await _get_db()
-    d = await db.tickets.find_one({"_id": _oid(tid)})
+    d = await db.tickets.find_one({"_id": _oid(tid), **_sales_scope_filter(staff, key="user_id")})
     if not d:
         raise HTTPException(status_code=404, detail="Ticket not found")
     events = [{"kind": "created", "at": _iso(d.get("created_at", "")),
@@ -238,7 +239,8 @@ async def admin_ticket_timeline(tid: str, staff=Depends(get_current_staff)):
 async def admin_tickets_by_device(did: str, staff=Depends(get_current_staff)):
     """Daftar tiket yang terkait dengan sebuah perangkat NOC."""
     db = await _get_db()
-    docs = await db.tickets.find({"related_device_id": did}).sort("updated_at", -1).to_list(200)
+    docs = await db.tickets.find({"related_device_id": did,
+                                  **_sales_scope_filter(staff, key="user_id")}).sort("updated_at", -1).to_list(200)
     return [await _serialize_ticket(db, d) for d in docs]
 
 

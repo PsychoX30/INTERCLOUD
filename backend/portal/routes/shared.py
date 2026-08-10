@@ -176,6 +176,39 @@ async def _insert_numbered(db, coll: str, prefix: str, doc: dict):
     raise HTTPException(status_code=500, detail=f"Could not allocate a unique {prefix} number")
 
 
+async def _log_transaction(
+    db, *, invoice_id=None, invoice_number=None, user_id=None,
+    user_name=None, customer_name="", amount=0.0, method=None,
+    status="paid", paid_at=None, invoice_date=None, due_date=None,
+    reference=None, notes="", source="auto",
+):
+    """Insert a transaction ledger record. Best-effort, never blocks caller."""
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "invoice_id": invoice_id,
+        "invoice_number": invoice_number,
+        "user_id": user_id,
+        "user_name": user_name,
+        "customer_name": customer_name,
+        "amount": float(amount or 0),
+        "method": method,
+        "status": status,
+        "paid_at": paid_at or (now if status == "paid" else None),
+        "verified_at": None,
+        "invoice_date": invoice_date,
+        "due_date": due_date,
+        "reference": reference,
+        "notes": notes,
+        "source": source,
+        "created_at": now,
+        "updated_at": now,
+    }
+    try:
+        await db.transactions.insert_one(doc)
+    except Exception:
+        logging.getLogger("portal.transactions").exception("transaction insert failed")
+
+
 async def _mark_overdue(db):
     """Auto-mark unpaid invoices past due as 'overdue'."""
     today = datetime.now(timezone.utc).date().isoformat()

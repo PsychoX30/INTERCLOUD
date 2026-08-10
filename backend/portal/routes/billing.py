@@ -30,7 +30,7 @@ from .domains import _apply_domain_renewal, _auto_register_domain, _apply_domain
 from .ssl import _provision_ssl_order  # noqa: E402
 from .provision import (_provision_order_from_invoice,  # noqa: E402
                         _proxmox_settings_for_service)
-from .shared import BILLING_SETTING_DEFAULTS, _EXTRA_PAYMENT_MODULES, _get_db, _get_setting_value, _iso, _load_user, _mark_overdue, _next_number, _now, _oid, _sales_scope_filter, _serialize_invoice, _set_setting_value, _sum_applied_credit  # noqa: E402
+from .shared import BILLING_SETTING_DEFAULTS, _EXTRA_PAYMENT_MODULES, _get_db, _get_setting_value, _iso, _load_user, _log_transaction, _mark_overdue, _next_number, _now, _oid, _sales_scope_filter, _serialize_invoice, _set_setting_value, _sum_applied_credit  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 from .users import _paginate  # noqa: E402
 
@@ -113,6 +113,14 @@ async def admin_create_invoice(payload: m.InvoiceIn, admin=Depends(get_current_a
     }
     r = await db.invoices.insert_one(doc)
     doc["_id"] = r.inserted_id
+    # --- Transaction ledger: unpaid record ---
+    await _log_transaction(
+        db, invoice_id=doc["_id"], invoice_number=number,
+        user_id=u["_id"], user_name=u.get("name"), customer_name=u.get("name", ""),
+        amount=float(total), method=None, status="unpaid",
+        invoice_date=doc["created_at"], due_date=payload.due_date,
+        reference=None, notes="auto-generated on invoice creation",
+    )
     return await _serialize_invoice(db, doc)
 
 
@@ -200,6 +208,19 @@ async def admin_update_invoice_status(
         await _apply_pending_upgrade(db, d)
         await _auto_register_domain(db, d)
         await _apply_domain_renewal(db, d)
+        # --- Transaction ledger: paid event ---
+        inv_user = await db.users.find_one({"_id": d["user_id"]}) or {}
+        await _log_transaction(
+            db, invoice_id=d["_id"], invoice_number=d.get("number"),
+            user_id=d["user_id"], user_name=inv_user.get("name"),
+            customer_name=inv_user.get("name", ""),
+            amount=float(d.get("total") or 0),
+            method=payload.payment_method or "bank_transfer",
+            status="paid", paid_at=d.get("paid_at"),
+            invoice_date=d.get("created_at"), due_date=d.get("due_date"),
+            reference=d.get("payment_ref"),
+            notes="admin mark-paid", source="auto",
+        )
         await _apply_domain_transfer(db, d)
         await _provision_ssl_order(db, d)
 
@@ -381,7 +402,7 @@ async def admin_convert_quotation_to_invoice(qid: str, payload: m.QuotationConve
 # BILLING DEFAULTS (admin-editable global settings)
 # ============================================================
 @router.get("/admin/billing/settings")
-async def get_billing_settings(staff=Depends(get_current_staff)):
+async def get_billing_settings(staff=Depends(require_roles("admin", "finance"))):
     """Global billing defaults. `default_tax_percent` is only the *suggested*
     initial PPN % pre-filled into new invoices/quotations and renewal
     auto-invoices - always overridable per document, down to 0."""
@@ -651,6 +672,22 @@ async def payment_webhook(provider: str, request: Request):
 
     inv = await db.invoices.find_one({"number": inv_no})
     user = await db.users.find_one({"_id": inv["user_id"]}) if inv else None
+
+    # 0) Transaction ledger: paid event from gateway webhook
+    if inv:
+        try:
+            await _log_transaction(
+                db, invoice_id=inv["_id"], invoice_number=inv.get("number"),
+                user_id=inv["user_id"], user_name=(user or {}).get("name"),
+                customer_name=(user or {}).get("name", ""),
+                amount=float(inv.get("total") or 0),
+                method=provider, status="paid", paid_at=inv.get("paid_at"),
+                invoice_date=inv.get("created_at"), due_date=inv.get("due_date"),
+                reference=verified.get("external_id") or inv.get("payment_ref"),
+                notes=f"payment via {provider} webhook", source="auto",
+            )
+        except Exception:
+            pass
 
     # 1) Payment-received notification email (best-effort, never blocks the ACK)
     if inv and user:

@@ -18,6 +18,7 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
+    get_current_kb_author,
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
@@ -194,6 +195,8 @@ def _serialize_article(d: dict, *, include_body: bool = True) -> dict:
         "author_name": d.get("author_name", ""),
         "tags": d.get("tags", []),
         "category": d.get("category", ""),
+        "type": d.get("type", "blog"),
+        "kb_section": d.get("kb_section", ""),
         "status": d.get("status", "draft"),
         "published_at": d.get("published_at"),
         "meta_title": d.get("meta_title", ""),
@@ -274,12 +277,15 @@ async def _unique_slug(db, base: str, ignore_id: Optional[str] = None) -> str:
 # ---- Admin CRUD ----
 @router.get("/admin/articles")
 async def admin_articles_list(status: str = "", q: str = "", tag: str = "",
+                              type: str = "",
                               staff=Depends(get_current_staff)):
     db = await _get_db()
     await _ensure_article_indexes(db)
     filt: dict = {}
     if status in ("draft", "published", "archived"):
         filt["status"] = status
+    if type in ("blog", "kb"):
+        filt["type"] = type
     if tag:
         filt["tags"] = _slugify(tag)
     if q:
@@ -298,8 +304,11 @@ async def admin_article_get(aid: str, staff=Depends(get_current_staff)):
 
 
 @router.post("/admin/articles")
-async def admin_article_create(payload: m.ArticleIn, admin=Depends(get_current_content)):
+async def admin_article_create(payload: m.ArticleIn, admin=Depends(get_current_kb_author)):
     db = await _get_db()
+    # Support staff may author KB articles only; blog/marketing stays admin+creative.
+    if admin.get("role") == "support" and payload.type != "kb":
+        raise HTTPException(status_code=403, detail="Support may only author knowledge-base articles")
     await _ensure_article_indexes(db)
     now = _now()
     slug_base = payload.slug or payload.title
@@ -325,11 +334,15 @@ async def admin_article_create(payload: m.ArticleIn, admin=Depends(get_current_c
 
 @router.put("/admin/articles/{aid}")
 async def admin_article_update(aid: str, payload: m.ArticleIn,
-                               admin=Depends(get_current_content)):
+                               admin=Depends(get_current_kb_author)):
     db = await _get_db()
     existing = await db.articles.find_one({"_id": _oid(aid)})
     if not existing:
         raise HTTPException(status_code=404, detail="Article not found")
+    # Support may only edit KB articles, and cannot change a KB article to blog.
+    if admin.get("role") == "support":
+        if existing.get("type", "blog") != "kb" or payload.type != "kb":
+            raise HTTPException(status_code=403, detail="Support may only edit knowledge-base articles")
     upd = payload.model_dump()
     upd["body_html"] = _sanitize_article_html(upd.get("body_html", ""))
     upd["tags"] = _norm_tags(payload.tags)
@@ -351,8 +364,13 @@ async def admin_article_update(aid: str, payload: m.ArticleIn,
 
 
 @router.delete("/admin/articles/{aid}")
-async def admin_article_delete(aid: str, admin=Depends(get_current_content)):
+async def admin_article_delete(aid: str, admin=Depends(get_current_kb_author)):
     db = await _get_db()
+    existing = await db.articles.find_one({"_id": _oid(aid)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Article not found")
+    if admin.get("role") == "support":
+        raise HTTPException(status_code=403, detail="Support cannot delete articles")
     r = await db.articles.delete_one({"_id": _oid(aid)})
     return {"deleted": r.deleted_count}
 
@@ -373,10 +391,13 @@ async def admin_articles_tags(staff=Depends(get_current_staff)):
 # ---- Public endpoints (unauthenticated) ----
 @router.get("/public/articles")
 async def public_articles_list(q: str = "", tag: str = "",
+                               type: str = "blog",
                                limit: int = 24, skip: int = 0):
     db = await _get_db()
     await _ensure_article_indexes(db)
     filt: dict = {"status": "published"}
+    if type in ("blog", "kb"):
+        filt["type"] = type
     if tag:
         filt["tags"] = _slugify(tag)
     projection = None

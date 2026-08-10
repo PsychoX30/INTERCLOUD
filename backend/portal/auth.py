@@ -132,6 +132,19 @@ async def get_current_content(user=Depends(get_current_user)):
     return user
 
 
+# Roles allowed to author KB (knowledge-base) articles.
+# Broader than CONTENT_ROLES: support staff can write KB articles to help clients,
+# but cannot publish blog/marketing articles or manage media/calendar.
+KB_AUTHOR_ROLES = {"admin", "creative", "support"}
+
+
+async def get_current_kb_author(user=Depends(get_current_user)):
+    """KB article authoring: admin + creative + support."""
+    if user.get("role") not in KB_AUTHOR_ROLES:
+        raise HTTPException(status_code=403, detail="KB authoring not allowed for your role")
+    return user
+
+
 def require_roles(*allowed):
     """Factory: dependency that only allows the listed roles."""
     allowed_set = set(allowed)

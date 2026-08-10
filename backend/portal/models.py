@@ -660,6 +660,8 @@ class ArticleIn(BaseModel):
     author_name: str = ""
     tags: List[str] = []                      # normalised lowercase slugs
     category: str = ""                        # optional editorial category
+    type: Literal["blog", "kb"] = "blog"      # blog = public marketing articles; kb = client-facing knowledge base
+    kb_section: str = ""                      # optional grouping for KB articles (e.g. "Billing", "Layanan")
     status: Literal["draft", "published", "archived"] = "draft"
     published_at: Optional[str] = None        # ISO date-time; auto-set on first publish
     # SEO
@@ -674,6 +676,105 @@ class ArticleOut(ArticleIn):
     id: str
     view_count: int = 0
     created_at: str
+    updated_at: str
+
+
+# ---------- TRANSACTION LEDGER ----------
+class TransactionIn(BaseModel):
+    """Manual ledger entry. Auto-populated entries from invoice events omit this."""
+    invoice_id: Optional[str] = None
+    user_id: Optional[str] = None
+    customer_name: str = ""
+    amount: float = 0.0
+    method: Optional[str] = None       # bank_transfer | duitku | xendit | credit_note | manual
+    status: Literal["pending", "paid", "unpaid", "failed", "refunded", "cancelled"] = "paid"
+    paid_at: Optional[str] = None      # ISO datetime string
+    verified_at: Optional[str] = None  # ISO datetime string
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    reference: Optional[str] = None
+    notes: str = ""
+
+
+class TransactionOut(BaseModel):
+    id: str
+    invoice_id: Optional[str] = None
+    invoice_number: Optional[str] = None
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    customer_name: str = ""
+    amount: float
+    method: Optional[str] = None
+    status: str
+    paid_at: Optional[str] = None
+    verified_at: Optional[str] = None
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    reference: Optional[str] = None
+    notes: str = ""
+    source: Literal["auto", "manual"] = "auto"
+    created_at: str
+    updated_at: str
+
+
+class TransactionVerifyIn(BaseModel):
+    notes: str = ""
+
+
+# ---------- SLA ----------
+class SLAIncidentIn(BaseModel):
+    service_id: Optional[str] = None
+    device_id: Optional[str] = None
+    title: str = Field(..., min_length=2)
+    description: str = ""
+    severity: Literal["critical", "high", "medium", "low"] = "medium"
+    started_at: str  # ISO datetime
+    ended_at: Optional[str] = None
+    affected_customers: List[str] = []  # user_id list
+    status: Literal["open", "resolved", "postmortem"] = "open"
+    root_cause: str = ""
+    created_by: Optional[str] = None
+    notes: str = ""
+
+
+class SLAIncidentOut(SLAIncidentIn):
+    id: str
+    duration_minutes: Optional[int] = None
+    created_at: str
+    updated_at: str
+
+
+class SLAIncidentUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    severity: Optional[Literal["critical", "high", "medium", "low"]] = None
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    affected_customers: Optional[List[str]] = None
+    status: Optional[Literal["open", "resolved", "postmortem"]] = None
+    root_cause: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class SLAConfigIn(BaseModel):
+    sla_target_uptime_percent: float = Field(..., ge=0, le=100)
+    sla_excluded_maintenance_windows: List[str] = []  # cron-like strings or human-readable
+    auto_create_sla_incidents: bool = False
+
+
+class SLAConfigOut(SLAConfigIn):
+    id: str = "sla_config"
+    updated_at: str
+
+
+# ---------- SETTINGS (generic) ----------
+class SettingIn(BaseModel):
+    key: str = Field(..., min_length=1)
+    value: str
+
+
+class SettingOut(SettingIn):
+    id: str
     updated_at: str
 
 

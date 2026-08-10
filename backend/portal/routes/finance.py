@@ -31,7 +31,7 @@ from .domains import _auto_register_domain, _apply_domain_renewal, _apply_domain
 from .ssl import _provision_ssl_order  # noqa: E402
 from .provision import _provision_order_from_invoice  # noqa: E402
 from .documents import _idr, _long_date, _render_pdf_bytes  # noqa: E402
-from .shared import _get_db, _iso, _next_number, _now, _oid, _sum_applied_credit  # noqa: E402
+from .shared import _get_db, _iso, _log_transaction, _next_number, _now, _oid, _sum_applied_credit  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.responses import Response  # noqa: E402
 from portal.branding import get_branding as _get_branding_dict  # noqa: E402
@@ -1294,6 +1294,20 @@ async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
         await _apply_pending_upgrade(db, invoice)
     except Exception:
         pass
+    try:
+        credit_user = await db.users.find_one({"_id": invoice["user_id"]}) or {}
+        await _log_transaction(
+            db, invoice_id=invoice["_id"], invoice_number=invoice.get("number"),
+            user_id=invoice["user_id"], user_name=credit_user.get("name"),
+            customer_name=credit_user.get("name", ""), amount=inv_total,
+            method="credit_note", status="paid", paid_at=_now(),
+            invoice_date=invoice.get("created_at"), due_date=invoice.get("due_date"),
+            reference=f"CN>={inv_total:.0f}",
+            notes="invoice settled via credit note", source="auto",
+        )
+    except Exception:
+        logging.getLogger("portal.finance").exception("transaction ledger credit settlement failed")
+
     # Invoice order yang dilunasi credit note juga harus memicu auto-provisioning
     # (sama seperti webhook Duitku / admin mark-paid) agar service muncul di klien.
     try:

@@ -26,7 +26,7 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .shared import _get_db, _get_setting_value, _iso, _next_number, _now, _oid  # noqa: E402
+from .shared import _get_db, _get_setting_value, _iso, _next_number, _now, _oid, _sales_scope_filter  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 from .users import _paginate  # noqa: E402
 
@@ -422,7 +422,7 @@ async def client_confirm_transfer(oid: str, payload: dict, user=Depends(get_curr
 async def admin_update_order(oid: str, payload: dict, staff=Depends(get_current_staff)):
     """Ubah detail pesanan (catatan + konfigurasi) sebelum/di tengah provisioning."""
     db = await _get_db()
-    d = await db.orders.find_one({"_id": _oid(oid)})
+    d = await db.orders.find_one({"_id": _oid(oid), **_sales_scope_filter(staff, key="user_id")})
     if not d:
         raise HTTPException(status_code=404, detail="Order not found")
     upd = {}
