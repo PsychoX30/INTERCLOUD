@@ -1,7 +1,7 @@
 # Intercloud Portal - PRD & Progress
 
 ## Original Problem Statement
-Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Backlog dikelola via NgodingPakeAI plan `dd3e43ef-1bc5-47d3-97f3-160da4a8309a` dengan kebijakan **Verifikasi + Sinkronisasi**.
+Portal manajemen Intercloud Digital (FastAPI + React + MongoDB): billing (Duitku), NOC/MikroTik live ops, CRM, CMS/SEO, finance, ticket, multi-role staff. Pengembangan menggunakan kebijakan **Verifikasi + Sinkronisasi**.
 
 ## Sesi 2026-06 (batch 13): CONTENT PLANNER <-> CONTENT CALENDAR TERHUBUNG - SELESAI & DITES (curl + screenshot UI)
 - Root cause: planner menyimpan ke `content_plan` (channel/publish_date/status idea..published), kalender membaca `content_calendar` - dua koleksi terpisah tanpa sinkronisasi.
