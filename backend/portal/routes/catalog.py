@@ -67,6 +67,17 @@ DEFAULT_CATEGORIES = [
     {"slug": "other",        "label": "Other",        "icon": "Boxes",       "sort_order": 999},
 ]
 
+# System categories are permanent. Their slugs carry provisioning behaviour in
+# the backend (see provision.py: cat in ("vps","cloud"), cat in ("hosting",),
+# cat in ("dedicated","colocation","interconnect","firewall","lease")). They
+# must NOT be deletable or re-slugged from the admin portal - doing so would
+# silently break auto-provisioning for every product in that category. Removal
+# is only possible in source code, never via the admin UI/API.
+SYSTEM_CATEGORY_SLUGS = {
+    "cloud", "vps", "hosting", "dedicated", "colocation",
+    "firewall", "interconnect", "lease",
+}
+
 
 async def _ensure_default_categories(db):
     # Retire the legacy catalog-only domain category. Domain registration is
@@ -91,6 +102,7 @@ def _serialize_category(d: dict, product_count: int = 0) -> dict:
         "icon": d.get("icon", ""),
         "sort_order": d.get("sort_order", 100),
         "is_active": d.get("is_active", True),
+        "system": d["slug"] in SYSTEM_CATEGORY_SLUGS,
         "product_count": product_count,
         "created_at": _iso(d.get("created_at", "")),
     }
@@ -139,11 +151,19 @@ async def admin_update_category(cid: str, payload: m.CategoryIn, admin=Depends(g
     current = await db.categories.find_one({"_id": _oid(cid)})
     if not current:
         raise HTTPException(status_code=404, detail="Category not found")
-    # If slug changed, cascade-update all products
-    if slug != current["slug"]:
+    # System categories protect their slug. The slug is the behaviour key for
+    # provisioning; changing it would break every product in the category.
+    old_slug = current["slug"]
+    if old_slug in SYSTEM_CATEGORY_SLUGS and slug != old_slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Category '{old_slug}' is a permanent system category. Its slug cannot be changed through the admin portal.",
+        )
+    # If slug changed, cascade-update all products (only possible for non-system)
+    if slug != old_slug:
         if await db.categories.find_one({"slug": slug, "_id": {"$ne": _oid(cid)}}):
             raise HTTPException(status_code=409, detail=f"Category '{slug}' already exists")
-        await db.products.update_many({"category": current["slug"]}, {"$set": {"category": slug}})
+        await db.products.update_many({"category": old_slug}, {"$set": {"category": slug}})
     upd = payload.model_dump()
     upd["slug"] = slug
     await db.categories.update_one({"_id": _oid(cid)}, {"$set": upd})
@@ -157,6 +177,11 @@ async def admin_delete_category(cid: str, admin=Depends(get_current_admin)):
     d = await db.categories.find_one({"_id": _oid(cid)})
     if not d:
         raise HTTPException(status_code=404, detail="Category not found")
+    if d["slug"] in SYSTEM_CATEGORY_SLUGS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Category '{d['slug']}' is a permanent system category and cannot be deleted through the admin portal.",
+        )
     if await db.products.count_documents({"category": d["slug"]}) > 0:
         raise HTTPException(status_code=400, detail="Cannot delete: products still use this category. Reassign them first.")
     r = await db.categories.delete_one({"_id": _oid(cid)})

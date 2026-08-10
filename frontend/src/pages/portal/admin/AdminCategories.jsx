@@ -1,8 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Plus, Edit, Trash2, Package as PackageIcon } from "lucide-react";
+import { Plus, Edit, Trash2, Package as PackageIcon, Lock } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+
+// Must match SYSTEM_CATEGORY_SLUGS in backend/portal/routes/catalog.py.
+// These categories carry provisioning behaviour (vps→Proxmox, hosting→cPanel,
+// etc.) and are permanent - they cannot be deleted or re-slugged from the UI.
+const SYSTEM_CATEGORY_SLUGS = new Set([
+  "cloud", "vps", "hosting", "dedicated", "colocation",
+  "firewall", "interconnect", "lease",
+]);
 
 const AdminCategories = () => {
   const [rows, setRows] = useState(null);
@@ -10,11 +18,13 @@ const AdminCategories = () => {
   const load = () => api.get("/admin/categories").then((r) => setRows(r.data));
   useEffect(() => { load(); }, []);
 
-  const del = async (id) => {
+  const del = async (id, slug) => {
     if (!window.confirm("Delete this category?")) return;
     try { await api.delete(`/admin/categories/${id}`); load(); }
     catch (e) { alert(e?.response?.data?.detail || "Failed to delete"); }
   };
+
+  const isSystem = (c) => SYSTEM_CATEGORY_SLUGS.has(c.slug) || c.system === true;
 
   const columns = [
     { key: "label", label: "Label / Slug", sortable: true,
@@ -22,6 +32,11 @@ const AdminCategories = () => {
         <>
           <div className="font-semibold text-[#0a2350]">{c.label}</div>
           <div className="text-[11px] text-slate-500 font-mono">{c.slug}</div>
+          {isSystem(c) && (
+            <span className="inline-flex items-center gap-1 mt-1 text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded">
+              <Lock className="h-2.5 w-2.5" /> System category (protected)
+            </span>
+          )}
         </>
       ) },
     { key: "description", label: "Description", sortable: false,
@@ -40,9 +55,16 @@ const AdminCategories = () => {
           <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(c)} data-testid={`cat-edit-${c.slug}`}>
             <Edit className="h-4 w-4 inline" />
           </button>
-          <button className="ml-3 text-slate-600 hover:text-red-600" onClick={() => del(c.id)} data-testid={`cat-del-${c.slug}`}>
-            <Trash2 className="h-4 w-4 inline" />
-          </button>
+          {!isSystem(c) && (
+            <button className="ml-3 text-slate-600 hover:text-red-600" onClick={() => del(c.id, c.slug)} data-testid={`cat-del-${c.slug}`}>
+              <Trash2 className="h-4 w-4 inline" />
+            </button>
+          )}
+          {isSystem(c) && (
+            <span className="ml-3 text-slate-400" title="System category cannot be deleted">
+              <Trash2 className="h-4 w-4 inline" />
+            </span>
+          )}
         </span>
       ) },
   ];
@@ -88,6 +110,7 @@ const CategoryModal = ({ c, onClose, onDone }) => {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const isEdit = !!c;
+  const isSystem = isEdit && (SYSTEM_CATEGORY_SLUGS.has(c.slug) || c.system === true);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -105,9 +128,25 @@ const CategoryModal = ({ c, onClose, onDone }) => {
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="w-full max-w-lg bg-white rounded-3xl p-6" data-testid="cat-modal">
         <h3 className="text-xl font-extrabold text-[#0a2350] mb-3">{isEdit ? "Edit category" : "New category"}</h3>
+        {isSystem && (
+          <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3">
+            This is a permanent system category. Only label, icon, description and visibility can be edited.
+            The slug and delete action are protected because this category drives automated provisioning.
+          </div>
+        )}
         {err && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2 mb-3">{err}</div>}
         <div className="grid grid-cols-2 gap-3">
-          <label><div className={labelClass}>Slug</div><input required value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })} className={inputClass} data-testid="cat-slug" /></label>
+          <label>
+            <div className={labelClass}>Slug</div>
+            <input
+              required
+              value={f.slug}
+              disabled={isSystem}
+              onChange={(e) => setF({ ...f, slug: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })}
+              className={inputClass + (isSystem ? " bg-slate-100 text-slate-500 cursor-not-allowed" : "")}
+              data-testid="cat-slug"
+            />
+          </label>
           <label><div className={labelClass}>Label</div><input required value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} className={inputClass} data-testid="cat-label" /></label>
           <label className="col-span-2"><div className={labelClass}>Description</div><input value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} className={inputClass} /></label>
           <label><div className={labelClass}>Icon (lucide-react name)</div><input value={f.icon} onChange={(e) => setF({ ...f, icon: e.target.value })} className={inputClass} placeholder="Server, Cloud, HardDrive…" /></label>
