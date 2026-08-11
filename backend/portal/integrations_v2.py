@@ -887,6 +887,131 @@ class RdashClient:
         return result
 
 
+class GoFlow2Client:
+    """Parse JSON flow lines from a goflow2 collector output file.
+
+    goflow2 is a single-binary NetFlow/IPFIX/sFlow collector (Go). It writes
+    one JSON object per line to a file (``-transport.file``). This client
+    polls the file incrementally — only lines appended since the last poll
+    are parsed — and normalizes each flow to the same dict shape as
+    ``MikrotikClient.torch()`` so the detection sweep can consume both
+    sources uniformly.
+
+    Key fields in goflow2 JSON:
+      src_addr, dst_addr, proto (TCP/UDP/ICMP), src_port, dst_port,
+      bytes, packets, sampling_rate, sampler_address,
+      time_flow_start_ns, time_flow_end_ns
+    """
+
+    _PROTO_MAP = {"TCP": "tcp", "UDP": "udp", "ICMP": "icmp", "ICMPv6": "icmpv6"}
+
+    def __init__(self, flow_path: str):
+        self.flow_path = flow_path
+        self._offset = 0  # byte offset for incremental reads
+
+    def _compute_rates(self, record: dict) -> tuple[int, int, int, int]:
+        """Return (rx_packets, tx_packets, rx_rate, tx_rate).
+
+        goflow2 reports total bytes/packets for the flow duration. We convert
+        to per-second rates using the flow duration from timestamps. If
+        sampling_rate > 1, actual values are sampled × rate.
+        """
+        rate = int(record.get("sampling_rate") or 1)
+        pkts = int(record.get("packets") or 0) * rate
+        byts = int(record.get("bytes") or 0) * rate
+
+        start_ns = int(record.get("time_flow_start_ns") or 0)
+        end_ns = int(record.get("time_flow_end_ns") or 0)
+        duration_s = 0
+        if start_ns and end_ns and end_ns > start_ns:
+            duration_s = (end_ns - start_ns) / 1_000_000_000
+        if duration_s <= 0:
+            duration_s = 1.0  # assume 1s if no timing
+
+        pps = int(pkts / duration_s)
+        bps = int(byts * 8 / duration_s)
+        return pkts, 0, bps, 0  # tx columns zero — goflow2 is unidirectional
+
+    def _normalize(self, record: dict) -> dict:
+        """Convert one goflow2 JSON record to the torch-compatible flow dict."""
+        rx_pkts, tx_pkts, rx_rate, tx_rate = self._compute_rates(record)
+        proto_raw = str(record.get("proto") or "").upper()
+        proto = self._PROTO_MAP.get(proto_raw, proto_raw.lower())
+        return {
+            "src_address": record.get("src_addr") or "",
+            "dst_address": record.get("dst_addr") or "",
+            "protocol": proto,
+            "src_port": str(record.get("src_port") or ""),
+            "dst_port": str(record.get("dst_port") or ""),
+            "rx_rate": rx_rate,
+            "tx_rate": tx_rate,
+            "rx_packets": rx_pkts,
+            "tx_packets": tx_pkts,
+            "sampler_address": record.get("sampler_address") or "",
+        }
+
+    # Safety cap: never parse more than this many lines in a single poll.
+    # A 5-minute sweep interval with ~hundreds of flows/sec still stays well
+    # under this, but it prevents a memory explosion if the file is large
+    # (e.g. first poll after deploy against a stale multi-hundred-MB file,
+    # or after collector downtime with accumulated backlog).
+    MAX_LINES_PER_POLL = 50_000
+
+    def poll(self) -> dict:
+        """Read new flow lines since last poll. Returns torch-compatible dict."""
+        import os as _os
+
+        if not _os.path.exists(self.flow_path):
+            return {"ok": False, "error": f"Flow file not found: {self.flow_path}", "rows": []}
+
+        try:
+            size = _os.path.getsize(self.flow_path)
+        except OSError as e:
+            return {"ok": False, "error": f"Cannot stat flow file: {e}", "rows": []}
+
+        if size <= self._offset:
+            # File hasn't grown (or was truncated)
+            if size < self._offset:
+                self._offset = 0  # file was rotated/truncated, reset
+            return {"ok": True, "flow_count": 0, "rows": []}
+
+        # Read at most MAX_LINES_PER_POLL lines since the last poll.  Note
+        # readlines() takes a *size hint in bytes*, so we iterate manually to
+        # cap on line count, not byte count.
+        raw_lines: list[str] = []
+        try:
+            with open(self.flow_path, "r") as f:
+                f.seek(self._offset)
+                for _ in range(self.MAX_LINES_PER_POLL):
+                    line = f.readline()
+                    if not line:
+                        break
+                    raw_lines.append(line)
+                self._offset = f.tell()
+        except OSError as e:
+            return {"ok": False, "error": f"Cannot read flow file: {e}", "rows": []}
+
+        import json as _json
+        rows: list[dict] = []
+        for line in raw_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = _json.loads(line)
+            except (ValueError, TypeError):
+                continue  # skip malformed lines
+            rows.append(self._normalize(record))
+
+        return {
+            "ok": True,
+            "flow_count": len(rows),
+            "total_rx_rate": sum(r["rx_rate"] for r in rows),
+            "total_tx_rate": sum(r["tx_rate"] for r in rows),
+            "rows": rows,
+        }
+
+
 class MikrotikClient:
     """Wraps librouteros for BGP/interface/traffic reads.
 
@@ -1181,6 +1306,37 @@ class MikrotikClient:
         finally:
             try: api.close()
             except Exception: pass
+
+    def blackhole_find_by_prefix(self, prefix: str) -> dict | None:
+        """Return the first blackhole route matching ``prefix`` (exact
+        dst-address match) or ``None`` if not found.  The return dict
+        includes ``.id`` so the caller can remove it via
+        ``blackhole_remove``.
+
+        Works on both RouterOS 7 (``blackhole=yes``) and RouterOS 6
+        (``type=blackhole``).
+        """
+        try:
+            api = self._connect()
+        except Exception:
+            return None
+        rows: list = []
+        for query in ("?blackhole=yes", "?type=blackhole"):
+            try:
+                rows = list(api.rawCmd("/ip/route/print", query))
+                if rows:
+                    break
+            except Exception:
+                continue
+        try:
+            api.close()
+        except Exception:
+            pass
+        for r in rows:
+            if (r.get("dst-address") or "").strip() == prefix.strip():
+                return {"id": r.get(".id"), "prefix": prefix,
+                        "comment": r.get("comment") or ""}
+        return None
 
     # ---------- Backup ----------
     def backup_list(self) -> list:

@@ -236,6 +236,14 @@ async def mikrotik_blackhole_add(payload: dict, admin=Depends(get_current_admin)
     prefix = (payload.get("prefix") or "").strip()
     if not prefix:
         raise HTTPException(status_code=400, detail="prefix required")
+    from ..ddos_guard import check_manual_blackhole, load_whitelist
+    whitelist = await load_whitelist(db)
+    try:
+        denied_reason = check_manual_blackhole(prefix, whitelist=whitelist)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if denied_reason:
+        raise HTTPException(status_code=400, detail=denied_reason)
     dev = await _get_mikrotik_device(db, payload.get("device_id"))
     result = await _run_mikrotik(db, payload.get("device_id"),
                                  "blackhole_add", prefix,
@@ -403,6 +411,9 @@ def _serialize_threshold_rule(d: dict) -> dict:
         "threshold": d.get("threshold", 0),
         "window_s": d.get("window_s", 60),
         "action": d.get("action", "alert"),
+        "direction": d.get("direction", "inbound"),
+        "scope_prefixes": d.get("scope_prefixes") or ["157.20.32.0/24"],
+        "auto_blackhole": bool(d.get("auto_blackhole")),
         "enabled": d.get("enabled", True),
         "created_at": _iso(d.get("created_at", "")),
     }
@@ -468,17 +479,27 @@ def _serialize_ddos_incident(d: dict) -> dict:
     return {
         "id": str(d["_id"]),
         "target": d.get("target", ""),
+        "src_ip": d.get("src_ip", ""),
+        "dst_ip": d.get("dst_ip", ""),
+        "protocol": d.get("protocol", ""),
+        "src_port": d.get("src_port", ""),
+        "dst_port": d.get("dst_port", ""),
+        "direction": d.get("direction", "inbound"),
         "attack_type": d.get("attack_type", ""),
         "pps": d.get("pps", 0),
         "bps": d.get("bps", 0),
         "severity": d.get("severity", "medium"),
         "status": d.get("status", "active"),
         "action": d.get("action", "alert"),
+        "mitigation_type": d.get("mitigation_type", "none"),
+        "bgp_blackhole_config_id": d.get("bgp_blackhole_config_id"),
         "rule_id": d.get("rule_id"),
         "rule_name": d.get("rule_name", ""),
         "device": d.get("device", ""),
         "started_at": d.get("started_at", ""),
         "ended_at": d.get("ended_at"),
+        "blackholed_prefix": d.get("blackholed_prefix"),
+        "blackhole_route_id": d.get("blackhole_route_id"),
         "notified": d.get("notified", []),
     }
 
@@ -575,6 +596,112 @@ async def noc_ddos_notify_log(limit: int = 100, admin=Depends(require_roles("adm
         "status": d.get("status", ""),
         "at": d.get("at", ""),
     } for d in docs]
+
+
+# ---------------- NOC: BGP Blackhole Config (upstream RTBH communities) ----------------
+def _serialize_bgp_bh(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "upstream_name": d.get("upstream_name", ""),
+        "bgp_community": d.get("bgp_community", ""),
+        "scope_prefixes": d.get("scope_prefixes") or ["157.20.32.0/24"],
+        "enabled": d.get("enabled", True),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/admin/noc/bgp-blackhole-configs")
+async def noc_bgp_bh_list(admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    docs = await db.bgp_blackhole_configs.find({}).sort("created_at", -1).to_list(50)
+    return [_serialize_bgp_bh(d) for d in docs]
+
+
+@router.post("/admin/noc/bgp-blackhole-configs")
+async def noc_bgp_bh_create(payload: m.BGPBlackholeConfigIn, request: Request,
+                            admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = payload.model_dump()
+    doc["created_at"] = _now()
+    r = await db.bgp_blackhole_configs.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="noc.bgp_blackhole_config_created", category="noc",
+                    target_type="bgp_blackhole_config", target_id=str(r.inserted_id),
+                    target_label=payload.name, metadata=payload.model_dump(), request=request)
+    return _serialize_bgp_bh(doc)
+
+
+@router.put("/admin/noc/bgp-blackhole-configs/{cid}")
+async def noc_bgp_bh_update(cid: str, payload: m.BGPBlackholeConfigIn, request: Request,
+                            admin=Depends(get_current_admin)):
+    db = await _get_db()
+    upd = payload.model_dump()
+    res = await db.bgp_blackhole_configs.update_one({"_id": _oid(cid)}, {"$set": upd})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="BGP blackhole config not found")
+    d = await db.bgp_blackhole_configs.find_one({"_id": _oid(cid)})
+    await log_audit(db, actor=admin, action="noc.bgp_blackhole_config_updated", category="noc",
+                    target_type="bgp_blackhole_config", target_id=cid,
+                    target_label=payload.name, metadata=upd, request=request)
+    return _serialize_bgp_bh(d)
+
+
+@router.delete("/admin/noc/bgp-blackhole-configs/{cid}")
+async def noc_bgp_bh_delete(cid: str, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    d = await db.bgp_blackhole_configs.find_one({"_id": _oid(cid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="BGP blackhole config not found")
+    await db.bgp_blackhole_configs.delete_one({"_id": _oid(cid)})
+    await log_audit(db, actor=admin, action="noc.bgp_blackhole_config_deleted", category="noc",
+                    target_type="bgp_blackhole_config", target_id=cid,
+                    target_label=d.get("name", ""), request=request)
+    return {"deleted": True}
+
+
+# ============================================================
+# NOC - DDoS mitigation whitelist (customizable)
+# ============================================================
+from pydantic import BaseModel
+
+class DDoSWhitelistIn(BaseModel):
+    prefixes: list[str]
+
+@router.get("/admin/noc/ddos-whitelist")
+async def noc_ddos_whitelist_get(admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    from ..ddos_guard import DEFAULT_WHITELIST, load_whitelist
+    custom = await db.integration_settings.find_one({"_id": "ddos_whitelist"})
+    active = await load_whitelist(db)
+    return {
+        "default": DEFAULT_WHITELIST,
+        "active": active,
+        "custom": (custom.get("prefixes") or []) if custom else [],
+        "updated_at": custom.get("updated_at") if custom else None,
+    }
+
+
+@router.put("/admin/noc/ddos-whitelist")
+async def noc_ddos_whitelist_update(payload: DDoSWhitelistIn, request: Request,
+                                    admin=Depends(get_current_admin)):
+    from ..ddos_guard import normalize_prefix
+    normalized: list[str] = []
+    for p in payload.prefixes:
+        try:
+            normalized.append(normalize_prefix(p))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid prefix: {p}")
+    db = await _get_db()
+    await db.integration_settings.update_one(
+        {"_id": "ddos_whitelist"},
+        {"$set": {"prefixes": normalized, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    await log_audit(db, actor=admin, action="noc.ddos_whitelist_updated", category="noc",
+                    target_type="ddos_whitelist", target_id="ddos_whitelist",
+                    metadata={"prefixes": normalized}, request=request)
+    return {"ok": True, "prefixes": normalized}
 
 
 # ============================================================

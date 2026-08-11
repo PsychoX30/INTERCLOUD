@@ -10,6 +10,24 @@ const STATUS_META = {
   false_positive: { label: "False positive", cls: "bg-slate-100 text-slate-600 border-slate-300", icon: ShieldOff },
 };
 
+const DIR_CLS = {
+  inbound: "bg-blue-100 text-blue-700 border-blue-300",
+  outbound: "bg-purple-100 text-purple-700 border-purple-300",
+};
+
+const ACTION_LABELS = { alert: "Alert", alert_blackhole: "Auto-blackhole", alert_bgp_blackhole: "BGP RTBH" };
+const MITIGATION_LABELS = { none: "-", local_blackhole: "Local /32", bgp_rtbh: "BGP intent" };
+
+const flowDetail = (h) => {
+  const parts = [];
+  if (h.src_ip) parts.push(`${h.src_ip}:${h.src_port || "*"}`);
+  else parts.push("?");
+  if (h.dst_ip) parts.push(`${h.dst_ip}:${h.dst_port || "*"}`);
+  else parts.push("?");
+  const proto = h.protocol ? h.protocol.toUpperCase() : "";
+  return `${parts.join(" → ")} ${proto}`.trim();
+};
+
 const FILTERS = [
   { key: "all", label: "Semua" },
   { key: "active", label: "Aktif" },
@@ -73,9 +91,11 @@ export const DDoSHistory = () => {
               <tr>
                 <th className="text-left px-4 py-2.5">Waktu</th>
                 <th className="text-left px-4 py-2.5">Target</th>
-                <th className="text-left px-4 py-2.5">Jenis</th>
+                <th className="text-left px-4 py-2.5">Arah</th>
+                <th className="text-left px-4 py-2.5">Flow</th>
                 <th className="text-right px-4 py-2.5">Puncak</th>
-                <th className="text-left px-4 py-2.5">Aksi</th>
+                <th className="text-left px-4 py-2.5">Aksi Rule</th>
+                <th className="text-left px-4 py-2.5">Mitigasi</th>
                 <th className="text-left px-4 py-2.5">Notifikasi Ke</th>
                 <th className="text-left px-4 py-2.5">Status</th>
               </tr>
@@ -87,9 +107,20 @@ export const DDoSHistory = () => {
                   <tr key={h.id} className="border-t border-slate-100" data-testid={`ddos-history-row-${h.id}`}>
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-600 whitespace-nowrap">{(h.started_at || "").slice(0, 16).replace("T", " ")}</td>
                     <td className="px-4 py-2.5 font-mono font-bold text-[#0a2350]">{h.target}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{h.attack_type}</td>
+                    <td className="px-4 py-2.5">
+                      {h.direction ? (
+                        <span className={`inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase ${DIR_CLS[h.direction] || "bg-slate-100 text-slate-600 border-slate-300"}`}>
+                          {h.direction.charAt(0).toUpperCase() + h.direction.slice(1)}
+                        </span>
+                      ) : <span className="text-[10px] text-slate-400">-</span>}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[10px] text-slate-500 whitespace-nowrap">{flowDetail(h)}</td>
                     <td className="px-4 py-2.5 text-right font-semibold tabular-nums">{fmtPeak(h)}</td>
-                    <td className="px-4 py-2.5 text-xs">{h.action === "alert_blackhole" ? "Auto-blackhole" : "Alert"}</td>
+                    <td className="px-4 py-2.5 text-xs">{ACTION_LABELS[h.action] || h.action || "-"}</td>
+                    <td className="px-4 py-2.5 font-mono text-[10px] text-slate-500">
+                      {MITIGATION_LABELS[h.mitigation_type] || "-"}
+                      {h.blackholed_prefix ? <div className="text-slate-400">{h.blackholed_prefix}</div> : ""}
+                    </td>
                     <td className="px-4 py-2.5">
                       <div className="flex flex-wrap gap-1">
                         {(h.notified || []).map((e) => (

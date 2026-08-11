@@ -11,8 +11,34 @@ const sevCls = {
   low: "bg-slate-100 text-slate-600 border-slate-300",
 };
 
+const DIR_CLS = {
+  inbound: "bg-blue-100 text-blue-700 border-blue-300",
+  outbound: "bg-purple-100 text-purple-700 border-purple-300",
+};
+
+const MITIGATION_CLS = {
+  none: "bg-slate-100 text-slate-600 border-slate-300",
+  local_blackhole: "bg-orange-100 text-orange-700 border-orange-300",
+  bgp_rtbh: "bg-violet-100 text-violet-700 border-violet-300",
+};
+const mitigationLabel = (value) => ({
+  none: "Alert only",
+  local_blackhole: "Local /32 RTBH",
+  bgp_rtbh: "BGP RTBH intent",
+}[value] || "Alert only");
+
 const fmtBps = (v) => v >= 1e9 ? `${(v / 1e9).toFixed(1)} Gbps` : `${(v / 1e6).toFixed(0)} Mbps`;
 const fmtPps = (v) => v >= 1e6 ? `${(v / 1e6).toFixed(1)}M pps` : `${(v / 1e3).toFixed(0)}K pps`;
+
+const flowDetail = (inc) => {
+  const parts = [];
+  if (inc.src_ip) parts.push(`${inc.src_ip}:${inc.src_port || "*"}`);
+  else parts.push("?");
+  if (inc.dst_ip) parts.push(`${inc.dst_ip}:${inc.dst_port || "*"}`);
+  else parts.push("?");
+  const proto = inc.protocol ? inc.protocol.toUpperCase() : "";
+  return `${parts.join(" → ")} ${proto}`.trim();
+};
 
 export const DDoSPanel = ({ devices }) => {
   const [incidents, setIncidents] = useState(null);
@@ -80,9 +106,18 @@ export const DDoSPanel = ({ devices }) => {
           return (
             <div key={inc.id} className="px-5 py-3.5 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid={`ddos-incident-${inc.id}`}>
               <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase ${sevCls[inc.severity] || sevCls.medium}`}>{inc.severity}</span>
+              {inc.direction && (
+                <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase ${DIR_CLS[inc.direction] || "bg-slate-100 text-slate-600 border-slate-300"}`}>
+                  {inc.direction.charAt(0).toUpperCase() + inc.direction.slice(1)}
+                </span>
+              )}
+              <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${MITIGATION_CLS[inc.mitigation_type] || MITIGATION_CLS.none}`}>
+                {mitigationLabel(inc.mitigation_type)}
+              </span>
               <div className="min-w-[140px]">
                 <div className="font-mono font-bold text-sm text-[#0a2350]">{inc.target}</div>
                 <div className="text-[11px] text-slate-500">{inc.attack_type}</div>
+                <div className="text-[10px] text-slate-400 font-mono">{flowDetail(inc)}</div>
               </div>
               <div className="text-xs text-slate-600 tabular-nums">
                 <b>{fmtBps(inc.bps)}</b> · {fmtPps(inc.pps)}
@@ -96,12 +131,12 @@ export const DDoSPanel = ({ devices }) => {
                 )}
                 <button
                   className={btnSecondary}
-                  disabled={busyId === inc.id || res?.ok}
+                  disabled={busyId === inc.id || res?.ok || inc.mitigation_type === "bgp_rtbh"}
                   onClick={() => blackhole(inc)}
                   data-testid={`ddos-blackhole-${inc.id}`}
                 >
                   {busyId === inc.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldAlert className="h-4 w-4" />}
-                  {res?.ok ? "Blackholed" : "Blackhole IP"}
+                  {inc.mitigation_type === "bgp_rtbh" ? "Menunggu upstream" : (res?.ok ? "Blackholed" : "Blackhole IP")}
                 </button>
               </div>
             </div>

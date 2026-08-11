@@ -9,6 +9,8 @@ import { ThresholdRules } from "./ThresholdRules";
 import { DDoSHistory } from "./DDoSHistory";
 import { NotifChannels } from "./NotifChannels";
 import { BlackholeLog } from "./BlackholeLog";
+import { BGPBlackholeConfig } from "./BGPBlackholeConfig";
+import { DDoSWhitelist } from "./DDoSWhitelist";
 
 const AdminNOC = () => {
   const [devices, setDevices] = useState([]);
@@ -106,6 +108,10 @@ const AdminNOC = () => {
           <DDoSPanel devices={devices} />
 
           <ThresholdRules />
+
+          <DDoSWhitelist />
+
+          <BGPBlackholeConfig />
 
           <DDoSHistory />
 

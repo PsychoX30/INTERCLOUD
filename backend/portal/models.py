@@ -382,8 +382,13 @@ class ThresholdRuleIn(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     metric: Literal["pps", "bps"] = "pps"
     threshold: float = Field(gt=0)
-    window_s: int = Field(default=60, ge=10, le=3600)
-    action: Literal["alert", "alert_blackhole"] = "alert"
+    window_s: int = Field(default=300, ge=60, le=3600)
+    # alert = notify only; alert_blackhole = local /32; alert_bgp_blackhole =
+    # try upstream BGP community RTBH first (fall back to local /32).
+    action: Literal["alert", "alert_blackhole", "alert_bgp_blackhole"] = "alert"
+    direction: Literal["inbound", "outbound", "any"] = "inbound"
+    scope_prefixes: List[str] = ["157.20.32.0/24"]
+    auto_blackhole: bool = False
     enabled: bool = True
 
 
@@ -407,21 +412,44 @@ class NotifChannelOut(NotifChannelIn):
 class DDoSIncidentOut(BaseModel):
     id: str
     target: str
+    src_ip: str = ""
+    dst_ip: str = ""
+    protocol: str = ""
+    src_port: str = ""
+    dst_port: str = ""
+    direction: Literal["inbound", "outbound", "internal"] = "inbound"
     attack_type: str = ""
     pps: float = 0
     bps: float = 0
     severity: Literal["critical", "high", "medium", "low"] = "medium"
     status: Literal["active", "mitigated", "resolved", "false_positive"] = "active"
     action: str = "alert"
+    mitigation_type: Literal["none", "local_blackhole", "bgp_rtbh"] = "none"
+    bgp_blackhole_config_id: Optional[str] = None
     rule_id: Optional[str] = None
     rule_name: str = ""
     started_at: str = ""
     ended_at: Optional[str] = None
+    blackholed_prefix: Optional[str] = None
+    blackhole_route_id: Optional[str] = None
     notified: List[str] = []
 
 
 class DDoSIncidentStatusIn(BaseModel):
     status: Literal["active", "mitigated", "resolved", "false_positive"]
+
+
+class BGPBlackholeConfigIn(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    upstream_name: str
+    bgp_community: str
+    scope_prefixes: List[str] = ["157.20.32.0/24"]
+    enabled: bool = True
+
+
+class BGPBlackholeConfigOut(BGPBlackholeConfigIn):
+    id: str
+    created_at: str = ""
 
 
 class BlackholeLogOut(BaseModel):

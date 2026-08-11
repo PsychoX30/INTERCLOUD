@@ -1379,6 +1379,44 @@ def _ddos_attack_type(flow: dict) -> str:
     return "Traffic Anomaly"
 
 
+def _ddos_direction(src: str, dst: str, prefixes: list[str]) -> str | None:
+    """Classify a flow relative to protected prefixes.
+
+    Returns None for external-to-external traffic.  Internal-to-internal is
+    deliberately ignored by the default inbound/outbound rules; it can be
+    enabled explicitly with an ``any`` rule in a future policy.
+    """
+    import ipaddress
+    try:
+        src_ip, dst_ip = ipaddress.ip_address(src), ipaddress.ip_address(dst)
+        nets = [ipaddress.ip_network(p, strict=False) for p in prefixes]
+    except ValueError:
+        return None
+    src_internal = any(src_ip in n for n in nets)
+    dst_internal = any(dst_ip in n for n in nets)
+    if not src_internal and dst_internal:
+        return "inbound"
+    if src_internal and not dst_internal:
+        return "outbound"
+    if src_internal and dst_internal:
+        return "internal"
+    return None
+
+
+def _ddos_target(src: str, dst: str, direction: str) -> str:
+    return dst if direction == "inbound" else src
+
+
+def _ddos_flow_fields(flow: dict) -> dict:
+    return {
+        "src_ip": (flow.get("src_address") or "").split("/")[0],
+        "dst_ip": (flow.get("dst_address") or "").split("/")[0],
+        "protocol": flow.get("protocol") or "",
+        "src_port": str(flow.get("src_port") or ""),
+        "dst_port": str(flow.get("dst_port") or ""),
+    }
+
+
 def _ddos_severity(ratio: float) -> str:
     if ratio >= 4:
         return "critical"
@@ -1387,167 +1425,301 @@ def _ddos_severity(ratio: float) -> str:
     return "medium"
 
 
+# --- GoFlow2 collector integration ------------------------------------------
+# GoFlow2 is the primary flow source.  It reads JSON-lines written by the
+# goflow2 systemd service (listening on UDP 2055 for MikroTik IPFIX export).
+# The path is configurable via integration_settings in MongoDB; the default
+# matches the production collector deployment.
+_goflow2_client: "iv2.GoFlow2Client | None" = None
+
+
+async def _get_goflow2_client(db) -> "iv2.GoFlow2Client | None":
+    """Return a cached GoFlow2Client, or None if goflow2 is not configured."""
+    global _goflow2_client
+    # The path is read from integration_settings at most once per process;
+    # restart picks up changes.
+    if _goflow2_client is not None:
+        return _goflow2_client
+    path = "/var/log/goflow2/flows.json"
+    # Try to read a configured path; fall back to default.
+    try:
+        settings = await db.integration_settings.find_one({"_id": "goflow2"})
+        if settings and settings.get("flow_path"):
+            path = settings["flow_path"]
+    except Exception:
+        pass
+    import os as _os
+    if not _os.path.exists(path):
+        return None  # collector not deployed or file missing
+    _goflow2_client = iv2.GoFlow2Client(flow_path=path)
+    log.info("[ddos] GoFlow2 collector wired: %s", path)
+    return _goflow2_client
+
+
 async def run_ddos_detection_sweep(db) -> dict:
-    """Evaluasi aturan ambang batas trafik terhadap sampel torch MikroTik live.
-    Membuka insiden DDoS (dedupe per target aktif), auto-blackhole bila rule
-    memintanya, dan auto-resolve insiden yang trafiknya sudah normal."""
-    from . import integrations_v2 as _iv2
+    """Evaluate protected-prefix traffic and optionally blackhole the
+    offending internal IP.  Direction is explicit: inbound attacks target
+    the internal destination; outbound abuse targets the internal source.
+
+    GoFlow2 (NetFlow/IPFIX collector) is the primary flow source when
+    available.  Torch remains a fallback for devices that don't export
+    NetFlow.  Each accepted sample is persisted in ``ddos_samples`` so a
+    rule's window is meaningful across scheduler sweeps.  Auto-blackhole
+    is opt-in per rule; otherwise NOC gets an alert and can use the
+    existing manual blackhole action.
+    """
     import asyncio as _a
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     rules = await db.ddos_threshold_rules.find({"enabled": True}).to_list(100)
     if not rules:
         return {"at": now_iso, "skipped": "no enabled rules"}
     devices = await db.mikrotik_devices.find({}).to_list(100)
-    # Include legacy single-device integration (same as Sankey) so DDoS detection
-    # also covers deployments that only configure MikroTik via Integrations.
-    legacy = await _iv2.get_settings(db, "mikrotik")
+    legacy = await iv2.get_settings(db, "mikrotik")
     if legacy and legacy.get("enabled") and (legacy.get("credentials") or {}).get("host"):
         devices.append({"_id": None, "name": "Legacy (Integrations)",
                         **(legacy.get("credentials") or {})})
 
-    # ---- Sample per-target traffic via torch (aggregate dst_address) ----
-    targets: dict = {}   # ip -> {bps, pps, flow, device_name}
+    flows: list[dict] = []
     sampled_devices = 0
-    for d in devices:
-        if not d:
-            continue
-        name = d.get("name") or d.get("host") or "device"
-        try:
-            client = _iv2.MikrotikClient(d)
-        except Exception:
-            continue
-        # Pick configured main_interface, else the busiest running interfaces
-        # (never just hardcode ether1 - it may be down / have no traffic).
-        iface_cfg = (d.get("main_interface") or d.get("interface") or "").strip()
-        if iface_cfg:
-            ifaces = [iface_cfg]
-        else:
-            try:
-                rows = await _a.get_event_loop().run_in_executor(None, client.list_interfaces)
-                running = [r for r in rows
-                           if str(r.get("running", "")).lower() in ("true", "yes")
-                           and str(r.get("disabled", "")).lower() not in ("true", "yes")]
-                running.sort(key=lambda r: int(r.get("rx-byte") or 0) + int(r.get("tx-byte") or 0),
-                             reverse=True)
-                ifaces = [r.get("name") for r in running if r.get("name")][:2]
-            except Exception:
-                ifaces = []
-            if not ifaces:
-                ifaces = ["ether1"]
-        for iface in ifaces:
-            try:
-                res = await _a.get_event_loop().run_in_executor(
-                    None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
-            except Exception:
-                continue
-            if not res.get("ok"):
-                continue
-            sampled_devices += 1
-            for f in res.get("rows", []):
-                ip = (f.get("dst_address") or "").split("/")[0]
-                if not ip or ip in ("0.0.0.0", "255.255.255.255"):
-                    continue
-                t = targets.setdefault(ip, {"bps": 0, "pps": 0, "flow": f,
-                                            "device": name,
-                                            "device_doc": d})
-                t["bps"] += f.get("rx_rate", 0) + f.get("tx_rate", 0)
-                t["pps"] += f.get("rx_packets", 0) + f.get("tx_packets", 0)
+    goflow_used = False
+    # Primary source: GoFlow2 NetFlow/IPFIX collector (if deployed).
+    try:
+        gf = await _get_goflow2_client(db)
+        if gf is not None:
+            gf_result = await _a.get_event_loop().run_in_executor(None, gf.poll)
+            if gf_result.get("ok"):
+                for flow in gf_result.get("rows", []):
+                    item = dict(flow)
+                    item["device"] = "goflow2"
+                    item["device_doc"] = {"name": "goflow2", "host": "157.20.32.183"}
+                    item["flow_source"] = "goflow2"
+                    flows.append(item)
+                if gf_result.get("rows"):
+                    goflow_used = True
+                    log.info("[ddos] goflow2 poll: %d flows", len(gf_result["rows"]))
+    except Exception:
+        log.exception("[ddos] goflow2 poll failed; falling back to torch")
 
-    # ---- Evaluate rules against samples ----
-    opened, blackholed = 0, 0
-    breached_ips = set()
-    for ip, t in targets.items():
-        for rule in rules:
-            value = t["pps"] if rule.get("metric") == "pps" else t["bps"]
+    # Fallback / additional source: MikroTik Torch for devices that don't
+    # export NetFlow.  Skip if goflow2 already gave us flows (avoid
+    # double-counting the same traffic).
+    if not goflow_used:
+        for device in devices:
+            if not device:
+                continue
+            name = device.get("name") or device.get("host") or "device"
+            client = iv2.MikrotikClient(device)
+            iface_cfg = (device.get("main_interface") or device.get("interface") or "").strip()
+            if iface_cfg:
+                ifaces = [iface_cfg]
+            else:
+                try:
+                    rows = await _a.get_event_loop().run_in_executor(None, client.list_interfaces)
+                    running = [r for r in rows if str(r.get("running", "")).lower() in ("true", "yes")
+                               and str(r.get("disabled", "")).lower() not in ("true", "yes")]
+                    running.sort(key=lambda r: int(r.get("rx-byte") or 0) + int(r.get("tx-byte") or 0), reverse=True)
+                    ifaces = [r.get("name") for r in running if r.get("name")][:2] or ["ether1"]
+                except Exception:
+                    ifaces = ["ether1"]
+            device_ok = False
+            for iface in ifaces:
+                try:
+                    result = await _a.get_event_loop().run_in_executor(
+                        None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
+                except Exception:
+                    continue
+                if not result.get("ok"):
+                    continue
+                device_ok = True
+                for flow in result.get("rows", []):
+                    item = dict(flow)
+                    item["device"] = name
+                    item["device_doc"] = device
+                    item["flow_source"] = "torch"
+                    flows.append(item)
+            if device_ok:
+                sampled_devices += 1
+
+    if not flows:
+        flows = []  # don't early-return; lifecycle recovery must still run
+
+    opened = blackholed = resolved = 0
+    breached_keys: set[tuple[str, str]] = set()
+    # A rule can specify several protected prefixes. Invalid entries are
+    # ignored safely; Pydantic validates new writes, but old Mongo rows exist.
+    for rule in rules:
+        prefixes = rule.get("scope_prefixes") or ["157.20.32.0/24"]
+        direction_policy = rule.get("direction") or "inbound"
+        aggregates: dict[tuple[str, str], dict] = {}
+        for flow in flows:
+            fields = _ddos_flow_fields(flow)
+            direction = _ddos_direction(fields["src_ip"], fields["dst_ip"], prefixes)
+            if direction not in ("inbound", "outbound"):
+                continue
+            if direction_policy not in ("any", direction):
+                continue
+            target = _ddos_target(fields["src_ip"], fields["dst_ip"], direction)
+            key = (direction, target)
+            agg = aggregates.setdefault(key, {"bps": 0, "pps": 0, "flow": flow,
+                                               "fields": fields, "device": flow["device"],
+                                               "device_doc": flow["device_doc"]})
+            agg["bps"] += int(flow.get("rx_rate", 0) or 0) + int(flow.get("tx_rate", 0) or 0)
+            agg["pps"] += int(flow.get("rx_packets", 0) or 0) + int(flow.get("tx_packets", 0) or 0)
+
+        for (direction, target), agg in aggregates.items():
+            sample = {"at": now_iso, "key": f"{direction}:{target}",
+                      "direction": direction, "target": target,
+                      "bps": agg["bps"], "pps": agg["pps"]}
+            await db.ddos_samples.insert_one(sample)
+            try:
+                cutoff = (now - timedelta(seconds=int(rule.get("window_s") or 300))).isoformat()
+                history = await db.ddos_samples.find({
+                    "key": sample["key"], "at": {"$gte": cutoff}}).to_list(100)
+            except Exception:
+                history = [sample]
+            metric = "pps" if rule.get("metric", "pps") == "pps" else "bps"
+            values = [float(h.get(metric) or 0) for h in history]
+            value = sum(values) / len(values) if values else 0
             threshold = float(rule.get("threshold") or 0)
             if threshold <= 0 or value <= threshold:
                 continue
-            breached_ips.add(ip)
-            existing = await db.ddos_incidents.find_one({"target": ip, "status": "active"})
-            if existing:
-                await db.ddos_incidents.update_one(
-                    {"_id": existing["_id"]},
-                    {"$set": {"pps": t["pps"], "bps": t["bps"],
-                              "severity": _ddos_severity(value / threshold)}})
-                continue
-            incident = {
-                "target": ip,
-                "attack_type": _ddos_attack_type(t["flow"]),
-                "pps": t["pps"],
-                "bps": t["bps"],
-                "severity": _ddos_severity(value / threshold),
-                "status": "active",
-                "action": rule.get("action", "alert"),
+            breached_keys.add((direction, target))
+            existing = await db.ddos_incidents.find_one({
+                "target": target, "direction": direction,
                 "rule_id": str(rule["_id"]),
-                "rule_name": rule.get("name", ""),
-                "device": t["device"],
-                "started_at": now_iso,
-                "ended_at": None,
-                "notified": [],
-            }
-            r = await db.ddos_incidents.insert_one(incident)
-            incident["_id"] = r.inserted_id
-            opened += 1
-            if rule.get("action") == "alert_blackhole":
+                "status": {"$in": ["active", "mitigated"]}})
+            fields = agg["fields"]
+            attack_type = _ddos_attack_type(agg["flow"])
+            severity = _ddos_severity(value / threshold)
+            action = rule.get("action", "alert")
+            bgp_config = None
+            if action == "alert_bgp_blackhole":
                 try:
-                    client = _iv2.MikrotikClient(t["device_doc"])
-                    bh = await _a.get_event_loop().run_in_executor(
-                        None, lambda c=client, p=f"{ip}/32", n=rule.get("name", ""):
-                        c.blackhole_add(p, comment=f"auto-mitigasi ({n})"))
-                    ok = not bh.get("error")
-                except Exception as e:
-                    ok, bh = False, {"error": str(e)}
-                await db.blackhole_log.insert_one({
-                    "prefix": f"{ip}/32", "action": "add",
-                    "by": f"auto-mitigasi ({rule.get('name', '')})",
-                    "source": "auto", "device": t["device"],
-                    "ok": ok, "detail": str(bh)[:300], "at": now_iso,
-                })
-                if ok:
-                    blackholed += 1
-                    await db.ddos_incidents.update_one(
-                        {"_id": r.inserted_id}, {"$set": {"status": "mitigated"}})
+                    bgp_config = await db.bgp_blackhole_configs.find_one({"enabled": True})
+                except (AttributeError, TypeError):
+                    bgp_config = None
+                upstream_ready = bool(
+                    bgp_config
+                    and bgp_config.get("upstream_name")
+                    and bgp_config.get("bgp_community")
+                )
+                from .ddos_guard import select_mitigation_strategy
+                strategy = select_mitigation_strategy(
+                    severity, attack_type, prefixes, upstream_ready)
+                mitigation_type = "none" if strategy == "alert" else strategy
+            elif bool(rule.get("auto_blackhole")) or action == "alert_blackhole":
+                mitigation_type = "local_blackhole"
+            else:
+                mitigation_type = "none"
+            incident_data = {"src_ip": fields["src_ip"], "dst_ip": fields["dst_ip"],
+                             "protocol": fields["protocol"], "src_port": fields["src_port"],
+                             "dst_port": fields["dst_port"], "direction": direction,
+                             "pps": int(agg["pps"]), "bps": int(agg["bps"]),
+                             "severity": severity, "mitigation_type": mitigation_type,
+                             "bgp_blackhole_config_id": (
+                                 str(bgp_config["_id"])
+                                 if mitigation_type == "bgp_rtbh" and bgp_config else None),
+                             "last_breach_at": now_iso}
+            if existing:
+                await db.ddos_incidents.update_one({"_id": existing["_id"]}, {"$set": incident_data})
+                incident = {**existing, **incident_data}
+            else:
+                incident = {"target": target, "attack_type": attack_type,
+                            "status": "active", "action": action,
+                            "rule_id": str(rule["_id"]), "rule_name": rule.get("name", ""),
+                            "device": agg["device"], "started_at": now_iso,
+                            "ended_at": None, "notified": [], **incident_data}
+                r = await db.ddos_incidents.insert_one(incident)
+                incident["_id"] = r.inserted_id
+                opened += 1
+            if mitigation_type == "local_blackhole" and (
+                    not existing or not existing.get("blackholed_prefix")):
+                prefix = f"{target}/32"
+                from .ddos_guard import evaluate_auto_blackhole, load_whitelist
+                whitelist = await load_whitelist(db)
+                verdict = evaluate_auto_blackhole(prefix, direction, whitelist=whitelist)
+                if not verdict.allowed:
+                    log.warning("[ddos] auto-blackhole skipped: %s (%s)", prefix, verdict.reason)
+                else:
+                    try:
+                        client = iv2.MikrotikClient(agg["device_doc"])
+                        bh = await _a.get_event_loop().run_in_executor(
+                            None, lambda c=client, p=prefix, n=rule.get("name", ""):
+                            c.blackhole_add(p, comment=f"auto-mitigasi ({n})"))
+                        route = await _a.get_event_loop().run_in_executor(
+                            None, lambda c=client, p=prefix: c.blackhole_find_by_prefix(p)) if bh.get("ok") else None
+                        ok = bool(bh.get("ok"))
+                    except Exception as exc:
+                        ok, bh, route = False, {"error": str(exc)}, None
+                    await db.blackhole_log.insert_one({"prefix": prefix, "action": "add",
+                        "by": f"auto-mitigasi ({rule.get('name', '')})", "source": "auto",
+                        "device": agg["device"], "ok": ok, "detail": str(bh)[:300], "at": now_iso})
+                    if ok:
+                        blackholed += 1
+                        await db.ddos_incidents.update_one({"_id": incident["_id"]}, {"$set": {
+                            "status": "mitigated", "blackholed_prefix": prefix,
+                            "blackhole_route_id": (route or {}).get("id")}})
+                        incident.update({"status": "mitigated", "blackholed_prefix": prefix,
+                                         "blackhole_route_id": (route or {}).get("id")})
             try:
                 await dispatch_ddos_notifications(db, incident)
             except Exception:
                 log.exception("[ddos] notification dispatch failed")
-            break  # satu insiden per target per sweep
 
-    # ---- Auto-resolve incidents whose targets are back to normal ----
-    resolved = 0
-    if sampled_devices:
-        async for inc in db.ddos_incidents.find({"status": "active"}):
-            if inc["target"] not in breached_ips:
-                await db.ddos_incidents.update_one(
-                    {"_id": inc["_id"]},
-                    {"$set": {"status": "resolved", "ended_at": now_iso}})
-                resolved += 1
+    # Recover only routes created by this engine, after the configured window
+    # has elapsed without another breach. Manual blackholes are never touched.
+    async for inc in db.ddos_incidents.find({"status": "mitigated", "blackholed_prefix": {"$exists": True}}):
+        key = (inc.get("direction"), inc.get("target"))
+        if key in breached_keys:
+            continue
+        try:
+            last = datetime.fromisoformat(inc.get("last_breach_at", ""))
+            grace = max(300, int(inc.get("window_s") or 300))
+            if (now - last).total_seconds() < grace:
+                continue
+        except Exception:
+            continue
+        device_doc = next((d for d in devices if (d.get("name") or d.get("host")) == inc.get("device")), None)
+        if not device_doc or not inc.get("blackhole_route_id"):
+            continue
+        client = iv2.MikrotikClient(device_doc)
+        result = await _a.get_event_loop().run_in_executor(
+            None, lambda c=client, rid=inc["blackhole_route_id"]: c.blackhole_remove(rid))
+        if result.get("ok"):
+            await db.blackhole_log.insert_one({"prefix": inc.get("blackholed_prefix", ""),
+                "action": "remove", "by": "auto-recovery", "source": "auto",
+                "device": inc.get("device", ""), "ok": True, "at": now_iso})
+            await db.ddos_incidents.update_one({"_id": inc["_id"]}, {"$set": {
+                "status": "resolved", "ended_at": now_iso}})
+            resolved += 1
 
     return {"at": now_iso, "devices_sampled": sampled_devices,
-            "targets_seen": len(targets), "incidents_opened": opened,
+            "targets_seen": len(breached_keys), "incidents_opened": opened,
             "auto_blackholed": blackholed, "auto_resolved": resolved}
 
 
 async def dispatch_ddos_notifications(db, incident: dict) -> list:
-    """Kirim alert insiden DDoS ke saluran notifikasi aktif (event 'ddos').
-    Email dikirim live via SMTP; whatsapp/telegram/webhook dicatat di
-    ddos_notify_log (dispatch live per channel menyusul sesuai kredensial)."""
+    """Send DDoS alerts with complete flow evidence to configured channels."""
     channels = await db.notif_channels.find({"enabled": True, "events": "ddos"}).to_list(50)
     notified = []
-    subject = (f"[DDoS] {incident.get('severity', '').upper()} - "
+    direction = str(incident.get("direction", "")).upper()
+    flow_line = (f"Direction: {direction} | Source: {incident.get('src_ip', '')}:{incident.get('src_port', '')} "
+                 f"-> Destination: {incident.get('dst_ip', '')}:{incident.get('dst_port', '')} "
+                 f"| Protocol: {incident.get('protocol', '')}")
+    subject = (f"[DDoS] {incident.get('severity', '').upper()} - {direction} "
                f"{incident.get('attack_type', '')} ke {incident.get('target', '')}")
-    body = (
-        f"<h2 style='color:#dc2626;margin:0 0 8px 0'>Insiden DDoS terdeteksi</h2>"
-        f"<table style='width:100%;border-collapse:collapse;font-size:13px'>"
-        f"<tr><td style='padding:6px 0;color:#64748b;width:130px'>Target</td><td><b>{incident.get('target', '')}</b></td></tr>"
-        f"<tr><td style='padding:6px 0;color:#64748b'>Jenis</td><td>{incident.get('attack_type', '')}</td></tr>"
-        f"<tr><td style='padding:6px 0;color:#64748b'>Severity</td><td>{incident.get('severity', '')}</td></tr>"
-        f"<tr><td style='padding:6px 0;color:#64748b'>Trafik</td><td>{incident.get('bps', 0):,} bps / {incident.get('pps', 0):,} pps</td></tr>"
-        f"<tr><td style='padding:6px 0;color:#64748b'>Rule</td><td>{incident.get('rule_name', '')}</td></tr>"
-        f"<tr><td style='padding:6px 0;color:#64748b'>Aksi</td><td>{incident.get('action', '')}</td></tr>"
-        f"<tr><td style='padding:6px 0;color:#64748b'>Waktu</td><td>{incident.get('started_at', '')}</td></tr>"
-        f"</table>"
-    )
+    body = (f"<h2 style='color:#dc2626;margin:0 0 8px 0'>Insiden DDoS terdeteksi</h2>"
+            f"<p><b>{flow_line}</b></p>"
+            f"<table style='width:100%;border-collapse:collapse;font-size:13px'>"
+            f"<tr><td>Target</td><td><b>{incident.get('target', '')}</b></td></tr>"
+            f"<tr><td>Jenis</td><td>{incident.get('attack_type', '')}</td></tr>"
+            f"<tr><td>Severity</td><td>{incident.get('severity', '')}</td></tr>"
+            f"<tr><td>Trafik</td><td>{incident.get('bps', 0):,} bps / {incident.get('pps', 0):,} pps</td></tr>"
+            f"<tr><td>Rule</td><td>{incident.get('rule_name', '')}</td></tr>"
+            f"<tr><td>Aksi</td><td>{incident.get('action', '')}</td></tr>"
+            f"<tr><td>Device</td><td>{incident.get('device', '')}</td></tr>"
+            f"<tr><td>Waktu</td><td>{incident.get('started_at', '')}</td></tr></table>")
     now_iso = datetime.now(timezone.utc).isoformat()
     for ch in channels:
         target = ch.get("target", "")
@@ -1561,16 +1733,14 @@ async def dispatch_ddos_notifications(db, incident: dict) -> list:
                 status = "failed"
         elif ch.get("type") == "telegram":
             try:
-                from . import integrations_v2 as _iv2
-                s = await _iv2.get_settings(db, "telegram")
-                if s and s.get("enabled"):
-                    text = (f"[DDoS {incident.get('severity', '').upper()}] "
-                            f"{incident.get('attack_type', '')} ke {incident.get('target', '')} - "
-                            f"{incident.get('bps', 0):,} bps / {incident.get('pps', 0):,} pps "
-                            f"(rule: {incident.get('rule_name', '')})")
+                settings = await iv2.get_settings(db, "telegram")
+                if settings and settings.get("enabled"):
+                    text = (f"{subject}\n{flow_line}\n"
+                            f"Traffic: {incident.get('bps', 0):,} bps / {incident.get('pps', 0):,} pps\n"
+                            f"Rule: {incident.get('rule_name', '')} | Action: {incident.get('action', '')}")
                     chat_id = target if target and not target.startswith("@") else None
-                    res = await _iv2.TelegramNotifier(s).send(text, chat_id=chat_id)
-                    status = "sent" if res.get("ok") else "failed"
+                    result = await iv2.TelegramNotifier(settings).send(text, chat_id=chat_id)
+                    status = "sent" if result.get("ok") else "failed"
                 else:
                     status = "skipped"
             except Exception:
@@ -1578,38 +1748,26 @@ async def dispatch_ddos_notifications(db, incident: dict) -> list:
         elif ch.get("type") == "webhook":
             try:
                 import httpx as _hx
-                payload = {
-                    "text": subject,
-                    "incident": {
-                        "target": incident.get("target", ""),
-                        "attack_type": incident.get("attack_type", ""),
-                        "severity": incident.get("severity", ""),
-                        "bps": incident.get("bps", 0),
-                        "pps": incident.get("pps", 0),
-                        "rule": incident.get("rule_name", ""),
-                        "action": incident.get("action", ""),
-                        "started_at": incident.get("started_at", ""),
-                    },
-                }
+                payload = {"text": subject, "incident": {
+                    "target": incident.get("target", ""), "src_ip": incident.get("src_ip", ""),
+                    "dst_ip": incident.get("dst_ip", ""), "src_port": incident.get("src_port", ""),
+                    "dst_port": incident.get("dst_port", ""), "protocol": incident.get("protocol", ""),
+                    "direction": incident.get("direction", ""), "severity": incident.get("severity", ""),
+                    "bps": incident.get("bps", 0), "pps": incident.get("pps", 0),
+                    "rule": incident.get("rule_name", ""), "action": incident.get("action", ""),
+                    "started_at": incident.get("started_at", ""),}}
                 async with _hx.AsyncClient(timeout=8.0) as c:
                     r = await c.post(target, json=payload)
                 status = "sent" if r.status_code < 300 else f"failed ({r.status_code})"
             except Exception:
                 status = "failed"
-        await db.ddos_notify_log.insert_one({
-            "incident_id": str(incident.get("_id") or ""),
-            "target": incident.get("target", ""),
-            "channel_type": ch.get("type", ""),
-            "channel_target": target,
-            "status": status,
-            "at": now_iso,
-        })
+        await db.ddos_notify_log.insert_one({"incident_id": str(incident.get("_id") or ""),
+            "target": incident.get("target", ""), "channel_type": ch.get("type", ""),
+            "channel_target": target, "status": status, "at": now_iso})
         notified.append(f"{ch.get('type')}:{target}")
-    if notified:
-        await db.ddos_incidents.update_one(
-            {"_id": incident.get("_id")}, {"$set": {"notified": notified}})
+    if notified and incident.get("_id"):
+        await db.ddos_incidents.update_one({"_id": incident["_id"]}, {"$set": {"notified": notified}})
     return notified
-
 
 # ------------------------------------------------------------------
 # Live traffic collector (MikroTik) - feeds the client Traffic Report
