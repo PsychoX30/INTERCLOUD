@@ -61,8 +61,11 @@ post_pull() {
 
     log "Installing frontend deps + building production bundle"
     cd "$APP_DIR/frontend"
-    yarn install --frozen-lockfile || yarn install
-    yarn build
+    # package-lock.json is the canonical lockfile. Using Yarn without a
+    # yarn.lock resolves a different dependency tree and has broken production
+    # builds (AJV/ajv-keywords incompatibility).
+    npm ci --legacy-peer-deps
+    npm run build
     cd "$APP_DIR"
 
     log "Restarting backend via supervisor"
