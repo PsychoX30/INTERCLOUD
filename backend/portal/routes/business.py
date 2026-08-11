@@ -151,7 +151,23 @@ async def crm_list(staff=Depends(get_current_staff)):
 
 @router.post("/admin/crm")
 async def crm_create(payload: dict, staff=Depends(get_current_staff)):
+    """Create a CRM row.
+
+    Sales may only create rows explicitly linked to one of their assigned
+    portal clients.  An unlinked prospect has no client scope, so accepting it
+    would create a globally visible CRM record outside the sales assignment.
+    """
     db = await _get_db()
+    _deny_creative(staff)
+    user_id = payload.get("user_id")
+    if staff.get("role") == "sales":
+        assigned = {str(client_id) for client_id in (staff.get("assigned_client_ids") or [])}
+        if not user_id or str(user_id) not in assigned:
+            raise HTTPException(status_code=403, detail="CRM client is not assigned to you")
+        client = await db.users.find_one({"_id": _oid(str(user_id)), "role": "client"})
+        if not client:
+            raise HTTPException(status_code=403, detail="CRM target must be an assigned client")
+
     doc = {
         "name": payload.get("name", ""),
         "email": (payload.get("email") or "").lower(),
@@ -164,6 +180,8 @@ async def crm_create(payload: dict, staff=Depends(get_current_staff)):
         "created_at": _now(),
         "updated_at": _now(),
     }
+    if user_id:
+        doc["user_id"] = _oid(str(user_id))
     r = await db.crm_customers.insert_one(doc)
     doc["_id"] = r.inserted_id
     return _serialize_crm(doc)
@@ -172,6 +190,7 @@ async def crm_create(payload: dict, staff=Depends(get_current_staff)):
 async def _assert_sales_can_touch_crm(db, staff: dict, cid: str) -> dict:
     """Load a CRM row and 403 if `staff` is a sales user whose assigned
     clients don't include the row's linked user_id."""
+    _deny_creative(staff)
     d = await db.crm_customers.find_one({"_id": _oid(cid)})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
@@ -294,6 +313,13 @@ async def crm_import_xlsx(file: _UploadFile = _File(...), staff=Depends(get_curr
     Segmen Industri, Status); tanpa header -> urutan kolom A-G. Upsert by email
     (fallback: nama+telepon)."""
     _deny_creative(staff)
+    if staff.get("role") == "sales":
+        # XLSX rows have no portal client ID, so they cannot be proven to fall
+        # within a sales user's assigned-client scope.
+        raise HTTPException(
+            status_code=403,
+            detail="Sales cannot import unscoped CRM contacts",
+        )
     db = await _get_db()
     raw = await file.read()
     if len(raw) > 10 * 1024 * 1024:
@@ -648,8 +674,21 @@ def _serialize_doc(d):
     }
 
 
+def _require_internal_document_access(staff: dict) -> None:
+    """Restrict unscoped internal documents to internal operations roles.
+
+    Documents do not yet carry client ownership, therefore sales cannot be
+    scoped safely. Creative is content-scoped and must not access business
+    document operations.
+    """
+    _deny_creative(staff)
+    if staff.get("role") == "sales":
+        raise HTTPException(status_code=403, detail="Sales cannot access business documents")
+
+
 @router.get("/admin/documents")
 async def docs_list(staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
     db = await _get_db()
     docs = await db.documents.find({}).sort("created_at", -1).to_list(1000)
     return [_serialize_doc(d) for d in docs]
@@ -657,6 +696,7 @@ async def docs_list(staff=Depends(get_current_staff)):
 
 @router.post("/admin/documents")
 async def docs_create(payload: dict, staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
     db = await _get_db()
     doc = {
         "title": payload.get("title", ""),
@@ -673,6 +713,7 @@ async def docs_create(payload: dict, staff=Depends(get_current_staff)):
 
 @router.delete("/admin/documents/{did}")
 async def docs_delete(did: str, staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
     db = await _get_db()
     d = await db.documents.find_one({"_id": _oid(did)})
     if d and d.get("stored_name"):
@@ -685,8 +726,9 @@ async def docs_delete(did: str, staff=Depends(get_current_staff)):
 
 
 @router.get("/documents/file/{did}")
-async def docs_file(did: str):
+async def docs_file(did: str, staff=Depends(get_current_staff)):
     """Serve dokumen bisnis yang di-upload (URL ber-ObjectId, seperti media)."""
+    _require_internal_document_access(staff)
     db = await _get_db()
     d = await db.documents.find_one({"_id": _oid(did)})
     if not d or not d.get("stored_name"):
@@ -880,6 +922,7 @@ async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
                       category: str = Form("contract"), customer_name: str = Form(""),
                       notes: str = Form(""), staff=Depends(get_current_staff)):
     """UAT-003: upload dokumen lokal (drag & drop) selain link URL."""
+    _require_internal_document_access(staff)
     db = await _get_db()
     ctype = file.content_type or "application/octet-stream"
     if ctype not in _DOC_ALLOWED_TYPES:

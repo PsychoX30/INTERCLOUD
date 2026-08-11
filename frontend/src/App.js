@@ -73,6 +73,7 @@ const AdminArticles     = lazy(() => import("./pages/portal/admin/AdminArticles"
 const AdminCategories   = lazy(() => import("./pages/portal/admin/AdminCategories"));
 const AdminAuditLog     = lazy(() => import("./pages/portal/admin/AdminAuditLog"));
 const AdminNOC          = lazy(() => import("./pages/portal/admin/AdminNOC"));
+const AdminMonitoring   = lazy(() => import("./pages/portal/admin/AdminMonitoring"));
 const AdminCreditNotes  = lazy(() => import("./pages/portal/admin/AdminCreditNotes"));
 const AdminTransactions = lazy(() => import("./pages/portal/admin/AdminTransactions"));
 const AdminSLA          = lazy(() => import("./pages/portal/admin/AdminSLA"));
@@ -182,6 +183,7 @@ function App() {
                   <Route path="security" element={<AdminSecurity />} />
                   <Route path="audit-log" element={<AdminAuditLog />} />
                   <Route path="noc" element={<AdminNOC />} />
+                  <Route path="monitoring" element={<RequireAuth role={["admin", "support"]}><AdminMonitoring /></RequireAuth>} />
                   <Route path="credit-notes" element={<AdminCreditNotes />} />
                   <Route path="transactions" element={<AdminTransactions />} />
                   <Route path="sla" element={<AdminSLA />} />

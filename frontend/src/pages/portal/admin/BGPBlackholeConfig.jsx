@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { Card, btnSecondary, inputClass, labelClass } from "../ui";
 import { Network, Plus, Trash2, Pencil, X, Check, Loader2 } from "lucide-react";
+import { useAuth } from "../../../portal/AuthContext";
 
 const EMPTY = { name: "", upstream_name: "", bgp_community: "", scope_prefixes: "157.20.32.0/24", enabled: true };
 
@@ -21,12 +22,8 @@ export const BGPBlackholeConfig = () => {
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [isAdmin, setIsAdmin] = useState(true);
-
-  useEffect(() => {
-    const role = (localStorage.getItem("auth_role") || "").toLowerCase();
-    setIsAdmin(role === "admin");
-  }, []);
+  const { user } = useAuth() || {};
+  const isAdmin = user?.role?.toLowerCase() === "admin";
 
   const load = () =>
     api.get("/admin/noc/bgp-blackhole-configs")

@@ -202,6 +202,13 @@ async def startup_seed():
         await db.noc_device_state.create_index("device_id", unique=True)
         # NOC daily uptime rollups (retention job)
         await db.noc_daily_uptime.create_index([("device_id", 1), ("date", 1)], unique=True)
+        # Internal monitoring registry + ping foundation. Sample retention and
+        # rollups are intentionally deferred until the scheduler phase exists.
+        await db.monitoring_checks.create_index([("created_at", 1)])
+        await db.monitoring_checks.create_index([("enabled", 1), ("created_at", 1)])
+        await db.monitoring_probes.create_index([("check_id", 1), ("at", -1)])
+        await db.monitoring_check_state.create_index("check_id", unique=True)
+        await db.monitoring_events.create_index([("check_id", 1), ("at", -1)])
         # Media library
         await db.media_assets.create_index([("tags", 1)])
         # Content calendar

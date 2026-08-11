@@ -34,6 +34,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 from bson import ObjectId
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from . import integrations_v2 as iv2
 
@@ -1306,6 +1308,10 @@ async def run_noc_probe_retention(db) -> dict:
 # Scheduler singleton
 _scheduler = None
 
+# Per-process set of jobs currently executing.  Prevents overlapping ticks in
+# the same worker even when the Mongo lease is acquired/renewed rapidly.
+_running_jobs: set[str] = set()
+
 
 # ============================================================
 # Domain expiry reminders - D-30/D-14/D-7/D-1 + status transitions
@@ -2116,6 +2122,128 @@ async def run_health_alert_sweep(db, disk_threshold: float = 85.0,
     return {"issues": len(issues), "to_email": to_email, "delivery": delivery}
 
 
+async def acquire_scheduler_lease(db, *, lease_id: str, owner: str,
+                                  ttl_seconds: int = 300) -> tuple[bool, Optional[str]]:
+    """Atomically acquire or renew a cross-process scheduler lease.
+
+    Returns ``(acquired, current_owner)``.  The ``_id`` unique index makes an
+    upsert race safe: when another process owns a live lease, Mongo raises a
+    duplicate-key error rather than replacing that process' document.
+    """
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    query = {
+        "_id": lease_id,
+        "$or": [
+            {"expires_at": {"$lte": now}},
+            {"owner": owner},
+            {"owner": None},
+        ],
+    }
+    try:
+        doc = await db.scheduler_leases.find_one_and_update(
+            query,
+            {"$set": {
+                "owner": owner,
+                "acquired_at": now,
+                "expires_at": expires_at,
+            }},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        doc = await db.scheduler_leases.find_one({"_id": lease_id})
+
+    current_owner = (doc or {}).get("owner")
+    return current_owner == owner, current_owner
+
+
+async def _release_scheduler_lease(db, *, lease_id: str, owner: str) -> None:
+    """Conditionally release a lease owned by ``owner``.
+
+    A conditional filter ensures we never delete another process' lease after
+    it has taken over (e.g. after our lease expired mid-job).
+    """
+    await db.scheduler_leases.update_one(
+        {"_id": lease_id, "owner": owner},
+        {"$set": {"owner": None, "released_at": datetime.now(timezone.utc)}},
+    )
+
+
+async def run_scheduled_with_lease(db, *, lease_id: str, owner: str,
+                                   ttl_seconds: int, label: str, job,
+                                   renewal_interval_seconds: Optional[float] = None):
+    """Run ``job`` while holding and periodically renewing a Mongo lease.
+
+    A per-process label reservation closes the same-worker race before the
+    first await. The heartbeat keeps long jobs from outliving their lease; if
+    renewal fails or ownership is lost, the job is cancelled fail-closed.
+    """
+    if label in _running_jobs:
+        log.info("[scheduler-lease] skip %s: already running in this process", label)
+        return {"status": "skipped", "reason": "in_progress"}
+
+    # Reserve before the first await. Two callbacks from this worker can
+    # otherwise both pass the membership check and renew the same Mongo lease.
+    _running_jobs.add(label)
+    acquired = False
+    heartbeat_task = None
+    job_task = None
+    try:
+        acquired, current_owner = await acquire_scheduler_lease(
+            db, lease_id=lease_id, owner=owner, ttl_seconds=ttl_seconds)
+        if not acquired:
+            log.info("[scheduler-lease] skip %s: held by %r", label, current_owner)
+            return {"status": "skipped", "reason": "lease_held", "owner": current_owner}
+
+        interval = (renewal_interval_seconds if renewal_interval_seconds is not None
+                    else max(1.0, ttl_seconds / 2))
+
+        async def _heartbeat():
+            while True:
+                await asyncio.sleep(interval)
+                renewed, lease_owner = await acquire_scheduler_lease(
+                    db, lease_id=lease_id, owner=owner, ttl_seconds=ttl_seconds)
+                if not renewed:
+                    raise RuntimeError(
+                        f"scheduler lease {lease_id!r} lost to {lease_owner!r}"
+                    )
+
+        job_task = asyncio.create_task(job())
+        heartbeat_task = asyncio.create_task(_heartbeat())
+        done, _ = await asyncio.wait(
+            {job_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED)
+        if heartbeat_task in done:
+            # A heartbeat should only finish by failing. Stop work immediately
+            # rather than allowing it to continue after the lease is lost.
+            job_task.cancel()
+            try:
+                await job_task
+            except asyncio.CancelledError:
+                pass
+            await heartbeat_task
+        return await job_task
+    finally:
+        if heartbeat_task is not None and not heartbeat_task.done():
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        if job_task is not None and not job_task.done():
+            job_task.cancel()
+            try:
+                await job_task
+            except asyncio.CancelledError:
+                pass
+        _running_jobs.discard(label)
+        if acquired:
+            try:
+                await _release_scheduler_lease(db, lease_id=lease_id, owner=owner)
+            except Exception:  # noqa: BLE001
+                log.exception("[scheduler-lease] release failed for %s", label)
+
+
 def start_scheduler(db):
     """Fire up an in-process APScheduler that runs the sweep hourly.
 
@@ -2131,144 +2259,206 @@ def start_scheduler(db):
         log.warning(f"APScheduler not available: {e}")
         return None
 
+    # Return a real async callback so APScheduler's AsyncIO executor awaits it.
+    # Hostname + PID keeps the lease owner unique across hosts and workers.
+    import socket
+    _owner = f"{socket.gethostname()}:{os.getpid()}"
+
+    def _leased(label: str, coro_factory, ttl_seconds: int = 300):
+        async def _run():
+            return await run_scheduled_with_lease(
+                db,
+                lease_id=f"job:{label}",
+                owner=_owner,
+                ttl_seconds=ttl_seconds,
+                label=label,
+                job=coro_factory,
+            )
+        return _run
+
     sched = AsyncIOScheduler(timezone="Asia/Jakarta")
 
-    async def _tick():
-        try:
-            summary = await run_invoice_reminder_sweep(db)
-            log.info(f"[email-scheduler] sweep result: {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[email-scheduler] tick failed: {e}")
+    # NOTE: cron and startup "date" jobs share the same _leased label (e.g.
+    # "invoice"), so the in-process _running_jobs guard is shared across both.
+    # If a startup run is still in flight when the first cron tick fires, the
+    # cron tick is intentionally skipped to avoid a double-run. The Mongo lease
+    # (lease_id="job:<label>") additionally prevents cross-worker overlap.
 
-    async def _renewal_tick():
-        try:
-            summary = await run_renewal_invoice_sweep(db)
-            log.info(f"[renewal-scheduler] sweep result: {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[renewal-scheduler] tick failed: {e}")
+    # Invoice reminder sweep - hourly at :05
+    sched.add_job(
+        _leased("invoice", lambda: run_invoice_reminder_sweep(db)),
+        CronTrigger(minute=5),
+        id="job:invoice",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _leased("invoice", lambda: run_invoice_reminder_sweep(db)),
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=10),
+        id="job:invoice:startup",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    async def _noc_tick():
-        try:
-            summary = await run_noc_probe_sweep(db)
-            log.info(f"[noc-scheduler] sweep result: {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[noc-scheduler] tick failed: {e}")
+    # Renewal invoice sweep - hourly at :20
+    sched.add_job(
+        _leased("renewal", lambda: run_renewal_invoice_sweep(db)),
+        CronTrigger(minute=20),
+        id="job:renewal",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _leased("renewal", lambda: run_renewal_invoice_sweep(db)),
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=20),
+        id="job:renewal:startup",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    async def _domain_tick():
-        try:
-            summary = await run_domain_expiry_sweep(db)
-            log.info(f"[domain-scheduler] sweep result: {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[domain-scheduler] tick failed: {e}")
+    # NOC probe sweep - every 5 minutes
+    sched.add_job(
+        _leased("noc", lambda: run_noc_probe_sweep(db)),
+        CronTrigger(minute="*/5"),
+        id="job:noc",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _leased("noc", lambda: run_noc_probe_sweep(db)),
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=30),
+        id="job:noc:startup",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    async def _ddos_tick():
-        try:
-            summary = await run_ddos_detection_sweep(db)
-            log.info(f"[ddos-scheduler] sweep result: {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[ddos-scheduler] tick failed: {e}")
+    # Internal ping monitoring registry - every 30 seconds. The outer lease
+    # prevents duplicate scheduler workers; probe_target adds a per-check lease.
+    async def _monitoring_sweep():
+        from .monitoring import run_monitoring_probe_sweep
+        return await run_monitoring_probe_sweep(db, owner=_owner)
 
-    # Run at :05 every hour (a small delay after the top of the hour so servers
-    # coming back up don't collide with other jobs).
-    sched.add_job(_tick, CronTrigger(minute=5))
-    # Also run once at startup so the effect is immediate on deploy.
-    sched.add_job(_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=10))
-    # Renewal invoice sweep - same scheduler instance, its own hourly slot.
-    sched.add_job(_renewal_tick, CronTrigger(minute=20))
-    sched.add_job(_renewal_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=20))
-    # NOC probe sweep - every 5 minutes, on the SAME scheduler (PRD constraint).
-    sched.add_job(_noc_tick, CronTrigger(minute="*/5"))
-    sched.add_job(_noc_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=30))
-    # Domain expiry sweep - hourly at :35 on the SAME scheduler.
-    sched.add_job(_domain_tick, CronTrigger(minute=35))
-    sched.add_job(_domain_tick, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=40))
-    # DDoS threshold evaluation - every 5 minutes (offset dari NOC probe) on the SAME scheduler.
-    sched.add_job(_ddos_tick, CronTrigger(minute="2-59/5"))
+    sched.add_job(
+        _leased("monitoring", _monitoring_sweep),
+        CronTrigger(second="*/30"),
+        id="job:monitoring",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    # Traffic collector - hourly live samples from mapped MikroTik interfaces.
-    async def _traffic_tick():
-        try:
-            summary = await run_traffic_sample_sweep(db)
-            if summary["services"]:
-                log.info(f"[traffic-scheduler] sweep result: {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[traffic-scheduler] tick failed: {e}")
+    # Domain expiry sweep - hourly at :35
+    sched.add_job(
+        _leased("domain", lambda: run_domain_expiry_sweep(db)),
+        CronTrigger(minute=35),
+        id="job:domain",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _leased("domain", lambda: run_domain_expiry_sweep(db)),
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=40),
+        id="job:domain:startup",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    sched.add_job(_traffic_tick, CronTrigger(minute=50))
-    sched.add_job(_traffic_tick, "date",
-                  run_date=datetime.now(timezone.utc) + timedelta(seconds=50))
+    # DDoS threshold evaluation - every 5 minutes (offset from NOC)
+    sched.add_job(
+        _leased("ddos", lambda: run_ddos_detection_sweep(db)),
+        CronTrigger(minute="2-59/5"),
+        id="job:ddos",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    # Laporan bulanan ke email support - tanggal 1 pukul 06:30 WIB.
-    async def _monthly_report_tick():
-        try:
-            result = await run_monthly_report(db)
-            log.info(f"[monthly-report] {result.get('month')} -> {result.get('to_email')} "
-                     f"({(result.get('delivery') or {}).get('status')})")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[monthly-report] tick failed: {e}")
+    # Traffic collector - hourly at :50
+    sched.add_job(
+        _leased("traffic", lambda: run_traffic_sample_sweep(db)),
+        CronTrigger(minute=50),
+        id="job:traffic",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _leased("traffic", lambda: run_traffic_sample_sweep(db)),
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=50),
+        id="job:traffic:startup",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    sched.add_job(_monthly_report_tick, CronTrigger(day=1, hour=6, minute=30))
+    # Monthly report - 1st of month 06:30
+    sched.add_job(
+        _leased("monthly_report", lambda: run_monthly_report(db)),
+        CronTrigger(day=1, hour=6, minute=30),
+        id="job:monthly_report",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    # Ringkasan mingguan ke email support - setiap Senin 07:00 WIB.
-    async def _weekly_summary_tick():
-        try:
-            result = await run_weekly_summary(db)
-            log.info(f"[weekly-summary] {result.get('date')} -> {result.get('to_email')} "
-                     f"({(result.get('delivery') or {}).get('status')})")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[weekly-summary] tick failed: {e}")
+    # Weekly summary - Monday 07:00
+    sched.add_job(
+        _leased("weekly_summary", lambda: run_weekly_summary(db)),
+        CronTrigger(day_of_week="mon", hour=7, minute=0),
+        id="job:weekly_summary",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    sched.add_job(_weekly_summary_tick, CronTrigger(day_of_week="mon", hour=7, minute=0))
+    # Health alert - daily 07:30
+    sched.add_job(
+        _leased("health_alert", lambda: run_health_alert_sweep(db)),
+        CronTrigger(hour=7, minute=30),
+        id="job:health_alert",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    # Peringatan kesehatan server (disk hampir penuh / SSL akan kedaluwarsa)
-    # - setiap hari 07:30 WIB, dedup 1 email per hari di dalam sweep-nya.
-    async def _health_alert_tick():
-        try:
-            result = await run_health_alert_sweep(db)
-            if result.get("issues"):
-                log.info(f"[health-alert] {result}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[health-alert] tick failed: {e}")
+    # NOC probe retention/rollup - daily 03:40
+    sched.add_job(
+        _leased("noc_retention", lambda: run_noc_probe_retention(db)),
+        CronTrigger(hour=3, minute=40),
+        id="job:noc_retention",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    sched.add_job(_health_alert_tick, CronTrigger(hour=7, minute=30))
+    # Backup database - daily 03:30
+    async def _backup_job():
+        import pathlib
+        from .backups import run_mongodump
+        blob, filename = await run_mongodump()
+        pathlib.Path("/app/backups").mkdir(parents=True, exist_ok=True)
+        with open(f"/app/backups/{filename}", "wb") as f:
+            f.write(blob)
+        await db.backup_history.insert_one({
+            "filename": filename, "path": f"/app/backups/{filename}",
+            "size_bytes": len(blob), "kind": "scheduled", "by": "scheduler",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        # Retention: keep last 14 scheduled backups
+        old = await db.backup_history.find({"kind": "scheduled"}).sort("created_at", -1).skip(14).to_list(50)
+        for o in old:
+            try:
+                os.remove(o.get("path", ""))
+            except OSError:
+                pass
+            await db.backup_history.delete_one({"_id": o["_id"]})
+        log.info(f"[backup-scheduler] daily backup ok: {filename} ({len(blob)} bytes)")
 
-    async def _noc_retention_tick():
-        try:
-            summary = await run_noc_probe_retention(db)
-            log.info(f"[noc-retention-scheduler] result: {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[noc-retention-scheduler] tick failed: {e}")
+    sched.add_job(
+        _leased("backup", _backup_job),
+        CronTrigger(hour=3, minute=30),
+        id="job:backup",
+        max_instances=1,
+        coalesce=True,
+    )
 
-    # NOC probe retention/rollup - daily at 03:40 (same scheduler, alongside backup cron slot).
-    sched.add_job(_noc_retention_tick, CronTrigger(hour=3, minute=40))
-
-    async def _backup_tick():
-        try:
-            import pathlib
-            from .backups import run_mongodump
-            blob, filename = await run_mongodump()
-            pathlib.Path("/app/backups").mkdir(parents=True, exist_ok=True)
-            with open(f"/app/backups/{filename}", "wb") as f:
-                f.write(blob)
-            await db.backup_history.insert_one({
-                "filename": filename, "path": f"/app/backups/{filename}",
-                "size_bytes": len(blob), "kind": "scheduled", "by": "scheduler",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            })
-            # Retensi: simpan 14 backup terjadwal terakhir
-            old = await db.backup_history.find({"kind": "scheduled"}).sort("created_at", -1).skip(14).to_list(50)
-            for o in old:
-                try:
-                    os.remove(o.get("path", ""))
-                except OSError:
-                    pass
-                await db.backup_history.delete_one({"_id": o["_id"]})
-            log.info(f"[backup-scheduler] daily backup ok: {filename} ({len(blob)} bytes)")
-        except Exception as e:  # noqa: BLE001
-            log.exception(f"[backup-scheduler] tick failed: {e}")
-
-    # Backup database harian - 03:30 (same scheduler).
-    sched.add_job(_backup_tick, CronTrigger(hour=3, minute=30))
     sched.start()
     _scheduler = sched
     log.info("[email-scheduler] started (hourly reminder + renewal sweeps + NOC 5-min probes)")

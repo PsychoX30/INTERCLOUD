@@ -76,6 +76,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "ssl",          to: "/portal/admin/ssl",          label: "SSL Orders", icon: ShieldCheck,   testid: "nav-admin-ssl", roles: ["admin", "support"] },
       { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
       { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
+      { key: "monitoring",   to: "/portal/admin/monitoring",   label: "Ping Monitoring", icon: Activity,     testid: "nav-monitoring",   roles: ["admin", "support"] },
       { key: "sla",          to: "/portal/admin/sla",          label: "SLA & Incidents", icon: Activity,   testid: "nav-sla",          roles: ["admin", "support", "finance", "sales"] },
     ],
   },
@@ -86,7 +87,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "projects",  to: "/portal/admin/projects",  label: "Project Tracker",   icon: ClipboardList, testid: "nav-projects",  roles: ["admin", "sales", "support"] },
       { key: "content",   to: "/portal/admin/content",   label: "Content Planner",   icon: CalendarDays,  testid: "nav-content",   roles: ["admin", "sales", "finance", "support", "creative"] },
       { key: "followups", to: "/portal/admin/followups", label: "Follow-ups",        icon: CheckSquare,   testid: "nav-followups", roles: ["admin", "sales", "finance", "support"] },
-      { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "sales", "finance", "support"] },
+      { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "finance", "support"] },
     ],
   },
   {

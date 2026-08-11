@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from . import (auth, client, orders, tickets, admin_core, users, catalog,
                billing, finance, lifecycle, integrations, business, dcim,
                provision, cms, documents, domains, ssl, noc, security, email_admin,
-               transactions, sla)
+               transactions, sla, monitoring)
 from .shared import _ip_in_whitelist  # noqa: F401 (test compat)
 
 router = APIRouter(prefix="/api/portal")
@@ -31,3 +31,4 @@ router.include_router(security.router)
 router.include_router(email_admin.router)
 router.include_router(transactions.router)
 router.include_router(sla.router)
+router.include_router(monitoring.router)

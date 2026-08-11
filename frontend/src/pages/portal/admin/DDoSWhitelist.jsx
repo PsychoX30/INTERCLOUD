@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { Card, btnSecondary, labelClass } from "../ui";
 import { Shield, Plus, Trash2, X, Check, Loader2, Info } from "lucide-react";
+import { useAuth } from "../../../portal/AuthContext";
 
 const parsePrefixes = (raw) => {
   if (Array.isArray(raw)) return raw.join("\n");
@@ -19,12 +20,8 @@ export const DDoSWhitelist = () => {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  useEffect(() => {
-    const role = (localStorage.getItem("auth_role") || "").toLowerCase();
-    setIsAdmin(role === "admin");
-  }, []);
+  const { user } = useAuth() || {};
+  const isAdmin = user?.role?.toLowerCase() === "admin";
 
   const load = () =>
     api

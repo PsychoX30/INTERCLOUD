@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, shortDate, fullDateTime } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame, MessageCircle, Phone, Mail, Upload, Download } from "lucide-react";
+import { useAuth } from "../../../portal/AuthContext";
 
 /* ============ Small generic modal ============ */
 const Modal = ({ children, onClose, title }) => (
@@ -44,7 +45,10 @@ const STATUSES = [
   ["ex_client", "Ex-Client"],
 ];
 export const AdminCRM = () => {
+  const { user } = useAuth() || {};
+  const isSales = user?.role?.toLowerCase() === "sales";
   const [rows, setRows] = useState(null);
+  const [clients, setClients] = useState([]);
   const [q, setQ] = useState("");
   const [statusF, setStatusF] = useState("");
   const [warmOnly, setWarmOnly] = useState(false);
@@ -52,7 +56,16 @@ export const AdminCRM = () => {
   const [importing, setImporting] = useState(false); // modal import xlsx
   const [exporting, setExporting] = useState(false);
   const load = () => api.get("/admin/crm").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    if (isSales) {
+      api.get("/admin/users").then((r) => {
+        const list = Array.isArray(r.data) ? r.data : (r.data?.items || []);
+        const assigned = new Set((user?.assigned_client_ids || []).map(String));
+        setClients(list.filter((u) => u.role === "client" && assigned.has(String(u.id))));
+      });
+    }
+  }, [isSales, user?.assigned_client_ids]);
   if (!rows) return <Loading />;
 
   const filtered = rows.filter((r) =>
@@ -83,9 +96,11 @@ export const AdminCRM = () => {
         subtitle="Prospects, partnerships, existing & past clients - all in one directory."
         actions={
           <div className="flex gap-2 flex-wrap">
-            <button className={btnSecondary} onClick={() => setImporting(true)} data-testid="crm-import-btn">
-              <Upload className="h-4 w-4" /> Import XLSX
-            </button>
+            {!isSales && (
+              <button className={btnSecondary} onClick={() => setImporting(true)} data-testid="crm-import-btn">
+                <Upload className="h-4 w-4" /> Import XLSX
+              </button>
+            )}
             <button className={btnSecondary} onClick={exportXlsx} disabled={exporting} data-testid="crm-export-btn">
               <Download className="h-4 w-4" /> {exporting ? "Menyiapkan…" : "Export XLSX"}
             </button>
@@ -234,7 +249,7 @@ export const AdminCRM = () => {
           </table>
         </div>
       )}
-      {editing && <CrmForm c={editing === "new" ? null : editing} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
+      {editing && <CrmForm c={editing === "new" ? null : editing} clients={clients} isSales={isSales} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
       {importing && <CrmImportModal onClose={() => setImporting(false)} onDone={() => { setImporting(false); load(); }} />}
     </div>
   );
@@ -306,11 +321,12 @@ const CrmImportModal = ({ onClose, onDone }) => {
   );
 };
 
-const CrmForm = ({ c, onClose, onDone }) => {
+const CrmForm = ({ c, clients, isSales, onClose, onDone }) => {
   const [f, setF] = useState({
     name: c?.name || "", email: c?.email || "", phone: c?.phone || "",
     company: c?.company || "", position: c?.position || "", industry: c?.industry || "",
     status: c?.status || "prospect", notes: c?.notes || "",
+    user_id: c?.user_id || "",
   });
   const submit = async (e) => {
     e.preventDefault();
@@ -321,6 +337,15 @@ const CrmForm = ({ c, onClose, onDone }) => {
   return (
     <Modal onClose={onClose} title={c ? "Edit contact" : "New contact"}>
       <form onSubmit={submit} className="grid grid-cols-2 gap-3" data-testid="crm-form">
+        {isSales && !c && (
+          <label className="col-span-2">
+            <div className={labelClass}>Assigned client *</div>
+            <select required value={f.user_id} onChange={(e) => setF({ ...f, user_id: e.target.value })} className={inputClass} data-testid="crm-client">
+              <option value="">Select client…</option>
+              {clients.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email || u.company || "-"})</option>)}
+            </select>
+          </label>
+        )}
         <label className="col-span-2"><div className={labelClass}>Full name *</div><input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inputClass} data-testid="crm-name" /></label>
         <label><div className={labelClass}>Email</div><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} className={inputClass} /></label>
         <label><div className={labelClass}>Phone</div><input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} className={inputClass} /></label>
@@ -600,6 +625,25 @@ export const AdminDocuments = () => {
   useEffect(() => { load(); }, []);
   if (!rows) return <Loading />;
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/documents/${id}`); load(); } };
+  const openDocument = async (path) => {
+    // Only an API-relative protected-file path receives the portal Bearer
+    // token. External document URLs remain ordinary browser navigation.
+    if (!path.startsWith("/documents/file/")) return;
+    try {
+      const r = await api.get(path, { responseType: "blob" });
+      const blobUrl = URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal membuka dokumen");
+    }
+  };
   return (
     <div>
       <PageHeader
@@ -620,7 +664,18 @@ export const AdminDocuments = () => {
               <div className="text-xs text-slate-500 mt-1">{d.customer_name || "-"} · {fullDateTime(d.created_at)}</div>
               {d.notes && <p className="mt-2 text-sm text-slate-600 line-clamp-2">{d.notes}</p>}
               <div className="mt-4 flex gap-2">
-                {d.url && <a href={d.url} target="_blank" rel="noreferrer" className={btnSecondary}>Open</a>}
+                {d.has_file && d.id ? (
+                  <button
+                    className={btnSecondary}
+                    onClick={() => openDocument(`/documents/file/${d.id}`)}
+                  >
+                    Open
+                  </button>
+                ) : d.url ? (
+                  <a href={d.url} target="_blank" rel="noreferrer" className={btnSecondary}>
+                    Open
+                  </a>
+                ) : null}
                 <button className="text-slate-500 hover:text-red-600 text-sm" onClick={() => del(d.id)}>Delete</button>
               </div>
             </Card>
