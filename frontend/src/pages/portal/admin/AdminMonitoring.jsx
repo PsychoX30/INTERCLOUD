@@ -1,13 +1,15 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { Activity, Edit, Loader2, Map, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Eye, EyeOff } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, Edit, Loader2, Map, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Eye, EyeOff, Search } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
 import { api } from "../../../portal/api";
 import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
 const PING_EMPTY = { name: "", target: "", enabled: true, interval_seconds: 300 };
-const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic", snmp_oid: "", snmp_community: "public", snmp_port: 161, interval_seconds: 300, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
+const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 300, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
 
 // ── Tab button ──────────────────────────────────────────────────
 const TabBtn = ({ active, onClick, icon: Icon, children, testid }) => (
@@ -314,13 +316,59 @@ const GRAPH_ROLES = [
   { value: "ticket_only", label: "Ticket Only" },
 ];
 
+// Map discovered sensor kind → a valid GRAPH_TYPES value
+const kindToType = (kind) => {
+  switch (kind) {
+    case "snmp_cpu": return "snmp_cpu";
+    case "snmp_uptime": return "snmp_uptime";
+    case "snmp_traffic": return "snmp_traffic";
+    default: return "snmp_traffic"; // memory/disk → traffic with unit preserved
+  }
+};
+
 const GraphForm = ({ value, onChange, onSubmit, onClose }) => {
   const set = (k, v) => onChange({ ...value, [k]: v });
+  const [scanning, setScanning] = useState(false);
+  const [sensors, setSensors] = useState(null);
+  const [scanError, setScanError] = useState("");
+  const [showManualOid, setShowManualOid] = useState(false);
   const toggleRole = (role) => {
     const current = Array.isArray(value.visible_roles) ? value.visible_roles : [];
     const next = current.includes(role) ? current.filter(r => r !== role) : [...current, role];
     set("visible_roles", next.length ? next : ["admin", "support"]);
   };
+
+  const scan = async () => {
+    if (!value.target) { setScanError("Set the target IP/hostname first."); return; }
+    setScanning(true); setScanError(""); setSensors(null);
+    const payload = {
+      target: value.target,
+      snmp_community: value.snmp_community || "public",
+      snmp_port: Number(value.snmp_port) || 161,
+      snmp_version: value.snmp_version || "2c",
+      snmp_user: value.snmp_user || "",
+      snmp_auth_protocol: value.snmp_auth_protocol || "",
+      snmp_auth_key: value.snmp_auth_key || "",
+      snmp_priv_protocol: value.snmp_priv_protocol || "",
+      snmp_priv_key: value.snmp_priv_key || "",
+    };
+    try {
+      const r = await api.post("/admin/monitoring/discover", payload);
+      const res = r.data || {};
+      if (res.ok) setSensors(res.sensors || []);
+      else { setSensors([]); setScanError(res.error || "Discovery failed"); }
+    } catch (e) {
+      setSensors([]); setScanError(e?.response?.data?.detail || "Discovery request failed");
+    } finally { setScanning(false); }
+  };
+
+  const pickSensor = (s) => {
+    set("snmp_oid", s.oid);
+    set("unit", s.unit || value.unit);
+    set("type", kindToType(s.kind));
+    if (s.label && !value.display_name) set("display_name", s.label);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <form className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()} onSubmit={onSubmit}>
@@ -334,15 +382,63 @@ const GraphForm = ({ value, onChange, onSubmit, onClose }) => {
           </select>
         </label>
         {value.type !== "ping" && <>
-          <label className="block"><span className={labelClass}>SNMP OID</span><input required maxLength={256} className={inputClass} value={value.snmp_oid} onChange={e => set("snmp_oid", e.target.value)} /></label>
-          <label className="block"><span className={labelClass}>SNMP Version</span>
-            <select className={inputClass} value={value.snmp_version || "2c"} onChange={e => set("snmp_version", e.target.value)}>
-              <option value="2c">v2c</option>
-              <option value="3">v3</option>
-            </select>
-          </label>
-          <label className="block"><span className={labelClass}>Community (v2c)</span><input className={inputClass} value={value.snmp_community} onChange={e => set("snmp_community", e.target.value)} /></label>
-          <label className="block"><span className={labelClass}>SNMP Port</span><input type="number" className={inputClass} value={value.snmp_port} onChange={e => set("snmp_port", e.target.value)} /></label>
+          <div className="rounded-xl border border-slate-200 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className={labelClass}>SNMP Sensor Discovery</span>
+              <button type="button" className={btnSecondary} onClick={scan} disabled={scanning} data-testid="discovery-scan">
+                {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Scan sensors
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block"><span className={labelClass}>Version</span>
+                <select className={inputClass} value={value.snmp_version || "2c"} onChange={e => set("snmp_version", e.target.value)}>
+                  <option value="2c">v2c</option>
+                  <option value="3">v3</option>
+                </select>
+              </label>
+              <label className="block"><span className={labelClass}>Port</span><input type="number" className={inputClass} value={value.snmp_port} onChange={e => set("snmp_port", e.target.value)} /></label>
+            </div>
+            {value.snmp_version === "3" ? (
+              <div className="space-y-2">
+                <label className="block"><span className={labelClass}>User</span><input className={inputClass} value={value.snmp_user || ""} onChange={e => set("snmp_user", e.target.value)} /></label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block"><span className={labelClass}>Auth protocol</span>
+                    <select className={inputClass} value={value.snmp_auth_protocol || ""} onChange={e => set("snmp_auth_protocol", e.target.value)}>
+                      <option value="">—</option><option value="MD5">MD5</option><option value="SHA">SHA</option>
+                    </select>
+                  </label>
+                  <label className="block"><span className={labelClass}>Auth key</span><input className={inputClass} value={value.snmp_auth_key || ""} onChange={e => set("snmp_auth_key", e.target.value)} /></label>
+                  <label className="block"><span className={labelClass}>Priv protocol</span>
+                    <select className={inputClass} value={value.snmp_priv_protocol || ""} onChange={e => set("snmp_priv_protocol", e.target.value)}>
+                      <option value="">—</option><option value="DES">DES</option><option value="AES">AES</option>
+                    </select>
+                  </label>
+                  <label className="block"><span className={labelClass}>Priv key</span><input className={inputClass} value={value.snmp_priv_key || ""} onChange={e => set("snmp_priv_key", e.target.value)} /></label>
+                </div>
+              </div>
+            ) : (
+              <label className="block"><span className={labelClass}>Community (v2c)</span><input className={inputClass} value={value.snmp_community} onChange={e => set("snmp_community", e.target.value)} /></label>
+            )}
+
+            {scanError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" data-testid="discovery-error">{scanError}</div>}
+            {sensors && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 max-h-48 overflow-y-auto" data-testid="discovery-results">
+                {sensors.length === 0 ? <div className="p-2 text-xs text-slate-500">No sensors discovered.</div> : sensors.map((s, i) => (
+                  <button key={i} type="button" onClick={() => pickSensor(s)}
+                    className="w-full flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-white transition-colors">
+                    <span className="font-semibold text-[#0a2350]">{s.label || s.oid}</span>
+                    <span className="text-slate-500">{s.unit}{s.kind ? ` · ${s.kind}` : ""}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <button type="button" className="text-xs text-slate-500 hover:text-[#0a2350] underline" onClick={() => setShowManualOid(v => !v)}>
+              {showManualOid ? "Hide manual OID" : "Enter OID manually"}
+            </button>
+            {showManualOid && (
+              <label className="block"><span className={labelClass}>SNMP OID (manual)</span><input maxLength={256} className={inputClass} value={value.snmp_oid} onChange={e => set("snmp_oid", e.target.value)} /></label>
+            )}
+          </div>
         </>}
         <label className="block"><span className={labelClass}>Interval (30–3600s)</span><input required type="number" min="30" max="3600" className={inputClass} value={value.interval_seconds} onChange={e => set("interval_seconds", e.target.value)} /></label>
         <label className="block"><span className={labelClass}>Unit</span><input className={inputClass} value={value.unit} onChange={e => set("unit", e.target.value)} /></label>
@@ -362,7 +458,7 @@ const GraphForm = ({ value, onChange, onSubmit, onClose }) => {
 };
 
 // ═════════════════════════════════════════════════════════════════
-// Network Map Tab
+// Network Map Tab (React Flow)
 // ═════════════════════════════════════════════════════════════════
 const NODE_EMPTY = { label: "", type: "custom", x: 100, y: 100, device_id: "", graph_id: "" };
 const LINK_EMPTY = { source_id: "", target_id: "", label: "", color: "#64748b", width: 1 };
@@ -385,6 +481,20 @@ const nodeIcon = (type) => {
   }
 };
 
+// Custom React Flow node with connection handles
+const NOCNode = ({ data }) => (
+  <div className="relative flex flex-col items-center">
+    <Handle type="target" position={Position.Top} className="!w-2 !h-2" />
+    <div className="flex flex-col items-center rounded-xl border-2 border-[#f5b120] bg-[#0a2350] px-3 py-2 shadow-md min-w-[90px]">
+      <span className="text-2xl leading-none">{nodeIcon(data.type)}</span>
+      <span className="mt-1 text-center text-xs font-bold text-white leading-tight">{data.label}</span>
+    </div>
+    <Handle type="source" position={Position.Bottom} className="!w-2 !h-2" />
+  </div>
+);
+
+const nodeTypes = { noc: NOCNode };
+
 const NetworkMapTab = ({ isAdmin }) => {
   const [nodes, setNodes] = useState(null);
   const [links, setLinks] = useState(null);
@@ -405,6 +515,46 @@ const NetworkMapTab = ({ isAdmin }) => {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Build React Flow nodes/edges from backend data
+  const rfNodes = useMemo(() => (nodes || []).map(n => ({
+    id: n.id,
+    position: { x: Number(n.x) || 100, y: Number(n.y) || 100 },
+    data: { label: n.label, type: n.type || "custom" },
+    type: "noc",
+  })), [nodes]);
+
+  const rfEdges = useMemo(() => (links || []).map(l => ({
+    id: l.id,
+    source: l.source_id,
+    target: l.target_id,
+    label: l.label || "",
+    style: { stroke: l.color || "#64748b", strokeWidth: Number(l.width) || 1 },
+    markerEnd: { type: MarkerType.ArrowClosed },
+  })), [links]);
+
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(rfNodes);
+  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(rfEdges);
+
+  // Keep React Flow state in sync when backend data reloads
+  useEffect(() => { setFlowNodes(rfNodes); }, [rfNodes, setFlowNodes]);
+  useEffect(() => { setFlowEdges(rfEdges); }, [rfEdges, setFlowEdges]);
+
+  const onConnect = useCallback(async (conn) => {
+    if (!conn.source || !conn.target) return;
+    try {
+      setError("");
+      await api.post("/admin/monitoring/map/links", { source_id: conn.source, target_id: conn.target });
+      await load();
+    } catch (e) { setError(e?.response?.data?.detail || "Failed to create link"); }
+  }, [load]);
+
+  const onNodeDragStop = useCallback(async (_e, node) => {
+    try {
+      setError("");
+      await api.put(`/admin/monitoring/map/nodes/${node.id}`, { x: Math.round(node.position.x), y: Math.round(node.position.y) });
+    } catch (e) { setError(e?.response?.data?.detail || "Failed to save node position"); }
+  }, []);
 
   const saveNode = async (e) => {
     e.preventDefault();
@@ -451,29 +601,24 @@ const NetworkMapTab = ({ isAdmin }) => {
         <div className="lg:col-span-2">
           <Card className="p-5">
             <h3 className="font-extrabold text-[#0a2350] mb-3">Map</h3>
-            <div className="relative bg-slate-50 rounded-xl border border-slate-200 overflow-hidden" style={{ minHeight: "400px", width: "100%" }}>
-              <svg viewBox="0 0 800 500" className="w-full h-full" style={{ minHeight: "400px" }}>
-                {/* Links */}
-                {links.map(l => {
-                  const src = nodes.find(n => n.id === l.source_id);
-                  const tgt = nodes.find(n => n.id === l.target_id);
-                  if (!src || !tgt) return null;
-                  return (
-                    <line key={l.id} x1={src.x} y1={src.y} x2={tgt.x} y2={tgt.y}
-                      stroke={l.color || "#64748b"} strokeWidth={l.width || 1}
-                      strokeDasharray={l.label ? "none" : "4,2"} />
-                  );
-                })}
-                {/* Nodes */}
-                {nodes.map(n => (
-                  <g key={n.id} transform={`translate(${n.x},${n.y})`}>
-                    <circle r="24" fill="#0a2350" stroke="#f5b120" strokeWidth="2" />
-                    <text textAnchor="middle" dy="-30" fontSize="10" fill="#0a2350" fontWeight="bold">{n.label}</text>
-                    <text textAnchor="middle" dy="5" fontSize="16">{nodeIcon(n.type)}</text>
-                  </g>
-                ))}
-              </svg>
+            <div className="rounded-xl border border-slate-200 overflow-hidden" data-testid="map-canvas" style={{ height: 480 }}>
+              <ReactFlow
+                nodes={flowNodes}
+                edges={flowEdges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onNodeDragStop={onNodeDragStop}
+                nodeTypes={nodeTypes}
+                fitView
+                proOptions={{ hideAttribution: true }}
+              >
+                <Background gap={20} size={1} />
+                <Controls />
+                <MiniMap nodeColor={(n) => n.data?.type === "router" ? "#f5b120" : "#0a2350"} />
+              </ReactFlow>
             </div>
+            <p className="mt-2 text-xs text-slate-500">Drag nodes to reposition. Drag from the bottom handle of one node to the top handle of another to draw a link.</p>
           </Card>
         </div>
 
@@ -498,7 +643,7 @@ const NetworkMapTab = ({ isAdmin }) => {
 
           <Card className="p-5">
             <h3 className="font-extrabold text-[#0a2350] mb-3">Links ({links.length})</h3>
-            {links.length === 0 ? <EmptyState title="No links" body="Connect nodes by adding links." /> : (
+            {links.length === 0 ? <EmptyState title="No links" body="Connect nodes by drawing between handles or adding links." /> : (
               <div className="space-y-2">
                 {links.map(l => {
                   const src = nodes.find(n => n.id === l.source_id);
@@ -530,9 +675,8 @@ const NetworkMapTab = ({ isAdmin }) => {
                 {NODE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </label>
-            <label className="block"><span className={labelClass}>X</span><input type="number" className={inputClass} value={editingNode.x} onChange={e => setEditingNode({ ...editingNode, x: Number(e.target.value) })} /></label>
-            <label className="block"><span className={labelClass}>Y</span><input type="number" className={inputClass} value={editingNode.y} onChange={e => setEditingNode({ ...editingNode, y: Number(e.target.value) })} /></label>
             <label className="block"><span className={labelClass}>Graph ID (optional)</span><input className={inputClass} value={editingNode.graph_id} onChange={e => setEditingNode({ ...editingNode, graph_id: e.target.value })} /></label>
+            <p className="text-xs text-slate-500">Position is set by dragging on the map after saving.</p>
             <div className="flex justify-end gap-2"><button type="button" className={btnSecondary} onClick={() => setEditingNode(null)}>Cancel</button><button type="submit" className={btnPrimary}>Save</button></div>
           </form>
         </div>
@@ -563,5 +707,3 @@ const NetworkMapTab = ({ isAdmin }) => {
     </div>
   );
 };
-
-export default AdminMonitoring;

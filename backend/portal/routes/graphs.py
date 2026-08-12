@@ -17,6 +17,7 @@ from ..monitoring_graphs import (
     probe_graph,
     run_graph_sweep,
     run_downsample_sweep,
+    discover_snmp_sensors,
     _clean_graph_name,
     _clean_graph_target,
     _clean_graph_interval,
@@ -40,6 +41,32 @@ def _clean_or_400(cleaner, value):
         return cleaner(value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# SNMP discovery (auto-scan available sensors on a host)
+# ---------------------------------------------------------------------------
+@router.post("/admin/monitoring/discover")
+async def discover_sensors(payload: dict, admin=Depends(get_current_admin)):
+    """Auto-scan a target for available SNMP sensors via snmpwalk.
+
+    Returns a list of discovered sensors (OID, label, unit, kind) so NOC can
+    pick one to create a graph without typing OIDs by hand. Admin only.
+    """
+    db = await _get_db()
+    target = _clean_or_400(_clean_graph_target, payload.get("target"))
+    community = _clean_community(payload.get("snmp_community"))
+    port = int(payload.get("snmp_port") or 161)
+    version = str(payload.get("snmp_version") or "2c").strip()
+    result = await discover_snmp_sensors(
+        target, community, port=port, version=version,
+        user=str(payload.get("snmp_user") or ""),
+        auth_protocol=str(payload.get("snmp_auth_protocol") or ""),
+        auth_key=str(payload.get("snmp_auth_key") or ""),
+        priv_protocol=str(payload.get("snmp_priv_protocol") or ""),
+        priv_key=str(payload.get("snmp_priv_key") or ""),
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

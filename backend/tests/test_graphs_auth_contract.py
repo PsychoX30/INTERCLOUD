@@ -105,6 +105,12 @@ def test_export_requires_admin_or_support():
         "export_graph must require admin+support"
 
 
+def test_discover_sensors_requires_admin():
+    fns = _load_functions()
+    defaults = list(_defaults(fns["discover_sensors"]))
+    assert _has_admin_default(defaults), "discover_sensors must use get_current_admin"
+
+
 # --- Client endpoints must use get_current_user ---
 def test_client_endpoints_use_get_current_user():
     fns = _load_functions()

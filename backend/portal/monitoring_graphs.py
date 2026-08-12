@@ -153,6 +153,193 @@ async def poll_snmp(target: str, oid: str, community: str = "public",
 
 
 # ---------------------------------------------------------------------------
+# SNMP discovery (auto-scan available sensors on a host)
+# ---------------------------------------------------------------------------
+# Known OID bases for common sensor categories.  These are standard MIB-II /
+# HOST-RESOURCES / UCD-SNMP / IF-MIB locations used to enumerate what a device
+# exposes so NOC does not have to type OIDs by hand.
+_SNMP_DISCOVERY_BASES = {
+    "interfaces": {
+        "oid": "1.3.6.1.2.1.2.2.1.2",  # ifDescr
+        "label": "Interfaces",
+        "unit": "bps",
+        "kind": "snmp_traffic",
+        "walk": True,
+    },
+    "if_in_octets": {
+        "oid": "1.3.6.1.2.1.2.2.1.10",  # ifInOctets
+        "label": "Interface In Octets",
+        "unit": "bytes",
+        "kind": "snmp_traffic",
+        "walk": True,
+    },
+    "if_out_octets": {
+        "oid": "1.3.6.1.2.1.2.2.1.16",  # ifOutOctets
+        "label": "Interface Out Octets",
+        "unit": "bytes",
+        "kind": "snmp_traffic",
+        "walk": True,
+    },
+    "cpu_load": {
+        "oid": "1.3.6.1.4.1.2021.10.1.3",  # UCD-SNMP-MIB laLoad (1/5/15 min)
+        "label": "CPU Load Average",
+        "unit": "load",
+        "kind": "snmp_cpu",
+        "walk": True,
+    },
+    "memory_used": {
+        "oid": "1.3.6.1.4.1.2021.4.5.0",  # UCD-SNMP-MIB memAvailReal (KB free)
+        "label": "Memory Available",
+        "unit": "KB",
+        "kind": "snmp_memory",
+        "walk": False,
+    },
+    "system_uptime": {
+        "oid": "1.3.6.1.2.1.1.3.0",  # sysUpTime
+        "label": "System Uptime",
+        "unit": "seconds",
+        "kind": "snmp_uptime",
+        "walk": False,
+    },
+    "hr_storage": {
+        "oid": "1.3.6.1.2.1.25.2.3.1.3",  # hrStorageDescr
+        "label": "Disk Storage",
+        "unit": "%",
+        "kind": "snmp_disk",
+        "walk": True,
+    },
+}
+
+# Map discovered OID suffix to a human-readable name / unit for common cases.
+# For interface walks, the suffix is the ifIndex.
+def _build_discovery_cmd(target, base_oid, community, port, version,
+                         user, auth_protocol, auth_key, priv_protocol, priv_key,
+                         timeout):
+    """Build an snmpwalk command list for a base OID."""
+    cmd = ["snmpwalk", "-t", str(timeout), "-r", "0", "-On", f"{target}:{port}", base_oid]
+    if version == "3":
+        cmd.append("-v3")
+        if user:
+            cmd += ["-u", user]
+        if auth_protocol and auth_key:
+            cmd += ["-l", "authPriv" if priv_protocol and priv_key else "authNoPriv",
+                    "-a", auth_protocol, "-A", auth_key]
+        if priv_protocol and priv_key:
+            cmd += ["-x", priv_protocol, "-X", priv_key]
+    else:
+        cmd += ["-v2c", "-c", community]
+    return cmd
+
+
+def _parse_walk_line(line: str):
+    """Parse one snmpwalk output line into (oid, value).
+
+    Handles both ``OID = TYPE: VALUE`` and ``OID = VALUE`` forms, plus
+    numeric string values.
+    """
+    line = line.strip()
+    if not line or "=" not in line:
+        return None, None
+    oid_part, _, rest = line.partition("=")
+    oid = oid_part.strip()
+    rest = rest.strip()
+    value = rest
+    if ":" in rest:
+        # "TYPE: VALUE" — drop the type token
+        _type, _, value = rest.partition(":")
+        value = value.strip()
+    return oid, value
+
+
+async def discover_snmp_sensors(target: str, community: str = "public",
+                                port: int = 161, version: str = "2c",
+                                user: str = "", auth_protocol: str = "",
+                                auth_key: str = "", priv_protocol: str = "",
+                                priv_key: str = "", timeout: float = 4.0) -> dict:
+    """Auto-scan a host for available SNMP sensors.
+
+    Runs snmpwalk against a set of well-known base OIDs and returns a list of
+    discovered sensors with their OID, human label, unit, and graph kind, so
+    NOC can pick a sensor without knowing the OID by hand.
+
+    Returns {"ok": bool, "sensors": [...], "error": str|None, "target": ...}.
+    """
+    sensors = []
+    errors = []
+
+    for key, base in _SNMP_DISCOVERY_BASES.items():
+        base_oid = base["oid"]
+        try:
+            cmd = _build_discovery_cmd(
+                target, base_oid, community, port, version,
+                user, auth_protocol, auth_key, priv_protocol, priv_key, timeout,
+            )
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout + 2)
+            lines = stdout.decode("utf-8", "replace").splitlines()
+            stderr_text = stderr.decode("utf-8", "replace").strip()
+
+            if proc.returncode != 0 and not lines:
+                # snmpwalk returns non-zero when the OID subtree is empty
+                # (no such instance). Not an error for a category that isn't
+                # present on the device.
+                if "Timeout" in stderr_text or "timed out" in stderr_text:
+                    errors.append(f"{key}: timeout")
+                continue
+
+            if base.get("walk"):
+                # Walk: each line is a distinct instance under base_oid
+                for line in lines:
+                    oid, value = _parse_walk_line(line)
+                    if not oid:
+                        continue
+                    # Derive a short label from the instance suffix
+                    suffix = oid.rsplit(".", 1)[-1] if "." in oid else oid
+                    label = f"{base['label']} [{suffix}]"
+                    sensors.append({
+                        "oid": oid,
+                        "label": label,
+                        "unit": base["unit"],
+                        "kind": base["kind"],
+                        "value": value,
+                        "category": key,
+                    })
+            else:
+                # Single scalar OID
+                for line in lines:
+                    oid, value = _parse_walk_line(line)
+                    if not oid:
+                        continue
+                    sensors.append({
+                        "oid": oid,
+                        "label": base["label"],
+                        "unit": base["unit"],
+                        "kind": base["kind"],
+                        "value": value,
+                        "category": key,
+                    })
+        except FileNotFoundError:
+            return {"ok": False, "sensors": [], "error": "snmpwalk not installed",
+                    "target": target}
+        except asyncio.TimeoutError:
+            errors.append(f"{key}: timeout")
+        except Exception as exc:
+            errors.append(f"{key}: {exc}")
+
+    # If we found nothing at all, the host likely does not respond to SNMP
+    # with the given community/version. Report it so NOC can adjust.
+    if not sensors:
+        err = errors[0] if errors else "no SNMP response (check community/version/port)"
+        return {"ok": False, "sensors": [], "error": err, "target": target}
+
+    return {"ok": True, "sensors": sensors, "error": None, "target": target}
+
+
+# ---------------------------------------------------------------------------
 # Graph sweep (mirrors run_monitoring_probe_sweep)
 # ---------------------------------------------------------------------------
 async def probe_graph(db, *, graph: dict, owner: str,
