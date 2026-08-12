@@ -50,6 +50,19 @@ def _clean_or_400(cleaner, value):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _clean_snmp_port(value) -> int:
+    """Validate SNMP port. Defaults to 161, rejects non-integer input."""
+    if value is None or value == "":
+        return 161
+    try:
+        port = int(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("snmp_port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("snmp_port must be between 1 and 65535")
+    return port
+
+
 # ---------------------------------------------------------------------------
 # SNMP discovery (auto-scan available sensors on a host)
 # ---------------------------------------------------------------------------
@@ -152,7 +165,7 @@ async def create_graphs_bulk(payload: dict, admin=Depends(get_current_admin)):
 async def search_clients(
     q: str = Query("", max_length=100),
     client_id: Optional[str] = Query(None),
-    staff=Depends(get_current_staff),
+    staff=Depends(require_roles("admin", "support", "sales")),
 ):
     """Search clients by name, email, or company for graph assignment dropdown.
 
@@ -253,14 +266,17 @@ async def create_graph(payload: dict, admin=Depends(get_current_admin)):
     db = await _get_db()
     now = datetime.now(timezone.utc)
 
-    gtype = payload.get("type", "snmp_traffic")
+    gtype = payload.get("type", "snmp_traffic_in")
+    if gtype not in VALID_GRAPH_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported graph type: {gtype}")
     doc = {
         "name": _clean_or_400(_clean_graph_name, payload.get("name")),
         "target": _clean_or_400(_clean_graph_target, payload.get("target")),
         "type": gtype,
-        "snmp_oid": _clean_oid(payload.get("snmp_oid")) if payload.get("snmp_oid") else None,
+        # SNMP graph types require a valid OID; ping graphs do not use one.
+        "snmp_oid": None if gtype == "ping" else _clean_or_400(_clean_oid, payload.get("snmp_oid")),
         "snmp_community": _clean_community(payload.get("snmp_community")),
-        "snmp_port": int(payload.get("snmp_port") or 161),
+        "snmp_port": _clean_or_400(_clean_snmp_port, payload.get("snmp_port")),
         "snmp_version": payload.get("snmp_version", "2c"),
         "interval_seconds": _clean_or_400(_clean_graph_interval, payload.get("interval_seconds")),
         "enabled": bool(payload.get("enabled", True)),
@@ -288,13 +304,15 @@ async def update_graph(graph_id: str, payload: dict, admin=Depends(get_current_a
     if "target" in payload:
         updates["target"] = _clean_or_400(_clean_graph_target, payload["target"])
     if "type" in payload:
+        if payload["type"] not in VALID_GRAPH_TYPES:
+            raise HTTPException(status_code=400, detail=f"Unsupported graph type: {payload['type']}")
         updates["type"] = payload["type"]
     if "snmp_oid" in payload:
-        updates["snmp_oid"] = _clean_oid(payload["snmp_oid"]) if payload["snmp_oid"] else None
+        updates["snmp_oid"] = _clean_or_400(_clean_oid, payload["snmp_oid"]) if payload["snmp_oid"] else None
     if "snmp_community" in payload:
         updates["snmp_community"] = _clean_community(payload["snmp_community"])
     if "snmp_port" in payload:
-        updates["snmp_port"] = int(payload["snmp_port"] or 161)
+        updates["snmp_port"] = _clean_or_400(_clean_snmp_port, payload["snmp_port"])
     if "snmp_version" in payload:
         updates["snmp_version"] = payload["snmp_version"]
     if "interval_seconds" in payload:

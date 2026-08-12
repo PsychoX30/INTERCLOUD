@@ -242,7 +242,19 @@ const GraphsTab = ({ isAdmin }) => {
       const url = window.URL.createObjectURL(new Blob([r.data]));
       const a = document.createElement("a"); a.href = url;
       a.download = `graph-${id}.${fmt}`; a.click(); window.URL.revokeObjectURL(url);
-    } catch (e) { setError(e?.response?.data?.detail || "Export failed"); }
+    } catch (e) {
+      // responseType "blob" makes axios wrap JSON error bodies in a Blob,
+      // so read it back as text before falling back to a generic message.
+      let detail = "";
+      const data = e?.response?.data;
+      if (data && typeof data.text === "function") {
+        try { detail = (JSON.parse(await data.text()) || {}).detail || ""; }
+        catch (_) { /* not a JSON error body */ }
+      } else if (data?.detail) {
+        detail = data.detail;
+      }
+      setError(detail || "Export failed");
+    }
   };
 
   if (graphs === null) return <Loading label="Loading graphs…" />;
@@ -368,7 +380,7 @@ const ClientPicker = ({ value, onChange }) => {
       {selected ? (
         <div className="flex items-center justify-between rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm">
           <span><strong>{selected.name || selected.email}</strong>{selected.company ? ` · ${selected.company}` : ""}</span>
-          <button type="button" className="text-xs text-red-600" onClick={() => { onChange(""); setSelected(null); }}>Clear</button>
+          <button type="button" className="text-xs text-red-600" onClick={() => { onChange(""); setSelected(null); setQuery(""); setResults([]); }}>Clear</button>
         </div>
       ) : (
         <>
@@ -394,6 +406,11 @@ const ClientPicker = ({ value, onChange }) => {
 
 const DiscoveryResults = ({ sensors, onBulkCreate, busy, target, common }) => {
   const [selected, setSelected] = useState(new Set());
+
+  // Reset selection whenever a new discovery scan replaces the sensor list.
+  // `selected` stores indices into `sensors`; keeping them across a rescan
+  // would submit the wrong sensors.
+  useEffect(() => { setSelected(new Set()); }, [sensors]);
 
   const interfacePairs = useMemo(() => {
     const byIndex = new Map();

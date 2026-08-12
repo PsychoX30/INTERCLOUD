@@ -395,3 +395,71 @@ async def test_run_graph_manual_success(db, monkeypatch):
     out = await routes.run_graph_manual(gid, {"role": "admin", "id": "a1"})
     assert out["probed"] is True
     assert out["value"] == 42.0
+
+
+# ---------------------------------------------------------------------------
+# Validation bug regressions
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_create_graph_rejects_unknown_type(db):
+    """create_graph must reject unsupported type values with HTTP 400."""
+    with pytest.raises(HTTPException) as exc:
+        await routes.create_graph(
+            {"name": "Bad", "target": "8.8.8.8", "type": "not-a-graph", "snmp_oid": "1.3.6.1"},
+            {"role": "admin"},
+        )
+    assert exc.value.status_code == 400
+    assert db.monitoring_graphs.inserted == []
+
+
+@pytest.mark.anyio
+async def test_create_graph_empty_oid_returns_400(db):
+    """Empty snmp_oid for an SNMP graph type must return HTTP 400, not 500."""
+    with pytest.raises(HTTPException) as exc:
+        await routes.create_graph(
+            {"name": "Bad", "target": "8.8.8.8", "type": "snmp_cpu", "snmp_oid": ""},
+            {"role": "admin"},
+        )
+    assert exc.value.status_code == 400
+    assert db.monitoring_graphs.inserted == []
+
+
+@pytest.mark.anyio
+async def test_create_graph_non_integer_port_returns_400(db):
+    """Non-integer snmp_port must return HTTP 400, not 500."""
+    with pytest.raises(HTTPException) as exc:
+        await routes.create_graph(
+            {"name": "Bad", "target": "8.8.8.8", "type": "snmp_cpu",
+             "snmp_oid": "1.3.6.1.2.1.25.3.3.1.2.1", "snmp_port": "abc"},
+            {"role": "admin"},
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_update_graph_rejects_unknown_type(db):
+    """update_graph must reject unknown type values with HTTP 400."""
+    gid = str(ObjectId())
+    db.monitoring_graphs.rows = [{"_id": ObjectId(gid), "name": "G", "target": "8.8.8.8"}]
+    with pytest.raises(HTTPException) as exc:
+        await routes.update_graph(gid, {"type": "not-a-graph"}, {"role": "admin"})
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_update_graph_non_integer_port_returns_400(db):
+    """Non-integer snmp_port in update must return HTTP 400, not 500."""
+    gid = str(ObjectId())
+    db.monitoring_graphs.rows = [{"_id": ObjectId(gid), "name": "G", "target": "8.8.8.8"}]
+    with pytest.raises(HTTPException) as exc:
+        await routes.update_graph(gid, {"snmp_port": "abc"}, {"role": "admin"})
+    assert exc.value.status_code == 400
+
+
+def test_search_clients_uses_narrow_role_guard():
+    """search_clients must use require_roles, not get_current_staff (RBAC gate)."""
+    import inspect
+    source = inspect.getsource(routes.search_clients)
+    assert "get_current_staff" not in source, (
+        "search_clients still uses get_current_staff — creative role can list clients"
+    )
