@@ -87,6 +87,10 @@ def test_monitoring_indexes_match_registry_and_probe_queries():
     }
     assert all(index in server_source for index in required)
     assert "db.monitoring_probes.create_index" in server_source
-    assert "expireAfterSeconds" not in "\n".join(
-        line for line in server_source.splitlines() if "monitoring_" in line
-    )
+    # The monitoring_* indexes should not use TTL, but the graph sample
+    # collections (monitoring_graph_samples_*) legitimately use TTL.
+    # Assert only that monitoring_checks*/probes/events/state do not use TTL.
+    monitoring_lines = [line for line in server_source.splitlines() if "monitoring_" in line]
+    graph_sample_lines = [line for line in monitoring_lines if "monitoring_graph_samples" in line]
+    non_graph_lines = [line for line in monitoring_lines if "monitoring_graph_samples" not in line]
+    assert "expireAfterSeconds" not in "\n".join(non_graph_lines), "Non-graph monitoring indexes must not use TTL"

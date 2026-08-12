@@ -1,0 +1,159 @@
+"""Reporting exports for graph monitoring data (PDF + XLSX).
+
+Reuses the existing weasyprint (PDF) and openpyxl (XLSX) toolchain
+already used by documents.py / transactions.py.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from io import BytesIO
+from html import escape
+
+from fastapi.responses import StreamingResponse
+
+
+# ---------------------------------------------------------------------------
+# XLSX export
+# ---------------------------------------------------------------------------
+def _excel_dt(dt):
+    if dt is None:
+        return None
+    try:
+        from datetime import datetime as _dt
+        if isinstance(dt, _dt):
+            return dt.replace(tzinfo=None)
+        parsed = _dt.fromisoformat(str(dt).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _graph_export_xlsx_bytes(graph: dict, rows: list[dict]) -> bytes:
+    """Build an XLSX workbook for a graph's time series. Returns bytes."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    thin = Side(style="thin", color="FFD8DEE9")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_font = Font(bold=True, color="FFFFFFFF")
+    head_fill = PatternFill("solid", fgColor="FF0A2350")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Graph Data"
+
+    # Header / metadata
+    ws.append(["Graph", graph.get("name", "")])
+    ws.append(["Target", graph.get("target", "")])
+    ws.append(["Type", graph.get("type", "")])
+    ws.append(["Unit", graph.get("unit") or ""])
+    ws.append(["Exported", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")])
+    ws.append([])
+
+    headers = ["Timestamp", "Value", "Min", "Max"]
+    ws.append(headers)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=7, column=c)
+        cell.font = head_font
+        cell.fill = head_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+    ws.freeze_panes = "A8"
+
+    for row in rows:
+        ws.append([
+            _excel_dt(row.get("at")),
+            row.get("value"),
+            row.get("min"),
+            row.get("max"),
+        ])
+
+    for col in range(1, 5):
+        letter = get_column_letter(col)
+        ws.column_dimensions[letter].width = 24
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# PDF export (HTML -> WeasyPrint)
+# ---------------------------------------------------------------------------
+def _graph_export_pdf_bytes(graph: dict, rows: list[dict]) -> bytes:
+    """Build a PDF report for a graph's time series. Returns bytes."""
+    from weasyprint import HTML
+
+    name = escape(graph.get("name") or "")
+    target = escape(graph.get("target") or "")
+    gtype = escape(graph.get("type") or "")
+    unit = escape(graph.get("unit") or "")
+    exported = escape(datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+
+    body_rows = []
+    for row in rows:
+        at = row.get("at")
+        at_str = at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(at, "strftime") else escape(str(at))
+        val = row.get("value")
+        val_str = f"{val:.4f}" if isinstance(val, float) else escape(str(val))
+        mn = row.get("min")
+        mx = row.get("max")
+        mn_str = f"{mn:.4f}" if isinstance(mn, float) else ("-" if mn is None else escape(str(mn)))
+        mx_str = f"{mx:.4f}" if isinstance(mx, float) else ("-" if mx is None else escape(str(mx)))
+        body_rows.append(
+            f"<tr><td>{escape(at_str)}</td><td>{val_str}</td>"
+            f"<td>{mn_str}</td><td>{mx_str}</td></tr>"
+        )
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  body {{ font-family: Arial, sans-serif; font-size: 12px; color: #0a2350; margin: 32px; }}
+  h1 {{ font-size: 20px; color: #0a2350; margin-bottom: 4px; }}
+  .meta {{ color: #64748b; font-size: 12px; margin-bottom: 20px; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+  th {{ background: #0a2350; color: #fff; padding: 8px; text-align: left; font-size: 12px; }}
+  td {{ border: 1px solid #d8dee9; padding: 6px 8px; font-size: 12px; }}
+  tr:nth-child(even) td {{ background: #f8fafc; }}
+  .footer {{ margin-top: 24px; font-size: 10px; color: #94a3b8; }}
+</style></head>
+<body>
+  <h1>{name}</h1>
+  <div class="meta">
+    Target: {target} &nbsp;•&nbsp; Type: {gtype} &nbsp;•&nbsp; Unit: {unit}<br>
+    Exported: {exported}
+  </div>
+  <table>
+    <thead><tr><th>Timestamp</th><th>Value</th><th>Min</th><th>Max</th></tr></thead>
+    <tbody>{''.join(body_rows) if body_rows else '<tr><td colspan="4">No data in range.</td></tr>'}</tbody>
+  </table>
+  <div class="footer">Generated by INTERCLOUD Monitoring</div>
+</body></html>"""
+
+    return HTML(string=html).write_pdf()
+
+
+# ---------------------------------------------------------------------------
+# Public helpers for routes
+# ---------------------------------------------------------------------------
+def graph_export_response(graph: dict, rows: list[dict], fmt: str):
+    """Return a StreamingResponse for the given graph data in fmt (pdf|xlsx)."""
+    if fmt == "pdf":
+        data = _graph_export_pdf_bytes(graph, rows)
+        media = "application/pdf"
+        ext = "pdf"
+    else:
+        data = _graph_export_xlsx_bytes(graph, rows)
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ext = "xlsx"
+
+    safe_name = "".join(c for c in (graph.get("name") or "graph") if c.isalnum() or c in "-_ ").strip().replace(" ", "-")
+    filename = f"{safe_name or 'graph'}.{ext}"
+
+    return StreamingResponse(
+        BytesIO(data),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

@@ -209,6 +209,20 @@ async def startup_seed():
         await db.monitoring_probes.create_index([("check_id", 1), ("at", -1)])
         await db.monitoring_check_state.create_index("check_id", unique=True)
         await db.monitoring_events.create_index([("check_id", 1), ("at", -1)])
+        # Monitoring graphs + samples (MRTG-style SNMP/ping graphs)
+        await db.monitoring_graphs.create_index([("enabled", 1), ("interval_seconds", 1)])
+        await db.monitoring_graphs.create_index([("client_id", 1)])
+        await db.monitoring_graphs.create_index([("type", 1)])
+        await db.monitoring_graph_samples_raw.create_index([("graph_id", 1), ("at", -1)])
+        await db.monitoring_graph_samples_raw.create_index("at", expireAfterSeconds=7 * 86400)
+        await db.monitoring_graph_samples_hourly.create_index([("graph_id", 1), ("hour", -1)], unique=True)
+        await db.monitoring_graph_samples_hourly.create_index("hour", expireAfterSeconds=90 * 86400)
+        await db.monitoring_graph_samples_daily.create_index([("graph_id", 1), ("date", -1)], unique=True)
+        await db.monitoring_graph_samples_daily.create_index("date", expireAfterSeconds=730 * 86400)
+        # Network map nodes/links
+        await db.network_map_nodes.create_index([("created_at", 1)])
+        await db.network_map_links.create_index([("source_id", 1)])
+        await db.network_map_links.create_index([("target_id", 1)])
         # Media library
         await db.media_assets.create_index([("tags", 1)])
         # Content calendar

@@ -2349,6 +2349,32 @@ def start_scheduler(db):
         coalesce=True,
     )
 
+    # SNMP/MRTG graph sweep - every 60 seconds.
+    async def _graph_sweep():
+        from .monitoring_graphs import run_graph_sweep
+        return await run_graph_sweep(db, owner=_owner)
+
+    sched.add_job(
+        _leased("graph_sweep", _graph_sweep),
+        CronTrigger(minute="*/1"),
+        id="job:graph_sweep",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Graph downsample - hourly at :15
+    async def _graph_downsample():
+        from .monitoring_graphs import run_downsample_sweep
+        return await run_downsample_sweep(db, owner=_owner)
+
+    sched.add_job(
+        _leased("graph_downsample", _graph_downsample),
+        CronTrigger(minute=15),
+        id="job:graph_downsample",
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Domain expiry sweep - hourly at :35
     sched.add_job(
         _leased("domain", lambda: run_domain_expiry_sweep(db)),

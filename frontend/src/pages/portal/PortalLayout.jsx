@@ -76,7 +76,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "ssl",          to: "/portal/admin/ssl",          label: "SSL Orders", icon: ShieldCheck,   testid: "nav-admin-ssl", roles: ["admin", "support"] },
       { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
       { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
-      { key: "monitoring",   to: "/portal/admin/monitoring",   label: "Ping Monitoring", icon: Activity,     testid: "nav-monitoring",   roles: ["admin", "support"] },
+      { key: "monitoring",   to: "/portal/admin/monitoring",   label: "Monitoring", icon: Activity,     testid: "nav-monitoring",   roles: ["admin", "support"] },
       { key: "sla",          to: "/portal/admin/sla",          label: "SLA & Incidents", icon: Activity,   testid: "nav-sla",          roles: ["admin", "support", "finance", "sales"] },
     ],
   },
