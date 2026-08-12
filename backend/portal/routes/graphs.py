@@ -8,10 +8,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 import uuid
 import socket
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..auth import get_current_admin, get_current_user, require_roles
+from ..auth import get_current_admin, get_current_user, get_current_staff, require_roles
 from ..monitoring_graphs import (
     serialize_graph,
     probe_graph,
@@ -31,8 +32,14 @@ from ..monitoring_samples import (
 )
 from ..monitoring_reports import graph_export_response
 from .shared import _get_db, _oid
+from bson import ObjectId
 
 router = APIRouter()
+
+VALID_GRAPH_TYPES = {
+    "snmp_traffic_in", "snmp_traffic_out", "snmp_cpu",
+    "snmp_memory", "snmp_disk", "snmp_uptime", "ping",
+}
 
 
 def _clean_or_400(cleaner, value):
@@ -50,8 +57,10 @@ def _clean_or_400(cleaner, value):
 async def discover_sensors(payload: dict, admin=Depends(get_current_admin)):
     """Auto-scan a target for available SNMP sensors via snmpwalk.
 
-    Returns a list of discovered sensors (OID, label, unit, kind) so NOC can
-    pick one to create a graph without typing OIDs by hand. Admin only.
+    Returns a structured list of discovered sensors:
+    - interfaces: real names (ifName/ifDescr) with in/out counter sensors
+    - system: CPU, memory, uptime
+    Admin only.
     """
     db = await _get_db()
     target = _clean_or_400(_clean_graph_target, payload.get("target"))
@@ -67,6 +76,153 @@ async def discover_sensors(payload: dict, admin=Depends(get_current_admin)):
         priv_key=str(payload.get("snmp_priv_key") or ""),
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Bulk graph creation (from discovery multi-select)
+# ---------------------------------------------------------------------------
+@router.post("/admin/monitoring/graphs/bulk")
+async def create_graphs_bulk(payload: dict, admin=Depends(get_current_admin)):
+    """Create multiple graphs at once from discovery scan selections.
+
+    Accepts a common SNMP config + a list of sensor specs.
+    """
+    db = await _get_db()
+    now = datetime.now(timezone.utc)
+    sensors = payload.get("sensors") or []
+    if not sensors or not isinstance(sensors, list):
+        raise HTTPException(status_code=400, detail="sensors list is required")
+    if len(sensors) > 200:
+        raise HTTPException(status_code=400, detail="at most 200 sensors may be created at once")
+
+    # Common SNMP config shared across all graphs
+    common = {
+        "target": _clean_or_400(_clean_graph_target, payload.get("target")),
+        "snmp_community": _clean_community(payload.get("snmp_community")),
+        "snmp_port": int(payload.get("snmp_port") or 161),
+        "snmp_version": str(payload.get("snmp_version") or "2c").strip(),
+        "snmp_user": str(payload.get("snmp_user") or ""),
+        "snmp_auth_protocol": str(payload.get("snmp_auth_protocol") or ""),
+        "snmp_auth_key": str(payload.get("snmp_auth_key") or ""),
+        "snmp_priv_protocol": str(payload.get("snmp_priv_protocol") or ""),
+        "snmp_priv_key": str(payload.get("snmp_priv_key") or ""),
+        "interval_seconds": _clean_or_400(_clean_graph_interval, payload.get("interval_seconds")),
+        "enabled": bool(payload.get("enabled", True)),
+        "client_id": _oid(payload["client_id"]) if payload.get("client_id") else None,
+        "visible_roles": _clean_visible_roles(payload.get("visible_roles")),
+        "created_by": str(admin.get("_id") or admin.get("id") or "admin"),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    created = []
+    for i, sensor in enumerate(sensors):
+        if not isinstance(sensor, dict):
+            continue
+        oid = sensor.get("oid")
+        if not oid:
+            continue
+        oid = _clean_or_400(_clean_oid, oid)
+        name = _clean_or_400(_clean_graph_name, sensor.get("name") or f"Graph-{i+1}")
+        gtype = str(sensor.get("type") or "").strip()
+        if gtype not in VALID_GRAPH_TYPES or gtype == "ping":
+            raise HTTPException(status_code=400, detail=f"unsupported discovered sensor type: {gtype}")
+        unit = str(sensor.get("unit") or "")[:32]
+        display_name = str(sensor.get("display_name") or sensor.get("label") or "")[:120]
+
+        doc = {
+            **common,
+            "name": name,
+            "type": gtype,
+            "snmp_oid": oid,
+            "unit": unit,
+            "display_name": display_name,
+        }
+        result = await db.monitoring_graphs.insert_one(doc)
+        doc["_id"] = result.inserted_id
+        created.append(serialize_graph(doc))
+
+    return {"ok": True, "created": len(created), "graphs": created}
+
+
+# ---------------------------------------------------------------------------
+# Client search endpoint (for client_id dropdown)
+# ---------------------------------------------------------------------------
+@router.get("/admin/monitoring/clients")
+async def search_clients(
+    q: str = Query("", max_length=100),
+    client_id: Optional[str] = Query(None),
+    staff=Depends(get_current_staff),
+):
+    """Search clients by name, email, or company for graph assignment dropdown.
+
+    Returns minimal fields: id, name, email, company.
+    Sales staff only see their assigned clients.
+    Pass an exact ``client_id`` to look up a single client (used when editing
+    an existing graph to render its assigned client name).
+    """
+    db = await _get_db()
+    role = staff.get("role", "")
+
+    query = {"role": "client"}
+    if client_id:
+        try:
+            exact_oid = ObjectId(client_id)
+        except Exception:
+            return []
+        if role == "sales":
+            assigned_oids = []
+            for assigned_id in staff.get("assigned_client_ids") or []:
+                try:
+                    assigned_oids.append(ObjectId(assigned_id))
+                except Exception:
+                    continue
+            if exact_oid not in assigned_oids:
+                return []
+        query["_id"] = exact_oid
+        # exact lookup ignores the q filter
+        cursor = db.users.find(query, {"name": 1, "email": 1, "company": 1}).limit(1)
+        results = []
+        async for u in cursor:
+            results.append({
+                "id": str(u["_id"]),
+                "name": u.get("name", ""),
+                "email": u.get("email", ""),
+                "company": u.get("company", ""),
+            })
+        return results
+
+    if role == "sales":
+        assigned = staff.get("assigned_client_ids") or []
+        if not assigned:
+            return []
+        assigned_oids = []
+        for assigned_id in assigned:
+            try:
+                assigned_oids.append(ObjectId(assigned_id))
+            except Exception:
+                continue
+        if not assigned_oids:
+            return []
+        query["_id"] = {"$in": assigned_oids}
+
+    if q:
+        q_lower = re.escape(q.strip().lower())
+        query["$or"] = [
+            {"name": {"$regex": q_lower, "$options": "i"}},
+            {"email": {"$regex": q_lower, "$options": "i"}},
+            {"company": {"$regex": q_lower, "$options": "i"}},
+        ]
+    cursor = db.users.find(query, {"name": 1, "email": 1, "company": 1}).limit(25)
+    results = []
+    async for u in cursor:
+        results.append({
+            "id": str(u["_id"]),
+            "name": u.get("name", ""),
+            "email": u.get("email", ""),
+            "company": u.get("company", ""),
+        })
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +253,11 @@ async def create_graph(payload: dict, admin=Depends(get_current_admin)):
     db = await _get_db()
     now = datetime.now(timezone.utc)
 
+    gtype = payload.get("type", "snmp_traffic")
     doc = {
         "name": _clean_or_400(_clean_graph_name, payload.get("name")),
         "target": _clean_or_400(_clean_graph_target, payload.get("target")),
-        "type": payload.get("type", "snmp_traffic"),
+        "type": gtype,
         "snmp_oid": _clean_oid(payload.get("snmp_oid")) if payload.get("snmp_oid") else None,
         "snmp_community": _clean_community(payload.get("snmp_community")),
         "snmp_port": int(payload.get("snmp_port") or 161),
@@ -215,10 +372,10 @@ async def export_graph(
     graph_id: str,
     from_: str = Query(..., alias="from"),
     to: str = Query(...),
-    fmt: str = Query("xlsx", pattern="^(xlsx|pdf)$"),
     resolution: str = Query("auto"),
     staff=Depends(require_roles("admin", "support")),
 ):
+    """Export graph data as PDF (monitoring use only)."""
     db = await _get_db()
     query = {"_id": _oid(graph_id)}
     if staff.get("role") != "admin":
@@ -234,7 +391,7 @@ async def export_graph(
     if from_dt >= to_dt:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
     rows = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
-    return graph_export_response(doc, rows, fmt)
+    return graph_export_response(doc, rows, "pdf")
 
 
 @router.post("/admin/monitoring/graphs/{graph_id}/run")

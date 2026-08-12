@@ -388,7 +388,7 @@ async def test_run_graph_manual_success(db, monkeypatch):
     gid = str(ObjectId())
     db.monitoring_graphs.rows = [{
         "_id": ObjectId(gid), "name": "G", "target": "8.8.8.8",
-        "type": "snmp_traffic", "snmp_oid": "1.3.6.1",
+        "type": "snmp_traffic_in", "snmp_oid": "1.3.6.1",
     }]
     # Mock probe_graph to avoid real SNMP calls
     monkeypatch.setattr(routes, "probe_graph", AsyncMock(return_value={"probed": True, "value": 42.0}))

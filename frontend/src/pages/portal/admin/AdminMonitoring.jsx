@@ -9,7 +9,7 @@ import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrima
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
 const PING_EMPTY = { name: "", target: "", enabled: true, interval_seconds: 300 };
-const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 300, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
+const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic_in", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 300, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
 
 // ── Tab button ──────────────────────────────────────────────────
 const TabBtn = ({ active, onClick, icon: Icon, children, testid }) => (
@@ -173,9 +173,11 @@ const PingForm = ({ value, onChange, onSubmit, onClose }) => {
 // SNMP Graphs Tab
 // ═════════════════════════════════════════════════════════════════
 const GRAPH_TYPES = [
-  { value: "snmp_traffic", label: "SNMP Traffic" },
-  { value: "snmp_uptime", label: "SNMP Uptime" },
+  { value: "snmp_traffic_in", label: "SNMP Traffic In (bps)" },
+  { value: "snmp_traffic_out", label: "SNMP Traffic Out (bps)" },
   { value: "snmp_cpu", label: "SNMP CPU" },
+  { value: "snmp_memory", label: "SNMP Memory" },
+  { value: "snmp_uptime", label: "SNMP Uptime" },
   { value: "ping", label: "Ping RTT" },
 ];
 
@@ -273,7 +275,6 @@ const GraphsTab = ({ isAdmin }) => {
                       <button className={btnSecondary} onClick={() => loadData(g.id)}><BarChart3 className="h-4 w-4" /> View</button>
                       {isAdmin && (<>
                         <button className={btnSecondary} onClick={() => run(g.id)} disabled={busyId === g.id}>{busyId === g.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Probe</button>
-                        <button className={btnSecondary} onClick={() => exportGraph(g.id, "xlsx")}><Download className="h-4 w-4" /> XLSX</button>
                         <button className={btnSecondary} onClick={() => exportGraph(g.id, "pdf")}><Download className="h-4 w-4" /> PDF</button>
                         <button className={btnSecondary} onClick={() => setEditing({ ...g })}><Edit className="h-4 w-4" /></button>
                         <button className={btnDanger} onClick={() => remove(g.id)}><Trash2 className="h-4 w-4" /></button>
@@ -288,7 +289,15 @@ const GraphsTab = ({ isAdmin }) => {
       </Card>
 
       {graphData && <GraphDataPanel graphData={graphData} onClose={() => { setGraphData(null); setSelectedId(""); }} />}
-      {editing && <GraphForm value={editing} onChange={setEditing} onSubmit={save} onClose={() => setEditing(null)} />}
+      {editing && (
+        <GraphForm
+          value={editing}
+          onChange={setEditing}
+          onSubmit={save}
+          onClose={() => setEditing(null)}
+          onAfterSave={loadGraphs}
+        />
+      )}
     </div>
   );
 };
@@ -316,21 +325,142 @@ const GRAPH_ROLES = [
   { value: "ticket_only", label: "Ticket Only" },
 ];
 
-// Map discovered sensor kind → a valid GRAPH_TYPES value
+// Map every discovery kind to a persisted graph type; never coerce memory to traffic.
 const kindToType = (kind) => {
-  switch (kind) {
-    case "snmp_cpu": return "snmp_cpu";
-    case "snmp_uptime": return "snmp_uptime";
-    case "snmp_traffic": return "snmp_traffic";
-    default: return "snmp_traffic"; // memory/disk → traffic with unit preserved
-  }
+  const supported = new Set(["snmp_traffic_in", "snmp_traffic_out", "snmp_cpu", "snmp_memory", "snmp_uptime", "ping"]);
+  return supported.has(kind) ? kind : "snmp_traffic_in";
 };
 
-const GraphForm = ({ value, onChange, onSubmit, onClose }) => {
+const ClientPicker = ({ value, onChange }) => {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!value) { setSelected(null); return undefined; }
+    let cancelled = false;
+    api.get("/admin/monitoring/clients", { params: { client_id: value } })
+      .then(r => { if (!cancelled) setSelected((r.data || [])[0] || null); })
+      .catch(() => { if (!cancelled) setSelected(null); });
+    return () => { cancelled = true; };
+  }, [value]);
+
+  useEffect(() => {
+    if (!query.trim()) { setResults([]); return undefined; }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        setSearching(true); setErr("");
+        const r = await api.get("/admin/monitoring/clients", { params: { q: query.trim() } });
+        if (!cancelled) setResults(r.data || []);
+      } catch (e) {
+        if (!cancelled) { setResults([]); setErr(e?.response?.data?.detail || "Search failed"); }
+      } finally { if (!cancelled) setSearching(false); }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query]);
+
+  return (
+    <div className="space-y-2" data-testid="client-picker">
+      <span className={labelClass}>Client (optional)</span>
+      {selected ? (
+        <div className="flex items-center justify-between rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm">
+          <span><strong>{selected.name || selected.email}</strong>{selected.company ? ` · ${selected.company}` : ""}</span>
+          <button type="button" className="text-xs text-red-600" onClick={() => { onChange(""); setSelected(null); }}>Clear</button>
+        </div>
+      ) : (
+        <>
+          <input className={inputClass} placeholder="Search name, email, or company" value={query} onChange={e => setQuery(e.target.value)} data-testid="client-search" />
+          {searching && <div className="text-xs text-slate-500">Searching...</div>}
+          {err && <div className="text-xs text-red-600">{err}</div>}
+          {results.length > 0 && (
+            <div className="max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-white" data-testid="client-results">
+              {results.map(client => (
+                <button key={client.id} type="button" className="w-full border-b border-slate-100 px-3 py-2 text-left text-sm hover:bg-slate-50 last:border-b-0"
+                  onClick={() => { onChange(client.id); setSelected(client); setQuery(""); setResults([]); }}>
+                  <div className="font-semibold">{client.name || client.email}</div>
+                  <div className="text-xs text-slate-500">{client.email}{client.company ? ` · ${client.company}` : ""}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+const DiscoveryResults = ({ sensors, onBulkCreate, busy, target, common }) => {
+  const [selected, setSelected] = useState(new Set());
+
+  const interfacePairs = useMemo(() => {
+    const byIndex = new Map();
+    sensors.filter(s => s.category === "interface").forEach(sensor => {
+      if (!byIndex.has(sensor.interface_index)) byIndex.set(sensor.interface_index, { name: sensor.interface_name || sensor.interface_descr || `if${sensor.interface_index}`, sensors: [] });
+      byIndex.get(sensor.interface_index).sensors.push(sensor);
+    });
+    return Array.from(byIndex.entries()).map(([index, info]) => ({ index, ...info }));
+  }, [sensors]);
+
+  const systemSensors = useMemo(() => sensors.filter(s => s.category !== "interface"), [sensors]);
+  const toggle = (idx) => setSelected(current => { const next = new Set(current); if (next.has(idx)) next.delete(idx); else next.add(idx); return next; });
+
+  const generate = () => {
+    const picks = Array.from(selected).map(index => sensors[index]).filter(Boolean);
+    if (!picks.length) return;
+    onBulkCreate(picks);
+  };
+
+  if (!sensors.length) return <div className="p-2 text-xs text-slate-500">No sensors discovered.</div>;
+
+  return (
+    <div className="space-y-3" data-testid="discovery-results">
+      {interfacePairs.length > 0 && (
+        <div>
+          <div className="mb-1 text-xs font-bold text-slate-700">Interfaces ({interfacePairs.length})</div>
+          <div className="space-y-1">{interfacePairs.map(pair => {
+            const inbound = pair.sensors.find(s => s.direction === "in");
+            const outbound = pair.sensors.find(s => s.direction === "out");
+            const inIndex = inbound ? sensors.indexOf(inbound) : -1;
+            const outIndex = outbound ? sensors.indexOf(outbound) : -1;
+            return <div key={pair.index} className="flex items-center gap-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
+              <div className="flex-1"><strong className="text-[#0a2350]">{pair.name}</strong><span className="ml-2 text-slate-500">ifIndex {pair.index}</span></div>
+              <label className="flex items-center gap-1"><input type="checkbox" disabled={!inbound} checked={inIndex >= 0 && selected.has(inIndex)} onChange={() => toggle(inIndex)} data-testid={`discovery-check-${pair.index}-in`} /> In</label>
+              <label className="flex items-center gap-1"><input type="checkbox" disabled={!outbound} checked={outIndex >= 0 && selected.has(outIndex)} onChange={() => toggle(outIndex)} data-testid={`discovery-check-${pair.index}-out`} /> Out</label>
+            </div>;
+          })}</div>
+        </div>
+      )}
+      {systemSensors.length > 0 && (
+        <div>
+          <div className="mb-1 text-xs font-bold text-slate-700">System sensors ({systemSensors.length})</div>
+          <div className="space-y-1">{systemSensors.map(sensor => {
+            const index = sensors.indexOf(sensor);
+            return <label key={`${sensor.oid}-${index}`} className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
+              <input type="checkbox" checked={selected.has(index)} onChange={() => toggle(index)} data-testid={`discovery-check-system-${index}`} />
+              <strong className="text-[#0a2350]">{sensor.label}</strong><span className="text-slate-500">{sensor.unit}</span>
+            </label>;
+          })}</div>
+        </div>
+      )}
+      <div className="flex items-center justify-between rounded-md bg-slate-100 px-3 py-2 text-xs">
+        <span>{selected.size} sensor(s) selected</span>
+        <button type="button" className={btnPrimary} disabled={busy || !selected.size} onClick={generate} data-testid="discovery-generate">
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Generate graphs
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const GraphForm = ({ value, onChange, onSubmit, onClose, onAfterSave }) => {
   const set = (k, v) => onChange({ ...value, [k]: v });
   const [scanning, setScanning] = useState(false);
   const [sensors, setSensors] = useState(null);
   const [scanError, setScanError] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [showManualOid, setShowManualOid] = useState(false);
   const toggleRole = (role) => {
     const current = Array.isArray(value.visible_roles) ? value.visible_roles : [];
@@ -362,11 +492,37 @@ const GraphForm = ({ value, onChange, onSubmit, onClose }) => {
     } finally { setScanning(false); }
   };
 
-  const pickSensor = (s) => {
-    set("snmp_oid", s.oid);
-    set("unit", s.unit || value.unit);
-    set("type", kindToType(s.kind));
-    if (s.label && !value.display_name) set("display_name", s.label);
+  const createBulk = async (pickedSensors) => {
+    const sensorsPayload = pickedSensors.map(sensor => ({
+      oid: sensor.oid,
+      name: sensor.label || sensor.oid,
+      display_name: sensor.label || sensor.oid,
+      type: kindToType(sensor.kind),
+      unit: sensor.unit || "",
+    }));
+    setBulkBusy(true); setScanError("");
+    try {
+      await api.post("/admin/monitoring/graphs/bulk", {
+        target: value.target,
+        snmp_community: value.snmp_community || "public",
+        snmp_port: Number(value.snmp_port) || 161,
+        snmp_version: value.snmp_version || "2c",
+        snmp_user: value.snmp_user || "",
+        snmp_auth_protocol: value.snmp_auth_protocol || "",
+        snmp_auth_key: value.snmp_auth_key || "",
+        snmp_priv_protocol: value.snmp_priv_protocol || "",
+        snmp_priv_key: value.snmp_priv_key || "",
+        interval_seconds: Number(value.interval_seconds) || 300,
+        enabled: value.enabled !== false,
+        client_id: value.client_id || "",
+        visible_roles: value.visible_roles || ["admin", "support"],
+        sensors: sensorsPayload,
+      });
+      await onAfterSave?.();
+      onClose();
+    } catch (e) {
+      setScanError(e?.response?.data?.detail || "Bulk graph creation failed");
+    } finally { setBulkBusy(false); }
   };
 
   return (
@@ -421,17 +577,7 @@ const GraphForm = ({ value, onChange, onSubmit, onClose }) => {
             )}
 
             {scanError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" data-testid="discovery-error">{scanError}</div>}
-            {sensors && (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 max-h-48 overflow-y-auto" data-testid="discovery-results">
-                {sensors.length === 0 ? <div className="p-2 text-xs text-slate-500">No sensors discovered.</div> : sensors.map((s, i) => (
-                  <button key={i} type="button" onClick={() => pickSensor(s)}
-                    className="w-full flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-white transition-colors">
-                    <span className="font-semibold text-[#0a2350]">{s.label || s.oid}</span>
-                    <span className="text-slate-500">{s.unit}{s.kind ? ` · ${s.kind}` : ""}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            {sensors && <DiscoveryResults sensors={sensors} onBulkCreate={createBulk} busy={bulkBusy} />}
             <button type="button" className="text-xs text-slate-500 hover:text-[#0a2350] underline" onClick={() => setShowManualOid(v => !v)}>
               {showManualOid ? "Hide manual OID" : "Enter OID manually"}
             </button>
@@ -441,8 +587,18 @@ const GraphForm = ({ value, onChange, onSubmit, onClose }) => {
           </div>
         </>}
         <label className="block"><span className={labelClass}>Interval (30–3600s)</span><input required type="number" min="30" max="3600" className={inputClass} value={value.interval_seconds} onChange={e => set("interval_seconds", e.target.value)} /></label>
-        <label className="block"><span className={labelClass}>Unit</span><input className={inputClass} value={value.unit} onChange={e => set("unit", e.target.value)} /></label>
-        <label className="block"><span className={labelClass}>Client ID (optional)</span><input className={inputClass} value={value.client_id} onChange={e => set("client_id", e.target.value)} placeholder="MongoDB ObjectId" /></label>
+        <label className="block"><span className={labelClass}>Unit</span>
+          <select className={inputClass} value={value.unit || ""} onChange={e => set("unit", e.target.value)}>
+            <option value="">Auto / none</option>
+            <option value="bps">bps</option>
+            <option value="%">%</option>
+            <option value="KB">KB</option>
+            <option value="bytes">bytes</option>
+            <option value="ms">ms</option>
+            <option value="seconds">seconds</option>
+          </select>
+        </label>
+        <ClientPicker value={value.client_id} onChange={clientId => set("client_id", clientId)} />
         <fieldset className="rounded-xl border border-slate-200 p-3">
           <legend className={labelClass}>Visible to roles</legend>
           <div className="grid grid-cols-2 gap-2 mt-2">

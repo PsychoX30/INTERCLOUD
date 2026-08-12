@@ -129,7 +129,9 @@ async def downsample_raw_to_hourly(db, before: datetime | None = None) -> dict:
         graph_id = doc["graph_id"]
         hour = doc["at"].replace(minute=0, second=0, microsecond=0)
         key = f"{graph_id}_{hour.isoformat()}"
-        groups[key].append(doc["value"])
+        value = doc.get("value")
+        if isinstance(value, (int, float)):
+            groups[key].append(float(value))
 
     raw_processed = 0
     hourly_inserted = 0

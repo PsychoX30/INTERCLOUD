@@ -1,8 +1,4 @@
-"""Reporting exports for graph monitoring data (PDF + XLSX).
-
-Reuses the existing weasyprint (PDF) and openpyxl (XLSX) toolchain
-already used by documents.py / transactions.py.
-"""
+"""Reporting exports for graph monitoring data (PDF only)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -10,73 +6,6 @@ from io import BytesIO
 from html import escape
 
 from fastapi.responses import StreamingResponse
-
-
-# ---------------------------------------------------------------------------
-# XLSX export
-# ---------------------------------------------------------------------------
-def _excel_dt(dt):
-    if dt is None:
-        return None
-    try:
-        from datetime import datetime as _dt
-        if isinstance(dt, _dt):
-            return dt.replace(tzinfo=None)
-        parsed = _dt.fromisoformat(str(dt).replace("Z", "+00:00"))
-        return parsed.replace(tzinfo=None)
-    except Exception:
-        return None
-
-
-def _graph_export_xlsx_bytes(graph: dict, rows: list[dict]) -> bytes:
-    """Build an XLSX workbook for a graph's time series. Returns bytes."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
-
-    thin = Side(style="thin", color="FFD8DEE9")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    head_font = Font(bold=True, color="FFFFFFFF")
-    head_fill = PatternFill("solid", fgColor="FF0A2350")
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Graph Data"
-
-    # Header / metadata
-    ws.append(["Graph", graph.get("name", "")])
-    ws.append(["Target", graph.get("target", "")])
-    ws.append(["Type", graph.get("type", "")])
-    ws.append(["Unit", graph.get("unit") or ""])
-    ws.append(["Exported", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")])
-    ws.append([])
-
-    headers = ["Timestamp", "Value", "Min", "Max"]
-    ws.append(headers)
-    for c in range(1, len(headers) + 1):
-        cell = ws.cell(row=7, column=c)
-        cell.font = head_font
-        cell.fill = head_fill
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = border
-    ws.freeze_panes = "A8"
-
-    for row in rows:
-        ws.append([
-            _excel_dt(row.get("at")),
-            row.get("value"),
-            row.get("min"),
-            row.get("max"),
-        ])
-
-    for col in range(1, 5):
-        letter = get_column_letter(col)
-        ws.column_dimensions[letter].width = 24
-
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -139,21 +68,15 @@ def _graph_export_pdf_bytes(graph: dict, rows: list[dict]) -> bytes:
 # Public helpers for routes
 # ---------------------------------------------------------------------------
 def graph_export_response(graph: dict, rows: list[dict], fmt: str):
-    """Return a StreamingResponse for the given graph data in fmt (pdf|xlsx)."""
-    if fmt == "pdf":
-        data = _graph_export_pdf_bytes(graph, rows)
-        media = "application/pdf"
-        ext = "pdf"
-    else:
-        data = _graph_export_xlsx_bytes(graph, rows)
-        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ext = "xlsx"
-
+    """Return a StreamingResponse for the given graph data as PDF."""
+    if fmt != "pdf":
+        raise ValueError("Only PDF export is supported for monitoring graphs")
+    data = _graph_export_pdf_bytes(graph, rows)
     safe_name = "".join(c for c in (graph.get("name") or "graph") if c.isalnum() or c in "-_ ").strip().replace(" ", "-")
-    filename = f"{safe_name or 'graph'}.{ext}"
+    filename = f"{safe_name or 'graph'}.pdf"
 
     return StreamingResponse(
         BytesIO(data),
-        media_type=media,
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
