@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Edit, Loader2, Map, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search } from "lucide-react";
+import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -39,7 +39,7 @@ const AdminMonitoring = () => {
       <div className="flex items-center gap-2 mb-4 border-b border-slate-200 overflow-x-auto">
         <TabBtn active={tab === "ping"} onClick={() => setTab("ping")} icon={Activity} testid="tab-ping">Ping Checks</TabBtn>
         <TabBtn active={tab === "graphs"} onClick={() => setTab("graphs")} icon={BarChart3} testid="tab-graphs">SNMP Graphs</TabBtn>
-        <TabBtn active={tab === "map"} onClick={() => setTab("map")} icon={Map} testid="tab-map">Network Map</TabBtn>
+        <TabBtn active={tab === "map"} onClick={() => setTab("map")} icon={MapIcon} testid="tab-map">Network Map</TabBtn>
       </div>
       {tab === "ping" && <PingTab isAdmin={isAdmin} />}
       {tab === "graphs" && <GraphsTab isAdmin={isAdmin} />}
