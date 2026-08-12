@@ -92,7 +92,6 @@ protobuf==5.29.6
 proxmoxer==2.3.0
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
-pysnmp-lextudio==6.4.0
 pycodestyle==2.14.0
 pycparser==3.0
 pydantic==2.13.4
