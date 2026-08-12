@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Edit, Loader2, Map, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Eye, EyeOff, Search } from "lucide-react";
+import { Activity, Edit, Loader2, Map, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
-import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
+import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
 import { api } from "../../../portal/api";
@@ -707,3 +707,5 @@ const NetworkMapTab = ({ isAdmin }) => {
     </div>
   );
 };
+
+export default AdminMonitoring;
