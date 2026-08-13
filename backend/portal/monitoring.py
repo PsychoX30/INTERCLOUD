@@ -62,7 +62,7 @@ def validate_target(host: str, *, approved_internal: Optional[Set[str]] = None) 
 # Probe execution
 # ---------------------------------------------------------------------------
 async def probe_target(db, *, target: str, check_id: str, owner: str,
-                       timeout: float = 2.0, ttl_seconds: int = 300):
+                       timeout: float = 2.0, ttl_seconds: int = 10):
     """Run one ping check if we hold the scheduler lease.
 
     Writes a ``monitoring_probes`` sample, updates ``monitoring_check_state``,

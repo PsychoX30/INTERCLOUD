@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search } from "lucide-react";
+import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search, ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -9,7 +9,7 @@ import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrima
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
 const PING_EMPTY = { name: "", target: "", enabled: true, interval_seconds: 300 };
-const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic_in", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 300, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
+const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic_in", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 60, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
 
 // ── Tab button ──────────────────────────────────────────────────
 const TabBtn = ({ active, onClick, icon: Icon, children, testid }) => (
@@ -23,6 +23,19 @@ const TabBtn = ({ active, onClick, icon: Icon, children, testid }) => (
     <Icon className="h-4 w-4" /> {children}
   </button>
 );
+
+
+
+const CopyId = ({ id }) => {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(id); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch (_) { /* clipboard unavailable */ }
+  };
+  return <button type="button" onClick={copy} className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-400 hover:text-[#0a2350]" data-testid="graph-id-copy" title="Copy graph ID">id: {id} {copied ? <Check className="h-3 w-3 text-green-600" /> : <Copy className="h-3 w-3" />}</button>;
+};
+
+const trafficBaseName = (g) => (g.display_name || g.name || "").replace(/\s*(in|out)\s*$/i, "").trim().toLowerCase();
 
 // ── Main wrapper ─────────────────────────────────────────────────
 const AdminMonitoring = () => {
@@ -58,6 +71,7 @@ const PingTab = ({ isAdmin }) => {
   const [editing, setEditing] = useState(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
 
   const loadChecks = useCallback(async () => {
     try { setError(""); const r = await api.get("/admin/monitoring/checks"); setChecks(r.data || []); }
@@ -90,7 +104,18 @@ const PingTab = ({ isAdmin }) => {
 
   const run = async (id) => {
     setBusyId(id);
-    try { setError(""); await api.post(`/admin/monitoring/checks/${id}/run`); await Promise.all([loadChecks(), loadHistory(id)]); }
+    try {
+      setError(""); setInfo("");
+      const r = await api.post(`/admin/monitoring/checks/${id}/run`);
+      // Backend returns { skipped: true, owner: "..." } if the scheduled sweep
+      // already holds the per-check lease; that is not a probe failure.
+      if (r.data && r.data.skipped) {
+        setInfo("Probe skipped — the scheduled sweep already holds the lease for this check. Try again in a moment.");
+      } else {
+        setInfo("Probe completed — history refreshed below.");
+      }
+      await Promise.all([loadChecks(), loadHistory(id)]);
+    }
     catch (e) { setError(e?.response?.data?.detail || "Probe failed"); }
     finally { setBusyId(""); }
   };
@@ -104,6 +129,7 @@ const PingTab = ({ isAdmin }) => {
         {isAdmin && <button className={btnPrimary} onClick={() => setEditing({ ...PING_EMPTY })} data-testid="monitoring-add"><Plus className="h-4 w-4" /> Add check</button>}
       </div>
       {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      {info && <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">{info}</div>}
       <Card className="overflow-hidden">
         {checks.length === 0 ? <EmptyState title="No checks" body={isAdmin ? "Add a public IP or hostname to begin polling." : "An admin has not configured any checks."} /> : (
           <div className="overflow-x-auto">
@@ -140,16 +166,22 @@ const PingTab = ({ isAdmin }) => {
 };
 
 const HistoryPanel = ({ history, onClose }) => {
+  const [expanded, setExpanded] = useState(true);
   const samples = [...(history.samples || [])].reverse().map(s => ({ ...s, label: s.at ? new Date(s.at).toLocaleTimeString() : "-" }));
   return (
-    <Card className="mt-5 p-5" data-testid="monitoring-history">
-      <div className="flex items-start justify-between gap-4 mb-4">
-        <div><h2 className="font-extrabold text-[#0a2350]">{history.check?.name} history</h2><p className="text-xs text-slate-500">Last probe: {stamp(history.state?.last_at)} · RTT: {history.state?.last_rtt_ms ?? "-"} ms</p></div>
-        <div className="flex items-center gap-2"><StatusBadge status={history.state?.status || "unknown"} /><button onClick={onClose}><X className="h-5 w-5" /></button></div>
+    <Foldable
+      title={`${history.check?.name || "Check"} history`}
+      subtitle={`Last probe: ${stamp(history.state?.last_at)} · RTT: ${history.state?.last_rtt_ms ?? "-"} ms`}
+      expanded={expanded}
+      onToggle={setExpanded}
+      badge={<StatusBadge status={history.state?.status || "unknown"} />}
+    >
+      <div className="flex justify-end mb-2">
+        <button onClick={onClose} aria-label="Close"><X className="h-5 w-5" /></button>
       </div>
       {samples.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><LineChart data={samples}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" minTickGap={24} /><YAxis unit="ms" /><Tooltip /><Line type="monotone" dataKey="rtt_ms" stroke="#0a2350" strokeWidth={2} connectNulls={false} /></LineChart></ResponsiveContainer></div> : <EmptyState title="No samples yet" body="Run the check or wait for its next scheduled interval." />}
       {(history.events || []).length > 0 && <div className="mt-5"><div className={labelClass}>Transitions</div><div className="mt-2 space-y-2">{history.events.map(ev => <div key={ev.id} className="rounded-lg bg-slate-50 px-3 py-2 text-xs"><span className="font-mono text-slate-500">{stamp(ev.at)}</span> · {ev.from || "unknown"} → <strong>{ev.to}</strong></div>)}</div></div>}
-    </Card>
+    </Foldable>
   );
 };
 
@@ -185,11 +217,13 @@ const GraphsTab = ({ isAdmin }) => {
   const [graphs, setGraphs] = useState(null);
   const [selectedId, setSelectedId] = useState("");
   const [graphData, setGraphData] = useState(null);
+  const [pairData, setPairData] = useState(null);
   const [editing, setEditing] = useState(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   const loadGraphs = useCallback(async () => {
     try { setError(""); const r = await api.get("/admin/monitoring/graphs"); setGraphs(r.data || []); }
@@ -198,17 +232,59 @@ const GraphsTab = ({ isAdmin }) => {
 
   useEffect(() => { loadGraphs(); }, [loadGraphs]);
 
-  const loadData = useCallback(async (id) => {
+  const loadData = useCallback(async (id, opts = {}) => {
     if (!id) return;
-    const f = from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const t = to || new Date().toISOString();
+    const f = opts.from || from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const t = opts.to || to || new Date().toISOString();
     try {
       setError("");
       const r = await api.get(`/admin/monitoring/graphs/${id}/data`, { params: { from: f, to: t, resolution: "auto" } });
       setSelectedId(id);
       setGraphData(r.data);
-    } catch (e) { setError(e?.response?.data?.detail || "Failed to load graph data"); }
+      return r.data;
+    } catch (e) { setError(e?.response?.data?.detail || "Failed to load graph data"); return null; }
   }, [from, to]);
+
+  const refreshData = useCallback(async () => {
+    if (!selectedId) return;
+    const data = await loadData(selectedId);
+    if (data && graphs) {
+      const g = graphs.find(x => x.id === selectedId);
+      const pair = g ? findTrafficPair(graphs, g) : null;
+      if (pair) {
+        const f = from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+        const t = to || new Date().toISOString();
+        try {
+          const pr = await api.get(`/admin/monitoring/graphs/${pair.id}/data`, { params: { from: f, to: t, resolution: "auto" } });
+          setPairData(pr.data);
+        } catch (e) { setPairData(null); }
+      } else {
+        setPairData(null);
+      }
+    }
+  }, [selectedId, graphs, from, to, loadData]);
+
+  // Auto-refresh the open graph panel periodically so traffic feels realtime.
+  useEffect(() => {
+    if (!autoRefresh || !selectedId) return undefined;
+    const timer = setInterval(() => { refreshData(); }, 30000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, selectedId, refreshData]);
+
+  // Load sibling pair data whenever a graph is selected for viewing.
+  useEffect(() => {
+    if (!selectedId || !graphs) { setPairData(null); return; }
+    const g = graphs.find(x => x.id === selectedId);
+    const pair = g ? findTrafficPair(graphs, g) : null;
+    if (!pair) { setPairData(null); return; }
+    const f = from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const t = to || new Date().toISOString();
+    let cancelled = false;
+    api.get(`/admin/monitoring/graphs/${pair.id}/data`, { params: { from: f, to: t, resolution: "auto" } })
+      .then(r => { if (!cancelled) setPairData(r.data); })
+      .catch(() => { if (!cancelled) setPairData(null); });
+    return () => { cancelled = true; };
+  }, [selectedId, graphs, from, to]);
 
   const save = async (e) => {
     e.preventDefault();
@@ -223,14 +299,19 @@ const GraphsTab = ({ isAdmin }) => {
 
   const remove = async (id) => {
     if (!window.confirm("Delete this graph?")) return;
-    try { await api.delete(`/admin/monitoring/graphs/${id}`); if (selectedId === id) { setSelectedId(""); setGraphData(null); } await loadGraphs(); }
+    try { await api.delete(`/admin/monitoring/graphs/${id}`); if (selectedId === id) { setSelectedId(""); setGraphData(null); setPairData(null); } await loadGraphs(); }
     catch (e) { setError(e?.response?.data?.detail || "Failed to delete"); }
   };
 
   const run = async (id) => {
     setBusyId(id);
-    try { setError(""); await api.post(`/admin/monitoring/graphs/${id}/run`); await loadGraphs(); }
-    catch (e) { setError(e?.response?.data?.detail || "Probe failed"); }
+    try {
+      setError("");
+      const r = await api.post(`/admin/monitoring/graphs/${id}/run`);
+      await loadGraphs();
+      if (id === selectedId) await refreshData();
+      if (r.data && r.data.baseline) setError("Probe OK — baseline counter captured. Next poll will show the rate.");
+    } catch (e) { setError(e?.response?.data?.detail || "Probe failed"); }
     finally { setBusyId(""); }
   };
 
@@ -243,8 +324,6 @@ const GraphsTab = ({ isAdmin }) => {
       const a = document.createElement("a"); a.href = url;
       a.download = `graph-${id}.${fmt}`; a.click(); window.URL.revokeObjectURL(url);
     } catch (e) {
-      // responseType "blob" makes axios wrap JSON error bodies in a Blob,
-      // so read it back as text before falling back to a generic message.
       let detail = "";
       const data = e?.response?.data;
       if (data && typeof data.text === "function") {
@@ -261,9 +340,12 @@ const GraphsTab = ({ isAdmin }) => {
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
         <button className={btnSecondary} onClick={loadGraphs}><RefreshCw className="h-4 w-4" /> Refresh</button>
         {isAdmin && <button className={btnPrimary} onClick={() => setEditing({ ...GRAPH_EMPTY })}><Plus className="h-4 w-4" /> Add graph</button>}
+        <label className="inline-flex items-center gap-2 text-sm text-slate-600 ml-auto">
+          <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} /> Auto-refresh (30s)
+        </label>
       </div>
       {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
@@ -272,12 +354,13 @@ const GraphsTab = ({ isAdmin }) => {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[11px] uppercase tracking-widest text-slate-500">
-                <tr><th className="px-4 py-3 text-left">Name</th><th className="px-4 py-3 text-left">Target</th><th className="px-4 py-3 text-left">Type</th><th className="px-4 py-3 text-left">Interval</th><th className="px-4 py-3 text-left">Client</th><th className="px-4 py-3 text-left">Visible to</th><th className="px-4 py-3 text-right">Actions</th></tr>
+                <tr><th className="px-4 py-3 text-left">Name</th><th className="px-4 py-3 text-left">Graph ID</th><th className="px-4 py-3 text-left">Target</th><th className="px-4 py-3 text-left">Type</th><th className="px-4 py-3 text-left">Interval</th><th className="px-4 py-3 text-left">Client</th><th className="px-4 py-3 text-left">Visible to</th><th className="px-4 py-3 text-right">Actions</th></tr>
               </thead>
               <tbody>
                 {graphs.map(g => (
                   <tr key={g.id} className="border-t border-slate-100">
                     <td className="px-4 py-3 font-semibold text-[#0a2350]">{g.display_name || g.name}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-500"><CopyButton text={g.id} label="copy" /> <span className="ml-1">{g.id.slice(0, 10)}…</span></td>
                     <td className="px-4 py-3 font-mono text-xs">{g.target}</td>
                     <td className="px-4 py-3"><StatusBadge status={g.type} /></td>
                     <td className="px-4 py-3">{g.interval_seconds}s</td>
@@ -300,7 +383,7 @@ const GraphsTab = ({ isAdmin }) => {
         )}
       </Card>
 
-      {graphData && <GraphDataPanel graphData={graphData} onClose={() => { setGraphData(null); setSelectedId(""); }} />}
+      {graphData && <GraphDataPanel graphData={graphData} pairData={pairData} graphs={graphs || []} onClose={() => { setGraphData(null); setPairData(null); setSelectedId(""); }} />}
       {editing && (
         <GraphForm
           value={editing}
@@ -314,16 +397,142 @@ const GraphsTab = ({ isAdmin }) => {
   );
 };
 
-const GraphDataPanel = ({ graphData, onClose }) => {
+const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
+  const [expanded, setExpanded] = useState(true);
+  const graph = (graphs || []).find(g => g.id === graphData.graph_id);
+  const isTraffic = graph && (graph.type === "snmp_traffic_in" || graph.type === "snmp_traffic_out");
+  const pair = isTraffic ? findTrafficPair(graphs || [], graph) : null;
+
   const samples = (graphData.data || []).map(s => ({ ...s, label: s.at ? new Date(s.at).toLocaleTimeString() : "-" }));
-  return (
-    <Card className="p-5 mt-5" data-testid="monitoring-graph-data">
-      <div className="flex items-start justify-between gap-4 mb-4">
-        <div><h2 className="font-extrabold text-[#0a2350]">Graph {graphData.graph_id}</h2><p className="text-xs text-slate-500">Resolution: {graphData.resolution} · Points: {samples.length}</p></div>
-        <button onClick={onClose}><X className="h-5 w-5" /></button>
+  const pairSamples = (pairData?.data || []).map(s => ({ ...s, label: s.at ? new Date(s.at).toLocaleTimeString() : "-" }));
+  const title = graph?.display_name || graph?.name || `Graph ${graphData.graph_id}`;
+
+  // Merge timelines for a single chart with IN and OUT series.
+  const merged = useMemo(() => {
+    if (!pairSamples.length) return samples;
+    const byLabel = new Map();
+    samples.forEach(s => byLabel.set(s.label, { label: s.label, in: s.value, out: undefined }));
+    pairSamples.forEach(s => {
+      if (byLabel.has(s.label)) byLabel.get(s.label).out = s.value;
+      else byLabel.set(s.label, { label: s.label, in: undefined, out: s.value });
+    });
+    return Array.from(byLabel.values());
+  }, [samples, pairSamples]);
+
+  const renderChart = () => {
+    if (isTraffic && pair) {
+      return merged.length ? (
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={merged}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="label" minTickGap={24} />
+              <YAxis />
+              <Tooltip />
+              <Line type="monotone" dataKey="in" name="IN (bps)" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
+              <Line type="monotone" dataKey="out" name="OUT (bps)" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ) : <EmptyState title="No data" body="No samples in range." />;
+    }
+    return samples.length ? (
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={samples}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="label" minTickGap={24} />
+            <YAxis />
+            <Tooltip />
+            <Line type="monotone" dataKey="value" stroke="#0a2350" strokeWidth={2} />
+          </LineChart>
+        </ResponsiveContainer>
       </div>
-      {samples.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><LineChart data={samples}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" minTickGap={24} /><YAxis /><Tooltip /><Line type="monotone" dataKey="value" stroke="#0a2350" strokeWidth={2} /></LineChart></ResponsiveContainer></div> : <EmptyState title="No data" body="No samples in range." />}
+    ) : <EmptyState title="No data" body="No samples in range." />;
+  };
+
+  const badge = (
+    <span className="inline-flex items-center gap-1 rounded-md bg-slate-200 px-2 py-0.5 text-[11px] font-mono text-slate-600">
+      id: {graphData.graph_id}
+      <CopyButton text={graphData.graph_id} label="" />
+    </span>
+  );
+
+  return (
+    <Foldable
+      title={isTraffic && pair ? `${title} — IN / OUT` : title}
+      subtitle={`Resolution: ${graphData.resolution} · Points: ${samples.length}${pair ? ` + ${pairSamples.length}` : ""}`}
+      expanded={expanded}
+      onToggle={setExpanded}
+      badge={badge}
+    >
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">Graph ID:</span>
+          <span className="font-mono text-xs text-slate-600">{graphData.graph_id}</span>
+          <CopyButton text={graphData.graph_id} label="copy id" />
+        </div>
+        <button onClick={onClose} aria-label="Close"><X className="h-5 w-5" /></button>
+      </div>
+      {renderChart()}
+      {isTraffic && pair && (
+        <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-green-600" /> IN</span>
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#f5b120]" /> OUT</span>
+          <span className="ml-auto">Combined from {graphData.graph_id} & {pair.id}</span>
+        </div>
+      )}
+    </Foldable>
+  );
+};
+
+// Helper: find the sibling IN/OUT traffic graph for the same target/interface.
+const findTrafficPair = (graphs, graph) => {
+  if (!graph || !graphs) return null;
+  const siblingType = graph.type === "snmp_traffic_in" ? "snmp_traffic_out" : "snmp_traffic_in";
+  // Prefer matching display_name / name as interface identifier.
+  const graphIf = (graph.display_name || graph.name || "").replace(/\s*(In|Out|IN|OUT)\b/i, "").trim().toLowerCase();
+  const graphTarget = (graph.target || "").trim().toLowerCase();
+  return graphs.find(g =>
+    g.id !== graph.id &&
+    g.type === siblingType &&
+    (g.target || "").trim().toLowerCase() === graphTarget &&
+    (g.display_name || g.name || "").replace(/\s*(In|Out|IN|OUT)\b/i, "").trim().toLowerCase() === graphIf
+  ) || null;
+};
+
+// Simple foldable panel wrapper.
+const Foldable = ({ title, subtitle, children, expanded: controlledExpanded, onToggle, badge }) => {
+  const [internal, setInternal] = useState(true);
+  const expanded = controlledExpanded !== undefined ? controlledExpanded : internal;
+  const setExpanded = onToggle || setInternal;
+  return (
+    <Card className="mt-5 overflow-hidden" data-testid="foldable-panel">
+      <button type="button" onClick={() => setExpanded(!expanded)} className="w-full px-5 py-4 flex items-center justify-between bg-slate-50 hover:bg-slate-100 transition-colors">
+        <div className="text-left">
+          <h2 className="font-extrabold text-[#0a2350]">{title}</h2>
+          {subtitle && <p className="text-xs text-slate-500">{subtitle}</p>}
+        </div>
+        <div className="flex items-center gap-2">
+          {badge}
+          {expanded ? <ChevronDown className="h-5 w-5 text-slate-500" /> : <ChevronRight className="h-5 w-5 text-slate-500" />}
+        </div>
+      </button>
+      {expanded && <div className="p-5">{children}</div>}
     </Card>
+  );
+};
+
+const CopyButton = ({ text, label = "Copy" }) => {
+  const [copied, setCopied] = useState(false);
+  const handle = () => {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  };
+  return (
+    <button type="button" onClick={handle} className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-[#0a2350]" title={label}>
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />} {copied ? "Copied" : label}
+    </button>
   );
 };
 
