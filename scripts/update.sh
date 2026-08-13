@@ -24,6 +24,10 @@
 #
 # Exit code:
 #   0 = success/noop, 2 = backup failed, 3 = dirty tree, 4 = no git remote.
+#   5 = build/deps complete but Supervisor restart was skipped (non-root user
+#       cannot access the root-owned socket) — the source is deployed but the
+#       backend is still running the previous process.  Restart it manually as
+#       root/support before declaring the deploy complete.
 #   On failure NOTHING has been dropped: the backup archive is written before
 #   any git/rebuild step.
 #
@@ -69,8 +73,28 @@ post_pull() {
     cd "$APP_DIR"
 
     log "Restarting backend via supervisor"
-    if command -v supervisorctl >/dev/null 2>&1; then
-        supervisorctl restart intercloud-backend || sudo supervisorctl restart intercloud-backend || true
+    if ! command -v supervisorctl >/dev/null 2>&1; then
+        echo "!! supervisorctl not found — backend was not restarted" >&2
+        echo "STATUS=restart-required OLD=$OLD_SHA NEW=$NEW_SHA BACKUP=$ARCHIVE" >&2
+        return 5
+    fi
+
+    # The production service user cannot access the root-owned Supervisor
+    # socket and must not be prompted for an interactive sudo password here.
+    # Run the restart directly only when this script is already root; otherwise
+    # fail visibly so the caller can restart it through the privileged deploy
+    # step instead of silently serving the previous backend process.
+    if [[ "${EUID}" -eq 0 ]]; then
+        if ! supervisorctl restart intercloud-backend; then
+            echo "!! Supervisor restart failed — backend may still serve the old code" >&2
+            echo "STATUS=restart-required OLD=$OLD_SHA NEW=$NEW_SHA BACKUP=$ARCHIVE" >&2
+            return 5
+        fi
+    else
+        echo "!! Cannot restart Supervisor as $(id -un): root-owned Supervisor socket" >&2
+        echo "!! Restart intercloud-backend as root/support before declaring deploy complete" >&2
+        echo "STATUS=restart-required OLD=$OLD_SHA NEW=$NEW_SHA BACKUP=$ARCHIVE" >&2
+        return 5
     fi
 
     # ---- Patch nginx for WebSocket (noVNC VM console) - idempotent ----------
