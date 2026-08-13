@@ -66,6 +66,15 @@ const ClientMRTG = () => {
 
   const fmt = (v) => (isBps ? fmtBps(v) : (v == null ? "-" : `${Number(v).toFixed(2)} ${unit}`.trim()));
 
+  // Y-axis auto-scales to the peak value within the selected range (0 → peak).
+  const yDomain = useMemo(() => {
+    const vals = samples.map(s => s.value).filter(v => v != null && Number.isFinite(Number(v))).map(Number);
+    if (!vals.length) return [0, "auto"];
+    const peak = Math.max(...vals);
+    if (peak <= 0) return [0, "auto"];
+    return [0, Math.ceil(peak * 1.1)];
+  }, [samples]);
+
   if (!graphs) return <Loading />;
   if (graphs.length === 0) return (
     <div>
@@ -140,7 +149,7 @@ const ClientMRTG = () => {
                 <LineChart data={samples}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="label" minTickGap={40} tick={{ fontSize: 10 }} />
-                  <YAxis tickFormatter={(v) => (isBps ? fmtBps(v).replace(/\s.*/, "") : Number(v).toFixed(0))} tick={{ fontSize: 10 }} />
+                  <YAxis domain={yDomain} allowDataOverflow tickFormatter={(v) => (isBps ? fmtBps(v).replace(/\s.*/, "") : Number(v).toFixed(0))} tick={{ fontSize: 10 }} />
                   <Tooltip formatter={(v) => [fmt(v), unit || ""]} />
                   <Line type="monotone" dataKey="value" name={unit || "value"} stroke="#0a2350" strokeWidth={2} dot={false} connectNulls={false} />
                 </LineChart>

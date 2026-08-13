@@ -175,21 +175,33 @@ _IF_OUT_OID = "1.3.6.1.2.1.2.2.1.16"         # ifOutOctets  (32-bit fallback)
 
 
 # System scalar sensors (not per-interface).
+# Use HOST-RESOURCES-MIB (HR-MIB) OIDs which are standard and supported by
+# MikroTik RouterOS, not UCD-SNMP-MIB (Linux-only net-snmp) OIDs.
 _SYSTEM_SENSORS = {
     "cpu_load": {
-        "oid": "1.3.6.1.4.1.2021.10.1.3.1",  # UCD-SNMP-MIB laLoad (1-min)
-        "label": "CPU Load (1 min)",
-        "unit": "load",
+        # hrProcessorLoad (percentage per core). We average across all cores
+        # in the frontend. Multiple instances returned; use first available.
+        "oid": "1.3.6.1.2.1.25.3.3.1.2",  # HR-MIB hrProcessorLoad
+        "label": "CPU Load (per core, %)",
+        "unit": "%",
         "kind": "snmp_cpu",
     },
     "memory_used": {
-        "oid": "1.3.6.1.4.1.2021.4.6.0",     # UCD-SNMP-MIB memTotalReal (KB)
+        # hrStorageUsed for main memory (index 65536). Memory % computed as
+        # used/total * 100. Total is hrStorageSize at same index.
+        "oid": "1.3.6.1.2.1.25.2.3.1.6.65536",  # HR-MIB hrStorageUsed (KB)
         "label": "Memory Used",
         "unit": "KB",
         "kind": "snmp_memory",
     },
+    "memory_total": {
+        "oid": "1.3.6.1.2.1.25.2.3.1.5.65536",  # HR-MIB hrStorageSize (KB)
+        "label": "Memory Total",
+        "unit": "KB",
+        "kind": "snmp_memory",
+    },
     "system_uptime": {
-        "oid": "1.3.6.1.2.1.1.3.0",          # sysUpTime
+        "oid": "1.3.6.1.2.1.1.3.0",          # sysUpTime (standard SNMPv2-MIB)
         "label": "System Uptime",
         "unit": "seconds",
         "kind": "snmp_uptime",
@@ -397,10 +409,17 @@ async def discover_snmp_sensors(target: str, community: str = "public",
         try:
             values = await _walk_oid(target, base["oid"], community, port, version,
                                      user, auth_protocol, auth_key, priv_protocol, priv_key, timeout)
+            # A walk base such as hrProcessorLoad returns one row per core.
+            # Suffix the label with the instance index so the operator can tell
+            # them apart in the discovery list instead of seeing N identical rows.
+            multi = len(values) > 1
             for oid, value in values.items():
+                label = base["label"]
+                if multi:
+                    label = f"{label} #{oid.rsplit('.', 1)[-1]}"
                 sensors.append({
                     "oid": oid,
-                    "label": base["label"],
+                    "label": label,
                     "unit": base["unit"],
                     "kind": base["kind"],
                     "value": value,

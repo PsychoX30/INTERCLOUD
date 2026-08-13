@@ -45,6 +45,13 @@ def test_valid_visible_roles_contains_expected():
     assert {"admin", "support", "owner", "sales", "finance", "creative", "ticket_only"} <= mg.VALID_VISIBLE_ROLES
 
 
+def test_system_sensor_oids_are_hr_mib_compatible():
+    """Discovery must use OIDs exposed by MikroTik, not Linux UCD-SNMP only OIDs."""
+    assert mg._SYSTEM_SENSORS["cpu_load"]["oid"] == "1.3.6.1.2.1.25.3.3.1.2"
+    assert mg._SYSTEM_SENSORS["memory_used"]["oid"] == "1.3.6.1.2.1.25.2.3.1.6.65536"
+    assert mg._SYSTEM_SENSORS["system_uptime"]["oid"] == "1.3.6.1.2.1.1.3.0"
+
+
 # ---------------------------------------------------------------------------
 # _clean helpers
 # ---------------------------------------------------------------------------

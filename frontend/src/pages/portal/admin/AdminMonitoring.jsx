@@ -533,6 +533,7 @@ const GraphsTab = ({ isAdmin }) => {
 
 const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
   const [expanded, setExpanded] = useState(true);
+  const [trafficView, setTrafficView] = useState("both");
   const graph = (graphs || []).find(g => g.id === graphData.graph_id);
   const isTraffic = graph && (graph.type === "snmp_traffic_in" || graph.type === "snmp_traffic_out");
   const pair = isTraffic ? findTrafficPair(graphs || [], graph) : null;
@@ -558,30 +559,50 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
   const unit = graph?.unit || (isTraffic ? "bps" : "");
   const stats = useMemo(() => isTraffic && pair ? trafficStats(merged) : null, [isTraffic, pair, merged]);
 
+  // Y-axis auto-scales to the peak value within the selected range (0 → peak),
+  // matching Cacti/LibreNMS/PRTG behaviour. A little headroom keeps the peak
+  // line off the top edge.
+  const yDomainForValues = (vals) => {
+    const nums = vals.filter(v => v != null && Number.isFinite(Number(v))).map(Number);
+    if (!nums.length) return [0, "auto"];
+    const peak = Math.max(...nums);
+    if (peak <= 0) return [0, "auto"];
+    return [0, Math.ceil(peak * 1.1)];
+  };
+
   const renderChart = () => {
     if (isTraffic && pair) {
+      // Toggle IN / OUT / BOTH by hiding series; Y-axis scales to whatever is shown.
+      const showIn = trafficView !== "out";
+      const showOut = trafficView !== "in";
+      const visibleVals = merged.flatMap(row => [
+        showIn ? row.in : null,
+        showOut ? row.out : null,
+      ]);
+      const yDomain = yDomainForValues(visibleVals);
       return merged.length ? (
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={merged}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="label" minTickGap={24} />
-              <YAxis tickFormatter={yTickFormatter("bps")} />
+              <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} />
               <Tooltip formatter={tooltipFormatter("bps")} />
-              <Line type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
-              <Line type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
+              <Line hide={!showIn} type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
+              <Line hide={!showOut} type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
       ) : <EmptyState title="No data" body="No samples in range." />;
     }
+    const yDomain = yDomainForValues(samples.map(s => s.value));
     return samples.length ? (
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={samples}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="label" minTickGap={24} />
-            <YAxis tickFormatter={yTickFormatter(unit)} />
+            <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} />
             <Tooltip formatter={tooltipFormatter(unit)} />
             <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} />
           </LineChart>
@@ -613,6 +634,15 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
         </div>
         <button onClick={onClose} aria-label="Close"><X className="h-5 w-5" /></button>
       </div>
+      {isTraffic && pair && (
+        <div className="mb-3 flex items-center gap-1 rounded-lg bg-slate-100 p-1 text-xs w-fit" data-testid="traffic-view-toggle">
+          {["in", "out", "both"].map(view => (
+            <button key={view} type="button" onClick={() => setTrafficView(view)} className={`rounded-md px-3 py-1.5 font-semibold ${trafficView === view ? "bg-white text-[#0a2350] shadow-sm" : "text-slate-500 hover:text-[#0a2350]"}`} data-testid={`traffic-view-${view}`}>
+              {view.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      )}
       {renderChart()}
       {isTraffic && pair && stats && (
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
