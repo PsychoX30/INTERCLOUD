@@ -408,16 +408,18 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
   const title = graph?.display_name || graph?.name || `Graph ${graphData.graph_id}`;
 
   // Merge timelines for a single chart with IN and OUT series.
+  // `graphData` is whichever direction the user opened; `pairData` is its sibling.
+  const primaryIsIn = graph?.type === "snmp_traffic_in";
   const merged = useMemo(() => {
     if (!pairSamples.length) return samples;
     const byLabel = new Map();
-    samples.forEach(s => byLabel.set(s.label, { label: s.label, in: s.value, out: undefined }));
+    samples.forEach(s => byLabel.set(s.label, { label: s.label, in: primaryIsIn ? s.value : undefined, out: primaryIsIn ? undefined : s.value }));
     pairSamples.forEach(s => {
-      if (byLabel.has(s.label)) byLabel.get(s.label).out = s.value;
-      else byLabel.set(s.label, { label: s.label, in: undefined, out: s.value });
+      if (byLabel.has(s.label)) { if (primaryIsIn) byLabel.get(s.label).out = s.value; else byLabel.get(s.label).in = s.value; }
+      else byLabel.set(s.label, { label: s.label, in: primaryIsIn ? undefined : s.value, out: primaryIsIn ? s.value : undefined });
     });
     return Array.from(byLabel.values());
-  }, [samples, pairSamples]);
+  }, [samples, pairSamples, primaryIsIn]);
 
   const renderChart = () => {
     if (isTraffic && pair) {
