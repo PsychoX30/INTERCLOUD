@@ -96,6 +96,8 @@ async def probe_target(db, *, target: str, check_id: str, owner: str,
             "at": datetime.now(timezone.utc),
             "up": up,
             "rtt_ms": summary.get("avg_ms"),
+            "rtt_min_ms": summary.get("min_ms"),
+            "rtt_max_ms": summary.get("max_ms"),
             "loss": summary.get("loss_percent"),
         }
         await db.monitoring_probes.insert_one(sample)

@@ -91,7 +91,7 @@ async def test_ping_up_writes_sample_and_state_no_event(monkeypatch):
     async def fake_ping(target, **kw):
         return {"tool": "ping", "summary": {
             "count": 3, "received": 3, "lost": 0,
-            "loss_percent": 0.0, "avg_ms": 3.2,
+            "loss_percent": 0.0, "min_ms": 2.8, "avg_ms": 3.2, "max_ms": 3.7,
         }, "results": []}
     monkeypatch.setattr(monitoring, "run_ping", fake_ping)
 
@@ -103,6 +103,8 @@ async def test_ping_up_writes_sample_and_state_no_event(monkeypatch):
     assert len(db.monitoring_probes.rows) == 1
     assert db.monitoring_probes.rows[0]["check_id"] == "c1"
     assert db.monitoring_probes.rows[0]["rtt_ms"] == 3.2
+    assert db.monitoring_probes.rows[0]["rtt_min_ms"] == 2.8
+    assert db.monitoring_probes.rows[0]["rtt_max_ms"] == 3.7
     assert db.monitoring_probes.rows[0]["loss"] == 0.0
     # BSON Date, not ISO string
     assert isinstance(db.monitoring_probes.rows[0]["at"], datetime)

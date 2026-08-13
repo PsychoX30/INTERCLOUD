@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search, ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
+import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search, ChevronDown, ChevronRight, Copy, Check, ChevronUp } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -10,6 +10,37 @@ import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrima
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
 const PING_EMPTY = { name: "", target: "", enabled: true, interval_seconds: 300 };
 const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic_in", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 60, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
+
+// ── Adaptive unit formatters ───────────────────────────────────
+// Auto-scale bps → kbps → Mbps → Gbps → Tbps (1000-based prefix)
+const fmtBps = (v) => {
+  if (v == null || isNaN(v)) return "-";
+  const units = ["bps", "kbps", "Mbps", "Gbps", "Tbps"];
+  const sign = v < 0 ? "-" : "";
+  let abs = Math.abs(v);
+  let i = 0;
+  while (abs >= 1000 && i < units.length - 1) { abs /= 1000; i++; }
+  return `${sign}${abs.toFixed(i > 0 ? 2 : 0)} ${units[i]}`;
+};
+
+// Generic value formatter for non-traffic metrics (CPU %, memory, ms, etc.)
+const fmtValue = (v, unit) => {
+  if (v == null || isNaN(v)) return "-";
+  const u = (unit || "").toLowerCase();
+  if (u === "bps") return fmtBps(v);
+  if (u === "%") return `${Number(v).toFixed(1)}%`;
+  if (u === "ms") return `${Number(v).toFixed(2)} ms`;
+  if (u === "kb" || u === "mb" || u === "gb") return `${Number(v).toFixed(2)} ${u.toUpperCase()}`;
+  if (u === "bytes") return fmtBps(v);  // bytes per second equivalent
+  return `${Number(v).toFixed(2)} ${unit || ""}`.trim();
+};
+
+// Pick the right formatter based on graph type/unit
+const valueFormatter = (graph) => {
+  if (!graph) return fmtValue;
+  if (graph.type === "snmp_traffic_in" || graph.type === "snmp_traffic_out") return fmtBps;
+  return (v) => fmtValue(v, graph.unit);
+};
 
 // ── Tab button ──────────────────────────────────────────────────
 const TabBtn = ({ active, onClick, icon: Icon, children, testid }) => (
@@ -36,6 +67,43 @@ const CopyId = ({ id }) => {
 };
 
 const trafficBaseName = (g) => (g.display_name || g.name || "").replace(/\s*(in|out)\s*$/i, "").trim().toLowerCase();
+
+// Recharts Y-axis tick formatter: compact form without unit suffix repetition.
+const yTickFormatter = (unit) => (v) => {
+  if (v == null || Number.isNaN(v)) return "";
+  const u = (unit || "").toLowerCase();
+  if (u === "bps") return fmtBps(v).replace(/\s*(bps|kbps|Mbps|Gbps|Tbps)$/i, (m) => m.trim().replace(/^k?bps$/i, "").trim());
+  if (u === "%") return `${Math.round(Number(v))}%`;
+  if (u === "ms") return `${Math.round(Number(v))}`;
+  return Number(v).toFixed(0);
+};
+
+// Recharts Tooltip formatter: [formattedValue, seriesLabel]
+const tooltipFormatter = (unit) => (value) => [fmtValue(value, unit), ""];
+
+// Compute aggregate stats from a merged IN/OUT traffic series.
+// Returns peak and average rates in bps; volume (bytes) is omitted because
+// summing bps values without per-sample Δt is meaningless.
+const trafficStats = (merged) => {
+  const nums = (arr) => arr.filter(v => v != null && !Number.isNaN(v)).map(Number);
+  const inVals = nums(merged.map(d => d.in));
+  const outVals = nums(merged.map(d => d.out));
+  const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+  const max = (arr) => (arr.length ? Math.max(...arr) : null);
+  return {
+    maxIn: max(inVals),
+    maxOut: max(outVals),
+    avgIn: avg(inVals),
+    avgOut: avg(outVals),
+  };
+};
+
+const StatCard = ({ label, value, color }) => (
+  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-center">
+    <div className={`text-sm font-bold ${color || "text-[#0a2350]"}`}>{value}</div>
+    <div className="text-[10px] uppercase tracking-wider text-slate-500">{label}</div>
+  </div>
+);
 
 // ── Main wrapper ─────────────────────────────────────────────────
 const AdminMonitoring = () => {
@@ -168,6 +236,22 @@ const PingTab = ({ isAdmin }) => {
 const HistoryPanel = ({ history, onClose }) => {
   const [expanded, setExpanded] = useState(true);
   const samples = [...(history.samples || [])].reverse().map(s => ({ ...s, label: s.at ? new Date(s.at).toLocaleTimeString() : "-" }));
+
+  // Latency + loss summary over the returned window (nulls excluded).
+  const pingStats = useMemo(() => {
+    const rtts = samples.map(s => s.rtt_ms).filter(v => v != null && !Number.isNaN(v)).map(Number);
+    const losses = samples.map(s => s.loss).filter(v => v != null && !Number.isNaN(v)).map(Number);
+    const maxes = samples.map(s => s.rtt_max_ms).filter(v => v != null && !Number.isNaN(v)).map(Number);
+    const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+    return {
+      avgRtt: avg(rtts),
+      maxRtt: maxes.length ? Math.max(...maxes) : (rtts.length ? Math.max(...rtts) : null),
+      avgLoss: avg(losses),
+      up: samples.length ? samples.filter(s => s.up).length : 0,
+      total: samples.length,
+    };
+  }, [samples]);
+
   return (
     <Foldable
       title={`${history.check?.name || "Check"} history`}
@@ -179,7 +263,15 @@ const HistoryPanel = ({ history, onClose }) => {
       <div className="flex justify-end mb-2">
         <button onClick={onClose} aria-label="Close"><X className="h-5 w-5" /></button>
       </div>
-      {samples.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><LineChart data={samples}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" minTickGap={24} /><YAxis unit="ms" /><Tooltip /><Line type="monotone" dataKey="rtt_ms" stroke="#0a2350" strokeWidth={2} connectNulls={false} /></LineChart></ResponsiveContainer></div> : <EmptyState title="No samples yet" body="Run the check or wait for its next scheduled interval." />}
+      {samples.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><LineChart data={samples}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="label" minTickGap={24} /><YAxis tickFormatter={yTickFormatter("ms")} /><Tooltip formatter={tooltipFormatter("ms")} /><Line type="monotone" dataKey="rtt_max_ms" name="Max" stroke="#f5b120" strokeWidth={1} dot={false} connectNulls={false} /><Line type="monotone" dataKey="rtt_ms" name="Avg" stroke="#0a2350" strokeWidth={2} connectNulls={false} /></LineChart></ResponsiveContainer></div> : <EmptyState title="No samples yet" body="Run the check or wait for its next scheduled interval." />}
+      {samples.length > 0 && (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatCard label="Avg RTT" value={fmtValue(pingStats.avgRtt, "ms")} />
+          <StatCard label="Max RTT" value={fmtValue(pingStats.maxRtt, "ms")} color="text-amber-500" />
+          <StatCard label="Avg Loss" value={pingStats.avgLoss == null ? "-" : `${pingStats.avgLoss.toFixed(1)}%`} color={pingStats.avgLoss > 0 ? "text-red-600" : "text-green-600"} />
+          <StatCard label="Up / Total" value={`${pingStats.up} / ${pingStats.total}`} color={pingStats.up === pingStats.total ? "text-green-600" : "text-red-600"} />
+        </div>
+      )}
       {(history.events || []).length > 0 && <div className="mt-5"><div className={labelClass}>Transitions</div><div className="mt-2 space-y-2">{history.events.map(ev => <div key={ev.id} className="rounded-lg bg-slate-50 px-3 py-2 text-xs"><span className="font-mono text-slate-500">{stamp(ev.at)}</span> · {ev.from || "unknown"} → <strong>{ev.to}</strong></div>)}</div></div>}
     </Foldable>
   );
@@ -215,7 +307,7 @@ const GRAPH_TYPES = [
 
 const GraphsTab = ({ isAdmin }) => {
   const [graphs, setGraphs] = useState(null);
-  const [selectedId, setSelectedId] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
   const [graphData, setGraphData] = useState(null);
   const [pairData, setPairData] = useState(null);
   const [editing, setEditing] = useState(null);
@@ -239,17 +331,17 @@ const GraphsTab = ({ isAdmin }) => {
     try {
       setError("");
       const r = await api.get(`/admin/monitoring/graphs/${id}/data`, { params: { from: f, to: t, resolution: "auto" } });
-      setSelectedId(id);
+      setExpandedId(id);
       setGraphData(r.data);
       return r.data;
     } catch (e) { setError(e?.response?.data?.detail || "Failed to load graph data"); return null; }
   }, [from, to]);
 
   const refreshData = useCallback(async () => {
-    if (!selectedId) return;
-    const data = await loadData(selectedId);
+    if (!expandedId) return;
+    const data = await loadData(expandedId);
     if (data && graphs) {
-      const g = graphs.find(x => x.id === selectedId);
+      const g = graphs.find(x => x.id === expandedId);
       const pair = g ? findTrafficPair(graphs, g) : null;
       if (pair) {
         const f = from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -262,19 +354,19 @@ const GraphsTab = ({ isAdmin }) => {
         setPairData(null);
       }
     }
-  }, [selectedId, graphs, from, to, loadData]);
+  }, [expandedId, graphs, from, to, loadData]);
 
   // Auto-refresh the open graph panel periodically so traffic feels realtime.
   useEffect(() => {
-    if (!autoRefresh || !selectedId) return undefined;
+    if (!autoRefresh || !expandedId) return undefined;
     const timer = setInterval(() => { refreshData(); }, 30000);
     return () => clearInterval(timer);
-  }, [autoRefresh, selectedId, refreshData]);
+  }, [autoRefresh, expandedId, refreshData]);
 
   // Load sibling pair data whenever a graph is selected for viewing.
   useEffect(() => {
-    if (!selectedId || !graphs) { setPairData(null); return; }
-    const g = graphs.find(x => x.id === selectedId);
+    if (!expandedId || !graphs) { setPairData(null); return; }
+    const g = graphs.find(x => x.id === expandedId);
     const pair = g ? findTrafficPair(graphs, g) : null;
     if (!pair) { setPairData(null); return; }
     const f = from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -284,7 +376,7 @@ const GraphsTab = ({ isAdmin }) => {
       .then(r => { if (!cancelled) setPairData(r.data); })
       .catch(() => { if (!cancelled) setPairData(null); });
     return () => { cancelled = true; };
-  }, [selectedId, graphs, from, to]);
+  }, [expandedId, graphs, from, to]);
 
   const save = async (e) => {
     e.preventDefault();
@@ -299,7 +391,7 @@ const GraphsTab = ({ isAdmin }) => {
 
   const remove = async (id) => {
     if (!window.confirm("Delete this graph?")) return;
-    try { await api.delete(`/admin/monitoring/graphs/${id}`); if (selectedId === id) { setSelectedId(""); setGraphData(null); setPairData(null); } await loadGraphs(); }
+    try { await api.delete(`/admin/monitoring/graphs/${id}`); if (expandedId === id) { setExpandedId(null); setGraphData(null); setPairData(null); } await loadGraphs(); }
     catch (e) { setError(e?.response?.data?.detail || "Failed to delete"); }
   };
 
@@ -309,7 +401,7 @@ const GraphsTab = ({ isAdmin }) => {
       setError("");
       const r = await api.post(`/admin/monitoring/graphs/${id}/run`);
       await loadGraphs();
-      if (id === selectedId) await refreshData();
+      if (id === expandedId) await refreshData();
       if (r.data && r.data.baseline) setError("Probe OK — baseline counter captured. Next poll will show the rate.");
     } catch (e) { setError(e?.response?.data?.detail || "Probe failed"); }
     finally { setBusyId(""); }
@@ -358,32 +450,51 @@ const GraphsTab = ({ isAdmin }) => {
               </thead>
               <tbody>
                 {graphs.map(g => (
-                  <tr key={g.id} className="border-t border-slate-100">
-                    <td className="px-4 py-3 font-semibold text-[#0a2350]">{g.display_name || g.name}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-500"><CopyButton text={g.id} label="copy" /> <span className="ml-1">{g.id.slice(0, 10)}…</span></td>
-                    <td className="px-4 py-3 font-mono text-xs">{g.target}</td>
-                    <td className="px-4 py-3"><StatusBadge status={g.type} /></td>
-                    <td className="px-4 py-3">{g.interval_seconds}s</td>
-                    <td className="px-4 py-3">{g.client_id ? <span className="text-green-700">assigned</span> : <span className="text-slate-400">internal</span>}</td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{(g.visible_roles || []).join(", ")}</td>
-                    <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                      <button className={btnSecondary} onClick={() => loadData(g.id)}><BarChart3 className="h-4 w-4" /> View</button>
-                      {isAdmin && (<>
-                        <button className={btnSecondary} onClick={() => run(g.id)} disabled={busyId === g.id}>{busyId === g.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Probe</button>
-                        <button className={btnSecondary} onClick={() => exportGraph(g.id, "pdf")}><Download className="h-4 w-4" /> PDF</button>
-                        <button className={btnSecondary} onClick={() => setEditing({ ...g })}><Edit className="h-4 w-4" /></button>
-                        <button className={btnDanger} onClick={() => remove(g.id)}><Trash2 className="h-4 w-4" /></button>
-                      </>)}
-                    </div></td>
-                  </tr>
+                  <React.Fragment key={g.id}>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-4 py-3 font-semibold text-[#0a2350]">{g.display_name || g.name}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-500"><CopyButton text={g.id} label="copy" /> <span className="ml-1">{g.id.slice(0, 10)}…</span></td>
+                      <td className="px-4 py-3 font-mono text-xs">{g.target}</td>
+                      <td className="px-4 py-3"><StatusBadge status={g.type} /></td>
+                      <td className="px-4 py-3">{g.interval_seconds}s</td>
+                      <td className="px-4 py-3">{g.client_id ? <span className="text-green-700">assigned</span> : <span className="text-slate-400">internal</span>}</td>
+                      <td className="px-4 py-3 text-xs text-slate-500">{(g.visible_roles || []).join(", ")}</td>
+                      <td className="px-4 py-3"><div className="flex justify-end gap-2">
+                        <button className={btnSecondary} onClick={() => {
+                          if (expandedId === g.id) { setExpandedId(null); setGraphData(null); setPairData(null); }
+                          else { setExpandedId(g.id); loadData(g.id); }
+                        }}>
+                          {expandedId === g.id ? <ChevronUp className="h-4 w-4" /> : <BarChart3 className="h-4 w-4" />} View
+                        </button>
+                        {isAdmin && (<>
+                          <button className={btnSecondary} onClick={() => run(g.id)} disabled={busyId === g.id}>{busyId === g.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Probe</button>
+                          <button className={btnSecondary} onClick={() => exportGraph(g.id, "pdf")}><Download className="h-4 w-4" /> PDF</button>
+                          <button className={btnSecondary} onClick={() => setEditing({ ...g })}><Edit className="h-4 w-4" /></button>
+                          <button className={btnDanger} onClick={() => remove(g.id)}><Trash2 className="h-4 w-4" /></button>
+                        </>)}
+                      </div></td>
+                    </tr>
+                    {expandedId === g.id && (
+                      <tr className="bg-slate-50">
+                        <td colSpan={8} className="p-0">
+                          <div className="p-4 border-t border-slate-200">
+                            {graphData ? <GraphDataPanel
+                              graphData={graphData}
+                              pairData={pairData}
+                              graphs={graphs || []}
+                              onClose={() => { setExpandedId(null); setGraphData(null); setPairData(null); }}
+                            /> : <Loading label="Loading graph data…" />}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
           </div>
         )}
       </Card>
-
-      {graphData && <GraphDataPanel graphData={graphData} pairData={pairData} graphs={graphs || []} onClose={() => { setGraphData(null); setPairData(null); setSelectedId(""); }} />}
       {editing && (
         <GraphForm
           value={editing}
@@ -421,6 +532,9 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
     return Array.from(byLabel.values());
   }, [samples, pairSamples, primaryIsIn]);
 
+  const unit = graph?.unit || (isTraffic ? "bps" : "");
+  const stats = useMemo(() => isTraffic && pair ? trafficStats(merged) : null, [isTraffic, pair, merged]);
+
   const renderChart = () => {
     if (isTraffic && pair) {
       return merged.length ? (
@@ -429,10 +543,10 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
             <LineChart data={merged}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="label" minTickGap={24} />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="in" name="IN (bps)" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
-              <Line type="monotone" dataKey="out" name="OUT (bps)" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
+              <YAxis tickFormatter={yTickFormatter("bps")} />
+              <Tooltip formatter={tooltipFormatter("bps")} />
+              <Line type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
+              <Line type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -444,9 +558,9 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
           <LineChart data={samples}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="label" minTickGap={24} />
-            <YAxis />
-            <Tooltip />
-            <Line type="monotone" dataKey="value" stroke="#0a2350" strokeWidth={2} />
+            <YAxis tickFormatter={yTickFormatter(unit)} />
+            <Tooltip formatter={tooltipFormatter(unit)} />
+            <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -477,6 +591,14 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
         <button onClick={onClose} aria-label="Close"><X className="h-5 w-5" /></button>
       </div>
       {renderChart()}
+      {isTraffic && pair && stats && (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatCard label="Max IN" value={fmtValue(stats.maxIn, "bps")} color="text-green-600" />
+          <StatCard label="Max OUT" value={fmtValue(stats.maxOut, "bps")} color="text-amber-500" />
+          <StatCard label="Avg IN" value={fmtValue(stats.avgIn, "bps")} color="text-green-600" />
+          <StatCard label="Avg OUT" value={fmtValue(stats.avgOut, "bps")} color="text-amber-500" />
+        </div>
+      )}
       {isTraffic && pair && (
         <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
           <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-green-600" /> IN</span>

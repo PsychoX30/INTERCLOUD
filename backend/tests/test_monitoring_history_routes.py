@@ -62,7 +62,8 @@ async def test_history_returns_selected_state_samples_and_events(monkeypatch):
         states=[{"check_id": check_id, "status": "up", "target": "8.8.8.8", "last_at": at,
                  "last_rtt_ms": 2.5, "consecutive_failures": 0, "secret": "must-not-leak"}],
         probes=[{"_id": ObjectId(), "check_id": check_id, "at": at, "up": True,
-                 "rtt_ms": 2.5, "loss": 0.0, "resolved_ip": "8.8.8.8", "raw": "must-not-leak"}],
+                 "rtt_ms": 2.5, "rtt_min_ms": 2.1, "rtt_max_ms": 2.9,
+                 "loss": 0.0, "resolved_ip": "8.8.8.8", "raw": "must-not-leak"}],
         events=[{"_id": ObjectId(), "check_id": check_id, "at": at, "from": "down", "to": "up",
                  "target": "8.8.8.8", "internal": "must-not-leak"}],
     )
@@ -75,8 +76,9 @@ async def test_history_returns_selected_state_samples_and_events(monkeypatch):
         "status": "up", "target": "8.8.8.8", "last_at": at,
         "last_rtt_ms": 2.5, "consecutive_failures": 0,
     }
-    assert out["samples"] == [{"at": at, "up": True, "rtt_ms": 2.5, "loss": 0.0,
-                                "resolved_ip": "8.8.8.8"}]
+    assert out["samples"] == [{"at": at, "up": True, "rtt_ms": 2.5,
+                                "rtt_min_ms": 2.1, "rtt_max_ms": 2.9,
+                                "loss": 0.0, "resolved_ip": "8.8.8.8"}]
     assert set(out["events"][0]) == {"id", "at", "from", "to", "target"}
     assert db.monitoring_probes.queries == [{"check_id": check_id}]
     assert db.monitoring_events.queries == [{"check_id": check_id}]

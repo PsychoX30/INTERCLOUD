@@ -72,14 +72,14 @@ async def _run(argv: List[str], timeout: float, input_bytes: bytes | None = None
 
 
 # ============================================================
-# PING - pure-python ping3 (SOCK_DGRAM, works without root)
+# PING - pure-python ping3 (SOCK_DGRAM) with subprocess fallback
 # ============================================================
 async def run_ping(target: str, *, count: int = 5, timeout: float = 2.0) -> Dict[str, Any]:
     t = validate_target(target)
     ip = resolve_ip(t)
     count = max(1, min(int(count), 10))
 
-    def _do_ping():
+    def _do_ping3():
         from ping3 import ping as _p  # local import
         results = []
         for i in range(count):
@@ -97,9 +97,34 @@ async def run_ping(target: str, *, count: int = 5, timeout: float = 2.0) -> Dict
         return results
 
     started = time.time()
-    results = await asyncio.get_event_loop().run_in_executor(None, _do_ping)
+    results = await asyncio.get_event_loop().run_in_executor(None, _do_ping3)
     good = [r["rtt_ms"] for r in results if r.get("rtt_ms") is not None]
     lost = count - len(good)
+
+    # Fallback to system ping if ping3 got zero received (likely permission issue)
+    if len(good) == 0:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ping", "-c", str(count), "-W", str(int(timeout)), ip,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout * count + 5)
+            output = (stdout or b"").decode(errors="replace").strip()
+            # Parse system ping output
+            good = []
+            for line in output.splitlines():
+                if "time=" in line and "seq=" in line:
+                    # Typical line: "64 bytes from 8.8.8.8: icmp_seq=1 ttl=114 time=13.9 ms"
+                    try:
+                        time_part = line.split("time=")[1].split(" ")[0]
+                        good.append(round(float(time_part), 2))
+                    except (IndexError, ValueError):
+                        pass
+            lost = count - len(good)
+            if len(good) > 0:
+                results = [{"seq": i, "rtt_ms": good[i] if i < len(good) else None} for i in range(count)]
+        except Exception:
+            pass  # Keep ping3 failure result
 
     summary = {
         "target": t, "resolved_ip": ip, "count": count,
