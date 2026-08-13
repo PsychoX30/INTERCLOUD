@@ -14,7 +14,7 @@ from .shared import _get_db, _oid
 
 router = APIRouter()
 
-_MIN_INTERVAL_SECONDS = 30
+_MIN_INTERVAL_SECONDS = 10
 _MAX_INTERVAL_SECONDS = 3600
 
 

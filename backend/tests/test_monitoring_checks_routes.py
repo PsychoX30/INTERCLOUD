@@ -77,6 +77,26 @@ async def test_create_ping_check_persists_validated_public_target(db):
 
 
 @pytest.mark.anyio
+async def test_create_ping_check_accepts_10s_interval(db):
+    out = await routes.monitoring_check_create(
+        {"name": "Fast", "target": "8.8.8.8", "interval_seconds": 10},
+        {"role": "admin", "email": "admin@example.test"},
+    )
+    assert out["interval_seconds"] == 10
+
+
+@pytest.mark.anyio
+async def test_create_ping_check_rejects_sub_10s_interval(db):
+    with pytest.raises(HTTPException) as exc:
+        await routes.monitoring_check_create(
+            {"name": "TooFast", "target": "8.8.8.8", "interval_seconds": 9},
+            {"role": "admin", "email": "admin@example.test"},
+        )
+    assert exc.value.status_code == 400
+    assert db.monitoring_checks.inserted == []
+
+
+@pytest.mark.anyio
 async def test_create_ping_check_rejects_private_target(db):
     with pytest.raises(HTTPException) as exc:
         await routes.monitoring_check_create(

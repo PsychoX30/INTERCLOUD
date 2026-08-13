@@ -7,7 +7,7 @@ import {
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
   History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
-  Bell, BookOpen,
+  Bell, BookOpen, TrendingUp,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import { api } from "../../portal/api";
@@ -21,7 +21,8 @@ const CLIENT_NAV = [
   { to: "/portal/client/credit-notes", label: "Credit Notes", icon: ReceiptText, testid: "nav-client-credit-notes" },
   { to: "/portal/client/tickets", label: "Tickets", icon: LifeBuoy, testid: "nav-tickets" },
   { to: "/portal/client/order", label: "Order Service", icon: ShoppingCart, testid: "nav-order" },
-  { to: "/portal/client/traffic", label: "Traffic Report", icon: Activity, testid: "nav-traffic" },
+  { to: "/portal/client/traffic", label: "Live Traffic", icon: Activity, testid: "nav-traffic" },
+  { to: "/portal/client/mrtg", label: "MRTG", icon: TrendingUp, testid: "nav-mrtg" },
   { to: "/portal/client/guide", label: "Panduan", icon: BookOpen, testid: "nav-guide" },
   { to: "/portal/client/profile", label: "Profil", icon: UserSquare, testid: "nav-profile" },
 ];

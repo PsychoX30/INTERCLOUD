@@ -2335,7 +2335,7 @@ def start_scheduler(db):
         coalesce=True,
     )
 
-    # Internal ping monitoring registry - every 30 seconds. The outer lease
+    # Internal ping monitoring registry - every 10 seconds. The outer lease
     # prevents duplicate scheduler workers; probe_target adds a per-check lease.
     async def _monitoring_sweep():
         from .monitoring import run_monitoring_probe_sweep
@@ -2343,20 +2343,20 @@ def start_scheduler(db):
 
     sched.add_job(
         _leased("monitoring", _monitoring_sweep),
-        CronTrigger(second="*/30"),
+        CronTrigger(second="*/10"),
         id="job:monitoring",
         max_instances=1,
         coalesce=True,
     )
 
-    # SNMP/MRTG graph sweep - every 60 seconds.
+    # SNMP/MRTG graph sweep - every 20 seconds.
     async def _graph_sweep():
         from .monitoring_graphs import run_graph_sweep
         return await run_graph_sweep(db, owner=_owner)
 
     sched.add_job(
         _leased("graph_sweep", _graph_sweep),
-        CronTrigger(minute="*/1"),
+        CronTrigger(second="*/20"),
         id="job:graph_sweep",
         max_instances=1,
         coalesce=True,

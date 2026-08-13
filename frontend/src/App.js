@@ -37,6 +37,7 @@ const ClientCreditNotes = lazy(() => import("./pages/portal/client/ClientCreditN
 const ClientTickets   = lazy(() => import("./pages/portal/client/ClientTickets"));
 const ClientOrder     = lazy(() => import("./pages/portal/client/ClientOrder"));
 const ClientTraffic   = lazy(() => import("./pages/portal/client/ClientTraffic"));
+const ClientMRTG      = lazy(() => import("./pages/portal/client/ClientMRTG"));
 const ClientDomains   = lazy(() => import("./pages/portal/client/ClientDomains"));
 const ClientSSL       = lazy(() => import("./pages/portal/client/ClientSSL"));
 const ClientGuide     = lazy(() => import("./pages/portal/client/ClientGuide"));
@@ -141,6 +142,7 @@ function App() {
                   <Route path="tickets" element={<ClientTickets />} />
                   <Route path="order" element={<ClientOrder />} />
                   <Route path="traffic" element={<ClientTraffic />} />
+                  <Route path="mrtg" element={<ClientMRTG />} />
                   <Route path="domains" element={<ClientDomains />} />
                   <Route path="ssl" element={<ClientSSL />} />
                   <Route path="guide" element={<ClientGuide />} />

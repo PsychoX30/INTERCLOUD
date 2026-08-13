@@ -15,7 +15,7 @@ from portal.emails import acquire_scheduler_lease, _release_scheduler_lease
 logger = logging.getLogger("portal.monitoring")
 
 _DEFAULT_INTERVAL_SECONDS = 300
-_MIN_INTERVAL_SECONDS = 30
+_MIN_INTERVAL_SECONDS = 10
 _MAX_INTERVAL_SECONDS = 3600
 
 

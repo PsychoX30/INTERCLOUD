@@ -20,7 +20,7 @@ from portal.monitoring import validate_target, resolve_ip
 
 logger = logging.getLogger("portal.monitoring_graphs")
 
-_MIN_INTERVAL = 30
+_MIN_INTERVAL = 20
 _MAX_INTERVAL = 3600
 
 # Graph types that represent a counter (monotonic increasing octet counter)

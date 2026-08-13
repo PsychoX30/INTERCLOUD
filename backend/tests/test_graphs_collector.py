@@ -58,10 +58,11 @@ def test_clean_graph_name_trims():
 
 
 def test_clean_graph_interval_bounds():
+    assert mg._clean_graph_interval(20) == 20
     assert mg._clean_graph_interval(30) == 30
     assert mg._clean_graph_interval(3600) == 3600
     with pytest.raises(ValueError):
-        mg._clean_graph_interval(29)
+        mg._clean_graph_interval(19)
     with pytest.raises(ValueError):
         mg._clean_graph_interval(3601)
 

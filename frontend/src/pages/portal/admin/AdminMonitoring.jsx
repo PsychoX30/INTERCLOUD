@@ -9,7 +9,7 @@ import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrima
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
 const PING_EMPTY = { name: "", target: "", enabled: true, interval_seconds: 300 };
-const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic_in", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 60, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
+const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic_in", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 20, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
 
 // ── Adaptive unit formatters ───────────────────────────────────
 // Auto-scale bps → kbps → Mbps → Gbps → Tbps (1000-based prefix)
@@ -285,7 +285,7 @@ const PingForm = ({ value, onChange, onSubmit, onClose }) => {
         <h2 className="text-lg font-extrabold text-[#0a2350]">{value.id ? "Edit check" : "Add check"}</h2>
         <label className="block"><span className={labelClass}>Name</span><input required maxLength={120} className={inputClass} value={value.name} onChange={e => set("name", e.target.value)} /></label>
         <label className="block"><span className={labelClass}>Public IP / hostname</span><input required maxLength={253} className={inputClass} value={value.target} onChange={e => set("target", e.target.value)} /></label>
-        <label className="block"><span className={labelClass}>Interval (30–3600s)</span><input required type="number" min="30" max="3600" className={inputClass} value={value.interval_seconds} onChange={e => set("interval_seconds", e.target.value)} /></label>
+        <label className="block"><span className={labelClass}>Interval (10–3600s)</span><input required type="number" min="10" max="3600" className={inputClass} value={value.interval_seconds} onChange={e => set("interval_seconds", e.target.value)} /></label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!value.enabled} onChange={e => set("enabled", e.target.checked)} /> Enabled</label>
         <div className="flex justify-end gap-2"><button type="button" className={btnSecondary} onClick={onClose}>Cancel</button><button type="submit" className={btnPrimary}>Save</button></div>
       </form>
@@ -316,6 +316,20 @@ const GraphsTab = ({ isAdmin }) => {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
+
+  // Range presets: set from/to for quick time range selection.
+  const setRange = (hours) => {
+    const t = new Date();
+    setFrom(new Date(t.getTime() - hours * 3600 * 1000).toISOString());
+    setTo(t.toISOString());
+  };
+  const RANGES = [
+    { label: "1H", hours: 1 },
+    { label: "1D", hours: 24 },
+    { label: "1W", hours: 24 * 7 },
+    { label: "1M", hours: 24 * 30 },
+    { label: "1Y", hours: 24 * 365 },
+  ];
 
   const loadGraphs = useCallback(async () => {
     try { setError(""); const r = await api.get("/admin/monitoring/graphs"); setGraphs(r.data || []); }
@@ -435,6 +449,15 @@ const GraphsTab = ({ isAdmin }) => {
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <button className={btnSecondary} onClick={loadGraphs}><RefreshCw className="h-4 w-4" /> Refresh</button>
         {isAdmin && <button className={btnPrimary} onClick={() => setEditing({ ...GRAPH_EMPTY })}><Plus className="h-4 w-4" /> Add graph</button>}
+        <div className="flex items-center gap-1 ml-2 rounded-full bg-slate-100 p-1 text-xs" data-testid="range-selector">
+          {RANGES.map(r => (
+            <button key={r.label} type="button"
+              className="px-2.5 h-7 rounded-full font-semibold text-slate-600 hover:bg-white hover:text-[#0a2350]"
+              onClick={() => setRange(r.hours)}
+              data-testid={`range-${r.label}`}
+            >{r.label}</button>
+          ))}
+        </div>
         <label className="inline-flex items-center gap-2 text-sm text-slate-600 ml-auto">
           <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} /> Auto-refresh (30s)
         </label>
@@ -775,10 +798,22 @@ const DiscoveryResults = ({ sensors, onBulkCreate, busy, target, common }) => {
             const outbound = pair.sensors.find(s => s.direction === "out");
             const inIndex = inbound ? sensors.indexOf(inbound) : -1;
             const outIndex = outbound ? sensors.indexOf(outbound) : -1;
+            // One checkbox per interface; selecting it turns on both IN and OUT
+            // so a traffic graph is always created as a matched pair.
+            const both = inIndex >= 0 && outIndex >= 0;
+            const bothSelected = both && selected.has(inIndex) && selected.has(outIndex);
+            const togglePair = () => {
+              const next = new Set(selected);
+              if (bothSelected) { next.delete(inIndex); next.delete(outIndex); }
+              else { if (inIndex >= 0) next.add(inIndex); if (outIndex >= 0) next.add(outIndex); }
+              setSelected(next);
+            };
             return <div key={pair.index} className="flex items-center gap-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
-              <div className="flex-1"><strong className="text-[#0a2350]">{pair.name}</strong><span className="ml-2 text-slate-500">ifIndex {pair.index}</span></div>
-              <label className="flex items-center gap-1"><input type="checkbox" disabled={!inbound} checked={inIndex >= 0 && selected.has(inIndex)} onChange={() => toggle(inIndex)} data-testid={`discovery-check-${pair.index}-in`} /> In</label>
-              <label className="flex items-center gap-1"><input type="checkbox" disabled={!outbound} checked={outIndex >= 0 && selected.has(outIndex)} onChange={() => toggle(outIndex)} data-testid={`discovery-check-${pair.index}-out`} /> Out</label>
+              <label className="flex items-center gap-2 cursor-pointer flex-1">
+                <input type="checkbox" disabled={!inbound && !outbound} checked={bothSelected} onChange={togglePair} data-testid={`discovery-check-${pair.index}-pair`} />
+                <strong className="text-[#0a2350]">{pair.name}</strong><span className="ml-2 text-slate-500">ifIndex {pair.index}</span>
+              </label>
+              <span className="text-slate-400">{both ? "In + Out" : (inbound ? "In" : "Out")}</span>
             </div>;
           })}</div>
         </div>
@@ -936,7 +971,7 @@ const GraphForm = ({ value, onChange, onSubmit, onClose, onAfterSave }) => {
             )}
           </div>
         </>}
-        <label className="block"><span className={labelClass}>Interval (30–3600s)</span><input required type="number" min="30" max="3600" className={inputClass} value={value.interval_seconds} onChange={e => set("interval_seconds", e.target.value)} /></label>
+        <label className="block"><span className={labelClass}>Interval (20–3600s)</span><input required type="number" min="20" max="3600" className={inputClass} value={value.interval_seconds} onChange={e => set("interval_seconds", e.target.value)} /></label>
         <label className="block"><span className={labelClass}>Unit</span>
           <select className={inputClass} value={value.unit || ""} onChange={e => set("unit", e.target.value)}>
             <option value="">Auto / none</option>
