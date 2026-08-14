@@ -46,7 +46,8 @@ async def get_graph_data(
     """
     span = to_dt - from_dt
 
-    if resolution == "auto":
+    auto = resolution == "auto"
+    if auto:
         if span <= timedelta(hours=6):
             resolution = "raw"
         elif span <= timedelta(days=7):
@@ -54,16 +55,14 @@ async def get_graph_data(
         else:
             resolution = "daily"
 
-    if resolution == "raw":
-        coll = db.monitoring_graph_samples_raw
-        cursor = coll.find(
+    async def _fetch_raw() -> list[dict]:
+        cursor = db.monitoring_graph_samples_raw.find(
             {"graph_id": graph_id, "at": {"$gte": from_dt, "$lte": to_dt}}
         ).sort("at", ASCENDING)
         return await cursor.to_list(length=None)
 
-    elif resolution == "hourly":
-        coll = db.monitoring_graph_samples_hourly
-        cursor = coll.find(
+    async def _fetch_hourly() -> list[dict]:
+        cursor = db.monitoring_graph_samples_hourly.find(
             {"graph_id": graph_id, "hour": {"$gte": from_dt, "$lte": to_dt}}
         ).sort("hour", ASCENDING)
         return [
@@ -71,15 +70,37 @@ async def get_graph_data(
             for doc in await cursor.to_list(length=None)
         ]
 
-    else:  # daily
-        coll = db.monitoring_graph_samples_daily
-        cursor = coll.find(
+    async def _fetch_daily() -> list[dict]:
+        cursor = db.monitoring_graph_samples_daily.find(
             {"graph_id": graph_id, "date": {"$gte": from_dt, "$lte": to_dt}}
         ).sort("date", ASCENDING)
         return [
             {"at": doc["date"], "value": doc["avg"], "min": doc["min"], "max": doc["max"]}
             for doc in await cursor.to_list(length=None)
         ]
+
+    fetchers = {"raw": _fetch_raw, "hourly": _fetch_hourly, "daily": _fetch_daily}
+
+    data = await fetchers[resolution]()
+
+    # Fallback for auto-selected resolution: rollup tiers are populated by
+    # scheduled downsample jobs (hourly at :15, daily after). A freshly created
+    # graph has raw samples immediately but no rollups yet, so an auto range of
+    # 1D/1W/1M/1Y would render an empty chart until the first downsample runs.
+    # Progressively fall back to finer tiers so recent data always shows. Raw is
+    # capped by a 7-day TTL, so falling back to raw stays bounded.
+    if not data and auto:
+        fallback_order = {
+            "daily": ["hourly", "raw"],
+            "hourly": ["raw"],
+            "raw": [],
+        }
+        for tier in fallback_order.get(resolution, []):
+            data = await fetchers[tier]()
+            if data:
+                break
+
+    return data
 
 
 async def ensure_indexes(db):
