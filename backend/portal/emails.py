@@ -2392,10 +2392,12 @@ def start_scheduler(db):
         coalesce=True,
     )
 
-    # DDoS threshold evaluation - every 5 minutes (offset from NOC)
+    # DDoS threshold evaluation - every 10 seconds so 10s-window rules can
+    # actually trigger within their window. Lease TTL = 60s is enough to
+    # suppress duplicates while leaving headroom for slow runs.
     sched.add_job(
-        _leased("ddos", lambda: run_ddos_detection_sweep(db)),
-        CronTrigger(minute="2-59/5"),
+        _leased("ddos", lambda: run_ddos_detection_sweep(db), ttl_seconds=60),
+        CronTrigger(second="*/10"),
         id="job:ddos",
         max_instances=1,
         coalesce=True,

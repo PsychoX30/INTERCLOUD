@@ -13,7 +13,7 @@ const fmtThreshold = (r) => r.metric === "bps"
   ? `${(r.threshold / 1e9).toLocaleString("id-ID")} Gbps`
   : `${(r.threshold / 1e3).toLocaleString("id-ID")}K pps`;
 
-const EMPTY = { name: "", metric: "pps", threshold: 100000, window_s: 60, action: "alert", direction: "inbound", scope_prefixes: "157.20.32.0/24", enabled: true };
+const EMPTY = { name: "", metric: "pps", threshold: 100000, window_s: 10, action: "alert", direction: "inbound", scope_prefixes: "157.20.32.0/24", enabled: true };
 
 export const ThresholdRules = () => {
   const [rules, setRules] = useState(null);
@@ -57,7 +57,7 @@ export const ThresholdRules = () => {
     const w = Number(form.window_s);
     if (n.length < 2) { setErr("Nama rule minimal 2 karakter"); return; }
     if (!t || t <= 0) { setErr("Ambang batas harus lebih dari 0"); return; }
-    if (!w || w < 60) { setErr("Window minimal 60 detik"); return; }
+    if (!w || w < 10) { setErr("Window minimal 10 detik"); return; }
     setBusy(true); setErr("");
     try {
       if (editing === "new") await api.post("/admin/noc/threshold-rules", payload(form));
@@ -117,7 +117,7 @@ export const ThresholdRules = () => {
             <label><div className={labelClass}>Ambang batas</div>
               <input type="number" min="1" className={`${inputClass} text-right`} value={form.threshold} onChange={(e) => setForm({ ...form, threshold: Number(e.target.value) })} data-testid="threshold-value" /></label>
             <label><div className={labelClass}>Window (detik)</div>
-              <input type="number" min="60" className={`${inputClass} text-right`} value={form.window_s} onChange={(e) => setForm({ ...form, window_s: Number(e.target.value) })} /></label>
+              <input type="number" min="10" className={`${inputClass} text-right`} value={form.window_s} onChange={(e) => setForm({ ...form, window_s: Number(e.target.value) })} /></label>
             <label><div className={labelClass}>Arah serangan</div>
               <select className={inputClass} value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} data-testid="threshold-direction">
                 <option value="inbound">Inbound (luar → dalam)</option>

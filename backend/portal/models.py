@@ -382,7 +382,7 @@ class ThresholdRuleIn(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     metric: Literal["pps", "bps"] = "pps"
     threshold: float = Field(gt=0)
-    window_s: int = Field(default=300, ge=60, le=3600)
+    window_s: int = Field(default=300, ge=10, le=3600)
     # alert = notify only; alert_blackhole = local /32; alert_bgp_blackhole =
     # try upstream BGP community RTBH first (fall back to local /32).
     action: Literal["alert", "alert_blackhole", "alert_bgp_blackhole"] = "alert"
