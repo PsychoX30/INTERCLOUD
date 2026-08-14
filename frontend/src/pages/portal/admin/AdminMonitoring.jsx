@@ -9,7 +9,24 @@ import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrima
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
 const PING_EMPTY = { name: "", target: "", enabled: true, interval_seconds: 300 };
-const GRAPH_EMPTY = { name: "", target: "", type: "snmp_traffic_in", snmp_oid: "", snmp_community: "public", snmp_port: 161, snmp_version: "2c", interval_seconds: 20, enabled: true, client_id: "", unit: "", display_name: "", visible_roles: ["admin", "support"] };
+const GRAPH_EMPTY = {
+  name: "",
+  target: "",
+  type: "snmp_traffic_pair",
+  snmp_oid_in: "",
+  snmp_oid_out: "",
+  snmp_community: "public",
+  snmp_port: 161,
+  snmp_version: "2c",
+  interval_seconds: 60,
+  enabled: true,
+  client_id: "",
+  unit: "",
+  display_name: "",
+  visible_roles: ["admin", "support"],
+};
+
+const isTrafficType = (t) => t === "snmp_traffic_in" || t === "snmp_traffic_out" || t === "snmp_traffic_pair";
 
 // ── Adaptive unit formatters ───────────────────────────────────
 // Auto-scale bps → kbps → Mbps → Gbps → Tbps (1000-based prefix)
@@ -38,7 +55,7 @@ const fmtValue = (v, unit) => {
 // Pick the right formatter based on graph type/unit
 const valueFormatter = (graph) => {
   if (!graph) return fmtValue;
-  if (graph.type === "snmp_traffic_in" || graph.type === "snmp_traffic_out") return fmtBps;
+  if (isTrafficType(graph.type)) return fmtBps;
   return (v) => fmtValue(v, graph.unit);
 };
 
@@ -297,13 +314,16 @@ const PingForm = ({ value, onChange, onSubmit, onClose }) => {
 // SNMP Graphs Tab
 // ═════════════════════════════════════════════════════════════════
 const GRAPH_TYPES = [
-  { value: "snmp_traffic_in", label: "SNMP Traffic In (bps)" },
-  { value: "snmp_traffic_out", label: "SNMP Traffic Out (bps)" },
+  { value: "snmp_traffic_pair", label: "SNMP Traffic (IN+OUT)" },
   { value: "snmp_cpu", label: "SNMP CPU" },
   { value: "snmp_memory", label: "SNMP Memory" },
   { value: "snmp_uptime", label: "SNMP Uptime" },
   { value: "ping", label: "Ping RTT" },
 ];
+
+// Legacy single-direction types used by old docs and discovery; kept in the
+// set so existing graphs validate on the backend but not exposed in the form.
+const TRAFFIC_PAIR_TYPES = new Set(["snmp_traffic_in", "snmp_traffic_out"]);
 
 const GraphsTab = ({ isAdmin }) => {
   const [graphs, setGraphs] = useState(null);
@@ -337,6 +357,9 @@ const GraphsTab = ({ isAdmin }) => {
   }, []);
 
   useEffect(() => { loadGraphs(); }, [loadGraphs]);
+
+  // Legacy IN/OUT documents are one logical traffic graph in the operator UI.
+  const graphRows = useMemo(() => groupGraphRows(graphs || []), [graphs]);
 
   const loadData = useCallback(async (id, opts = {}) => {
     if (!id) return;
@@ -395,31 +418,104 @@ const GraphsTab = ({ isAdmin }) => {
   const save = async (e) => {
     e.preventDefault();
     const payload = { ...editing };
+    const pairMemberIds = payload.__pairMemberIds; // {in, out} when editing an existing pair
     delete payload.id;
+    delete payload.__pairMemberIds;
     try {
-      if (editing.id) await api.put(`/admin/monitoring/graphs/${editing.id}`, payload);
-      else await api.post("/admin/monitoring/graphs", payload);
+      if (payload.type === "snmp_traffic_pair") {
+        // Creating (or re-saving) a traffic pair: two legacy documents share
+        // the same target/SNMP config but each carries its own OID.
+        const common = {
+          target: payload.target,
+          snmp_community: payload.snmp_community || "public",
+          snmp_port: Number(payload.snmp_port) || 161,
+          snmp_version: payload.snmp_version || "2c",
+          snmp_user: payload.snmp_user || "",
+          snmp_auth_protocol: payload.snmp_auth_protocol || "",
+          snmp_auth_key: payload.snmp_auth_key || "",
+          snmp_priv_protocol: payload.snmp_priv_protocol || "",
+          snmp_priv_key: payload.snmp_priv_key || "",
+          interval_seconds: Number(payload.interval_seconds) || 60,
+          enabled: payload.enabled !== false,
+          client_id: payload.client_id || "",
+          visible_roles: payload.visible_roles || ["admin", "support"],
+        };
+        const baseName = payload.name || payload.target;
+        const baseDisplay = payload.display_name || baseName;
+        if (pairMemberIds?.in && pairMemberIds?.out) {
+          // Editing an existing pair: update both documents individually.
+          await Promise.all([
+            api.put(`/admin/monitoring/graphs/${pairMemberIds.in}`, {
+              ...common, name: `${baseName} In`, display_name: `${baseDisplay} In`,
+              snmp_oid: payload.snmp_oid_in, unit: payload.unit || "",
+            }),
+            api.put(`/admin/monitoring/graphs/${pairMemberIds.out}`, {
+              ...common, name: `${baseName} Out`, display_name: `${baseDisplay} Out`,
+              snmp_oid: payload.snmp_oid_out, unit: payload.unit || "",
+            }),
+          ]);
+        } else {
+          await api.post("/admin/monitoring/graphs/bulk", {
+            ...common,
+            sensors: [
+              { oid: payload.snmp_oid_in, name: `${baseName} In`, display_name: `${baseDisplay} In`, type: "snmp_traffic_in", unit: payload.unit || "" },
+              { oid: payload.snmp_oid_out, name: `${baseName} Out`, display_name: `${baseDisplay} Out`, type: "snmp_traffic_out", unit: payload.unit || "" },
+            ],
+          });
+        }
+      } else if (editing.id) {
+        await api.put(`/admin/monitoring/graphs/${editing.id}`, payload);
+      } else {
+        await api.post("/admin/monitoring/graphs", payload);
+      }
       setEditing(null); await loadGraphs();
     } catch (e) { setError(e?.response?.data?.detail || "Failed to save"); }
   };
 
-  const remove = async (id) => {
-    if (!window.confirm("Delete this graph?")) return;
-    try { await api.delete(`/admin/monitoring/graphs/${id}`); if (expandedId === id) { setExpandedId(null); setGraphData(null); setPairData(null); } await loadGraphs(); }
-    catch (e) { setError(e?.response?.data?.detail || "Failed to delete"); }
+  const remove = async (ids) => {
+    const idList = Array.isArray(ids) ? ids : [ids];
+    if (!window.confirm(idList.length > 1 ? "Delete this traffic graph (IN+OUT)?" : "Delete this graph?")) return;
+    try {
+      await Promise.all(idList.map(id => api.delete(`/admin/monitoring/graphs/${id}`)));
+      if (idList.includes(expandedId)) { setExpandedId(null); setGraphData(null); setPairData(null); }
+      await loadGraphs();
+    } catch (e) { setError(e?.response?.data?.detail || "Failed to delete"); }
   };
 
-  const run = async (id) => {
-    setBusyId(id);
+  const run = async (ids) => {
+    const idList = Array.isArray(ids) ? ids : [ids];
+    const busyKey = idList[0];
+    setBusyId(busyKey);
     try {
       setError("");
-      const r = await api.post(`/admin/monitoring/graphs/${id}/run`);
+      const results = await Promise.all(idList.map(id => api.post(`/admin/monitoring/graphs/${id}/run`)));
       await loadGraphs();
-      if (id === expandedId) await refreshData();
-      if (r.data && r.data.baseline) setError("Probe OK — baseline counter captured. Next poll will show the rate.");
-    } catch (e) { setError(e?.response?.data?.detail || "Probe failed"); }
+      if (idList.includes(expandedId)) await refreshData();
+      if (results.some(r => r.data && r.data.baseline)) setError("Probe OK — baseline counter captured. Next poll will show the rate.");
+    } catch (e) { setError("Probe failed"); }
     finally { setBusyId(""); }
   };
+
+  // Convert a grouped pair row back into the GraphForm's pair-editing shape.
+  const pairToFormValue = (row) => ({
+    ...GRAPH_EMPTY,
+    id: row.id,
+    name: row.name,
+    display_name: row.name,
+    target: row.target,
+    type: "snmp_traffic_pair",
+    snmp_oid_in: row.inGraph?.snmp_oid || "",
+    snmp_oid_out: row.outGraph?.snmp_oid || "",
+    snmp_community: row.inGraph?.snmp_community || row.outGraph?.snmp_community || "public",
+    snmp_port: row.inGraph?.snmp_port || row.outGraph?.snmp_port || 161,
+    snmp_version: row.inGraph?.snmp_version || row.outGraph?.snmp_version || "2c",
+    interval_seconds: row.interval_seconds,
+    enabled: row.inGraph?.enabled !== false,
+    client_id: row.client_id || "",
+    unit: row.inGraph?.unit || row.outGraph?.unit || "",
+    visible_roles: row.visible_roles || ["admin", "support"],
+    __pairMemberIds: { in: row.inGraph?.id, out: row.outGraph?.id },
+  });
 
   const exportGraph = async (id, fmt) => {
     const f = from || new Date(Date.now() - 7 * 86400 * 1000).toISOString();
@@ -472,47 +568,60 @@ const GraphsTab = ({ isAdmin }) => {
                 <tr><th className="px-4 py-3 text-left">Name</th><th className="px-4 py-3 text-left">Graph ID</th><th className="px-4 py-3 text-left">Target</th><th className="px-4 py-3 text-left">Type</th><th className="px-4 py-3 text-left">Interval</th><th className="px-4 py-3 text-left">Client</th><th className="px-4 py-3 text-left">Visible to</th><th className="px-4 py-3 text-right">Actions</th></tr>
               </thead>
               <tbody>
-                {graphs.map(g => (
-                  <React.Fragment key={g.id}>
-                    <tr className="border-t border-slate-100">
-                      <td className="px-4 py-3 font-semibold text-[#0a2350]">{g.display_name || g.name}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500"><CopyButton text={g.id} label="copy" /> <span className="ml-1">{g.id.slice(0, 10)}…</span></td>
-                      <td className="px-4 py-3 font-mono text-xs">{g.target}</td>
-                      <td className="px-4 py-3"><StatusBadge status={g.type} /></td>
-                      <td className="px-4 py-3">{g.interval_seconds}s</td>
-                      <td className="px-4 py-3">{g.client_id ? <span className="text-green-700">assigned</span> : <span className="text-slate-400">internal</span>}</td>
-                      <td className="px-4 py-3 text-xs text-slate-500">{(g.visible_roles || []).join(", ")}</td>
-                      <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                        <button className={btnSecondary} onClick={() => {
-                          if (expandedId === g.id) { setExpandedId(null); setGraphData(null); setPairData(null); }
-                          else { setExpandedId(g.id); loadData(g.id); }
-                        }}>
-                          {expandedId === g.id ? <ChevronUp className="h-4 w-4" /> : <BarChart3 className="h-4 w-4" />} View
-                        </button>
-                        {isAdmin && (<>
-                          <button className={btnSecondary} onClick={() => run(g.id)} disabled={busyId === g.id}>{busyId === g.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Probe</button>
-                          <button className={btnSecondary} onClick={() => exportGraph(g.id, "pdf")}><Download className="h-4 w-4" /> PDF</button>
-                          <button className={btnSecondary} onClick={() => setEditing({ ...g })}><Edit className="h-4 w-4" /></button>
-                          <button className={btnDanger} onClick={() => remove(g.id)}><Trash2 className="h-4 w-4" /></button>
-                        </>)}
-                      </div></td>
-                    </tr>
-                    {expandedId === g.id && (
-                      <tr className="bg-slate-50">
-                        <td colSpan={8} className="p-0">
-                          <div className="p-4 border-t border-slate-200">
-                            {graphData ? <GraphDataPanel
-                              graphData={graphData}
-                              pairData={pairData}
-                              graphs={graphs || []}
-                              onClose={() => { setExpandedId(null); setGraphData(null); setPairData(null); }}
-                            /> : <Loading label="Loading graph data…" />}
-                          </div>
+                {graphRows.map(row => {
+                  const isPair = row.kind === "pair";
+                  const g = isPair ? (row.inGraph || row.outGraph) : row.graph;
+                  const rowName = isPair ? row.name : (g.display_name || g.name);
+                  const rowType = isPair ? "snmp_traffic" : g.type;
+                  const memberIds = isPair
+                    ? [row.inGraph?.id, row.outGraph?.id].filter(Boolean)
+                    : [g.id];
+                  const busy = memberIds.some(id => busyId === id);
+                  return (
+                    <React.Fragment key={row.id}>
+                      <tr className="border-t border-slate-100">
+                        <td className="px-4 py-3 font-semibold text-[#0a2350]">
+                          {rowName}
+                          {isPair && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">IN+OUT</span>}
                         </td>
+                        <td className="px-4 py-3 font-mono text-xs text-slate-500"><CopyButton text={row.id} label="copy" /> <span className="ml-1">{row.id.slice(0, 10)}…</span></td>
+                        <td className="px-4 py-3 font-mono text-xs">{isPair ? row.target : g.target}</td>
+                        <td className="px-4 py-3"><StatusBadge status={rowType} /></td>
+                        <td className="px-4 py-3">{(isPair ? row.interval_seconds : g.interval_seconds)}s</td>
+                        <td className="px-4 py-3">{(isPair ? row.client_id : g.client_id) ? <span className="text-green-700">assigned</span> : <span className="text-slate-400">internal</span>}</td>
+                        <td className="px-4 py-3 text-xs text-slate-500">{((isPair ? row.visible_roles : g.visible_roles) || []).join(", ")}</td>
+                        <td className="px-4 py-3"><div className="flex justify-end gap-2">
+                          <button className={btnSecondary} onClick={() => {
+                            if (expandedId === row.id) { setExpandedId(null); setGraphData(null); setPairData(null); }
+                            else { setExpandedId(row.id); loadData(row.id); }
+                          }}>
+                            {expandedId === row.id ? <ChevronUp className="h-4 w-4" /> : <BarChart3 className="h-4 w-4" />} View
+                          </button>
+                          {isAdmin && (<>
+                            <button className={btnSecondary} onClick={() => run(memberIds)} disabled={busy}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Probe</button>
+                            <button className={btnSecondary} onClick={() => exportGraph(row.id, "pdf")}><Download className="h-4 w-4" /> PDF</button>
+                            <button className={btnSecondary} onClick={() => setEditing(isPair ? pairToFormValue(row) : { ...g })}><Edit className="h-4 w-4" /></button>
+                            <button className={btnDanger} onClick={() => remove(memberIds)}><Trash2 className="h-4 w-4" /></button>
+                          </>)}
+                        </div></td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                ))}
+                      {expandedId === row.id && (
+                        <tr className="bg-slate-50">
+                          <td colSpan={8} className="p-0">
+                            <div className="p-4 border-t border-slate-200">
+                              {graphData ? <GraphDataPanel
+                                graphData={graphData}
+                                pairData={pairData}
+                                graphs={graphs || []}
+                                onClose={() => { setExpandedId(null); setGraphData(null); setPairData(null); }}
+                              /> : <Loading label="Loading graph data…" />}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -663,6 +772,45 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
   );
 };
 
+// Collapse IN/OUT traffic graphs into one logical "pair" row so the operator
+// sees a single "SNMP Traffic" entry instead of two rows. Non-traffic and
+// unpaired traffic graphs stay as single rows.
+//   pair  -> { kind:"pair", id, inGraph, outGraph, name, target, ... }
+//   single-> { kind:"single", id, graph, ... }
+const groupGraphRows = (graphs) => {
+  const rows = [];
+  const consumed = new Set();
+  (graphs || []).forEach(g => {
+    if (consumed.has(g.id)) return;
+    if (TRAFFIC_PAIR_TYPES.has(g.type)) {
+      const sibling = findTrafficPair(graphs, g);
+      const inGraph = g.type === "snmp_traffic_in" ? g : sibling;
+      const outGraph = g.type === "snmp_traffic_out" ? g : sibling;
+      if (sibling) {
+        consumed.add(g.id);
+        consumed.add(sibling.id);
+        // Use the IN graph as the primary handle for View/expand.
+        const primary = inGraph || g;
+        rows.push({
+          kind: "pair",
+          id: primary.id,
+          inGraph: inGraph || null,
+          outGraph: outGraph || null,
+          name: (primary.display_name || primary.name || "").replace(/\s*(In|Out|IN|OUT)\b/i, "").trim() || primary.name,
+          target: primary.target,
+          interval_seconds: primary.interval_seconds,
+          client_id: primary.client_id,
+          visible_roles: primary.visible_roles,
+        });
+        return;
+      }
+    }
+    consumed.add(g.id);
+    rows.push({ kind: "single", id: g.id, graph: g });
+  });
+  return rows;
+};
+
 // Helper: find the sibling IN/OUT traffic graph for the same target/interface.
 const findTrafficPair = (graphs, graph) => {
   if (!graph || !graphs) return null;
@@ -727,6 +875,12 @@ const GRAPH_ROLES = [
 const kindToType = (kind) => {
   const supported = new Set(["snmp_traffic_in", "snmp_traffic_out", "snmp_cpu", "snmp_memory", "snmp_uptime", "ping"]);
   return supported.has(kind) ? kind : "snmp_traffic_in";
+};
+
+// Helper: map a pair type to the two legacy types it creates.
+const pairToLegacyTypes = (pairType) => {
+  if (pairType === "snmp_traffic_pair") return ["snmp_traffic_in", "snmp_traffic_out"];
+  return [pairType];
 };
 
 const ClientPicker = ({ value, onChange }) => {
@@ -994,9 +1148,16 @@ const GraphForm = ({ value, onChange, onSubmit, onClose, onAfterSave }) => {
             {scanError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" data-testid="discovery-error">{scanError}</div>}
             {sensors && <DiscoveryResults sensors={sensors} onBulkCreate={createBulk} busy={bulkBusy} />}
             <button type="button" className="text-xs text-slate-500 hover:text-[#0a2350] underline" onClick={() => setShowManualOid(v => !v)}>
-              {showManualOid ? "Hide manual OID" : "Enter OID manually"}
-            </button>
-            {showManualOid && (
+              {showManualOid ? "Hide manual OIDs" : "Enter OIDs manually"}
+           </button>
+            {showManualOid && value.type === "snmp_traffic_pair" && (
+              <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs text-slate-500">SNMP Traffic needs two OIDs (one for IN, one for OUT)</p>
+                <label className="block"><span className={labelClass}>SNMP OID In (manual)</span><input maxLength={256} className={inputClass} value={value.snmp_oid_in} onChange={e => set("snmp_oid_in", e.target.value)} /></label>
+                <label className="block"><span className={labelClass}>SNMP OID Out (manual)</span><input maxLength={256} className={inputClass} value={value.snmp_oid_out} onChange={e => set("snmp_oid_out", e.target.value)} /></label>
+              </div>
+            )}
+            {showManualOid && value.type !== "snmp_traffic_pair" && value.type !== "ping" && (
               <label className="block"><span className={labelClass}>SNMP OID (manual)</span><input maxLength={256} className={inputClass} value={value.snmp_oid} onChange={e => set("snmp_oid", e.target.value)} /></label>
             )}
           </div>

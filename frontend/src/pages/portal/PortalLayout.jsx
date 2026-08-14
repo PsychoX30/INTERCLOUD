@@ -71,13 +71,21 @@ const ADMIN_NAV_GROUPS = [
     label: "Operations",
     items: [
       { key: "provisioning", to: "/portal/admin/provisioning", label: "Provisioning", icon: Cloud,          testid: "nav-provisioning", roles: ["admin", "support"] },
-      { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
       { key: "dcim",         to: "/portal/admin/dcim",         label: "DCIM & IPAM",  icon: HardDrive,      testid: "nav-dcim",         roles: ["admin", "support"] },
       { key: "domains",      to: "/portal/admin/domains",      label: "Domain Management", icon: Globe2, testid: "nav-admin-domains", roles: ["admin", "support"] },
       { key: "ssl",          to: "/portal/admin/ssl",          label: "SSL Orders", icon: ShieldCheck,   testid: "nav-admin-ssl", roles: ["admin", "support"] },
-      { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
-      { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
+    ],
+  },
+  {
+    // Network Operations consolidates the NOC/monitoring surface that used to be
+    // scattered across Operations. Routes and role guards are unchanged — this
+    // is nav grouping only, so RBAC enforcement still lives in App.js.
+    label: "Network Operations",
+    items: [
       { key: "monitoring",   to: "/portal/admin/monitoring",   label: "Monitoring", icon: Activity,     testid: "nav-monitoring",   roles: ["admin", "support"] },
+      { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
+      { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
+      { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
       { key: "sla",          to: "/portal/admin/sla",          label: "SLA & Incidents", icon: Activity,   testid: "nav-sla",          roles: ["admin", "support", "finance", "sales"] },
     ],
   },
