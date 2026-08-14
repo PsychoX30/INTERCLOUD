@@ -376,6 +376,21 @@ const GraphsTab = ({ isAdmin }) => {
     { label: "1M", hours: 24 * 30 },
     { label: "1Y", hours: 24 * 365 },
   ];
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const applyCustomRange = () => {
+    if (!customFrom || !customTo) return;
+    const f = new Date(customFrom).toISOString();
+    const t = new Date(customTo).toISOString();
+    if (f >= t) { setError("From harus lebih awal daripada To"); return; }
+    setFrom(f); setTo(t);
+    if (expandedId) {
+      loadData(expandedId, { from: f, to: t });
+      const g = (graphs || []).find(x => x.id === expandedId);
+      const pair = g ? findTrafficPair(graphs || [], g) : null;
+      if (pair) loadPairData(pair.id, { from: f, to: t });
+    }
+  };
 
   const loadGraphs = useCallback(async () => {
     try { setError(""); const r = await api.get("/admin/monitoring/graphs"); setGraphs(r.data || []); }
@@ -539,11 +554,13 @@ const GraphsTab = ({ isAdmin }) => {
     __pairMemberIds: { in: row.inGraph?.id, out: row.outGraph?.id },
   });
 
-  const exportGraph = async (id, fmt) => {
+  const exportGraph = async (id, fmt, pairId) => {
     const f = from || new Date(Date.now() - 7 * 86400 * 1000).toISOString();
     const t = to || new Date().toISOString();
     try {
-      const r = await api.get(`/admin/monitoring/graphs/${id}/export`, { params: { from: f, to: t, fmt }, responseType: "blob" });
+      const params = { from: f, to: t, fmt };
+      if (pairId) params.pair_id = pairId;
+      const r = await api.get(`/admin/monitoring/graphs/${id}/export`, { params, responseType: "blob" });
       const url = window.URL.createObjectURL(new Blob([r.data]));
       const a = document.createElement("a"); a.href = url;
       a.download = `graph-${id}.${fmt}`; a.click(); window.URL.revokeObjectURL(url);
@@ -575,6 +592,12 @@ const GraphsTab = ({ isAdmin }) => {
               data-testid={`range-${r.label}`}
             >{r.label}</button>
           ))}
+        </div>
+        <div className="flex items-center gap-1 text-xs">
+          <input type="datetime-local" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className={`${inputClass} py-1.5`} />
+          <span className="text-slate-400">→</span>
+          <input type="datetime-local" onChange={e => setCustomTo(e.target.value)} value={customTo} className={`${inputClass} py-1.5`} />
+          <button className={btnSecondary} onClick={applyCustomRange}>Apply</button>
         </div>
         <label className="inline-flex items-center gap-2 text-sm text-slate-600 ml-auto">
           <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} /> Auto-refresh (30s)
@@ -622,6 +645,7 @@ const GraphsTab = ({ isAdmin }) => {
                           {isAdmin && (<>
                             <button className={btnSecondary} onClick={() => run(memberIds)} disabled={busy}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Probe</button>
                             <button className={btnSecondary} onClick={() => exportGraph(row.id, "pdf")}><Download className="h-4 w-4" /> PDF</button>
+                            <button className={btnSecondary} onClick={() => exportGraph(row.id, "csv", isPair ? row.outGraph?.id : undefined)}><Download className="h-4 w-4" /> CSV</button>
                             <button className={btnSecondary} onClick={() => setEditing(isPair ? pairToFormValue(row) : { ...g })}><Edit className="h-4 w-4" /></button>
                             <button className={btnDanger} onClick={() => remove(memberIds)}><Trash2 className="h-4 w-4" /></button>
                           </>)}
@@ -698,7 +722,7 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       if (byLabel.has(s.ts)) { if (primaryIsIn) byLabel.get(s.ts).out = s.value; else byLabel.get(s.ts).in = s.value; }
       else byLabel.set(s.ts, { ts: s.ts, in: primaryIsIn ? undefined : s.value, out: primaryIsIn ? s.value : undefined });
     });
-    return Array.from(byLabel.values());
+    return Array.from(byLabel.values()).sort((a, b) => a.ts - b.ts);
   }, [samples, pairSamples, primaryIsIn]);
 
   const unit = graph?.unit || (isTraffic ? "bps" : "");
@@ -733,8 +757,8 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
               <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
               <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} width={70} tick={{ fontSize: 10 }} />
               <Tooltip formatter={tooltipFormatter("bps")} labelFormatter={xTickFormatter} />
-              <Line hide={!showIn} type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
-              <Line hide={!showOut} type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
+              <Line hide={!showIn} type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} dot={false} connectNulls={false} />
+              <Line hide={!showOut} type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} dot={false} connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -749,7 +773,7 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
             <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
             <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} width={70} tick={{ fontSize: 10 }} />
             <Tooltip formatter={tooltipFormatter(unit)} labelFormatter={xTickFormatter} />
-            <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} />
+            <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>

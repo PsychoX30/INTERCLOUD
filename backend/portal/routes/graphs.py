@@ -385,15 +385,38 @@ async def graph_data(
     return {"graph_id": graph_id, "resolution": resolved_resolution, "data": data}
 
 
+def _merge_pair_rows(primary_rows: list[dict], pair_rows: list[dict]) -> list[dict]:
+    """Merge two direction series into combined {at, in, out} rows by timestamp."""
+    by_ts: dict[str, dict] = {}
+    for r in primary_rows:
+        ts = r["at"]
+        if isinstance(ts, datetime):
+            ts = ts.isoformat()
+        by_ts[ts] = {"at": r["at"], "in": r.get("value"), "out": None}
+    for r in pair_rows:
+        ts = r["at"]
+        if isinstance(ts, datetime):
+            ts = ts.isoformat()
+        entry = by_ts.get(ts)
+        if entry:
+            entry["out"] = r.get("value")
+        else:
+            by_ts[ts] = {"at": r["at"], "in": None, "out": r.get("value")}
+    return sorted(by_ts.values(), key=lambda x: x["at"] if isinstance(x["at"], datetime) else x["at"])
+
+
 @router.get("/admin/monitoring/graphs/{graph_id}/export")
 async def export_graph(
     graph_id: str,
     from_: str = Query(..., alias="from"),
     to: str = Query(...),
     resolution: str = Query("auto"),
+    fmt: str = Query("pdf", pattern="^(pdf|csv)$"),
+    pair_id: Optional[str] = Query(None, description="Sibling OUT/IN graph id to merge into a combined IN+OUT export"),
     staff=Depends(require_roles("admin", "support")),
 ):
-    """Export graph data as PDF (monitoring use only)."""
+    """Export graph data as PDF or CSV. When ``pair_id`` is given and fmt=csv,
+    merge the sibling traffic direction into combined IN/OUT columns."""
     db = await _get_db()
     query = {"_id": _oid(graph_id)}
     if staff.get("role") != "admin":
@@ -409,7 +432,10 @@ async def export_graph(
     if from_dt >= to_dt:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
     rows, _ = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
-    return graph_export_response(doc, rows, "pdf")
+    if fmt == "csv" and pair_id:
+        pair_rows, _ = await get_graph_data(db, pair_id, from_dt, to_dt, resolution=resolution)
+        rows = _merge_pair_rows(rows, pair_rows)
+    return graph_export_response(doc, rows, fmt)
 
 
 @router.post("/admin/monitoring/graphs/{graph_id}/run")

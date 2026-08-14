@@ -143,16 +143,49 @@ def _graph_export_pdf_bytes(graph: dict, rows: list[dict]) -> bytes:
 # ---------------------------------------------------------------------------
 # Public helpers for routes
 # ---------------------------------------------------------------------------
+def _graph_export_csv_bytes(graph: dict, rows: list[dict]) -> bytes:
+    """Return CSV bytes for graph data."""
+    import csv, io
+    output = io.StringIO()
+    writer = csv.writer(output)
+    sample = rows[0] if rows else {}
+    has_in_out = "in" in sample and "out" in sample
+    if has_in_out:
+        writer.writerow(["timestamp", "in_bps", "out_bps"])
+        for r in rows:
+            ts = r.get("at")
+            if ts:
+                if hasattr(ts, "isoformat"):
+                    ts = ts.isoformat()
+                writer.writerow([ts, r.get("in", ""), r.get("out", "")])
+    else:
+        unit = graph.get("unit") or ""
+        writer.writerow(["timestamp", f"value_{unit}" if unit else "value"])
+        for r in rows:
+            ts = r.get("at")
+            if ts:
+                if hasattr(ts, "isoformat"):
+                    ts = ts.isoformat()
+                writer.writerow([ts, r.get("value", "")])
+    return output.getvalue().encode("utf-8")
+
+
 def graph_export_response(graph: dict, rows: list[dict], fmt: str):
-    """Return a StreamingResponse for the given graph data as PDF."""
-    if fmt != "pdf":
-        raise ValueError("Only PDF export is supported for monitoring graphs")
-    data = _graph_export_pdf_bytes(graph, rows)
+    """Return a StreamingResponse for the given graph data as PDF or CSV."""
+    if fmt == "pdf":
+        data = _graph_export_pdf_bytes(graph, rows)
+        media_type = "application/pdf"
+    elif fmt == "csv":
+        data = _graph_export_csv_bytes(graph, rows)
+        media_type = "text/csv"
+    else:
+        raise ValueError(f"Unsupported export format: {fmt}")
     safe_name = "".join(c for c in (graph.get("name") or "graph") if c.isalnum() or c in "-_ ").strip().replace(" ", "-")
-    filename = f"{safe_name or 'graph'}.pdf"
+    ext = "pdf" if fmt == "pdf" else "csv"
+    filename = f"{safe_name or 'graph'}.{ext}"
 
     return StreamingResponse(
         BytesIO(data),
-        media_type="application/pdf",
+        media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
