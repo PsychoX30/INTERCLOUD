@@ -237,13 +237,17 @@ def _parse_walk_line(line: str):
     """Parse one snmpwalk output line into (oid, value).
 
     Handles both ``OID = TYPE: VALUE`` and ``OID = VALUE`` forms, plus
-    numeric string values.
+    numeric string values. ``snmpwalk -On`` prints a leading dot on the
+    OID; strip it so callers can compare against canonical numeric OIDs
+    without surprises.
     """
     line = line.strip()
     if not line or "=" not in line:
         return None, None
     oid_part, _, rest = line.partition("=")
     oid = oid_part.strip()
+    if oid.startswith("."):
+        oid = oid[1:]
     rest = rest.strip()
     value = rest
     if ":" in rest:

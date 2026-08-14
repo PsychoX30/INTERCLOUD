@@ -62,6 +62,23 @@ def test_is_hr_storage_ram_matches_numeric_and_symbolic():
     assert not mg._is_hr_storage_ram("1.3.6.1.2.1.25.2.1.4")
 
 
+def test_parse_walk_line_strips_leading_dot():
+    """snmpwalk -On prints a leading dot; normalize to canonical OID."""
+    oid, value = mg._parse_walk_line(
+        ".1.3.6.1.2.1.25.2.3.1.2.65536 = OID: iso.3.6.1.2.1.25.2.1.2"
+    )
+    assert oid == "1.3.6.1.2.1.25.2.3.1.2.65536"
+    assert value == "iso.3.6.1.2.1.25.2.1.2"
+
+
+def test_parse_walk_line_keeps_plain_numeric():
+    oid, value = mg._parse_walk_line(
+        ".1.3.6.1.2.1.25.2.3.1.6.65536 = Gauge32: 1234"
+    )
+    assert oid == "1.3.6.1.2.1.25.2.3.1.6.65536"
+    assert value == "1234"
+
+
 def test_storage_index_from_oid():
     assert mg._storage_index_from_oid("1.3.6.1.2.1.25.2.3.1.2.65536") == "65536"
     assert mg._storage_index_from_oid("1.3.6.1.2.1.25.2.3.1.2.1") == "1"
