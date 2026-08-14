@@ -644,8 +644,7 @@ const GraphsTab = ({ isAdmin }) => {
                           </button>
                           {isAdmin && (<>
                             <button className={btnSecondary} onClick={() => run(memberIds)} disabled={busy}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Probe</button>
-                            <button className={btnSecondary} onClick={() => exportGraph(row.id, "pdf")}><Download className="h-4 w-4" /> PDF</button>
-                            <button className={btnSecondary} onClick={() => exportGraph(row.id, "csv", isPair ? row.outGraph?.id : undefined)}><Download className="h-4 w-4" /> CSV</button>
+                            <button className={btnSecondary} onClick={() => exportGraph(row.id, "pdf", isPair ? row.outGraph?.id : undefined)}><Download className="h-4 w-4" /> PDF</button>
                             <button className={btnSecondary} onClick={() => setEditing(isPair ? pairToFormValue(row) : { ...g })}><Edit className="h-4 w-4" /></button>
                             <button className={btnDanger} onClick={() => remove(memberIds)}><Trash2 className="h-4 w-4" /></button>
                           </>)}
@@ -716,13 +715,27 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
   const primaryIsIn = graph?.type === "snmp_traffic_in";
   const merged = useMemo(() => {
     if (!pairSamples.length) return samples;
-    const byLabel = new Map();
-    samples.forEach(s => byLabel.set(s.ts, { ts: s.ts, in: primaryIsIn ? s.value : undefined, out: primaryIsIn ? undefined : s.value }));
-    pairSamples.forEach(s => {
-      if (byLabel.has(s.ts)) { if (primaryIsIn) byLabel.get(s.ts).out = s.value; else byLabel.get(s.ts).in = s.value; }
-      else byLabel.set(s.ts, { ts: s.ts, in: primaryIsIn ? undefined : s.value, out: primaryIsIn ? s.value : undefined });
+    // IN and OUT are polled as two separate SNMP GETs, so their sample
+    // timestamps differ by a few hundred milliseconds within the same polling
+    // interval. Keying the merge on the exact millisecond `ts` NEVER joins the
+    // two series — every row ends up with only one direction, so with
+    // connectNulls={false} the chart draws nothing (the flat-line symptom in
+    // the 1H view). Bucket both series to whole seconds before joining.
+    const secKey = (ts) => (ts == null ? null : Math.floor(ts / 1000) * 1000);
+    const byBucket = new Map();
+    samples.forEach(s => {
+      const key = secKey(s.ts);
+      if (key == null) return;
+      byBucket.set(key, { ts: s.ts, in: primaryIsIn ? s.value : undefined, out: primaryIsIn ? undefined : s.value });
     });
-    return Array.from(byLabel.values()).sort((a, b) => a.ts - b.ts);
+    pairSamples.forEach(s => {
+      const key = secKey(s.ts);
+      if (key == null) return;
+      const entry = byBucket.get(key);
+      if (entry) { if (primaryIsIn) entry.out = s.value; else entry.in = s.value; }
+      else byBucket.set(key, { ts: s.ts, in: primaryIsIn ? undefined : s.value, out: primaryIsIn ? s.value : undefined });
+    });
+    return Array.from(byBucket.values()).sort((a, b) => a.ts - b.ts);
   }, [samples, pairSamples, primaryIsIn]);
 
   const unit = graph?.unit || (isTraffic ? "bps" : "");

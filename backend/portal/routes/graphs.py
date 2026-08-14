@@ -422,12 +422,10 @@ async def export_graph(
     from_: str = Query(..., alias="from"),
     to: str = Query(...),
     resolution: str = Query("auto"),
-    fmt: str = Query("pdf", pattern="^(pdf|csv)$"),
-    pair_id: Optional[str] = Query(None, description="Sibling OUT/IN graph id to merge into a combined IN+OUT export"),
+    pair_id: Optional[str] = Query(None, description="Sibling OUT/IN graph id for a combined IN+OUT PDF"),
     staff=Depends(require_roles("admin", "support")),
 ):
-    """Export graph data as PDF or CSV. When ``pair_id`` is given and fmt=csv,
-    merge the sibling traffic direction into combined IN/OUT columns."""
+    """Export the selected time range as PDF, optionally combining IN and OUT."""
     db = await _get_db()
     query = {"_id": _oid(graph_id)}
     if staff.get("role") != "admin":
@@ -443,10 +441,10 @@ async def export_graph(
     if from_dt >= to_dt:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
     rows, _ = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
-    if fmt == "csv" and pair_id:
+    if pair_id:
         pair_rows, _ = await get_graph_data(db, pair_id, from_dt, to_dt, resolution=resolution)
         rows = _merge_pair_rows(rows, pair_rows)
-    return graph_export_response(doc, rows, fmt)
+    return graph_export_response(doc, rows)
 
 
 @router.post("/admin/monitoring/graphs/{graph_id}/run")
