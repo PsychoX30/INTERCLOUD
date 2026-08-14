@@ -89,7 +89,7 @@ const trafficBaseName = (g) => (g.display_name || g.name || "").replace(/\s*(in|
 const yTickFormatter = (unit) => (v) => {
   if (v == null || Number.isNaN(v)) return "";
   const u = (unit || "").toLowerCase();
-  if (u === "bps") return fmtBps(v).replace(/\s*(bps|kbps|Mbps|Gbps|Tbps)$/i, (m) => m.trim().replace(/^k?bps$/i, "").trim());
+  if (u === "bps") return fmtBps(v);
   if (u === "%") return `${Math.round(Number(v))}%`;
   if (u === "ms") return `${Math.round(Number(v))}`;
   return Number(v).toFixed(0);
@@ -730,8 +730,8 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={merged}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} />
-              <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} />
+              <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
+              <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} width={70} tick={{ fontSize: 10 }} />
               <Tooltip formatter={tooltipFormatter("bps")} labelFormatter={xTickFormatter} />
               <Line hide={!showIn} type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
               <Line hide={!showOut} type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
@@ -745,10 +745,10 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={samples}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} />
-            <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} />
-            <Tooltip formatter={tooltipFormatter(unit)} labelFormatter={xTickFormatter} />
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
+          <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} width={70} tick={{ fontSize: 10 }} />
+          <Tooltip formatter={tooltipFormatter(unit)} labelFormatter={xTickFormatter} />
             <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} />
           </LineChart>
         </ResponsiveContainer>
