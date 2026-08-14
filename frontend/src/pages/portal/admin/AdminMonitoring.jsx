@@ -122,6 +122,22 @@ const StatCard = ({ label, value, color }) => (
   </div>
 );
 
+const formatGraphTick = (timestamp, spanMs) => {
+  if (!timestamp) return "";
+  const d = new Date(timestamp);
+  if (spanMs <= 2 * 86400000) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (spanMs <= 14 * 86400000) return d.toLocaleDateString([], { day: "2-digit", month: "short" });
+  if (spanMs <= 180 * 86400000) return d.toLocaleDateString([], { day: "2-digit", month: "short" });
+  return d.toLocaleDateString([], { month: "short", year: "numeric" });
+};
+
+const graphSpanMs = (data) => {
+  const points = (data || []).map(s => new Date(s.at).getTime()).filter(Number.isFinite);
+  return points.length > 1 ? Math.max(...points) - Math.min(...points) : 0;
+};
+
+const chartTickFormatter = (spanMs) => (value) => formatGraphTick(value, spanMs);
+
 // ── Main wrapper ─────────────────────────────────────────────────
 const AdminMonitoring = () => {
   const { user } = useAuth() || {};
@@ -338,10 +354,20 @@ const GraphsTab = ({ isAdmin }) => {
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   // Range presets: set from/to for quick time range selection.
+  // Also immediately reload the open graph so the chart reflects the new range
+  // (previously the preset only set state; the chart never re-queried).
   const setRange = (hours) => {
     const t = new Date();
-    setFrom(new Date(t.getTime() - hours * 3600 * 1000).toISOString());
-    setTo(t.toISOString());
+    const f = new Date(t.getTime() - hours * 3600 * 1000).toISOString();
+    const toIso = t.toISOString();
+    setFrom(f);
+    setTo(toIso);
+    if (expandedId) {
+      loadData(expandedId, { from: f, to: toIso });
+      const g = (graphs || []).find(x => x.id === expandedId);
+      const pair = g ? findTrafficPair(graphs || [], g) : null;
+      if (pair) loadPairData(pair.id, { from: f, to: toIso });
+    }
   };
   const RANGES = [
     { label: "1H", hours: 1 },
@@ -374,31 +400,26 @@ const GraphsTab = ({ isAdmin }) => {
     } catch (e) { setError(e?.response?.data?.detail || "Failed to load graph data"); return null; }
   }, [from, to]);
 
+  const loadPairData = useCallback(async (pairId, opts = {}) => {
+    if (!pairId) return;
+    const f = opts.from || from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const t = opts.to || to || new Date().toISOString();
+    try {
+      const pr = await api.get(`/admin/monitoring/graphs/${pairId}/data`, { params: { from: f, to: t, resolution: "auto" } });
+      setPairData(pr.data);
+    } catch (e) { setPairData(null); }
+  }, [from, to]);
+
   const refreshData = useCallback(async () => {
     if (!expandedId) return;
     const data = await loadData(expandedId);
     if (data && graphs) {
       const g = graphs.find(x => x.id === expandedId);
       const pair = g ? findTrafficPair(graphs, g) : null;
-      if (pair) {
-        const f = from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-        const t = to || new Date().toISOString();
-        try {
-          const pr = await api.get(`/admin/monitoring/graphs/${pair.id}/data`, { params: { from: f, to: t, resolution: "auto" } });
-          setPairData(pr.data);
-        } catch (e) { setPairData(null); }
-      } else {
-        setPairData(null);
-      }
+      if (pair) await loadPairData(pair.id);
+      else setPairData(null);
     }
-  }, [expandedId, graphs, from, to, loadData]);
-
-  // Auto-refresh the open graph panel periodically so traffic feels realtime.
-  useEffect(() => {
-    if (!autoRefresh || !expandedId) return undefined;
-    const timer = setInterval(() => { refreshData(); }, 30000);
-    return () => clearInterval(timer);
-  }, [autoRefresh, expandedId, refreshData]);
+  }, [expandedId, graphs, loadData, loadPairData]);
 
   // Load sibling pair data whenever a graph is selected for viewing.
   useEffect(() => {
@@ -406,14 +427,15 @@ const GraphsTab = ({ isAdmin }) => {
     const g = graphs.find(x => x.id === expandedId);
     const pair = g ? findTrafficPair(graphs, g) : null;
     if (!pair) { setPairData(null); return; }
-    const f = from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const t = to || new Date().toISOString();
-    let cancelled = false;
-    api.get(`/admin/monitoring/graphs/${pair.id}/data`, { params: { from: f, to: t, resolution: "auto" } })
-      .then(r => { if (!cancelled) setPairData(r.data); })
-      .catch(() => { if (!cancelled) setPairData(null); });
-    return () => { cancelled = true; };
-  }, [expandedId, graphs, from, to]);
+    loadPairData(pair.id);
+  }, [expandedId, graphs, loadPairData]);
+
+  // Auto-refresh the open graph panel periodically so traffic feels realtime.
+  useEffect(() => {
+    if (!autoRefresh || !expandedId) return undefined;
+    const timer = setInterval(() => { refreshData(); }, 30000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, expandedId, refreshData]);
 
   const save = async (e) => {
     e.preventDefault();
@@ -647,9 +669,17 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
   const isTraffic = graph && (graph.type === "snmp_traffic_in" || graph.type === "snmp_traffic_out");
   const pair = isTraffic ? findTrafficPair(graphs || [], graph) : null;
 
-  const samples = (graphData.data || []).map(s => ({ ...s, label: s.at ? new Date(s.at).toLocaleTimeString() : "-" }));
-  const pairSamples = (pairData?.data || []).map(s => ({ ...s, label: s.at ? new Date(s.at).toLocaleTimeString() : "-" }));
+  const samples = (graphData.data || []).map(s => ({ ...s, at: s.at, ts: s.at ? new Date(s.at).getTime() : null }));
+  const pairSamples = (pairData?.data || []).map(s => ({ ...s, at: s.at, ts: s.at ? new Date(s.at).getTime() : null }));
   const title = graph?.display_name || graph?.name || `Graph ${graphData.graph_id}`;
+
+  // Span across both series drives the X-axis tick formatter: short spans
+  // show time-of-day, longer spans roll up to day/month/year to match
+  // Cacti/MRTG behaviour.  The same timestamp bucket is used as the merge
+  // key so the IN/OUT pair lines up even when the resolutions differ.
+  const seriesSpan = Math.max(graphSpanMs(samples), graphSpanMs(pairSamples));
+  const xTickFormatter = useMemo(() => chartTickFormatter(seriesSpan), [seriesSpan]);
+  const xDataKey = "ts";
 
   // Merge timelines for a single chart with IN and OUT series.
   // `graphData` is whichever direction the user opened; `pairData` is its sibling.
@@ -657,10 +687,10 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
   const merged = useMemo(() => {
     if (!pairSamples.length) return samples;
     const byLabel = new Map();
-    samples.forEach(s => byLabel.set(s.label, { label: s.label, in: primaryIsIn ? s.value : undefined, out: primaryIsIn ? undefined : s.value }));
+    samples.forEach(s => byLabel.set(s.ts, { ts: s.ts, in: primaryIsIn ? s.value : undefined, out: primaryIsIn ? undefined : s.value }));
     pairSamples.forEach(s => {
-      if (byLabel.has(s.label)) { if (primaryIsIn) byLabel.get(s.label).out = s.value; else byLabel.get(s.label).in = s.value; }
-      else byLabel.set(s.label, { label: s.label, in: primaryIsIn ? undefined : s.value, out: primaryIsIn ? s.value : undefined });
+      if (byLabel.has(s.ts)) { if (primaryIsIn) byLabel.get(s.ts).out = s.value; else byLabel.get(s.ts).in = s.value; }
+      else byLabel.set(s.ts, { ts: s.ts, in: primaryIsIn ? undefined : s.value, out: primaryIsIn ? s.value : undefined });
     });
     return Array.from(byLabel.values());
   }, [samples, pairSamples, primaryIsIn]);
@@ -694,9 +724,9 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={merged}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="label" minTickGap={24} />
+              <XAxis dataKey={xDataKey} tickFormatter={xTickFormatter} minTickGap={24} />
               <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} />
-              <Tooltip formatter={tooltipFormatter("bps")} />
+              <Tooltip formatter={tooltipFormatter("bps")} labelFormatter={xTickFormatter} />
               <Line hide={!showIn} type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
               <Line hide={!showOut} type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} connectNulls={false} />
             </LineChart>
@@ -710,9 +740,9 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={samples}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="label" minTickGap={24} />
+            <XAxis dataKey={xDataKey} tickFormatter={xTickFormatter} minTickGap={24} />
             <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} />
-            <Tooltip formatter={tooltipFormatter(unit)} />
+            <Tooltip formatter={tooltipFormatter(unit)} labelFormatter={xTickFormatter} />
             <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} />
           </LineChart>
         </ResponsiveContainer>

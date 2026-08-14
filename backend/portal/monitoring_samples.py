@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 
 from pymongo import ASCENDING, DESCENDING
 
+# Maximum number of raw samples fetched for on-the-fly consolidation.
+# Raw TTL is 7 days at ~60s intervals = ~10k docs max per graph, but
+# we cap to stay safe with high-frequency polling (20s → ~30k/7d).
+_RAW_FETCH_LIMIT = 30_000
+
 
 async def insert_sample(
     db,
@@ -29,6 +34,63 @@ async def insert_sample(
     return doc
 
 
+def _resolve_tier(span: timedelta) -> str:
+    """Pick the target bucket size for a given time span.
+
+    Mirrors RRDTool's RRA selection: choose the finest archive whose
+    step produces a reasonable number of points for the requested range.
+    """
+    if span <= timedelta(hours=6):
+        return "raw"
+    elif span <= timedelta(days=7):
+        return "hourly"
+    else:
+        return "daily"
+
+
+def _bucket_start(dt: datetime, tier: str) -> datetime:
+    """Truncate *dt* to the start of its bucket for the given tier."""
+    if tier == "raw":
+        return dt
+    elif tier == "hourly":
+        return dt.replace(minute=0, second=0, microsecond=0)
+    else:  # daily
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _consolidate(samples: list[dict], tier: str) -> list[dict]:
+    """On-the-fly consolidation of raw/finer samples into bucketed points.
+
+    Groups by bucket start, computes avg/min/max per bucket — same math
+    as the background rollup, but done at read time so charts always
+    have data even before the scheduled downsample runs.
+    """
+    if tier == "raw":
+        return samples
+
+    buckets: dict[datetime, list[float]] = defaultdict(list)
+    for s in samples:
+        at = s["at"]
+        if isinstance(at, str):
+            at = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        v = s.get("value")
+        if isinstance(v, (int, float)):
+            buckets[_bucket_start(at, tier)].append(float(v))
+
+    result = []
+    for bucket_start in sorted(buckets):
+        vals = buckets[bucket_start]
+        if not vals:
+            continue
+        result.append({
+            "at": bucket_start,
+            "value": sum(vals) / len(vals),
+            "min": min(vals),
+            "max": max(vals),
+        })
+    return result
+
+
 async def get_graph_data(
     db,
     graph_id: str,
@@ -36,71 +98,85 @@ async def get_graph_data(
     to_dt: datetime,
     *,
     resolution: str = "auto",
-) -> list[dict]:
+) -> tuple[list[dict], str]:
     """Return graph data for chart rendering, auto-selecting tier based on range.
 
-    Tiers:
-    - raw: ≤ 6 hours, 60s samples, TTL 7 days
-    - hourly: ≤ 7 days, avg/max/min per hour, TTL 90 days
-    - daily: > 7 days, avg/max/min per day, TTL 2 years
+    Uses a hybrid approach inspired by RRDTool:
+    1. Select target bucket size (raw / hourly / daily) from the span.
+    2. Fetch pre-computed rollups for the target tier (fast for historical data).
+    3. If rollups are sparse or missing, fetch raw samples and consolidate
+       on-the-fly (covers the gap before the scheduled downsample runs).
+    4. For large ranges (> 7 days) where raw has TTL-expired, merge multiple
+       tiers: daily rollups for older data + on-the-fly raw for recent data.
+
+    Returns (data_points, resolution_name).
     """
     span = to_dt - from_dt
 
-    auto = resolution == "auto"
-    if auto:
-        if span <= timedelta(hours=6):
-            resolution = "raw"
-        elif span <= timedelta(days=7):
-            resolution = "hourly"
-        else:
-            resolution = "daily"
+    if resolution == "auto":
+        resolution = _resolve_tier(span)
 
-    async def _fetch_raw() -> list[dict]:
+    async def _fetch_raw(lte: datetime | None = None, gte: datetime | None = None) -> list[dict]:
+        query: dict = {"graph_id": graph_id, "at": {"$gte": gte if gte is not None else from_dt}}
+        query["at"]["$lte"] = lte if lte is not None else to_dt
         cursor = db.monitoring_graph_samples_raw.find(
-            {"graph_id": graph_id, "at": {"$gte": from_dt, "$lte": to_dt}}
+            query,
+            {"_id": 0, "at": 1, "value": 1},
         ).sort("at", ASCENDING)
-        return await cursor.to_list(length=None)
+        return await cursor.to_list(length=_RAW_FETCH_LIMIT)
 
-    async def _fetch_hourly() -> list[dict]:
+    async def _fetch_hourly(lte: datetime | None = None) -> list[dict]:
+        query: dict = {"graph_id": graph_id, "hour": {"$gte": from_dt}}
+        if lte is not None:
+            query["hour"]["$lte"] = lte
+        else:
+            query["hour"]["$lte"] = to_dt
         cursor = db.monitoring_graph_samples_hourly.find(
-            {"graph_id": graph_id, "hour": {"$gte": from_dt, "$lte": to_dt}}
+            query,
+            {"_id": 0, "hour": 1, "avg": 1, "min": 1, "max": 1},
         ).sort("hour", ASCENDING)
         return [
             {"at": doc["hour"], "value": doc["avg"], "min": doc["min"], "max": doc["max"]}
             for doc in await cursor.to_list(length=None)
         ]
 
-    async def _fetch_daily() -> list[dict]:
+    async def _fetch_daily(lte: datetime | None = None) -> list[dict]:
+        query: dict = {"graph_id": graph_id, "date": {"$gte": from_dt}}
+        if lte is not None:
+            query["date"]["$lte"] = lte
+        else:
+            query["date"]["$lte"] = to_dt
         cursor = db.monitoring_graph_samples_daily.find(
-            {"graph_id": graph_id, "date": {"$gte": from_dt, "$lte": to_dt}}
+            query,
+            {"_id": 0, "date": 1, "avg": 1, "min": 1, "max": 1},
         ).sort("date", ASCENDING)
         return [
             {"at": doc["date"], "value": doc["avg"], "min": doc["min"], "max": doc["max"]}
             for doc in await cursor.to_list(length=None)
         ]
 
-    fetchers = {"raw": _fetch_raw, "hourly": _fetch_hourly, "daily": _fetch_daily}
+    if resolution == "raw":
+        return await _fetch_raw(), resolution
 
-    data = await fetchers[resolution]()
+    # Overlay archives by target bucket, from coarsest to finest. A finer tier
+    # replaces the same bucket from a coarser tier, preventing duplicate points
+    # while filling recent buckets that the scheduled rollup has not produced.
+    by_bucket: dict[datetime, dict] = {}
 
-    # Fallback for auto-selected resolution: rollup tiers are populated by
-    # scheduled downsample jobs (hourly at :15, daily after). A freshly created
-    # graph has raw samples immediately but no rollups yet, so an auto range of
-    # 1D/1W/1M/1Y would render an empty chart until the first downsample runs.
-    # Progressively fall back to finer tiers so recent data always shows. Raw is
-    # capped by a 7-day TTL, so falling back to raw stays bounded.
-    if not data and auto:
-        fallback_order = {
-            "daily": ["hourly", "raw"],
-            "hourly": ["raw"],
-            "raw": [],
-        }
-        for tier in fallback_order.get(resolution, []):
-            data = await fetchers[tier]()
-            if data:
-                break
+    if resolution == "daily":
+        for point in await _fetch_daily():
+            by_bucket[_bucket_start(point["at"], "daily")] = point
+        for point in _consolidate(await _fetch_hourly(), "daily"):
+            by_bucket[point["at"]] = point
 
-    return data
+    if resolution == "hourly":
+        for point in await _fetch_hourly():
+            by_bucket[_bucket_start(point["at"], "hourly")] = point
+
+    for point in _consolidate(await _fetch_raw(), resolution):
+        by_bucket[point["at"]] = point
+
+    return [by_bucket[key] for key in sorted(by_bucket)], resolution
 
 
 async def ensure_indexes(db):

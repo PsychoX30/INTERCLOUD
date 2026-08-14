@@ -381,8 +381,8 @@ async def graph_data(
     if from_dt >= to_dt:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
 
-    data = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
-    return {"graph_id": graph_id, "resolution": resolution, "data": data}
+    data, resolved_resolution = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
+    return {"graph_id": graph_id, "resolution": resolved_resolution, "data": data}
 
 
 @router.get("/admin/monitoring/graphs/{graph_id}/export")
@@ -408,7 +408,7 @@ async def export_graph(
         raise HTTPException(status_code=400, detail="Invalid date format (use ISO 8601)")
     if from_dt >= to_dt:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
-    rows = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
+    rows, _ = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
     return graph_export_response(doc, rows, "pdf")
 
 
@@ -467,8 +467,8 @@ async def client_graph_data(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format (use ISO 8601)")
 
-    data = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
-    return {"graph_id": graph_id, "resolution": resolution, "data": data}
+    data, resolved_resolution = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
+    return {"graph_id": graph_id, "resolution": resolved_resolution, "data": data}
 
 
 # ---------------------------------------------------------------------------

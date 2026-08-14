@@ -265,7 +265,7 @@ async def test_graph_data_admin_can_access_any(db):
         "visible_roles": ["admin"],
     }]
     # Mock get_graph_data to avoid needing real samples
-    routes.get_graph_data = AsyncMock(return_value=[])
+    routes.get_graph_data = AsyncMock(return_value=([], "raw"))
     out = await routes.graph_data(
         gid, from_="2026-01-01T00:00:00Z", to="2026-01-02T00:00:00Z",
         staff={"role": "admin"},
