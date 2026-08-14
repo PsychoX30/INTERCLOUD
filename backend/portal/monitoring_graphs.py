@@ -179,6 +179,7 @@ _IF_OUT_OID = "1.3.6.1.2.1.2.2.1.16"         # ifOutOctets  (32-bit fallback)
 # MikroTik RouterOS, not UCD-SNMP-MIB (Linux-only net-snmp) OIDs.
 _HR_STORAGE_TYPE_OID = "1.3.6.1.2.1.25.2.3.1.2"
 _HR_STORAGE_RAM_TYPE = "1.3.6.1.2.1.25.2.1.2"
+_HR_STORAGE_ALLOCATION_UNITS_OID = "1.3.6.1.2.1.25.2.3.1.4"
 _HR_STORAGE_USED_OID = "1.3.6.1.2.1.25.2.3.1.6"
 _HR_STORAGE_SIZE_OID = "1.3.6.1.2.1.25.2.3.1.5"
 
@@ -460,9 +461,14 @@ async def discover_snmp_sensors(target: str, community: str = "public",
                 target, _HR_STORAGE_SIZE_OID, community, port, version,
                 user, auth_protocol, auth_key, priv_protocol, priv_key, timeout,
             )
+            alloc_rows = await _walk_oid(
+                target, _HR_STORAGE_ALLOCATION_UNITS_OID, community, port, version,
+                user, auth_protocol, auth_key, priv_protocol, priv_key, timeout,
+            )
             multi_ram = len(ram_indexes) > 1
             for idx in sorted(ram_indexes, key=lambda x: (len(x), x)):
                 suffix = f" #{idx}" if multi_ram else ""
+                alloc_value = alloc_rows.get(f"{_HR_STORAGE_ALLOCATION_UNITS_OID}.{idx}")
                 for base_oid, rows, label in (
                     (_HR_STORAGE_USED_OID, used_rows, "Memory Used"),
                     (_HR_STORAGE_SIZE_OID, size_rows, "Memory Total"),
@@ -470,7 +476,7 @@ async def discover_snmp_sensors(target: str, community: str = "public",
                     oid = f"{base_oid}.{idx}"
                     if oid not in rows:
                         continue
-                    sensors.append({
+                    sensor = {
                         "oid": oid,
                         "label": f"{label}{suffix}",
                         # hrStorage rows are in allocation units, not always KB.
@@ -478,7 +484,10 @@ async def discover_snmp_sensors(target: str, community: str = "public",
                         "kind": "snmp_memory",
                         "value": rows[oid],
                         "category": "system",
-                    })
+                    }
+                    if alloc_value is not None:
+                        sensor["hr_storage_allocation_units"] = alloc_value
+                    sensors.append(sensor)
     except FileNotFoundError:
         return {"ok": False, "sensors": [], "error": "snmpwalk not installed",
                 "target": target}

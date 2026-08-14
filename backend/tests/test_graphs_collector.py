@@ -154,6 +154,8 @@ async def test_discover_snmp_sensors_finds_memory_by_hr_storage_type(monkeypatch
                 f"{mg._HR_STORAGE_TYPE_OID}.1": "hrStorageRam",
                 f"{mg._HR_STORAGE_TYPE_OID}.2": "hrStorageVirtualMemory",
             }
+        if base_oid == mg._HR_STORAGE_ALLOCATION_UNITS_OID:
+            return {f"{mg._HR_STORAGE_ALLOCATION_UNITS_OID}.1": "1024"}
         if base_oid == mg._HR_STORAGE_USED_OID:
             return {f"{mg._HR_STORAGE_USED_OID}.1": "1234"}
         if base_oid == mg._HR_STORAGE_SIZE_OID:
@@ -172,6 +174,7 @@ async def test_discover_snmp_sensors_finds_memory_by_hr_storage_type(monkeypatch
     used_sensor = next(s for s in memory_sensors if s["label"] == "Memory Used")
     assert used_sensor["oid"] == "1.3.6.1.2.1.25.2.3.1.6.1"
     assert used_sensor["value"] == "1234"
+    assert used_sensor.get("hr_storage_allocation_units") == "1024"
 
 
 @pytest.mark.anyio
