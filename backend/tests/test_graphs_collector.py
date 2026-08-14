@@ -57,6 +57,7 @@ def test_system_sensor_oids_are_hr_mib_compatible():
 
 def test_is_hr_storage_ram_matches_numeric_and_symbolic():
     assert mg._is_hr_storage_ram("1.3.6.1.2.1.25.2.1.2")
+    assert mg._is_hr_storage_ram(".1.3.6.1.2.1.25.2.1.2")
     assert mg._is_hr_storage_ram('"1.3.6.1.2.1.25.2.1.2"')
     assert mg._is_hr_storage_ram("hrStorageRam")
     assert not mg._is_hr_storage_ram("1.3.6.1.2.1.25.2.1.4")

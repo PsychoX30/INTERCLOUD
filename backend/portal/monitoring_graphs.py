@@ -209,8 +209,15 @@ def _storage_index_from_oid(oid: str) -> str:
 
 
 def _is_hr_storage_ram(value: str) -> bool:
-    """Match hrStorageRam whether snmpwalk prints numeric or symbolic value."""
+    """Match hrStorageRam whether snmpwalk prints numeric or symbolic value.
+
+    ``snmpwalk -On`` may prefix OID values with a leading dot (e.g.
+    ``.1.3.6.1.2.1.25.2.1.2``); strip it before comparing against the
+    canonical numeric OID.
+    """
     normalized = str(value or "").strip().strip('"')
+    if normalized.startswith("."):
+        normalized = normalized[1:]
     return normalized == _HR_STORAGE_RAM_TYPE or normalized.lower() == "hrstorageram"
 
 
