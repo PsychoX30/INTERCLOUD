@@ -635,6 +635,8 @@ const GraphsTab = ({ isAdmin }) => {
                                 graphData={graphData}
                                 pairData={pairData}
                                 graphs={graphs || []}
+                                from={from}
+                                to={to}
                                 onClose={() => { setExpandedId(null); setGraphData(null); setPairData(null); }}
                               /> : <Loading label="Loading graph data…" />}
                             </div>
@@ -662,7 +664,7 @@ const GraphsTab = ({ isAdmin }) => {
   );
 };
 
-const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
+const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
   const [expanded, setExpanded] = useState(true);
   const [trafficView, setTrafficView] = useState("both");
   const graph = (graphs || []).find(g => g.id === graphData.graph_id);
@@ -673,13 +675,17 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
   const pairSamples = (pairData?.data || []).map(s => ({ ...s, at: s.at, ts: s.at ? new Date(s.at).getTime() : null }));
   const title = graph?.display_name || graph?.name || `Graph ${graphData.graph_id}`;
 
-  // Span across both series drives the X-axis tick formatter: short spans
-  // show time-of-day, longer spans roll up to day/month/year to match
-  // Cacti/MRTG behaviour.  The same timestamp bucket is used as the merge
-  // key so the IN/OUT pair lines up even when the resolutions differ.
-  const seriesSpan = Math.max(graphSpanMs(samples), graphSpanMs(pairSamples));
-  const xTickFormatter = useMemo(() => chartTickFormatter(seriesSpan), [seriesSpan]);
+  // The X-axis spans the full user-selected range (from/to), not just the
+  // points present, so a 1W view with only 3 days of data still shows the
+  // whole week with empty buckets rendered as gaps.  The span of that range
+  // drives the tick formatter: short ranges show time-of-day, longer ranges
+  // roll up to day/month/year to match Cacti/MRTG behaviour.
+  const fromMs = from ? new Date(from).getTime() : null;
+  const toMs = to ? new Date(to).getTime() : null;
+  const rangeSpan = fromMs && toMs && toMs > fromMs ? toMs - fromMs : Math.max(graphSpanMs(samples), graphSpanMs(pairSamples));
+  const xTickFormatter = useMemo(() => chartTickFormatter(rangeSpan), [rangeSpan]);
   const xDataKey = "ts";
+  const xDomain = (fromMs && toMs && toMs > fromMs) ? [fromMs, toMs] : undefined;
 
   // Merge timelines for a single chart with IN and OUT series.
   // `graphData` is whichever direction the user opened; `pairData` is its sibling.
@@ -724,7 +730,7 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={merged}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xDataKey} tickFormatter={xTickFormatter} minTickGap={24} />
+              <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} />
               <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} />
               <Tooltip formatter={tooltipFormatter("bps")} labelFormatter={xTickFormatter} />
               <Line hide={!showIn} type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
@@ -740,7 +746,7 @@ const GraphDataPanel = ({ graphData, pairData, graphs, onClose }) => {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={samples}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={xDataKey} tickFormatter={xTickFormatter} minTickGap={24} />
+            <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} />
             <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} />
             <Tooltip formatter={tooltipFormatter(unit)} labelFormatter={xTickFormatter} />
             <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} />
