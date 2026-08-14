@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api } from "../../../portal/api";
+import { api, formatApiError } from "../../../portal/api";
 import { Card, btnSecondary, inputClass, labelClass } from "../ui";
 import { SlidersHorizontal, Plus, Trash2, Pencil, X, Check, Loader2 } from "lucide-react";
 
@@ -26,7 +26,20 @@ export const ThresholdRules = () => {
   useEffect(() => { load(); }, []);
 
   const openNew = () => { setForm(EMPTY); setEditing("new"); };
-  const openEdit = (r) => { setForm({ ...r, scope_prefixes: (r.scope_prefixes || []).join(", ") }); setEditing(r.id); };
+  const openEdit = (r) => {
+    setForm({
+      ...EMPTY,
+      ...r,
+      name: String(r.name || ""),
+      threshold: Number(r.threshold ?? EMPTY.threshold),
+      window_s: Number(r.window_s ?? EMPTY.window_s),
+      scope_prefixes: Array.isArray(r.scope_prefixes)
+        ? r.scope_prefixes.join(", ")
+        : String(r.scope_prefixes || ""),
+    });
+    setErr("");
+    setEditing(r.id);
+  };
 
   const payload = (f) => ({
     name: f.name, metric: f.metric, threshold: Number(f.threshold),
@@ -39,7 +52,12 @@ export const ThresholdRules = () => {
   });
 
   const save = async () => {
-    if (!form.name.trim()) return;
+    const n = (form.name || "").trim();
+    const t = Number(form.threshold);
+    const w = Number(form.window_s);
+    if (n.length < 2) { setErr("Nama rule minimal 2 karakter"); return; }
+    if (!t || t <= 0) { setErr("Ambang batas harus lebih dari 0"); return; }
+    if (!w || w < 60) { setErr("Window minimal 60 detik"); return; }
     setBusy(true); setErr("");
     try {
       if (editing === "new") await api.post("/admin/noc/threshold-rules", payload(form));
@@ -47,18 +65,28 @@ export const ThresholdRules = () => {
       setEditing(null);
       load();
     } catch (e) {
-      setErr(e?.response?.data?.detail || "Gagal menyimpan rule");
+      setErr(formatApiError(e) || "Gagal menyimpan rule");
     } finally { setBusy(false); }
   };
 
   const del = async (id) => {
     if (!window.confirm("Hapus rule ini?")) return;
-    await api.delete(`/admin/noc/threshold-rules/${id}`);
-    load();
+    setBusy(true); setErr("");
+    try {
+      await api.delete(`/admin/noc/threshold-rules/${id}`);
+      load();
+    } catch (e) {
+      setErr(formatApiError(e) || "Gagal menghapus rule");
+    } finally { setBusy(false); }
   };
   const toggle = async (r) => {
-    await api.put(`/admin/noc/threshold-rules/${r.id}`, payload({ ...r, enabled: !r.enabled }));
-    load();
+    setBusy(true); setErr("");
+    try {
+      await api.put(`/admin/noc/threshold-rules/${r.id}`, payload({ ...r, enabled: !r.enabled }));
+      load();
+    } catch (e) {
+      setErr(formatApiError(e) || "Gagal mengubah status rule");
+    } finally { setBusy(false); }
   };
 
   return (

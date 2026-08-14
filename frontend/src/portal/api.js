@@ -16,6 +16,24 @@ api.interceptors.request.use((cfg) => {
 api.interceptors.response.use(
   (r) => r,
   (err) => {
+    // FastAPI returns Pydantic validation errors as `detail` being an ARRAY of
+    // objects ({type, loc, msg, input, ctx, url}) or a plain object, not a
+    // string. Many components render `e?.response?.data?.detail` directly in
+    // JSX, which crashes React with error #31 ("Objects are not valid as a
+    // React child") and blanks the whole page. Normalize `detail` to a string
+    // here so every consumer is safe.
+    const data = err?.response?.data;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const d = data.detail;
+      if (Array.isArray(d)) {
+        data.detail = d
+          .map((e) => (e && typeof e === "object" ? e.msg || JSON.stringify(e) : String(e)))
+          .filter(Boolean)
+          .join(" ");
+      } else if (d && typeof d === "object") {
+        data.detail = d.message || d.msg || JSON.stringify(d);
+      }
+    }
     if (err?.response?.status === 401) {
       localStorage.removeItem(TOKEN_KEY);
       if (!window.location.pathname.startsWith("/portal/login")) {
