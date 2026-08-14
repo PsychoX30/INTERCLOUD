@@ -177,6 +177,11 @@ _IF_OUT_OID = "1.3.6.1.2.1.2.2.1.16"         # ifOutOctets  (32-bit fallback)
 # System scalar sensors (not per-interface).
 # Use HOST-RESOURCES-MIB (HR-MIB) OIDs which are standard and supported by
 # MikroTik RouterOS, not UCD-SNMP-MIB (Linux-only net-snmp) OIDs.
+_HR_STORAGE_TYPE_OID = "1.3.6.1.2.1.25.2.3.1.2"
+_HR_STORAGE_RAM_TYPE = "1.3.6.1.2.1.25.2.1.2"
+_HR_STORAGE_USED_OID = "1.3.6.1.2.1.25.2.3.1.6"
+_HR_STORAGE_SIZE_OID = "1.3.6.1.2.1.25.2.3.1.5"
+
 _SYSTEM_SENSORS = {
     "cpu_load": {
         # hrProcessorLoad (percentage per core). We average across all cores
@@ -186,20 +191,8 @@ _SYSTEM_SENSORS = {
         "unit": "%",
         "kind": "snmp_cpu",
     },
-    "memory_used": {
-        # hrStorageUsed for main memory (index 65536). Memory % computed as
-        # used/total * 100. Total is hrStorageSize at same index.
-        "oid": "1.3.6.1.2.1.25.2.3.1.6.65536",  # HR-MIB hrStorageUsed (KB)
-        "label": "Memory Used",
-        "unit": "KB",
-        "kind": "snmp_memory",
-    },
-    "memory_total": {
-        "oid": "1.3.6.1.2.1.25.2.3.1.5.65536",  # HR-MIB hrStorageSize (KB)
-        "label": "Memory Total",
-        "unit": "KB",
-        "kind": "snmp_memory",
-    },
+    # Memory is discovered dynamically from hrStorageType. The RAM row index
+    # is not portable; 65536 only happens to be used by some net-snmp devices.
     "system_uptime": {
         "oid": "1.3.6.1.2.1.1.3.0",          # sysUpTime (standard SNMPv2-MIB)
         "label": "System Uptime",
@@ -207,6 +200,17 @@ _SYSTEM_SENSORS = {
         "kind": "snmp_uptime",
     },
 }
+
+
+def _storage_index_from_oid(oid: str) -> str:
+    """Return the table index suffix from an hrStorageTable OID."""
+    return oid.rsplit(".", 1)[-1]
+
+
+def _is_hr_storage_ram(value: str) -> bool:
+    """Match hrStorageRam whether snmpwalk prints numeric or symbolic value."""
+    normalized = str(value or "").strip().strip('"')
+    return normalized == _HR_STORAGE_RAM_TYPE or normalized.lower() == "hrstorageram"
 
 
 def _build_discovery_cmd(target, base_oid, community, port, version,
@@ -432,6 +436,56 @@ async def discover_snmp_sensors(target: str, community: str = "public",
             errors.append(f"{key}: timeout")
         except Exception as exc:
             errors.append(f"{key}: {exc}")
+
+    # ---- Memory: resolve the RAM row index from hrStorageType instead of
+    # ---- assuming index 65536, which is not portable across vendors.
+    try:
+        storage_types = await _walk_oid(
+            target, _HR_STORAGE_TYPE_OID, community, port, version,
+            user, auth_protocol, auth_key, priv_protocol, priv_key, timeout,
+        )
+        ram_indexes = [
+            _storage_index_from_oid(oid)
+            for oid, value in storage_types.items()
+            if _is_hr_storage_ram(value)
+        ]
+        if not ram_indexes:
+            errors.append("memory: no hrStorageRam row")
+        else:
+            used_rows = await _walk_oid(
+                target, _HR_STORAGE_USED_OID, community, port, version,
+                user, auth_protocol, auth_key, priv_protocol, priv_key, timeout,
+            )
+            size_rows = await _walk_oid(
+                target, _HR_STORAGE_SIZE_OID, community, port, version,
+                user, auth_protocol, auth_key, priv_protocol, priv_key, timeout,
+            )
+            multi_ram = len(ram_indexes) > 1
+            for idx in sorted(ram_indexes, key=lambda x: (len(x), x)):
+                suffix = f" #{idx}" if multi_ram else ""
+                for base_oid, rows, label in (
+                    (_HR_STORAGE_USED_OID, used_rows, "Memory Used"),
+                    (_HR_STORAGE_SIZE_OID, size_rows, "Memory Total"),
+                ):
+                    oid = f"{base_oid}.{idx}"
+                    if oid not in rows:
+                        continue
+                    sensors.append({
+                        "oid": oid,
+                        "label": f"{label}{suffix}",
+                        # hrStorage rows are in allocation units, not always KB.
+                        "unit": "units",
+                        "kind": "snmp_memory",
+                        "value": rows[oid],
+                        "category": "system",
+                    })
+    except FileNotFoundError:
+        return {"ok": False, "sensors": [], "error": "snmpwalk not installed",
+                "target": target}
+    except asyncio.TimeoutError:
+        errors.append("memory: timeout")
+    except Exception as exc:
+        errors.append(f"memory: {exc}")
 
     # If we found nothing at all, the host likely does not respond to SNMP
     # with the given community/version. Report it so NOC can adjust.

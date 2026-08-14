@@ -48,8 +48,23 @@ def test_valid_visible_roles_contains_expected():
 def test_system_sensor_oids_are_hr_mib_compatible():
     """Discovery must use OIDs exposed by MikroTik, not Linux UCD-SNMP only OIDs."""
     assert mg._SYSTEM_SENSORS["cpu_load"]["oid"] == "1.3.6.1.2.1.25.3.3.1.2"
-    assert mg._SYSTEM_SENSORS["memory_used"]["oid"] == "1.3.6.1.2.1.25.2.3.1.6.65536"
     assert mg._SYSTEM_SENSORS["system_uptime"]["oid"] == "1.3.6.1.2.1.1.3.0"
+    # Memory is no longer a static OID: it's discovered dynamically from
+    # hrStorageType so the RAM row index isn't hardcoded to 65536.
+    assert "memory_used" not in mg._SYSTEM_SENSORS
+    assert "memory_total" not in mg._SYSTEM_SENSORS
+
+
+def test_is_hr_storage_ram_matches_numeric_and_symbolic():
+    assert mg._is_hr_storage_ram("1.3.6.1.2.1.25.2.1.2")
+    assert mg._is_hr_storage_ram('"1.3.6.1.2.1.25.2.1.2"')
+    assert mg._is_hr_storage_ram("hrStorageRam")
+    assert not mg._is_hr_storage_ram("1.3.6.1.2.1.25.2.1.4")
+
+
+def test_storage_index_from_oid():
+    assert mg._storage_index_from_oid("1.3.6.1.2.1.25.2.3.1.2.65536") == "65536"
+    assert mg._storage_index_from_oid("1.3.6.1.2.1.25.2.3.1.2.1") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +137,67 @@ async def test_poll_snmp_nonzero_returncode(monkeypatch):
     out = await mg.poll_snmp("8.8.8.8", "1.3.6.1", "public")
     assert out["error"] == "No Such Object"
     assert out["value"] is None
+
+
+# ---------------------------------------------------------------------------
+# discover_snmp_sensors memory row discovery
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_discover_snmp_sensors_finds_memory_by_hr_storage_type(monkeypatch):
+    """RAM index is not always 65536; discover it from hrStorageType."""
+
+    async def fake_walk(target, base_oid, *args, **kwargs):
+        if base_oid == mg._IF_NAME_OID:
+            return {}  # no interfaces in this focused test
+        if base_oid == mg._HR_STORAGE_TYPE_OID:
+            return {
+                f"{mg._HR_STORAGE_TYPE_OID}.1": "hrStorageRam",
+                f"{mg._HR_STORAGE_TYPE_OID}.2": "hrStorageVirtualMemory",
+            }
+        if base_oid == mg._HR_STORAGE_USED_OID:
+            return {f"{mg._HR_STORAGE_USED_OID}.1": "1234"}
+        if base_oid == mg._HR_STORAGE_SIZE_OID:
+            return {f"{mg._HR_STORAGE_SIZE_OID}.1": "4096"}
+        if base_oid == "1.3.6.1.2.1.1.3.0":
+            return {"1.3.6.1.2.1.1.3.0": "(123456) 1:23:45.67"}
+        return {}
+
+    monkeypatch.setattr(mg, "_walk_oid", fake_walk)
+    out = await mg.discover_snmp_sensors("8.8.8.8")
+    assert out["ok"] is True
+    memory_sensors = [s for s in out["sensors"] if s["kind"] == "snmp_memory"]
+    assert len(memory_sensors) == 2
+    labels = {s["label"] for s in memory_sensors}
+    assert labels == {"Memory Used", "Memory Total"}
+    used_sensor = next(s for s in memory_sensors if s["label"] == "Memory Used")
+    assert used_sensor["oid"] == "1.3.6.1.2.1.25.2.3.1.6.1"
+    assert used_sensor["value"] == "1234"
+
+
+@pytest.mark.anyio
+async def test_discover_snmp_sensors_numeric_hr_storage_type(monkeypatch):
+    """Some agents return the numeric OID for hrStorageRam instead of name."""
+
+    async def fake_walk(target, base_oid, *args, **kwargs):
+        if "if" in base_oid:
+            # crude but enough to avoid interface discovery
+            return {}
+        if base_oid == mg._HR_STORAGE_TYPE_OID:
+            return {f"{mg._HR_STORAGE_TYPE_OID}.65536": mg._HR_STORAGE_RAM_TYPE}
+        if base_oid == mg._HR_STORAGE_USED_OID:
+            return {f"{mg._HR_STORAGE_USED_OID}.65536": "500"}
+        if base_oid == mg._HR_STORAGE_SIZE_OID:
+            return {f"{mg._HR_STORAGE_SIZE_OID}.65536": "1000"}
+        return {}
+
+    monkeypatch.setattr(mg, "_walk_oid", fake_walk)
+    out = await mg.discover_snmp_sensors("8.8.8.8")
+    assert out["ok"] is True
+    used_sensor = next(
+        (s for s in out["sensors"] if s["label"] == "Memory Used"), None
+    )
+    assert used_sensor is not None
+    assert used_sensor["oid"] == "1.3.6.1.2.1.25.2.3.1.6.65536"
 
 
 # ---------------------------------------------------------------------------
