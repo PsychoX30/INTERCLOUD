@@ -745,10 +745,10 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={samples}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
-          <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} width={70} tick={{ fontSize: 10 }} />
-          <Tooltip formatter={tooltipFormatter(unit)} labelFormatter={xTickFormatter} />
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
+            <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter(unit)} width={70} tick={{ fontSize: 10 }} />
+            <Tooltip formatter={tooltipFormatter(unit)} labelFormatter={xTickFormatter} />
             <Line type="monotone" dataKey="value" name={unit ? unit.toUpperCase() : undefined} stroke="#0a2350" strokeWidth={2} />
           </LineChart>
         </ResponsiveContainer>
