@@ -386,23 +386,34 @@ async def graph_data(
 
 
 def _merge_pair_rows(primary_rows: list[dict], pair_rows: list[dict]) -> list[dict]:
-    """Merge two direction series into combined {at, in, out} rows by timestamp."""
-    by_ts: dict[str, dict] = {}
+    """Merge two direction series into combined {at, in, out} rows by timestamp.
+
+    IN and OUT are polled as separate documents, so their sample timestamps
+    are never bit-identical (they differ by milliseconds / the probe latency
+    between the two SNMP GETs). To line them up we normalize each timestamp to
+    whole seconds before joining; rows within the same second are treated as
+    the same polling interval.
+    """
+    def _key(at):
+        if isinstance(at, datetime):
+            return at.replace(microsecond=0)
+        return at
+
+    by_ts: dict = {}
     for r in primary_rows:
-        ts = r["at"]
-        if isinstance(ts, datetime):
-            ts = ts.isoformat()
-        by_ts[ts] = {"at": r["at"], "in": r.get("value"), "out": None}
+        key = _key(r["at"])
+        by_ts[key] = {"at": r["at"], "in": r.get("value"), "out": None}
     for r in pair_rows:
-        ts = r["at"]
-        if isinstance(ts, datetime):
-            ts = ts.isoformat()
-        entry = by_ts.get(ts)
+        key = _key(r["at"])
+        entry = by_ts.get(key)
         if entry:
             entry["out"] = r.get("value")
         else:
-            by_ts[ts] = {"at": r["at"], "in": None, "out": r.get("value")}
-    return sorted(by_ts.values(), key=lambda x: x["at"] if isinstance(x["at"], datetime) else x["at"])
+            by_ts[key] = {"at": r["at"], "in": None, "out": r.get("value")}
+    return sorted(
+        by_ts.values(),
+        key=lambda x: x["at"] if isinstance(x["at"], datetime) else x["at"],
+    )
 
 
 @router.get("/admin/monitoring/graphs/{graph_id}/export")
