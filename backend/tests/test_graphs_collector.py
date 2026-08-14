@@ -116,6 +116,39 @@ def test_clean_community_default_public():
     assert mg._clean_community(None) == "public"
 
 
+def test_clean_community_rejects_flag_injection():
+    with pytest.raises(ValueError):
+        mg._clean_community("-M/tmp")
+    with pytest.raises(ValueError):
+        mg._clean_community("-cpublic")
+
+
+def test_clean_oid_valid():
+    assert mg._clean_oid("1.3.6.1.2.1.1") == "1.3.6.1.2.1.1"
+    assert mg._clean_oid("0") == "0"
+    assert mg._clean_oid("0.0") == "0.0"
+    assert mg._clean_oid("1.0.0.1") == "1.0.0.1"
+
+
+def test_clean_oid_rejects_invalid():
+    with pytest.raises(ValueError):
+        mg._clean_oid("")
+    with pytest.raises(ValueError):
+        mg._clean_oid("1..2")          # empty component
+    with pytest.raises(ValueError):
+        mg._clean_oid("01.2")          # leading zero
+    with pytest.raises(ValueError):
+        mg._clean_oid(".1.2")          # leading dot
+    with pytest.raises(ValueError):
+        mg._clean_oid("1.2.")          # trailing dot
+    with pytest.raises(ValueError):
+        mg._clean_oid("1.2a")          # non-digit
+    with pytest.raises(ValueError):
+        mg._clean_oid("-1.3.6")        # flag injection
+    with pytest.raises(ValueError):
+        mg._clean_oid("-")             # just dash
+
+
 # ---------------------------------------------------------------------------
 # poll_snmp
 # ---------------------------------------------------------------------------

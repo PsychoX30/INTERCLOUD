@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -65,6 +66,12 @@ def _clean_oid(value) -> str:
         raise ValueError("snmp_oid is required for SNMP graph types")
     if len(oid) > 256:
         raise ValueError("snmp_oid must be at most 256 characters")
+    if oid.startswith("-"):
+        raise ValueError("snmp_oid must not start with '-'")
+    # Canonical numeric OID: one or more decimal numbers separated by dots,
+    # no leading zeros unless the number is exactly "0"
+    if not re.fullmatch(r"(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))*", oid):
+        raise ValueError("snmp_oid must be a valid numeric OID (e.g. 1.3.6.1.2.1.1)")
     return oid
 
 
@@ -72,6 +79,9 @@ def _clean_community(value) -> str:
     community = str(value or "public").strip()
     if len(community) > 64:
         raise ValueError("snmp_community must be at most 64 characters")
+    if community.startswith("-"):
+        # Prevents argv flag injection into snmpget/snmpwalk (e.g. "-M/tmp").
+        raise ValueError("snmp_community must not start with '-'")
     return community
 
 
