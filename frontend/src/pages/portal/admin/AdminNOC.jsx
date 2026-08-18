@@ -11,26 +11,33 @@ import { NotifChannels } from "./NotifChannels";
 import { BlackholeLog } from "./BlackholeLog";
 import { BGPBlackholeConfig } from "./BGPBlackholeConfig";
 import { DDoSWhitelist } from "./DDoSWhitelist";
+import { TablePager } from "./TablePager";
 
 const AdminNOC = () => {
   const [devices, setDevices] = useState([]);
   const [events, setEvents] = useState([]);
+  const [eventsTotal, setEventsTotal] = useState(0);
+  const [eventsPage, setEventsPage] = useState(0); // zero-based
+  const [eventsLimit] = useState(25);
+  const [eventsType, setEventsType] = useState(""); // filter
+  const [eventsOrder, setEventsOrder] = useState("desc"); // sort
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [d, e, t] = await Promise.all([
+      const [d, eRes, t] = await Promise.all([
         api.get("/admin/noc/devices"),
-        api.get("/admin/noc/events?limit=100"),
+        api.get(`/admin/noc/events?limit=${eventsLimit}&skip=${eventsPage * eventsLimit}&type=${eventsType || ""}&sort=at&order=${eventsOrder}&paginate=true`),
         api.get("/admin/tickets").catch(() => ({ data: [] })),
       ]);
       setDevices(d.data || []);
-      setEvents(e.data || []);
+      setEvents(eRes.data?.items || []);
+      setEventsTotal(eRes.data?.total ?? 0);
       setTickets((t.data || []).filter((tk) => tk.related_device_id));
     } finally { setLoading(false); }
-  }, []);
+  }, [eventsLimit, eventsPage, eventsType, eventsOrder]);
 
   useEffect(() => { load(); }, [load]);
   // Auto-refresh every 30 seconds so the operator sees new events without clicking
@@ -120,9 +127,19 @@ const AdminNOC = () => {
           <BlackholeLog />
 
           <Card className="overflow-hidden">
-            <div className="px-5 py-3 border-b border-slate-200 bg-slate-50">
-              <div className="text-xs font-bold uppercase tracking-widest text-slate-600">Recent Transition Events</div>
-              <div className="text-xs text-slate-500 mt-0.5">Only real up→down / down→up transitions are recorded - no flap noise.</div>
+            <div className="px-5 py-3 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-widest text-slate-600">Recent Transition Events</div>
+                <div className="text-xs text-slate-500 mt-0.5">Only real up→down / down→up transitions are recorded - no flap noise.</div>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <select className="rounded-lg border border-slate-300 px-2 py-1.5" value={eventsType} onChange={(e) => { setEventsType(e.target.value); setEventsPage(0); }}>
+                  <option value="">Semua tipe</option><option value="device_down">Down</option><option value="device_up">Up</option>
+                </select>
+                <select className="rounded-lg border border-slate-300 px-2 py-1.5" value={eventsOrder} onChange={(e) => { setEventsOrder(e.target.value); setEventsPage(0); }}>
+                  <option value="desc">Terbaru</option><option value="asc">Terlama</option>
+                </select>
+              </div>
             </div>
             {events.length === 0 ? (
               <div className="p-6"><EmptyState title="No transitions yet" body="Devices haven't changed state since monitoring started." /></div>
@@ -165,6 +182,9 @@ const AdminNOC = () => {
                   </tbody>
                 </table>
               </div>
+            )}
+            {eventsTotal > eventsLimit && (
+              <TablePager page={eventsPage} total={eventsTotal} limit={eventsLimit} onPage={setEventsPage} testid="noc-events-pager" />
             )}
           </Card>
 

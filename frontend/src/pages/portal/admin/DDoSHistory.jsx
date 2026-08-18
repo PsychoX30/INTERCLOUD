@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { Card } from "../ui";
 import { History, Mail, ShieldCheck, ShieldOff, ShieldAlert, Filter } from "lucide-react";
+import { TablePager } from "./TablePager";
 
 const STATUS_META = {
   active: { label: "Aktif", cls: "bg-red-100 text-red-700 border-red-300", icon: ShieldAlert },
@@ -45,15 +46,21 @@ const fmtPeak = (h) => {
 
 export const DDoSHistory = () => {
   const [filter, setFilter] = useState("all");
+  const [order, setOrder] = useState("desc");
+  const [page, setPage] = useState(0);
+  const LIMIT = 25;
   const [history, setHistory] = useState(null);
+  const [total, setTotal] = useState(0);
 
   useEffect(() => {
-    api.get("/admin/noc/ddos/incidents", { params: { limit: 100 } })
-      .then((r) => setHistory(r.data))
-      .catch(() => setHistory([]));
-  }, []);
+    const params = { limit: LIMIT, skip: page * LIMIT, order, paginate: true };
+    if (filter !== "all") params.status = filter;
+    api.get("/admin/noc/ddos/incidents", { params })
+      .then((r) => { setHistory(r.data?.items ?? []); setTotal(r.data?.total ?? 0); })
+      .catch(() => { setHistory([]); setTotal(0); });
+  }, [filter, order, page]);
 
-  const rows = filter === "all" ? (history || []) : (history || []).filter((h) => h.status === filter);
+  const rows = history || [];
 
   return (
     <Card className="overflow-hidden mb-6" data-testid="ddos-history">
@@ -69,20 +76,24 @@ export const DDoSHistory = () => {
           {FILTERS.map((f) => (
             <button
               key={f.key}
-              onClick={() => setFilter(f.key)}
+              onClick={() => { setFilter(f.key); setPage(0); }}
               className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors ${filter === f.key ? "bg-[#0a2350] text-white" : "bg-white border border-slate-200 text-slate-600 hover:border-[#f5b120]"}`}
               data-testid={`ddos-history-filter-${f.key}`}
             >
               {f.label}
             </button>
           ))}
+          <select className="rounded-lg border border-slate-300 px-2 py-1.5 text-[11px] ml-2" value={order} onChange={(e) => { setOrder(e.target.value); setPage(0); }}>
+            <option value="desc">Terbaru</option>
+            <option value="asc">Terlama</option>
+          </select>
         </div>
       </div>
       {history === null ? (
         <div className="px-5 py-6 text-sm text-slate-500">Memuat riwayat...</div>
       ) : rows.length === 0 ? (
         <div className="px-5 py-6 text-sm text-slate-500" data-testid="ddos-history-empty">
-          {history.length === 0 ? "Belum ada insiden tercatat. Engine deteksi berjalan tiap 5 menit." : "Tidak ada insiden dengan status ini."}
+          {total === 0 && filter === "all" ? "Belum ada insiden tercatat. Engine deteksi berjalan tiap 5 menit." : "Tidak ada insiden dengan status ini."}
         </div>
       ) : (
         <div className="overflow-x-auto">
@@ -142,6 +153,9 @@ export const DDoSHistory = () => {
             </tbody>
           </table>
         </div>
+      )}
+      {total > LIMIT && (
+        <TablePager page={page} total={total} limit={LIMIT} onPage={setPage} testid="ddos-history-pager" />
       )}
     </Card>
   );

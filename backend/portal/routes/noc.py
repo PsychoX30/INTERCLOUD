@@ -273,18 +273,37 @@ async def mikrotik_blackhole_remove(route_id: str, admin=Depends(get_current_adm
     return result
 
 
+_BLACKHOLE_LOG_SORT_FIELDS = {"at", "prefix", "action", "by", "device", "source"}
+
+
 @router.get("/admin/noc/blackhole-log")
-async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100,
+async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100, skip: int = 0,
+                            sort: str = "at", order: str = "desc",
+                            action: Optional[str] = None, source: Optional[str] = None,
+                            paginate: bool = False,
                             admin=Depends(require_roles("admin", "support"))):
-    """Riwayat announce/remove blackhole (auto + manual) dengan pencarian prefix/aktor."""
+    """Riwayat announce/remove blackhole (auto + manual) dengan pencarian prefix/aktor.
+
+    Mendukung pagination (skip/limit), filter (action/source), dan sort server-side
+    supaya panel tetap ringan saat jumlah entri banyak.
+    """
     db = await _get_db()
     limit = max(1, min(limit, 500))
-    query = {}
+    skip = max(0, skip)
+    query: dict = {}
     if q:
         rx = {"$regex": re.escape(q.strip()), "$options": "i"}
-        query = {"$or": [{"prefix": rx}, {"by": rx}, {"device": rx}]}
-    docs = await db.blackhole_log.find(query).sort("at", -1).to_list(limit)
-    return [{
+        query["$or"] = [{"prefix": rx}, {"by": rx}, {"device": rx}]
+    if action:
+        query["action"] = action
+    if source:
+        query["source"] = source
+    total = await db.blackhole_log.count_documents(query)
+    sort_field = sort if sort in _BLACKHOLE_LOG_SORT_FIELDS else "at"
+    direction = 1 if order.lower() == "asc" else -1
+    cursor = db.blackhole_log.find(query).sort(sort_field, direction).skip(skip).limit(limit)
+    docs = await cursor.to_list(limit)
+    items = [{
         "id": str(d["_id"]),
         "prefix": d.get("prefix", ""),
         "action": d.get("action", "add"),
@@ -294,6 +313,9 @@ async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100,
         "ok": d.get("ok", True),
         "at": d.get("at", ""),
     } for d in docs]
+    if paginate:
+        return {"items": items, "total": total, "limit": limit, "skip": skip}
+    return items
 
 
 @router.get("/admin/noc/netflow/sankey")
@@ -506,14 +528,26 @@ def _serialize_ddos_incident(d: dict) -> dict:
     }
 
 
+_DDOS_INCIDENTS_SORT_FIELDS = {"started_at", "ended_at", "target", "status", "bps", "pps", "direction"}
+
+
 @router.get("/admin/noc/ddos/incidents")
-async def noc_ddos_incidents(status: Optional[str] = None, limit: int = 100,
+async def noc_ddos_incidents(status: Optional[str] = None, limit: int = 100, skip: int = 0,
+                             sort: str = "started_at", order: str = "desc",
+                             paginate: bool = False,
                              admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
-    q = {"status": status} if status else {}
+    q: dict = {"status": status} if status else {}
     limit = max(1, min(limit, 500))
-    docs = await db.ddos_incidents.find(q).sort("started_at", -1).to_list(limit)
-    return [_serialize_ddos_incident(d) for d in docs]
+    skip = max(0, skip)
+    total = await db.ddos_incidents.count_documents(q)
+    sort_field = sort if sort in _DDOS_INCIDENTS_SORT_FIELDS else "started_at"
+    direction = 1 if order.lower() == "asc" else -1
+    docs = await db.ddos_incidents.find(q).sort(sort_field, direction).skip(skip).limit(limit).to_list(limit)
+    items = [_serialize_ddos_incident(d) for d in docs]
+    if paginate:
+        return {"items": items, "total": total, "limit": limit, "skip": skip}
+    return items
 
 
 @router.put("/admin/noc/ddos/incidents/{iid}/status")
@@ -773,14 +807,20 @@ async def noc_devices_list(admin=Depends(require_roles("admin", "support"))):
     return out
 
 
+_NOC_EVENTS_SORT_FIELDS = {"at", "device_name", "device_host", "type", "email_notified"}
+
+
 @router.get("/admin/noc/events")
 async def noc_events_list(admin=Depends(require_roles("admin", "support")),
-                          limit: int = 200,
+                          limit: int = 200, skip: int = 0,
                           device_id: Optional[str] = None,
-                          type: Optional[str] = None):
+                          type: Optional[str] = None,
+                          sort: str = "at", order: str = "desc",
+                          paginate: bool = False):
     """Chronological device_up / device_down events (newest first)."""
     db = await _get_db()
     limit = max(1, min(int(limit or 200), 500))
+    skip = max(0, int(skip or 0))
     query: dict = {}
     if device_id:
         try:
@@ -789,9 +829,12 @@ async def noc_events_list(admin=Depends(require_roles("admin", "support")),
             query["device_id"] = None
     if type:
         query["type"] = type
-    cur = db.noc_events.find(query).sort("at", -1).limit(limit)
+    total = await db.noc_events.count_documents(query)
+    sort_field = sort if sort in _NOC_EVENTS_SORT_FIELDS else "at"
+    direction = 1 if order.lower() == "asc" else -1
+    cur = db.noc_events.find(query).sort(sort_field, direction).skip(skip).limit(limit)
     docs = [d async for d in cur]
-    return [{
+    items = [{
         "id": str(d["_id"]),
         "device_id": str(d.get("device_id")) if d.get("device_id") else None,
         "device_name": d.get("device_name") or "",
@@ -801,6 +844,9 @@ async def noc_events_list(admin=Depends(require_roles("admin", "support")),
         "at": d.get("at") or "",
         "email_notified": bool(d.get("email_notified")),
     } for d in docs]
+    if paginate:
+        return {"items": items, "total": total, "limit": limit, "skip": skip}
+    return items
 
 
 @router.post("/admin/noc/run-poll")
