@@ -184,3 +184,42 @@ def test_sampling_rate_applied(client, flow_file):
     f = result["rows"][0]
     # Actual packets = 10000 * 100 = 1000000
     assert f["rx_packets"] == 1000000
+
+
+def test_zero_duration_records_use_batch_span_for_pps(client, flow_file):
+    """Instantaneous RouterOS records are counts, not one-second rates."""
+    first = dict(GOFLOW_TCP_SYN)
+    first.update({
+        "packets": 100,
+        "time_received_ns": 1_000_000_000,
+        "time_flow_start_ns": 1_000_000_000,
+        "time_flow_end_ns": 1_000_000_000,
+    })
+    second = dict(first)
+    second["time_received_ns"] = 11_000_000_000
+    second["time_flow_start_ns"] = 11_000_000_000
+    second["time_flow_end_ns"] = 11_000_000_000
+    flow_file.write_text(json.dumps(first) + "\n" + json.dumps(second) + "\n")
+
+    rows = client.poll()["rows"]
+
+    # 100 packets per record over the observed 10-second batch = 10 pps,
+    # not 100 pps per record as the old one-second fallback reported.
+    assert [row["pps"] for row in rows] == [10, 10]
+    assert sum(row["pps"] for row in rows) == 20
+    assert sum(row["rx_packets"] for row in rows) == 200
+
+
+def test_valid_flow_duration_takes_precedence_over_batch_span(client, flow_file):
+    flow = dict(GOFLOW_UDP_FLOOD)
+    flow.update({
+        "packets": 100,
+        "time_flow_start_ns": 1_000_000_000,
+        "time_flow_end_ns": 3_000_000_000,
+        "time_received_ns": 50_000_000_000,
+    })
+    flow_file.write_text(json.dumps(flow) + "\n")
+
+    row = client.poll()["rows"][0]
+
+    assert row["pps"] == 50

@@ -908,13 +908,14 @@ class GoFlow2Client:
     def __init__(self, flow_path: str):
         self.flow_path = flow_path
         self._offset = 0  # byte offset for incremental reads
+    def _compute_rates(self, record: dict, fallback_duration_s: float = 30.0) -> tuple[int, int, int, int, int]:
+        """Return (packets, tx_packets, bps, tx_bps, pps).
 
-    def _compute_rates(self, record: dict) -> tuple[int, int, int, int]:
-        """Return (rx_packets, tx_packets, rx_rate, tx_rate).
-
-        goflow2 reports total bytes/packets for the flow duration. We convert
-        to per-second rates using the flow duration from timestamps. If
-        sampling_rate > 1, actual values are sampled × rate.
+        NetFlow records can be instantaneous snapshots: RouterOS commonly
+        emits equal start/end timestamps and sampling_rate=0.  In that case
+        using a fake one-second duration inflates rates.  Use the collector
+        polling interval for such records instead.  The packet count is kept
+        separately from PPS because the detector needs a rate, not a count.
         """
         rate = int(record.get("sampling_rate") or 1)
         pkts = int(record.get("packets") or 0) * rate
@@ -922,19 +923,18 @@ class GoFlow2Client:
 
         start_ns = int(record.get("time_flow_start_ns") or 0)
         end_ns = int(record.get("time_flow_end_ns") or 0)
-        duration_s = 0
-        if start_ns and end_ns and end_ns > start_ns:
-            duration_s = (end_ns - start_ns) / 1_000_000_000
+        duration_s = ((end_ns - start_ns) / 1_000_000_000
+                      if start_ns and end_ns and end_ns > start_ns else 0)
         if duration_s <= 0:
-            duration_s = 1.0  # assume 1s if no timing
+            duration_s = max(1.0, float(fallback_duration_s or 30.0))
 
         pps = int(pkts / duration_s)
         bps = int(byts * 8 / duration_s)
-        return pkts, 0, bps, 0  # tx columns zero — goflow2 is unidirectional
+        return pkts, 0, bps, 0, pps  # tx columns zero — unidirectional
 
-    def _normalize(self, record: dict) -> dict:
+    def _normalize(self, record: dict, fallback_duration_s: float = 30.0) -> dict:
         """Convert one goflow2 JSON record to the torch-compatible flow dict."""
-        rx_pkts, tx_pkts, rx_rate, tx_rate = self._compute_rates(record)
+        rx_pkts, tx_pkts, rx_rate, tx_rate, pps = self._compute_rates(record, fallback_duration_s)
         proto_raw = str(record.get("proto") or "").upper()
         proto = self._PROTO_MAP.get(proto_raw, proto_raw.lower())
         return {
@@ -947,6 +947,7 @@ class GoFlow2Client:
             "tx_rate": tx_rate,
             "rx_packets": rx_pkts,
             "tx_packets": tx_pkts,
+            "pps": pps,
             "sampler_address": record.get("sampler_address") or "",
         }
 
@@ -992,7 +993,7 @@ class GoFlow2Client:
             return {"ok": False, "error": f"Cannot read flow file: {e}", "rows": []}
 
         import json as _json
-        rows: list[dict] = []
+        records: list[dict] = []
         for line in raw_lines:
             line = line.strip()
             if not line:
@@ -1001,7 +1002,25 @@ class GoFlow2Client:
                 record = _json.loads(line)
             except (ValueError, TypeError):
                 continue  # skip malformed lines
-            rows.append(self._normalize(record))
+            records.append(record)
+
+        # RouterOS often exports instantaneous records whose start and end
+        # timestamps are equal.  Their packet/byte fields are counts, not
+        # one-second rates.  Use the observed batch span as the denominator
+        # instead of treating every such record as one second.  This also
+        # makes a first poll over an accumulated backlog conservative rather
+        # than producing a restart-triggered traffic spike.
+        observed_ns = [
+            int(r.get("time_received_ns") or r.get("time_flow_start_ns") or 0)
+            for r in records
+        ]
+        observed_ns = [ts for ts in observed_ns if ts > 0]
+        batch_duration_s = (
+            (max(observed_ns) - min(observed_ns)) / 1_000_000_000
+            if len(observed_ns) > 1 else 30.0
+        )
+        batch_duration_s = max(1.0, batch_duration_s)
+        rows = [self._normalize(record, batch_duration_s) for record in records]
 
         return {
             "ok": True,

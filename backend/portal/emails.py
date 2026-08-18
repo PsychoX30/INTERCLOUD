@@ -1591,7 +1591,14 @@ async def run_ddos_detection_sweep(db) -> dict:
                                                "fields": fields, "device": flow["device"],
                                                "device_doc": flow["device_doc"]})
             agg["bps"] += int(flow.get("rx_rate", 0) or 0) + int(flow.get("tx_rate", 0) or 0)
-            agg["pps"] += int(flow.get("rx_packets", 0) or 0) + int(flow.get("tx_packets", 0) or 0)
+            # GoFlow2 packet fields are counts.  Its explicit ``pps`` is
+            # normalized over the flow/batch duration.  Torch packet fields
+            # are already rates and remain the compatibility fallback.
+            if flow.get("pps") is not None:
+                agg["pps"] += int(flow.get("pps") or 0)
+            else:
+                agg["pps"] += (int(flow.get("rx_packets", 0) or 0)
+                               + int(flow.get("tx_packets", 0) or 0))
 
         for (direction, target), agg in aggregates.items():
             sample = {"at": now_iso, "key": f"{direction}:{target}",
