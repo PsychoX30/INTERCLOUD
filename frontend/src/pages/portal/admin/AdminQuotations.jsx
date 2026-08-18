@@ -1,18 +1,35 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { api, money, shortDate } from "../../../portal/api";
 import { docUrl } from "../../../portal/api";
 import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Trash2, FileDown, Download, Receipt } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+import TablePager from "./TablePager";
 import { TaxPercentField } from "./TaxPercentField";
 import { toast } from "sonner";
 
 const AdminQuotations = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
   const [convertQ, setConvertQ] = useState(null);
-  const load = () => api.get("/admin/quotations").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+  }), [page, limit]);
+
+  const load = useCallback(() => {
+    api.get("/admin/quotations", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
+  useEffect(() => { load(); }, [load]);
 
   const setStatus = async (id, status) => { await api.put(`/admin/quotations/${id}/status`, { status }); load(); };
 
@@ -77,6 +94,16 @@ const AdminQuotations = () => {
         empty={{ title: "No quotations yet", hint: "Send your first quote to a prospect." }}
         testid="admin-quotations-table"
       />
+      {rows !== null && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-quotations-pager"
+        />
+      )}
       {modal && <NewQuotation onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
       {convertQ && <ConvertToInvoice q={convertQ} onClose={() => setConvertQ(null)} onDone={() => { setConvertQ(null); load(); }} />}
     </div>

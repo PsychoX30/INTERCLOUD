@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api, money } from "../../../portal/api";
 import { PageHeader, Loading, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Edit, Trash2, Plus, ChevronDown, ChevronUp, X, Puzzle, Package } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+import TablePager from "./TablePager";
 
 /* ---------------------------------------------------------------
    Admin Products page - WHMCS-style catalog editor
@@ -29,25 +30,45 @@ const AdminProducts = () => {
   const location = useLocation();
   const initialFilter = location.pathname.endsWith("/addons") ? "addons" : "all";
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [cats, setCats] = useState([]);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState(initialFilter); // all | base | addons
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+    ...(filter === "addons" ? { is_addon: true } : filter === "base" ? { is_addon: false } : {}),
+  }), [filter, page, limit]);
+
+  const loadProducts = useCallback(() => {
+    api.get("/admin/products", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
+  useEffect(() => {
+    loadProducts();
+  }, [loadProducts]);
+
+  const load = useCallback(() => {
+    api.get("/admin/categories").then((c) => setCats(c.data)).catch(() => {});
+    loadProducts();
+  }, [loadProducts]);
 
   useEffect(() => {
     setFilter(location.pathname.endsWith("/addons") ? "addons" : "all");
   }, [location.pathname]);
 
-  const load = () => Promise.all([
-    api.get("/admin/products"),
-    api.get("/admin/categories"),
-  ]).then(([p, c]) => { setRows(p.data); setCats(c.data); });
+  useEffect(() => {
+    api.get("/admin/categories").then((c) => setCats(c.data)).catch(() => {});
+  }, []);
 
-  useEffect(() => { load(); }, []);
   if (!rows) return <Loading />;
-
-  const visible = rows.filter((p) =>
-    filter === "all" ? true : filter === "addons" ? p.is_addon : !p.is_addon
-  );
 
   return (
     <div>
@@ -61,19 +82,19 @@ const AdminProducts = () => {
         {["all", "base", "addons"].map((f) => (
           <button
             key={f}
-            onClick={() => setFilter(f)}
+            onClick={() => { setPage(0); setFilter(f); }}
             data-testid={`filter-${f}`}
             className={`h-8 px-3 rounded-full text-xs font-bold uppercase tracking-widest ${
               filter === f ? "bg-[#0a2350] text-white" : "bg-white text-slate-500 border border-slate-200"
             }`}
           >
-            {f === "all" ? `All (${rows.length})` : f === "base" ? `Base plans (${rows.filter((r) => !r.is_addon).length})` : `Add-ons (${rows.filter((r) => r.is_addon).length})`}
+            {f === "all" ? `All (${total})` : f === "base" ? `Base plans` : `Add-ons`}
           </button>
         ))}
       </div>
 
       <DataTable
-        rows={visible}
+        rows={rows}
         loading={false}
         columns={[
           { key: "name", label: "Name", sortable: true,
@@ -127,6 +148,20 @@ const AdminProducts = () => {
         empty={{ title: "No products in this view", hint: "Create products or add-ons to sell." }}
         testid="admin-products-table"
       />
+
+      {rows !== null && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => {
+            setLimit(l);
+            setPage(0);
+          }}
+          testid="admin-products-pager"
+        />
+      )}
 
       {editing && (
         <ProductForm

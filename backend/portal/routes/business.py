@@ -26,7 +26,8 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .shared import _get_db, _iso, _now, _oid, _sales_scope_filter, _sales_visible_crm_ids  # noqa: E402
+from .shared import (_get_db, _iso, _now, _oid, _sales_scope_filter, _sales_visible_crm_ids,
+                     _pagination_params, _pagination_response)  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 
 router = APIRouter()
@@ -124,14 +125,38 @@ async def _crm_enrichment_by_uid(db, user_ids: list) -> dict:
 
 
 @router.get("/admin/crm")
-async def crm_list(staff=Depends(get_current_staff)):
+async def crm_list(staff=Depends(get_current_staff),
+                   skip: int = 0, limit: int = 50, sort: str = "updated_at",
+                   order: str = "desc", q: Optional[str] = None,
+                   status: Optional[str] = None,
+                   paginate: Optional[bool] = None):
+    """Server-side pagination + q-search + status filter for CRM.
+    Default response stays bare array."""
     _deny_creative(staff)
     db = await _get_db()
-    q = _sales_scope_filter(staff, key="user_id")
-    docs = await db.crm_customers.find(q).sort("updated_at", -1).to_list(2000)
+    query = _sales_scope_filter(staff, key="user_id")
+    if status and status != "all":
+        query["status"] = status
+    if q:
+        query["$or"] = [
+            {field: {"$regex": q.strip(), "$options": "i"}}
+            for field in ("name", "email", "phone", "company")
+        ]
+    sort_field = sort if sort in {
+        "name", "email", "company", "status", "created_at", "updated_at"
+    } else "updated_at"
+    direction = 1 if order.lower() == "asc" else -1
+    skip_n, limit_n = _pagination_params(skip, limit)
+    cursor = db.crm_customers.find(query).sort(sort_field, direction)
+    total = 0
+    if bool(paginate):
+        total = await db.crm_customers.count_documents(query)
+        cursor = cursor.skip(skip_n).limit(limit_n if limit_n is not None else 500)
+        docs = await cursor.to_list(None)
+    else:
+        docs = await cursor.to_list(2000)
     # Collect user_ids for enrichment
-    uid_pairs = [(str(d.get("user_id")), d.get("user_id")) for d in docs if d.get("user_id")]
-    uids = [pair[1] for pair in uid_pairs]
+    uids = [d.get("user_id") for d in docs if d.get("user_id")]
     enrich = await _crm_enrichment_by_uid(db, uids)
     out = []
     for d in docs:
@@ -146,6 +171,8 @@ async def crm_list(staff=Depends(get_current_staff)):
         # OR an existing customer with a fresh in-progress order (upsell signal)
         row["is_warm"] = row["in_progress_count"] > 0
         out.append(row)
+    if bool(paginate):
+        return _pagination_response(out, total, skip_n, limit_n, True)
     return out
 
 
@@ -437,10 +464,29 @@ def _serialize_project(d):
 
 
 @router.get("/admin/projects")
-async def projects_list(staff=Depends(get_current_staff)):
+async def projects_list(staff=Depends(get_current_staff),
+                        skip: int = 0, limit: int = 50, sort: str = "updated_at",
+                        order: str = "desc", status: Optional[str] = None,
+                        paginate: Optional[bool] = None):
+    """Server-side pagination + status filter for projects. Default stays bare array."""
     db = await _get_db()
-    docs = await db.projects.find({}).sort("updated_at", -1).to_list(1000)
-    return [_serialize_project(d) for d in docs]
+    query = {"status": status} if status and status != "all" else {}
+    sort_field = sort if sort in {
+        "name", "customer_name", "owner", "status", "priority", "progress",
+        "start_date", "target_date", "created_at", "updated_at"
+    } else "updated_at"
+    direction = 1 if order.lower() == "asc" else -1
+    skip_n, limit_n = _pagination_params(skip, limit)
+    cursor = db.projects.find(query).sort(sort_field, direction)
+    total = 0
+    if bool(paginate):
+        total = await db.projects.count_documents(query)
+        cursor = cursor.skip(skip_n).limit(limit_n if limit_n is not None else 500)
+        docs = await cursor.to_list(None)
+    else:
+        docs = await cursor.to_list(1000)
+    items = [_serialize_project(d) for d in docs]
+    return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
 
 
 @router.post("/admin/projects")
@@ -505,10 +551,26 @@ def _serialize_content(d):
 
 
 @router.get("/admin/content")
-async def content_list(staff=Depends(get_current_staff)):
+async def content_list(staff=Depends(get_current_staff),
+                       skip: int = 0, limit: int = 50, sort: str = "publish_date",
+                       order: str = "asc", paginate: Optional[bool] = None):
+    """Server-side pagination for content planner. Default stays bare array."""
     db = await _get_db()
-    docs = await db.content_plan.find({}).sort("publish_date", 1).to_list(1000)
-    return [_serialize_content(d) for d in docs]
+    sort_field = sort if sort in {
+        "title", "channel", "type", "status", "owner", "publish_date", "created_at"
+    } else "publish_date"
+    direction = 1 if order.lower() == "asc" else -1
+    skip_n, limit_n = _pagination_params(skip, limit)
+    cursor = db.content_plan.find({}).sort(sort_field, direction)
+    total = 0
+    if bool(paginate):
+        total = await db.content_plan.count_documents({})
+        cursor = cursor.skip(skip_n).limit(limit_n if limit_n is not None else 500)
+        docs = await cursor.to_list(None)
+    else:
+        docs = await cursor.to_list(1000)
+    items = [_serialize_content(d) for d in docs]
+    return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
 
 
 @router.post("/admin/content")
@@ -588,14 +650,34 @@ async def _assert_sales_can_touch_followup(db, staff: dict, fid: str) -> dict:
 
 
 @router.get("/admin/followups")
-async def followups_list(staff=Depends(get_current_staff)):
+async def followups_list(staff=Depends(get_current_staff),
+                         skip: int = 0, limit: int = 50, sort: str = "due_date",
+                         order: str = "asc", done: Optional[bool] = None,
+                         paginate: Optional[bool] = None):
+    """Server-side pagination for follow-ups with done filter.
+    Sales-empty short-circuit and _sales_followup_filter scoping preserved."""
     _deny_creative(staff)
     db = await _get_db()
     q = await _sales_followup_filter(db, staff)
     if q is None:
         return []
-    docs = await db.followups.find(q).sort("due_date", 1).to_list(1000)
-    return [_serialize_followup(d) for d in docs]
+    if done is not None:
+        q["done"] = done
+    sort_field = sort if sort in {
+        "customer_name", "task", "channel", "due_date", "done", "owner", "created_at"
+    } else "due_date"
+    direction = 1 if order.lower() == "asc" else -1
+    skip_n, limit_n = _pagination_params(skip, limit)
+    cursor = db.followups.find(q).sort(sort_field, direction)
+    total = 0
+    if bool(paginate):
+        total = await db.followups.count_documents(q)
+        cursor = cursor.skip(skip_n).limit(limit_n if limit_n is not None else 500)
+        docs = await cursor.to_list(None)
+    else:
+        docs = await cursor.to_list(1000)
+    items = [_serialize_followup(d) for d in docs]
+    return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
 
 
 @router.post("/admin/followups")
@@ -687,11 +769,34 @@ def _require_internal_document_access(staff: dict) -> None:
 
 
 @router.get("/admin/documents")
-async def docs_list(staff=Depends(get_current_staff)):
+async def docs_list(staff=Depends(get_current_staff),
+                    skip: int = 0, limit: int = 50, sort: str = "created_at",
+                    order: str = "desc", q: Optional[str] = None,
+                    paginate: Optional[bool] = None):
+    """Server-side pagination + q-search for documents. Default stays bare array."""
     _require_internal_document_access(staff)
     db = await _get_db()
-    docs = await db.documents.find({}).sort("created_at", -1).to_list(1000)
-    return [_serialize_doc(d) for d in docs]
+    query: dict = {}
+    if q:
+        query["$or"] = [
+            {field: {"$regex": q.strip(), "$options": "i"}}
+            for field in ("title", "category", "customer_name", "notes", "filename")
+        ]
+    sort_field = sort if sort in {
+        "title", "category", "customer_name", "filename", "size_bytes", "created_at"
+    } else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    skip_n, limit_n = _pagination_params(skip, limit)
+    cursor = db.documents.find(query).sort(sort_field, direction)
+    total = 0
+    if bool(paginate):
+        total = await db.documents.count_documents(query)
+        cursor = cursor.skip(skip_n).limit(limit_n if limit_n is not None else 500)
+        docs = await cursor.to_list(None)
+    else:
+        docs = await cursor.to_list(1000)
+    items = [_serialize_doc(d) for d in docs]
+    return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
 
 
 @router.post("/admin/documents")

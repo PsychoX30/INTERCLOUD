@@ -29,6 +29,31 @@ from .. import integrations_v2 as iv2
 
 
 # ---------- helpers ----------
+def _pagination_params(skip: int = 0, limit: int = 25) -> tuple[int, int | None]:
+    """Normalize shared admin-list pagination parameters.
+
+    ``limit=0`` means "all", but is still bounded by ``_PAGINATION_ALL_CAP``
+    at the query layer. Returning None lets callers omit Mongo's limit clause.
+    """
+    skip = max(0, int(skip or 0))
+    raw_limit = int(limit if limit is not None else 25)
+    if raw_limit == 0:
+        return skip, None
+    return skip, max(1, min(raw_limit, 500))
+
+
+def _pagination_response(items: list, total: int, skip: int, limit: int | None,
+                         paginate: bool = False) -> list | dict:
+    """Return a paginated envelope only when explicitly requested.
+
+    Legacy callers continue receiving a bare array. ``limit=0`` is represented
+    as zero in the envelope, while the actual query remains bounded by callers.
+    """
+    if not paginate:
+        return items
+    return {"items": items, "total": total, "limit": 0 if limit is None else limit, "skip": skip}
+
+
 def _iso(dt: datetime | str) -> str:
     if isinstance(dt, str):
         return dt

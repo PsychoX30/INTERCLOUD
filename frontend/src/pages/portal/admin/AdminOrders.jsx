@@ -1,16 +1,34 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { api, fullDateTime, money } from "../../../portal/api";
 import { PageHeader, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, Card } from "../ui";
 import { CheckCircle2, XCircle, Eye, PlayCircle } from "lucide-react";
 import { Link } from "react-router-dom";
+import TablePager from "./TablePager";
 
 const AdminOrders = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [active, setActive] = useState(null);
   const [verifying, setVerifying] = useState(null);
   const [provisioning, setProvisioning] = useState(null);
-  const load = () => api.get("/admin/orders").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+  }), [page, limit]);
+
+  const load = useCallback(() => {
+    api.get("/admin/orders", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
+  useEffect(() => { load(); }, [load]);
+
   if (!rows) return <Loading />;
 
   const verifyPayment = async (o) => {
@@ -105,6 +123,16 @@ const AdminOrders = () => {
           </Card>
         ))}
       </div>
+      {rows !== null && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-orders-pager"
+        />
+      )}
       {active && <OrderDetail order={active} onClose={() => setActive(null)} />}
     </div>
   );

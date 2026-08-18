@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import models as m
 from ..auth import require_roles
-from .shared import _get_db, _iso, _oid, _sales_scope_filter
+from .shared import _get_db, _iso, _oid, _sales_scope_filter, _pagination_params, _pagination_response
 from .users import _paginate
 
 router = APIRouter()
@@ -59,13 +59,17 @@ async def list_transactions(
     end: Optional[str] = None,
     page: Optional[int] = None,
     limit: int = 25,
+    skip: int = 0,
+    sort: str = "created_at",
+    order: str = "desc",
+    paginate: bool = False,
 ):
     db = await _get_db()
     query = _sales_scope_filter(staff, key="user_id")
     if user_id:
         uid = _oid(user_id)
         if staff.get("role") == "sales" and uid not in [ObjectId(x) for x in staff.get("assigned_client_ids") or []]:
-            return _paginate([], page, limit)
+            return _pagination_response([], 0, 0, limit, True) if paginate else []
         query["user_id"] = uid
     if status:
         statuses = [s.strip() for s in status.split(",") if s.strip()]
@@ -84,11 +88,34 @@ async def list_transactions(
     if start_dt or end_dt:
         query["created_at"] = {}
         if start_dt:
-            query["created_at"]["$gte"] = start_dt.isoformat()
+            query["created_at"]["$gte"] = start_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if end_dt:
-            query["created_at"]["$lte"] = end_dt.isoformat()
-    docs = await db.transactions.find(query).sort("created_at", -1).to_list(5000)
-    return _paginate([_serialize_transaction(d) for d in docs], page, min(max(limit, 1), 200))
+            query["created_at"]["$lte"] = end_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sort_field = sort if sort in {"created_at", "amount", "status", "method"} else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    if paginate:
+        # When paginate=True, map page (1-based) to skip if skip=0 and page provided
+        if page is not None and skip == 0:
+            skip = max(0, (int(page) - 1) * limit)
+        skip_n, limit_n = _pagination_params(skip, limit)
+        total = await db.transactions.count_documents(query)
+        cursor = db.transactions.find(query).sort(sort_field, direction).skip(skip_n)
+        if limit_n is not None:
+            cursor = cursor.limit(limit_n)
+        docs = await cursor.to_list(limit_n or 5000)
+        items = [_serialize_transaction(d) for d in docs]
+        return _pagination_response(items, total, skip_n, limit_n, True)
+    # Legacy bare-array behavior. When page is provided, slice the page-sized window
+    # with limit; otherwise return the full list. _paginate returns the original list
+    # when page is None (compatible with old consumers like DDoSPanel).
+    docs = await db.transactions.find(query).sort(sort_field, direction).to_list(5000)
+    items = [_serialize_transaction(d) for d in docs]
+    if page is not None:
+        page_n = max(1, int(page))
+        limit_n = max(1, min(int(limit), 200))
+        offset = (page_n - 1) * limit_n
+        return items[offset:offset + limit_n]
+    return items
 
 
 @router.get("/admin/transactions/summary")

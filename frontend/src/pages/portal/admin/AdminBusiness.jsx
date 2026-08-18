@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { api, shortDate, fullDateTime } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame, MessageCircle, Phone, Mail, Upload, Download } from "lucide-react";
 import { useAuth } from "../../../portal/AuthContext";
+import TablePager from "./TablePager";
 
 /* ============ Small generic modal ============ */
 const Modal = ({ children, onClose, title }) => (
@@ -48,6 +49,9 @@ export const AdminCRM = () => {
   const { user } = useAuth() || {};
   const isSales = user?.role?.toLowerCase() === "sales";
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [clients, setClients] = useState([]);
   const [q, setQ] = useState("");
   const [statusF, setStatusF] = useState("");
@@ -55,7 +59,22 @@ export const AdminCRM = () => {
   const [editing, setEditing] = useState(null); // null | 'new' | obj
   const [importing, setImporting] = useState(false); // modal import xlsx
   const [exporting, setExporting] = useState(false);
-  const load = () => api.get("/admin/crm").then((r) => setRows(r.data));
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+    ...(q.trim() ? { q: q.trim() } : {}),
+    ...(statusF ? { status: statusF } : {}),
+  }), [page, limit, q, statusF]);
+
+  const load = useCallback(() => {
+    api.get("/admin/crm", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
   useEffect(() => {
     load();
     if (isSales) {
@@ -65,14 +84,11 @@ export const AdminCRM = () => {
         setClients(list.filter((u) => u.role === "client" && assigned.has(String(u.id))));
       });
     }
-  }, [isSales, user?.assigned_client_ids]);
+  }, [load, isSales, user?.assigned_client_ids]);
+
   if (!rows) return <Loading />;
 
-  const filtered = rows.filter((r) =>
-    (!statusF || r.status === statusF) &&
-    (!warmOnly || r.is_warm) &&
-    (!q || `${r.name} ${r.email} ${r.company} ${r.industry}`.toLowerCase().includes(q.toLowerCase()))
-  );
+  const filtered = warmOnly ? rows.filter((r) => r.is_warm) : rows;
   const warmCount = rows.filter((r) => r.is_warm).length;
   const totalLTV = rows.reduce((s, r) => s + (Number(r.lifetime_value) || 0), 0);
 
@@ -113,27 +129,30 @@ export const AdminCRM = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <Card className="p-4">
           <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Total contacts</div>
-          <div className="text-2xl font-extrabold text-[#0a2350] mt-0.5" data-testid="crm-kpi-total">{rows.length}</div>
+          <div className="text-2xl font-extrabold text-[#0a2350] mt-0.5" data-testid="crm-kpi-total">{total}</div>
         </Card>
         <Card className="p-4">
           <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex items-center gap-1"><Flame className="h-3.5 w-3.5 text-orange-500" /> Warm leads</div>
           <div className="text-2xl font-extrabold text-orange-600 mt-0.5" data-testid="crm-kpi-warm">{warmCount}</div>
+          <div className="text-[10px] text-slate-400 mt-0.5">di halaman ini</div>
         </Card>
         <Card className="p-4">
           <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Existing / active</div>
           <div className="text-2xl font-extrabold text-emerald-700 mt-0.5" data-testid="crm-kpi-existing">
             {rows.filter((r) => r.status === "existing").length}
           </div>
+          <div className="text-[10px] text-slate-400 mt-0.5">di halaman ini</div>
         </Card>
         <Card className="p-4">
           <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Lifetime value paid</div>
           <div className="text-2xl font-extrabold text-[#0a2350] mt-0.5" data-testid="crm-kpi-ltv">{idr(totalLTV)}</div>
+          <div className="text-[10px] text-slate-400 mt-0.5">di halaman ini</div>
         </Card>
       </div>
 
       <div className="mb-3 flex gap-2 flex-wrap items-center">
-        <input placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} className={`${inputClass} max-w-xs`} data-testid="crm-search" />
-        <select value={statusF} onChange={(e) => setStatusF(e.target.value)} className={`${inputClass} max-w-[220px]`}>
+        <input placeholder="Search… (server)" value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} className={`${inputClass} max-w-xs`} data-testid="crm-search" />
+        <select value={statusF} onChange={(e) => { setStatusF(e.target.value); setPage(0); }} className={`${inputClass} max-w-[220px]`} data-testid="crm-status-filter">
           <option value="">All statuses</option>
           {STATUSES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
@@ -248,6 +267,16 @@ export const AdminCRM = () => {
             </tbody>
           </table>
         </div>
+      )}
+      {total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-crm-pager"
+        />
       )}
       {editing && <CrmForm c={editing === "new" ? null : editing} clients={clients} isSales={isSales} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
       {importing && <CrmImportModal onClose={() => setImporting(false)} onDone={() => { setImporting(false); load(); }} />}
@@ -370,9 +399,26 @@ const PROJ_STATUS = [["planning", "Planning"], ["in_progress", "In Progress"], [
 const PROJ_PRIO = [["low", "Low"], ["medium", "Medium"], ["high", "High"], ["critical", "Critical"]];
 export const AdminProjects = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [editing, setEditing] = useState(null);
-  const load = () => api.get("/admin/projects").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+  }), [page, limit]);
+
+  const load = useCallback(() => {
+    api.get("/admin/projects", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
+  useEffect(() => { load(); }, [load]);
+
   if (!rows) return <Loading />;
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/projects/${id}`); load(); } };
   return (
@@ -406,6 +452,16 @@ export const AdminProjects = () => {
           </Card>
         ))}
       </div>
+      {total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-projects-pager"
+        />
+      )}
       {editing && <ProjForm p={editing === "new" ? null : editing} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
     </div>
   );
@@ -453,9 +509,26 @@ const CHANNELS = ["blog", "instagram", "linkedin", "email_campaign", "youtube", 
 const CONTENT_STATUS = [["idea", "Idea"], ["draft", "Draft"], ["scheduled", "Scheduled"], ["published", "Published"]];
 export const AdminContent = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [editing, setEditing] = useState(null);
-  const load = () => api.get("/admin/content").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+  }), [page, limit]);
+
+  const load = useCallback(() => {
+    api.get("/admin/content", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
+  useEffect(() => { load(); }, [load]);
+
   if (!rows) return <Loading />;
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/content/${id}`); load(); } };
   return (
@@ -501,6 +574,16 @@ export const AdminContent = () => {
           </tbody>
         </table>
       </div>
+      {total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-content-pager"
+        />
+      )}
       {editing && <ContentForm c={editing === "new" ? null : editing} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
     </div>
   );
@@ -543,9 +626,28 @@ const ContentForm = ({ c, onClose, onDone }) => {
    ========================================================================= */
 export const AdminFollowups = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
-  const load = () => api.get("/admin/followups").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+  const [doneF, setDoneF] = useState("open"); // open | done | all
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+    ...(doneF === "all" ? {} : { done: doneF === "done" }),
+  }), [page, limit, doneF]);
+
+  const load = useCallback(() => {
+    api.get("/admin/followups", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
+  useEffect(() => { load(); }, [load]);
+
   if (!rows) return <Loading />;
   const toggle = async (r) => { await api.put(`/admin/followups/${r.id}`, { done: !r.done }); load(); };
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/followups/${id}`); load(); } };
@@ -566,6 +668,20 @@ export const AdminFollowups = () => {
         subtitle="Never miss a warm lead - track outreach tasks by due date."
         actions={<button className={btnPrimary} onClick={() => setModal(true)}><Plus className="h-4 w-4" /> New Task</button>}
       />
+      <div className="mb-4 flex gap-1 flex-wrap" data-testid="fu-filter-tabs">
+        {[["open", "Open"], ["done", "Done"], ["all", "All"]].map(([k, l]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => { setDoneF(k); setPage(0); }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider ${doneF === k ? "bg-[#0a2350] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+            data-testid={`fu-filter-${k}`}
+          >
+            {l}
+          </button>
+        ))}
+        <span className="ml-auto self-center text-xs text-slate-400">{total} total</span>
+      </div>
       {rows.length === 0 && <EmptyState title="No follow-ups scheduled" />}
       {["overdue", "today", "upcoming", "done"].map((k) => grouped[k].length > 0 && (
         <div key={k} className="mb-6">
@@ -590,6 +706,16 @@ export const AdminFollowups = () => {
           </div>
         </div>
       ))}
+      {total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-followups-pager"
+        />
+      )}
       {modal && <FollowupForm onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
     </div>
   );
@@ -620,9 +746,26 @@ const FollowupForm = ({ onClose, onDone }) => {
    ========================================================================= */
 export const AdminDocuments = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
-  const load = () => api.get("/admin/documents").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+
+  const params = useMemo(() => ({
+    paginate: true,
+    skip: page * limit,
+    limit,
+  }), [page, limit]);
+
+  const load = useCallback(() => {
+    api.get("/admin/documents", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
+  useEffect(() => { load(); }, [load]);
+
   if (!rows) return <Loading />;
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/documents/${id}`); load(); } };
   const openDocument = async (path) => {
@@ -681,6 +824,16 @@ export const AdminDocuments = () => {
             </Card>
           ))}
         </div>
+      )}
+      {total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-documents-pager"
+        />
       )}
       {modal && <DocForm onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
     </div>

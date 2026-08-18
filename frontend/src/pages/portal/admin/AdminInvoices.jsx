@@ -3,15 +3,23 @@ import { api, money, shortDate, docUrl } from "../../../portal/api";
 import { PageHeader, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Trash2, CheckCircle2, FileDown, Download, ReceiptText } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+import TablePager from "./TablePager";
 import { TaxPercentField } from "./TaxPercentField";
 import { Link, useNavigate } from "react-router-dom";
 
 const AdminInvoices = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
   const navigate = useNavigate();
-  const load = () => api.get("/admin/invoices").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+
+  const load = () =>
+    api.get("/admin/invoices", { params: { paginate: true, limit, skip: page * limit } })
+      .then((r) => { setRows(r.data?.items || []); setTotal(r.data?.total || 0); });
+
+  useEffect(() => { load(); }, [page, limit]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const markPaid = async (id) => { await api.put(`/admin/invoices/${id}/status`, { status: "paid", payment_method: "bank_transfer" }); load(); };
   const cancel = async (id) => { if (window.confirm("Cancel invoice?")) { await api.put(`/admin/invoices/${id}/status`, { status: "cancelled" }); load(); } };
@@ -79,6 +87,16 @@ const AdminInvoices = () => {
         empty={{ title: "No invoices yet", hint: "Create your first invoice." }}
         testid="admin-invoices-table"
       />
+      {rows !== null && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-invoices-pager"
+        />
+      )}
       {modal && <NewInvoice onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
     </div>
   );

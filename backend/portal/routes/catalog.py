@@ -26,7 +26,7 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .shared import _get_db, _iso, _now, _oid  # noqa: E402
+from .shared import _get_db, _iso, _now, _oid, _pagination_params, _pagination_response  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 
 router = APIRouter()
@@ -189,10 +189,34 @@ async def admin_delete_category(cid: str, admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/products")
-async def admin_list_products(admin=Depends(require_roles("admin", "support"))):
+async def admin_list_products(
+    admin=Depends(require_roles("admin", "support")),
+    skip: int = 0, limit: int = 50, sort: str = "created_at",
+    order: str = "desc", q: Optional[str] = None,
+    paginate: bool = False, is_addon: Optional[bool] = None,
+):
     db = await _get_db()
-    docs = await db.products.find({}).sort([("sort_order", 1), ("created_at", -1)]).to_list(500)
-    return [_serialize_product(d) for d in docs]
+    query = {}
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"description": {"$regex": q, "$options": "i"}},
+        ]
+    if is_addon is not None:
+        query["is_addon"] = is_addon
+    allowed = {"created_at", "name", "sort_order", "category", "price_monthly"}
+    sort_field = sort if sort in allowed else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    if not paginate:
+        docs = await db.products.find(query).sort(sort_field, direction).to_list(500)
+        return [_serialize_product(d) for d in docs]
+    skip_n, limit_n = _pagination_params(skip, limit)
+    total = await db.products.count_documents(query)
+    cursor = db.products.find(query).sort(sort_field, direction).skip(skip_n)
+    if limit_n is not None:
+        cursor = cursor.limit(limit_n)
+    docs = await cursor.to_list(limit_n or 500)
+    return _pagination_response([_serialize_product(d) for d in docs], total, skip_n, limit_n, True)
 
 
 @router.get("/portal-public/products")

@@ -3,15 +3,21 @@ import { api, money, shortDate } from "../../../portal/api";
 import { PageHeader, StatCard, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Plus, Trash2, Edit, Calculator, X } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
+import TablePager from "./TablePager";
 
 const CATEGORIES = ["server", "switch", "router", "firewall", "storage", "ups", "aircon", "monitor", "cable", "other"];
 
 const AdminAssets = () => {
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [editing, setEditing] = useState(null);
   const [scheduleFor, setScheduleFor] = useState(null);
-  const load = () => api.get("/admin/assets").then((r) => setRows(r.data));
-  useEffect(() => { load(); }, []);
+  const load = () =>
+    api.get("/admin/assets", { params: { paginate: true, limit, skip: page * limit } })
+      .then((r) => { setRows(r.data?.items || []); setTotal(r.data?.total || 0); });
+  useEffect(() => { load(); }, [page, limit]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/assets/${id}`); load(); } };
   const showSchedule = async (id) => {
@@ -108,6 +114,16 @@ const AdminAssets = () => {
         testid="admin-assets-table"
       />
 
+      {rows !== null && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-assets-pager"
+        />
+      )}
       {editing && <AssetForm a={editing === "new" ? null : editing} onClose={() => setEditing(null)} onDone={() => { setEditing(null); load(); }} />}
       {scheduleFor && <ScheduleModal asset={scheduleFor} onClose={() => setScheduleFor(null)} />}
     </div>

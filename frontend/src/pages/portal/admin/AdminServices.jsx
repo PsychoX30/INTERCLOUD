@@ -1,19 +1,42 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, money, shortDate } from "../../../portal/api";
 import { PageHeader, Card, StatusBadge } from "../ui";
 import { DataTable } from "../../../components/ui/data-table";
+import TablePager from "./TablePager";
 
 const AdminServices = () => {
   const [rows, setRows] = useState(null);
   const [users, setUsers] = useState({});
   const [active, setActive] = useState(null);
   const [requests, setRequests] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [q, setQ] = useState("");
+
+  const params = useMemo(() => {
+    const p = { paginate: true, limit, skip: page * limit };
+    if (statusFilter) p.status = statusFilter;
+    if (q) p.q = q;
+    return p;
+  }, [limit, page, statusFilter, q]);
 
   const loadRequests = () =>
     api.get("/admin/service-requests").then((r) => setRequests(r.data || [])).catch(() => setRequests([]));
 
+  const loadServices = useCallback(() => {
+    api.get("/admin/services", { params }).then((r) => {
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
+    });
+  }, [params]);
+
   useEffect(() => {
-    api.get("/admin/services").then((r) => setRows(r.data));
+    loadServices();
+  }, [loadServices]);
+
+  useEffect(() => {
     api.get("/admin/users").then((r) => {
       const map = {};
       for (const u of r.data) map[u.id] = u;
@@ -23,7 +46,7 @@ const AdminServices = () => {
   }, []);
 
   const refresh = () => {
-    api.get("/admin/services").then((r) => setRows(r.data));
+    loadServices();
     loadRequests();
   };
 
@@ -94,6 +117,20 @@ const AdminServices = () => {
         empty={{ title: "No services yet", hint: "Provisioned services will appear here once orders are verified." }}
         testid="admin-services-table"
       />
+
+      {rows !== null && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => {
+            setLimit(l);
+            setPage(0);
+          }}
+          testid="admin-services-pager"
+        />
+      )}
       {active && <ServiceDetailModal serviceId={active.id} onClose={() => { setActive(null); refresh(); }} />}
     </div>
   );

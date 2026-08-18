@@ -30,7 +30,7 @@ from .domains import _apply_domain_renewal, _auto_register_domain, _apply_domain
 from .ssl import _provision_ssl_order  # noqa: E402
 from .provision import (_provision_order_from_invoice,  # noqa: E402
                         _proxmox_settings_for_service)
-from .shared import BILLING_SETTING_DEFAULTS, _EXTRA_PAYMENT_MODULES, _get_db, _get_setting_value, _iso, _load_user, _log_transaction, _mark_overdue, _next_number, _now, _oid, _sales_scope_filter, _serialize_invoice, _set_setting_value, _sum_applied_credit  # noqa: E402
+from .shared import BILLING_SETTING_DEFAULTS, _EXTRA_PAYMENT_MODULES, _get_db, _get_setting_value, _iso, _load_user, _log_transaction, _mark_overdue, _next_number, _now, _oid, _sales_scope_filter, _serialize_invoice, _set_setting_value, _sum_applied_credit, _pagination_params, _pagination_response  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 from .users import _paginate  # noqa: E402
 
@@ -39,14 +39,29 @@ router = APIRouter()
 
 # Invoices (staff - Sales sees only invoices of their assigned clients)
 @router.get("/admin/invoices")
-async def admin_list_invoices(staff=Depends(require_roles("admin", "finance")),
-                              page: Optional[int] = None, limit: int = 25):
+async def admin_list_invoices(
+    staff=Depends(require_roles("admin", "finance")), page: Optional[int] = None,
+    skip: int = 0, limit: int = 25, sort: str = "created_at", order: str = "desc",
+    paginate: bool = False,
+):
     _deny_creative(staff)
     db = await _get_db()
     await _mark_overdue(db)
     q = _sales_scope_filter(staff, key="user_id")
-    docs = await db.invoices.find(q).sort("created_at", -1).to_list(2000)
-    return _paginate([await _serialize_invoice(db, d) for d in docs], page, limit)
+    sort_field = sort if sort in {"created_at", "due_date", "total", "status", "number"} else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    if paginate:
+        skip_n, limit_n = _pagination_params(skip, limit)
+        total = await db.invoices.count_documents(q)
+        cursor = db.invoices.find(q).sort(sort_field, direction).skip(skip_n)
+        if limit_n is not None:
+            cursor = cursor.limit(limit_n)
+        docs = await cursor.to_list(limit_n or 500)
+        items = [await _serialize_invoice(db, d) for d in docs]
+        return _pagination_response(items, total, skip_n, limit_n, True)
+    docs = await db.invoices.find(q).sort(sort_field, direction).to_list(2000)
+    items = [await _serialize_invoice(db, d) for d in docs]
+    return _paginate(items, page, limit) if page is not None else items
 
 
 @router.get("/admin/invoices/{iid}")
@@ -305,15 +320,30 @@ async def _serialize_quotation(db, d: dict) -> dict:
 
 
 @router.get("/admin/quotations")
-async def admin_list_quotations(staff=Depends(require_roles("admin", "sales", "finance"))):
+async def admin_list_quotations(
+    staff=Depends(require_roles("admin", "sales", "finance")), skip: int = 0,
+    limit: int = 25, sort: str = "created_at", order: str = "desc",
+    paginate: bool = False, page: Optional[int] = None,
+):
     _deny_creative(staff)
     db = await _get_db()
     q = {}
     if staff["role"] == "sales":
         assigned = [ObjectId(cid) for cid in (staff.get("assigned_client_ids") or [])]
         q = {"user_id": {"$in": assigned}} if assigned else {"_id": None}
-    docs = await db.quotations.find(q).sort("created_at", -1).to_list(1000)
-    return [await _serialize_quotation(db, d) for d in docs]
+    sort_field = sort if sort in {"created_at", "total", "status", "number"} else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    if paginate:
+        skip_n, limit_n = _pagination_params(skip, limit)
+        total = await db.quotations.count_documents(q)
+        cursor = db.quotations.find(q).sort(sort_field, direction).skip(skip_n)
+        if limit_n is not None:
+            cursor = cursor.limit(limit_n)
+        docs = await cursor.to_list(limit_n or 500)
+        return _pagination_response([await _serialize_quotation(db, d) for d in docs], total, skip_n, limit_n, True)
+    docs = await db.quotations.find(q).sort(sort_field, direction).to_list(1000)
+    items = [await _serialize_quotation(db, d) for d in docs]
+    return _paginate(items, page, limit) if page is not None else items
 
 
 @router.post("/admin/quotations", response_model=m.QuotationOut)

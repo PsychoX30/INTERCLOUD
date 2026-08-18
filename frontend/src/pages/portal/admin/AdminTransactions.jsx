@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, money, shortDate, fullDateTime } from "../../../portal/api";
 import { PageHeader } from "../ui";
 import { DataTable } from "../../../components/ui/data-table";
+import TablePager from "./TablePager";
 import {
   Download,
   Eye,
@@ -120,6 +121,9 @@ const InvoicePreviewModal = ({ invoiceId, onClose }) => {
 const AdminTransactions = () => {
   const [rows, setRows] = useState(null);
   const [summary, setSummary] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [filters, setFilters] = useState({
     start: "",
     end: "",
@@ -132,17 +136,22 @@ const AdminTransactions = () => {
   const [exportErr, setExportErr] = useState("");
 
   const queryString = useMemo(() => {
-    const p = {};
+    const p = { paginate: true, limit, skip: page * limit };
     if (filters.start) p.start = `${filters.start}T00:00:00`;
     if (filters.end) p.end = `${filters.end}T23:59:59`;
     if (filters.status) p.status = filters.status;
     if (filters.method) p.method = filters.method;
     if (filters.search) p.search = filters.search;
     return p;
-  }, [filters]);
+  }, [filters, page, limit]);
 
   const load = () => {
-    api.get("/admin/transactions", { params: queryString }).then((r) => setRows(r.data));
+    api
+      .get("/admin/transactions", { params: queryString })
+      .then((r) => {
+        setRows(r.data?.items || []);
+        setTotal(r.data?.total || 0);
+      });
     api.get("/admin/transactions/summary", { params: queryString }).then((r) => setSummary(r.data));
   };
 
@@ -281,7 +290,7 @@ const AdminTransactions = () => {
                 className="w-full h-10 rounded-lg border border-slate-300 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120]"
                 placeholder="Nama, nomor invoice, referensi…"
                 value={filters.search}
-                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                onChange={(e) => { setPage(0); setFilters({ ...filters, search: e.target.value }); }}
                 data-testid="tx-search"
               />
            </div>
@@ -291,7 +300,7 @@ const AdminTransactions = () => {
             <select
               className="w-full h-10 rounded-lg border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120]"
               value={filters.status}
-              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+              onChange={(e) => { setPage(0); setFilters({ ...filters, status: e.target.value }); }}
               data-testid="tx-filter-status"
             >
               {STATUS_OPTIONS.map((o) => (
@@ -304,7 +313,7 @@ const AdminTransactions = () => {
             <select
               className="w-full h-10 rounded-lg border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120]"
               value={filters.method}
-              onChange={(e) => setFilters({ ...filters, method: e.target.value })}
+              onChange={(e) => { setPage(0); setFilters({ ...filters, method: e.target.value }); }}
               data-testid="tx-filter-method"
             >
               {METHOD_OPTIONS.map((o) => (
@@ -319,7 +328,7 @@ const AdminTransactions = () => {
                 type="date"
                 className="w-full h-10 rounded-lg border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120]"
                 value={filters.start}
-                onChange={(e) => setFilters({ ...filters, start: e.target.value })}
+                onChange={(e) => { setPage(0); setFilters({ ...filters, start: e.target.value }); }}
                 data-testid="tx-filter-start"
               />
            </label>
@@ -329,7 +338,7 @@ const AdminTransactions = () => {
                 type="date"
                 className="w-full h-10 rounded-lg border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120]"
                 value={filters.end}
-                onChange={(e) => setFilters({ ...filters, end: e.target.value })}
+                onChange={(e) => { setPage(0); setFilters({ ...filters, end: e.target.value }); }}
                 data-testid="tx-filter-end"
               />
            </label>
@@ -374,6 +383,20 @@ const AdminTransactions = () => {
         empty={{ title: "Belum ada transaksi", hint: "Transaksi muncul saat invoice dibuat / dibayar / di-refund." }}
         testid="admin-transactions-table"
       />
+
+      {rows !== null && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => {
+            setLimit(l);
+            setPage(0);
+          }}
+          testid="admin-transactions-pager"
+        />
+      )}
 
       {previewId && (
         <InvoicePreviewModal invoiceId={previewId} onClose={() => setPreviewId(null)} />

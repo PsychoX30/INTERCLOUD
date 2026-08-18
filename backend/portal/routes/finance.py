@@ -31,7 +31,7 @@ from .domains import _auto_register_domain, _apply_domain_renewal, _apply_domain
 from .ssl import _provision_ssl_order  # noqa: E402
 from .provision import _provision_order_from_invoice  # noqa: E402
 from .documents import _idr, _long_date, _render_pdf_bytes  # noqa: E402
-from .shared import _get_db, _iso, _log_transaction, _next_number, _now, _oid, _sum_applied_credit  # noqa: E402
+from .shared import _get_db, _iso, _log_transaction, _next_number, _now, _oid, _sum_applied_credit, _pagination_params, _pagination_response  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.responses import Response  # noqa: E402
 from portal.branding import get_branding as _get_branding_dict  # noqa: E402
@@ -214,10 +214,30 @@ def _serialize_asset(d):
 
 
 @router.get("/admin/assets")
-async def assets_list(admin=Depends(require_roles("admin", "finance"))):
+async def assets_list(
+    admin=Depends(require_roles("admin", "finance")), skip: int = 0, limit: int = 50,
+    sort: str = "created_at", order: str = "desc", q: Optional[str] = None,
+    paginate: bool = False,
+):
     db = await _get_db()
-    docs = await db.assets.find({}).sort("created_at", -1).to_list(2000)
-    return [_serialize_asset(d) for d in docs]
+    query: dict = {}
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"serial_number": {"$regex": q, "$options": "i"}},
+        ]
+    sort_field = sort if sort in {"created_at", "name", "value", "status", "category"} else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    if not paginate:
+        docs = await db.assets.find(query).sort(sort_field, direction).to_list(2000)
+        return [_serialize_asset(d) for d in docs]
+    skip_n, limit_n = _pagination_params(skip, limit)
+    total = await db.assets.count_documents(query)
+    cursor = db.assets.find(query).sort(sort_field, direction).skip(skip_n)
+    if limit_n is not None:
+        cursor = cursor.limit(limit_n)
+    docs = await cursor.to_list(limit_n or 2000)
+    return _pagination_response([_serialize_asset(d) for d in docs], total, skip_n, limit_n, True)
 
 
 @router.get("/admin/assets/{aid}")
@@ -1337,7 +1357,10 @@ async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
 async def credit_notes_list(admin=Depends(require_roles("admin", "finance")),
                             invoice_id: Optional[str] = None,
                             user_id: Optional[str] = None,
-                            status: Optional[str] = None):
+                            status: Optional[str] = None,
+                            skip: int = 0, limit: int = 50,
+                            sort: str = "created_at", order: str = "desc",
+                            paginate: bool = False):
     db = await _get_db()
     query: dict = {}
     if invoice_id:
@@ -1348,14 +1371,27 @@ async def credit_notes_list(admin=Depends(require_roles("admin", "finance")),
         except Exception: query["user_id"] = None
     if status:
         query["status"] = status
-    docs = await db.credit_notes.find(query).sort("created_at", -1).to_list(500)
-    # bulk-fetch related invoices + users
-    inv_ids = [d["invoice_id"] for d in docs if d.get("invoice_id")]
-    user_ids = [d["user_id"] for d in docs if d.get("user_id")]
-    invs = {i["_id"]: i for i in await db.invoices.find({"_id": {"$in": inv_ids}}).to_list(500)}
-    users = {u["_id"]: u for u in await db.users.find({"_id": {"$in": user_ids}}).to_list(500)}
-    return [_credit_note_serialize(d, invs.get(d.get("invoice_id")), users.get(d.get("user_id")))
-            for d in docs]
+    sort_field = sort if sort in {"created_at", "number", "amount", "status"} else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+
+    async def _enrich(rows: list) -> list:
+        inv_ids = [d["invoice_id"] for d in rows if d.get("invoice_id")]
+        user_ids = [d["user_id"] for d in rows if d.get("user_id")]
+        invs = {i["_id"]: i for i in await db.invoices.find({"_id": {"$in": inv_ids}}).to_list(500)}
+        users = {u["_id"]: u for u in await db.users.find({"_id": {"$in": user_ids}}).to_list(500)}
+        return [_credit_note_serialize(d, invs.get(d.get("invoice_id")), users.get(d.get("user_id")))
+                for d in rows]
+
+    if not paginate:
+        docs = await db.credit_notes.find(query).sort(sort_field, direction).to_list(500)
+        return await _enrich(docs)
+    skip_n, limit_n = _pagination_params(skip, limit)
+    total = await db.credit_notes.count_documents(query)
+    cursor = db.credit_notes.find(query).sort(sort_field, direction).skip(skip_n)
+    if limit_n is not None:
+        cursor = cursor.limit(limit_n)
+    docs = await cursor.to_list(limit_n or 500)
+    return _pagination_response(await _enrich(docs), total, skip_n, limit_n, True)
 
 
 @router.post("/admin/credit-notes")

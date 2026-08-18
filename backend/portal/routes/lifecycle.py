@@ -28,15 +28,38 @@ from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
 from .. import integrations_v2 as iv2
 from .client import _VM_CATEGORIES  # noqa: E402
 from .provision import _proxmox_settings_for_service  # noqa: E402
-from .shared import _get_db, _load_user, _now, _oid, _sales_scope_filter, _serialize_service  # noqa: E402
+from .shared import _get_db, _load_user, _now, _oid, _sales_scope_filter, _serialize_service, _pagination_params, _pagination_response  # noqa: E402
 
 router = APIRouter()
 
 
 @router.get("/admin/services")
-async def admin_list_services(admin=Depends(require_roles("admin", "finance", "support"))):
+async def admin_list_services(admin=Depends(require_roles("admin", "finance", "support")),
+                              skip: int = 0, limit: int = 50, sort: str = "created_at",
+                              order: str = "desc", status: Optional[str] = None,
+                              q: Optional[str] = None, paginate: Optional[bool] = None):
+    """Server-side pagination untuk Services. Default response tetap bare array."""
+    _SORT = {"created_at", "name", "status", "next_renewal", "price_monthly"}
     db = await _get_db()
-    docs = await db.services.find({}).sort("created_at", -1).to_list(2000)
+    query: dict = {}
+    if status and status != "all":
+        query["status"] = status
+    if q:
+        query["$or"] = [{"name": {"$regex": q, "$options": "i"}},
+                        {"product_name": {"$regex": q, "$options": "i"}}]
+    sort_field = sort if sort in _SORT else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    skip_n, limit_n = _pagination_params(skip, limit)
+    if bool(paginate):
+        cursor = db.services.find(query).sort(sort_field, direction)
+        total = await db.services.count_documents(query)
+        if limit_n is not None:
+            cursor = cursor.skip(skip_n).limit(limit_n)
+        else:
+            cursor = cursor.skip(skip_n).limit(500)
+        docs = await cursor.to_list(None)
+        return _pagination_response([_serialize_service(d) for d in docs], total, skip_n, limit_n, True)
+    docs = await db.services.find(query).sort(sort_field, direction).to_list(2000)
     return [_serialize_service(d) for d in docs]
 
 

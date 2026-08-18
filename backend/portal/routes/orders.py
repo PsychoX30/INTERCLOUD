@@ -26,7 +26,7 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .shared import _get_db, _get_setting_value, _iso, _next_number, _now, _oid, _sales_scope_filter  # noqa: E402
+from .shared import _get_db, _get_setting_value, _iso, _next_number, _now, _oid, _sales_scope_filter, _pagination_params, _pagination_response  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 from .users import _paginate  # noqa: E402
 
@@ -319,17 +319,30 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
 
 # Orders
 @router.get("/admin/orders")
-async def admin_list_orders(staff=Depends(require_roles("admin", "sales", "finance")),
-                            page: Optional[int] = None, limit: int = 25):
+async def admin_list_orders(
+    staff=Depends(require_roles("admin", "sales", "finance")),
+    page: Optional[int] = None, skip: int = 0, limit: int = 25,
+    sort: str = "created_at", order: str = "desc", paginate: bool = False,
+):
     _deny_creative(staff)
     db = await _get_db()
     q = {}
     if staff["role"] == "sales":
-        # Sales sees only orders belonging to clients they're assigned to.
         assigned = [ObjectId(cid) for cid in (staff.get("assigned_client_ids") or [])]
-        q = {"user_id": {"$in": assigned}} if assigned else {"_id": None}  # empty result if unassigned
-    docs = await db.orders.find(q).sort("created_at", -1).to_list(1000)
-    return _paginate([_serialize_order(d) for d in docs], page, limit)
+        q = {"user_id": {"$in": assigned}} if assigned else {"_id": None}
+    sort_field = sort if sort in {"created_at", "status", "total", "product_name"} else "created_at"
+    direction = 1 if order.lower() == "asc" else -1
+    if paginate:
+        skip_n, limit_n = _pagination_params(skip, limit)
+        total = await db.orders.count_documents(q)
+        cursor = db.orders.find(q).sort(sort_field, direction).skip(skip_n)
+        if limit_n is not None:
+            cursor = cursor.limit(limit_n)
+        docs = await cursor.to_list(limit_n or 1000)
+        return _pagination_response([_serialize_order(d) for d in docs], total, skip_n, limit_n, True)
+    docs = await db.orders.find(q).sort(sort_field, direction).to_list(1000)
+    items = [_serialize_order(d) for d in docs]
+    return _paginate(items, page, limit) if page is not None else items
 
 
 @router.put("/admin/orders/{oid}/status")

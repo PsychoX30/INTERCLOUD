@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { api, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, btnDanger, inputClass, labelClass } from "../ui";
 import { Plus, ReceiptText, Loader2, CheckCircle2, XCircle, FileText, Download, Search, RefreshCw, Pencil, Trash2 } from "lucide-react";
+import TablePager from "./TablePager";
 import { toast } from "sonner";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
@@ -15,24 +16,33 @@ const STATUS_CHIPS = {
 
 const AdminCreditNotes = () => {
   const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [loading, setLoading] = useState(true);
   const [invoices, setInvoices] = useState([]);
   const [showCreate, setShowCreate] = useState(false);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
+  const params = useMemo(() => {
+    const p = { paginate: true, skip: page * limit, limit };
+    if (statusFilter) p.status = statusFilter;
+    return p;
+  }, [page, limit, statusFilter]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = statusFilter ? `?status=${statusFilter}` : "";
       const [r, i] = await Promise.all([
-        api.get(`/admin/credit-notes${params}`),
+        api.get("/admin/credit-notes", { params }),
         api.get("/admin/invoices"),
       ]);
-      setRows(r.data || []);
+      setRows(r.data?.items || []);
+      setTotal(r.data?.total || 0);
       setInvoices(i.data || []);
     } finally { setLoading(false); }
-  }, [statusFilter]);
+  }, [params]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -86,12 +96,12 @@ const AdminCreditNotes = () => {
             <label className={labelClass}>Search</label>
             <div className="relative">
               <Search className="h-4 w-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="CN number, invoice, email, reason" className={inputClass + " pl-8"} data-testid="cn-search" />
+              <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="CN number, invoice, email, reason" className={inputClass + " pl-8"} data-testid="cn-search" />
             </div>
           </div>
           <div>
             <label className={labelClass}>Status</label>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={inputClass} data-testid="cn-status-filter">
+            <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }} className={inputClass} data-testid="cn-status-filter">
               <option value="">All</option>
               <option value="draft">Draft</option>
               <option value="applied">Applied</option>
@@ -165,6 +175,17 @@ const AdminCreditNotes = () => {
           </div>
         )}
       </Card>
+
+      {!loading && total > 0 && (
+        <TablePager
+          page={page}
+          total={total}
+          limit={limit}
+          onPage={setPage}
+          onLimit={(l) => { setLimit(l); setPage(0); }}
+          testid="admin-credit-notes-pager"
+        />
+      )}
 
       {showCreate && (
         <CreateModal
