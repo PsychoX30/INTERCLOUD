@@ -453,3 +453,61 @@ async def test_notification_contains_flow_evidence(db, monkeypatch):
     assert payload["incident"]["src_port"] == "1234"
     assert payload["incident"]["dst_port"] == "53"
     assert payload["incident"]["direction"] == "inbound"
+
+
+# 11. A selected mitigation router is independent of the telemetry source.
+async def test_selected_mitigation_device_is_used_for_goflow2_flow(db, monkeypatch):
+    db.ddos_threshold_rules._docs = [
+        _rule(action="alert_blackhole", auto_blackhole=True,
+              mitigation_device_id="dev-bgp")
+    ]
+    bgp = _device(name="RO.BGP", host="157.20.32.254")
+    bgp["_id"] = "dev-bgp"
+    goflow = _device(name="goflow2", host="157.20.32.183")
+    goflow["_id"] = "dev-goflow2"
+    db.mikrotik_devices._docs = [bgp, goflow]
+
+    captured_devices = []
+    from portal import integrations_v2 as iv2
+
+    class CaptureClient:
+        def __init__(self, device=None, *args, **kwargs):
+            self.device = device
+
+        def torch(self, interface="ether1", duration="2s", **kwargs):
+            return {"ok": True, "rows": [_flow("8.8.8.8", "157.20.32.50", pps=80_000)]}
+
+        def list_interfaces(self):
+            return [{"name": "ether1", "running": "true", "disabled": "false"}]
+
+        def blackhole_add(self, prefix, *, comment=""):
+            captured_devices.append(self.device)
+            return {"ok": True, "prefix": prefix}
+
+        def blackhole_find_by_prefix(self, prefix):
+            return {"id": "route-001", "prefix": prefix}
+
+        def blackhole_remove(self, route_id):
+            return {"ok": True, "id": route_id}
+
+    monkeypatch.setattr(iv2, "MikrotikClient", CaptureClient)
+    from portal import emails as _em
+    monkeypatch.setattr(_em, "iv2", iv2)
+
+    # GoFlow2 marks its flow source as the collector; mitigation must still
+    # use the selected RO.BGP router.
+    class FakeGoFlow2:
+        def poll(self):
+            return {"ok": True, "rows": [_flow("8.8.8.8", "157.20.32.50", pps=80_000)]}
+
+    from portal import emails as _em
+
+    async def fake_get_goflow2_client(_db):
+        return FakeGoFlow2()
+
+    monkeypatch.setattr(_em, "_get_goflow2_client", fake_get_goflow2_client)
+    result = await _em.run_ddos_detection_sweep(db)
+
+    assert result["auto_blackholed"] == 1
+    assert [device["_id"] for device in captured_devices] == ["dev-bgp"]
+    assert db.ddos_incidents._docs[0]["device"] == "RO.BGP"

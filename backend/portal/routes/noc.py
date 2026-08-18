@@ -414,6 +414,8 @@ def _serialize_threshold_rule(d: dict) -> dict:
         "direction": d.get("direction", "inbound"),
         "scope_prefixes": d.get("scope_prefixes") or ["157.20.32.0/24"],
         "auto_blackhole": bool(d.get("auto_blackhole")),
+        "mitigation_device_id": (str(d["mitigation_device_id"])
+                                 if d.get("mitigation_device_id") else None),
         "enabled": d.get("enabled", True),
         "created_at": _iso(d.get("created_at", "")),
     }

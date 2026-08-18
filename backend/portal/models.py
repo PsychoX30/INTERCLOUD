@@ -389,6 +389,7 @@ class ThresholdRuleIn(BaseModel):
     direction: Literal["inbound", "outbound", "any"] = "inbound"
     scope_prefixes: List[str] = ["157.20.32.0/24"]
     auto_blackhole: bool = False
+    mitigation_device_id: Optional[str] = None
     enabled: bool = True
 
 

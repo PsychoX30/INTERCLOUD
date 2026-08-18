@@ -1413,6 +1413,26 @@ def _ddos_target(src: str, dst: str, direction: str) -> str:
     return dst if direction == "inbound" else src
 
 
+def _resolve_mitigation_device(rule: dict, devices: list[dict]) -> dict | None:
+    """Resolve the router used for blackholing, independent of the flow source.
+
+    The telemetry source (GoFlow2 collector, or a MikroTik polled via Torch)
+    is not necessarily reachable on the MikroTik API port, and must never be
+    conflated with the device that actually executes the blackhole route.
+    A rule may pin an explicit ``mitigation_device_id``; otherwise this falls
+    back to RO.BGP, matching today's manual-blackhole behavior.
+    """
+    selected = rule.get("mitigation_device_id")
+    if selected:
+        device = next((d for d in devices if str(d.get("_id")) == str(selected)), None)
+        if device:
+            return device
+        log.warning("[ddos] configured mitigation device not found: %s", selected)
+    return next((d for d in devices
+                 if d.get("name") == "RO.BGP" or d.get("host") == "157.20.32.254"),
+                next(iter(devices), None))
+
+
 def _ddos_flow_fields(flow: dict) -> dict:
     return {
         "src_ip": (flow.get("src_address") or "").split("/")[0],
@@ -1631,10 +1651,12 @@ async def run_ddos_detection_sweep(db) -> dict:
                 await db.ddos_incidents.update_one({"_id": existing["_id"]}, {"$set": incident_data})
                 incident = {**existing, **incident_data}
             else:
+                mit_device = _resolve_mitigation_device(rule, devices)
+                mit_device_name = (mit_device or {}).get("name") or "unknown"
                 incident = {"target": target, "attack_type": attack_type,
                             "status": "active", "action": action,
                             "rule_id": str(rule["_id"]), "rule_name": rule.get("name", ""),
-                            "device": agg["device"], "started_at": now_iso,
+                            "device": mit_device_name, "started_at": now_iso,
                             "ended_at": None, "notified": [], **incident_data}
                 r = await db.ddos_incidents.insert_one(incident)
                 incident["_id"] = r.inserted_id
@@ -1648,19 +1670,25 @@ async def run_ddos_detection_sweep(db) -> dict:
                 if not verdict.allowed:
                     log.warning("[ddos] auto-blackhole skipped: %s (%s)", prefix, verdict.reason)
                 else:
-                    try:
-                        client = iv2.MikrotikClient(agg["device_doc"])
-                        bh = await _a.get_event_loop().run_in_executor(
-                            None, lambda c=client, p=prefix, n=rule.get("name", ""):
-                            c.blackhole_add(p, comment=f"auto-mitigasi ({n})"))
-                        route = await _a.get_event_loop().run_in_executor(
-                            None, lambda c=client, p=prefix: c.blackhole_find_by_prefix(p)) if bh.get("ok") else None
-                        ok = bool(bh.get("ok"))
-                    except Exception as exc:
-                        ok, bh, route = False, {"error": str(exc)}, None
+                    mit_device = _resolve_mitigation_device(rule, devices)
+                    if not mit_device:
+                        ok, bh, route = False, {"error": "no mitigation device configured"}, None
+                        log.error("[ddos] no mitigation device for rule %s; skipping blackhole", rule.get("name"))
+                    else:
+                        try:
+                            client = iv2.MikrotikClient(mit_device)
+                            bh = await _a.get_event_loop().run_in_executor(
+                                None, lambda c=client, p=prefix, n=rule.get("name", ""):
+                                c.blackhole_add(p, comment=f"auto-mitigasi ({n})"))
+                            route = await _a.get_event_loop().run_in_executor(
+                                None, lambda c=client, p=prefix: c.blackhole_find_by_prefix(p)) if bh.get("ok") else None
+                            ok = bool(bh.get("ok"))
+                        except Exception as exc:
+                            ok, bh, route = False, {"error": str(exc)}, None
+                    mit_device_name = (mit_device or {}).get("name") or "unknown"
                     await db.blackhole_log.insert_one({"prefix": prefix, "action": "add",
                         "by": f"auto-mitigasi ({rule.get('name', '')})", "source": "auto",
-                        "device": agg["device"], "ok": ok, "detail": str(bh)[:300], "at": now_iso})
+                        "device": mit_device_name, "ok": ok, "detail": str(bh)[:300], "at": now_iso})
                     if ok:
                         blackholed += 1
                         await db.ddos_incidents.update_one({"_id": incident["_id"]}, {"$set": {

@@ -13,17 +13,23 @@ const fmtThreshold = (r) => r.metric === "bps"
   ? `${(r.threshold / 1e9).toLocaleString("id-ID")} Gbps`
   : `${(r.threshold / 1e3).toLocaleString("id-ID")}K pps`;
 
-const EMPTY = { name: "", metric: "pps", threshold: 100000, window_s: 10, action: "alert", direction: "inbound", scope_prefixes: "157.20.32.0/24", enabled: true };
+const EMPTY = { name: "", metric: "pps", threshold: 100000, window_s: 10, action: "alert", direction: "inbound", scope_prefixes: "157.20.32.0/24", mitigation_device_id: "", enabled: true };
+
+const BLACKHOLE_ACTIONS = ["alert_blackhole", "alert_bgp_blackhole"];
 
 export const ThresholdRules = () => {
   const [rules, setRules] = useState(null);
+  const [devices, setDevices] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const load = () => api.get("/admin/noc/threshold-rules").then((r) => setRules(r.data)).catch(() => setRules([]));
-  useEffect(() => { load(); }, []);
+  const loadDevices = () => api.get("/admin/mikrotik/devices")
+    .then((r) => setDevices(Array.isArray(r.data) ? r.data : []))
+    .catch(() => setDevices([]));
+  useEffect(() => { load(); loadDevices(); }, []);
 
   const openNew = () => { setForm(EMPTY); setEditing("new"); };
   const openEdit = (r) => {
@@ -36,6 +42,7 @@ export const ThresholdRules = () => {
       scope_prefixes: Array.isArray(r.scope_prefixes)
         ? r.scope_prefixes.join(", ")
         : String(r.scope_prefixes || ""),
+      mitigation_device_id: r.mitigation_device_id || "",
     });
     setErr("");
     setEditing(r.id);
@@ -49,6 +56,7 @@ export const ThresholdRules = () => {
       .split(/[\s,]+/)
       .map((p) => p.trim())
       .filter(Boolean),
+    mitigation_device_id: f.mitigation_device_id ? String(f.mitigation_device_id) : null,
   });
 
   const save = async () => {
@@ -131,6 +139,15 @@ export const ThresholdRules = () => {
                 <option value="alert_bgp_blackhole">Alert + BGP RTBH (auto)</option>
               </select></label>
           </div>
+          {BLACKHOLE_ACTIONS.includes(form.action) && (
+            <label className="block mt-3"><div className={labelClass}>Router mitigasi</div>
+              <select className={inputClass} value={form.mitigation_device_id || ""} onChange={(e) => setForm({ ...form, mitigation_device_id: e.target.value })} data-testid="threshold-device">
+                <option value="">Pilih device…</option>
+                {(devices || []).map((d) => (
+                  <option key={d.id || d._id} value={d.id || d._id}>{d.name} ({d.host})</option>
+                ))}
+              </select></label>
+          )}
           <label className="block mt-3"><div className={labelClass}>Scope prefixes (dipisah koma)</div>
             <input className={inputClass} value={form.scope_prefixes} onChange={(e) => setForm({ ...form, scope_prefixes: e.target.value })} placeholder="157.20.32.0/24" data-testid="threshold-scope" /></label>
           <div className="mt-3 flex gap-2">
