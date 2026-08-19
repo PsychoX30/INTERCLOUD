@@ -84,6 +84,10 @@ LANDING_CONTENT_DEFAULT: dict = {
         # "address_en": "...",
         # "whatsapp_number": "6287812397187",
     },
+    # Image overrides keyed by slot id. Only URLs are stored (media-library
+    # path or absolute http/https), never base64 - keeps this doc small.
+    # { "<slot>": {"url": "...", "alt_id": "...", "alt_en": "..."} }
+    "images": {},
 }
 
 
@@ -97,4 +101,5 @@ async def get_landing_content(db) -> dict:
         "overrides": value.get("overrides") or {},
         "faqs":      value.get("faqs") or [],
         "contact":   value.get("contact") or {},
+        "images":    value.get("images") or {},
     }

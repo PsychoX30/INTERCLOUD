@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { Save, RotateCcw, Plus, Trash2, Loader2, Monitor, Tablet, Smartphone, RefreshCw, Eye } from "lucide-react";
+import { Save, RotateCcw, Plus, Trash2, Loader2, Monitor, Tablet, Smartphone, RefreshCw, Eye, UploadCloud } from "lucide-react";
 import { api } from "../../../portal/api";
 
 // Full landing-page coverage grouped by the sections a visitor scrolls through.
@@ -137,6 +137,17 @@ const SECTIONS = [
 
 const emptyFaq = () => ({ q: { id: "", en: "" }, a: { id: "", en: "" } });
 
+// Landing-page image slots that can be overridden from the CMS.
+// Defaults live in the components (Hero.jsx / Infrastructure.jsx) and are only
+// used when no override URL is set.
+const IMAGE_SLOTS = [
+  { slot: "hero_main",      label: "Hero - Gambar utama (kanan)" },
+  { slot: "infra_dc",       label: "Infrastruktur - Data Center" },
+  { slot: "infra_servers",  label: "Infrastruktur - Server" },
+  { slot: "infra_fiber",    label: "Infrastruktur - Fiber" },
+  { slot: "infra_network",  label: "Infrastruktur - Network" },
+];
+
 const DEVICES = {
   desktop: { w: "100%", icon: Monitor, label: "Desktop" },
   tablet: { w: "834px", icon: Tablet, label: "Tablet" },
@@ -145,7 +156,7 @@ const DEVICES = {
 
 const AdminSiteContent = () => {
   const [content, setContent] = useState(null);
-  const [tab, setTab] = useState("editor");     // editor | faqs | json
+  const [tab, setTab] = useState("editor");     // editor | faqs | images | json
   const [device, setDevice] = useState("desktop");
   const [previewLang, setPreviewLang] = useState("id");
   const [busy, setBusy] = useState(false);
@@ -153,6 +164,10 @@ const AdminSiteContent = () => {
   const [jsonText, setJsonText] = useState("");
   const iframeRef = useRef(null);
   const editorScrollRef = useRef(null);
+  const [mediaRows, setMediaRows] = useState([]);
+  const [mediaLoading, setMediaLoading] = useState(false);
+  const [mediaTag, setMediaTag] = useState("");
+  const [uploadingSlot, setUploadingSlot] = useState("");
 
   useEffect(() => {
     api.get("/landing-content").then(({ data }) => {
@@ -160,6 +175,21 @@ const AdminSiteContent = () => {
       setJsonText(JSON.stringify(data, null, 2));
     });
   }, []);
+
+  // Load media library for the image picker
+  const loadMedia = async () => {
+    setMediaLoading(true);
+    try {
+      const r = await api.get("/admin/media", { params: { tag: mediaTag || undefined } });
+      setMediaRows(r.data || []);
+    } catch (_) {
+      setMediaRows([]);
+    } finally {
+      setMediaLoading(false);
+    }
+  };
+
+  useEffect(() => { loadMedia(); }, [mediaTag]);
 
   const previewUrl = useMemo(() => `${window.location.origin}/?cmsPreview=1`, []);
 
@@ -171,6 +201,7 @@ const AdminSiteContent = () => {
       overrides: c.overrides || {},
       faqs: Array.isArray(c.faqs) ? c.faqs : [],
       contact: c.contact || null,
+      images: c.images || {},
       lang,
     }, window.location.origin);
   }, [content, previewLang]);
@@ -214,6 +245,51 @@ const AdminSiteContent = () => {
   };
   const addFaq = () => setContent((c) => ({ ...c, faqs: [...(c.faqs || []), emptyFaq()] }));
   const rmFaq = (i) => setContent((c) => ({ ...c, faqs: (c.faqs || []).filter((_, idx) => idx !== i) }));
+
+  const setImage = (slot, field, val) => {
+    setContent((c) => ({
+      ...c,
+      images: {
+        ...(c.images || {}),
+        [slot]: {
+          url: (c.images || {})[slot]?.url || "",
+          alt_id: (c.images || {})[slot]?.alt_id || "",
+          alt_en: (c.images || {})[slot]?.alt_en || "",
+          ...(field ? { [field]: val } : {}),
+        },
+      },
+    }));
+  };
+  const clearImage = (slot) => {
+    setContent((c) => {
+      const images = { ...(c.images || {}) };
+      delete images[slot];
+      return { ...c, images };
+    });
+  };
+
+  const uploadImage = async (slot, file) => {
+    if (!file) return;
+    setUploadingSlot(slot);
+    setMsg(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("alt_text", (content.images || {})[slot]?.alt_id || "");
+      form.append("tags", "landing,cms");
+      const { data } = await api.post("/admin/media", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      if (!data?.url) throw new Error("Server tidak mengembalikan URL media");
+      setImage(slot, "url", data.url);
+      setMediaRows((rows) => [data, ...rows.filter((m) => m.id !== data.id)]);
+      setMsg({ kind: "ok", text: `${file.name} berhasil diunggah dan dipilih. Klik Simpan untuk menerbitkan.` });
+    } catch (e) {
+      setMsg({ kind: "error", text: e?.response?.data?.detail || e.message || "Upload gagal" });
+    } finally {
+      setUploadingSlot("");
+    }
+  };
 
   const jumpTo = (secId) => {
     const el = editorScrollRef.current && editorScrollRef.current.querySelector(`#sec-${secId}`);
@@ -290,6 +366,7 @@ const AdminSiteContent = () => {
             {[
               { k: "editor", label: "Teks per Bagian" },
               { k: "faqs", label: `FAQ (${(content.faqs || []).length})` },
+              { k: "images", label: "Gambar" },
               { k: "json", label: "JSON" },
             ].map((t) => (
               <button key={t.k}
@@ -397,6 +474,115 @@ const AdminSiteContent = () => {
                       Belum ada FAQ kustom - situs memakai FAQ bawaan. Klik "Tambah FAQ".
                     </div>
                   )}
+                </div>
+              </div>
+            )}
+
+            {tab === "images" && (
+              <div>
+                <div className="mb-4 text-xs text-slate-500">
+                  Ganti gambar landing (hero &amp; 4 kartu infrastruktur). Kosong = pakai gambar bawaan.
+                  Upload langsung, pilih dari Media Library, atau tempel URL eksternal.
+                </div>
+                <div className="space-y-4">
+                  {IMAGE_SLOTS.map(({ slot, label }) => {
+                    const entry = (content.images || {})[slot] || {};
+                    return (
+                      <div key={slot} className="rounded-2xl border border-slate-200 bg-white p-4" data-testid={`cms-image-${slot}`}>
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="text-xs font-bold uppercase tracking-widest text-[#0a2350]">{label}</div>
+                          {entry.url && (
+                            <button onClick={() => clearImage(slot)}
+                                    className="text-xs text-red-600 inline-flex items-center gap-1"
+                                    data-testid={`cms-image-clear-${slot}`}>
+                              <RotateCcw className="h-3.5 w-3.5" /> Pakai bawaan
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Preview */}
+                          <div>
+                            <label className="text-[10px] uppercase tracking-widest text-slate-400">Pratinjau</label>
+                            <div className="mt-1 aspect-[4/3] rounded-xl border border-slate-200 overflow-hidden bg-slate-50 flex items-center justify-center">
+                              {entry.url ? (
+                                <img src={entry.url} alt={label} className="h-full w-full object-cover"
+                                     onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                              ) : (
+                                <span className="text-xs text-slate-400">(gambar bawaan)</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Controls */}
+                          <div className="space-y-3">
+                            <div>
+                              <label className="text-[10px] uppercase tracking-widest text-slate-400">Upload gambar baru</label>
+                              <label className={`mt-1 w-full px-3 py-2 rounded-lg border border-dashed text-xs font-semibold inline-flex items-center justify-center gap-2 transition-colors ${uploadingSlot === slot ? "cursor-wait border-slate-200 bg-slate-50 text-slate-400" : "cursor-pointer border-[#0a2350]/30 text-[#0a2350] hover:border-[#f5b120] hover:bg-amber-50"}`}>
+                                {uploadingSlot === slot ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                                {uploadingSlot === slot ? "Mengunggah…" : "Pilih file dari komputer"}
+                                <input type="file"
+                                       accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                                       disabled={!!uploadingSlot}
+                                       onChange={(e) => {
+                                         const file = e.target.files?.[0];
+                                         e.target.value = "";
+                                         uploadImage(slot, file);
+                                       }}
+                                       className="sr-only"
+                                       data-testid={`cms-image-upload-${slot}`} />
+                              </label>
+                              <div className="mt-1 text-[10px] text-slate-400">PNG, JPEG, WebP, GIF, atau SVG; maksimum 8 MB.</div>
+                            </div>
+                            <div>
+                              <label className="text-[10px] uppercase tracking-widest text-slate-400">URL gambar</label>
+                              <input value={entry.url || ""}
+                                     onChange={(e) => setImage(slot, "url", e.target.value)}
+                                     placeholder="/api/portal/media/file/... atau https://..."
+                                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-mono"
+                                     data-testid={`cms-image-url-${slot}`} />
+                            </div>
+                            <div>
+                              <label className="text-[10px] uppercase tracking-widest text-slate-400">Pilih dari Media Library</label>
+                              {mediaLoading ? (
+                                <div className="text-xs text-slate-400 mt-1">Memuat media…</div>
+                              ) : mediaRows.length === 0 ? (
+                                <div className="text-xs text-slate-400 mt-1">
+                                  Belum ada media. Gunakan tombol upload di atas.
+                                </div>
+                              ) : (
+                                <div className="mt-1 grid grid-cols-4 gap-1.5 max-h-28 overflow-y-auto">
+                                  {mediaRows.map((m) => (
+                                    <button key={m.id} type="button" onClick={() => setImage(slot, "url", m.url)}
+                                            title={m.filename}
+                                            className={`aspect-square rounded-lg border overflow-hidden bg-slate-50 hover:border-[#f5b120] transition-colors ${entry.url === m.url ? "border-[#f5b120] ring-2 ring-[#f5b120]/40" : "border-slate-200"}`}>
+                                      <img src={m.url} alt={m.alt_text || m.filename} className="h-full w-full object-cover" loading="lazy" />
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-[10px] uppercase tracking-widest text-slate-400">Alt (Indonesia)</label>
+                                <input value={entry.alt_id || ""}
+                                       onChange={(e) => setImage(slot, "alt_id", e.target.value)}
+                                       placeholder="teks alternatif (ID)"
+                                       className="mt-0.5 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm" />
+                              </div>
+                              <div>
+                                <label className="text-[10px] uppercase tracking-widest text-slate-400">Alt (English)</label>
+                                <input value={entry.alt_en || ""}
+                                       onChange={(e) => setImage(slot, "alt_en", e.target.value)}
+                                       placeholder="alt text (EN)"
+                                       className="mt-0.5 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm" />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

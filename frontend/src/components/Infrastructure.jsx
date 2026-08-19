@@ -42,7 +42,8 @@ const CARDS = [
 ];
 
 const Infrastructure = () => {
-  const { t } = useLang();
+  const { t, lang, cmsImages } = useLang();
+  const imgs = cmsImages || {};
 
   return (
     <section
@@ -77,8 +78,8 @@ const Infrastructure = () => {
               >
                 <div className="relative h-48 overflow-hidden">
                   <img
-                    src={c.image}
-                    alt={t(c.titleKey)}
+                    src={(imgs[`infra_${c.id}`]?.url) || c.image}
+                    alt={(imgs[`infra_${c.id}`] ? (lang === "en" ? imgs[`infra_${c.id}`].alt_en : imgs[`infra_${c.id}`].alt_id) : "") || t(c.titleKey)}
                     loading="lazy"
                     className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
                   />

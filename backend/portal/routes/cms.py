@@ -106,6 +106,32 @@ from portal.backups import (
 )
 
 
+def _clean_landing_images(raw) -> dict:
+    """Normalise the images field from a CMS POST.
+
+    Expected shape: { "<slot>": {"url": "...", "alt_id": "...", "alt_en": "..."} }
+    - url is required (string); alt_id/alt_en default to ''.
+    - Only string values are kept; everything else is dropped.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for slot, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        alt_id = entry.get("alt_id")
+        alt_en = entry.get("alt_en")
+        out[str(slot)] = {
+            "url": url.strip(),
+            "alt_id": alt_id if isinstance(alt_id, str) else "",
+            "alt_en": alt_en if isinstance(alt_en, str) else "",
+        }
+    return out
+
+
 @router.get("/landing-content")
 async def landing_content_get():
     """Public - Landing page fetches on mount and merges overrides on top of
@@ -131,6 +157,7 @@ async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
         "overrides": payload.get("overrides") if isinstance(payload.get("overrides"), dict) else {},
         "faqs":      payload.get("faqs")      if isinstance(payload.get("faqs"), list)      else [],
         "contact":   payload.get("contact")   if isinstance(payload.get("contact"), dict)   else {},
+        "images":    _clean_landing_images(payload.get("images")),
     }
     # 128 KB cap on the whole doc - plenty for a landing page's worth of text.
     approx = len(str(clean))
@@ -152,7 +179,7 @@ async def landing_content_reset(admin=Depends(get_current_admin)):
     db = await _get_db()
     await db.settings.update_one(
         {"key": "landing_content"},
-        {"$set": {"value": {"overrides": {}, "faqs": [], "contact": {}},
+        {"$set": {"value": {"overrides": {}, "faqs": [], "contact": {}, "images": {}},
                   "updated_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True,
     )

@@ -41,8 +41,9 @@ const BottomWave = () => (
 );
 
 const Hero = () => {
-  const { lang, t } = useLang();
+  const { lang, t, cmsImages } = useLang();
   const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
+  const heroImg = cmsImages?.hero_main;
 
   return (
     <section
@@ -112,8 +113,8 @@ const Hero = () => {
         <div className="lg:col-span-5 relative fade-up hidden lg:block">
           <div className="relative aspect-[4/5] rounded-3xl overflow-hidden border border-white/10 shadow-2xl shadow-black/40">
             <img
-              src="https://images.pexels.com/photos/17489163/pexels-photo-17489163.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=600"
-              alt="Data center servers"
+              src={heroImg?.url || "https://images.pexels.com/photos/17489163/pexels-photo-17489163.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=600"}
+              alt={heroImg ? (lang === "en" ? heroImg.alt_en : heroImg.alt_id) || "Data center servers" : "Data center servers"}
               className="absolute inset-0 h-full w-full object-cover"
               loading="eager"
             />

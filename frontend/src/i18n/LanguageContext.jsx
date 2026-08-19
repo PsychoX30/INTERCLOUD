@@ -297,6 +297,7 @@ export const LanguageProvider = ({ children }) => {
   const [overrides, setOverrides] = useState({});
   const [cmsFaqs, setCmsFaqs] = useState(null);        // null = use hardcoded default
   const [contactOverride, setContactOverride] = useState(null);
+  const [cmsImages, setCmsImages] = useState({});      // { hero_main: {url, alt_id, alt_en}, ... }
 
   useEffect(() => {
     const base = process.env.REACT_APP_BACKEND_URL;
@@ -308,6 +309,7 @@ export const LanguageProvider = ({ children }) => {
         setOverrides(data.overrides && typeof data.overrides === "object" ? data.overrides : {});
         setCmsFaqs(Array.isArray(data.faqs) && data.faqs.length ? data.faqs : null);
         setContactOverride(data.contact && typeof data.contact === "object" ? data.contact : null);
+        setCmsImages(data.images && typeof data.images === "object" ? data.images : {});
       })
       .catch(() => { /* stay on hardcoded defaults */ });
   }, []);
@@ -323,6 +325,7 @@ export const LanguageProvider = ({ children }) => {
       setOverrides(d.overrides && typeof d.overrides === "object" ? d.overrides : {});
       setCmsFaqs(Array.isArray(d.faqs) && d.faqs.length ? d.faqs : null);
       setContactOverride(d.contact && typeof d.contact === "object" ? d.contact : null);
+      setCmsImages(d.images && typeof d.images === "object" ? d.images : {});
       if (d.lang === "id" || d.lang === "en") setLangState(d.lang);
       if (d.scrollTo) {
         const el = document.getElementById(d.scrollTo) ||
@@ -363,8 +366,8 @@ export const LanguageProvider = ({ children }) => {
   }, [lang, mergedDict]);
 
   const value = useMemo(
-    () => ({ lang, setLang, t, cmsFaqs, contactOverride }),
-    [lang, setLang, t, cmsFaqs, contactOverride]
+    () => ({ lang, setLang, t, cmsFaqs, contactOverride, cmsImages }),
+    [lang, setLang, t, cmsFaqs, contactOverride, cmsImages]
   );
 
   return (
