@@ -133,15 +133,21 @@ async def _sales_visible_crm_ids(db, staff: dict) -> list | None:
     """Return the list of crm_customers._id that a sales staff can access.
 
     Returns None if the staff is not a sales role (i.e., no restriction).
-    For sales, we consider a CRM row "theirs" if its `user_id` is in their
-    assigned_client_ids. This is what powers scoping on the Follow-ups table.
+    For sales, a CRM row is "theirs" if its `user_id` is in their
+    assigned_client_ids, OR it is in the shared pool (status prospect /
+    partnership), OR it is currently assigned to them (status='assigned').
+    This is what powers scoping on the Follow-ups table.
     """
     if staff.get("role") != "sales":
         return None
     assigned = [ObjectId(x) for x in (staff.get("assigned_client_ids") or [])]
-    if not assigned:
-        return []
-    cur = db.crm_customers.find({"user_id": {"$in": assigned}}, {"_id": 1})
+    or_clauses = [{"status": {"$in": ["prospect", "partnership"]}}]
+    if assigned:
+        or_clauses.append({"user_id": {"$in": assigned}})
+    staff_id = staff.get("_id")
+    if staff_id:
+        or_clauses.append({"assigned_to": ObjectId(str(staff_id))})
+    cur = db.crm_customers.find({"$or": or_clauses}, {"_id": 1})
     return [d["_id"] async for d in cur]
 
 

@@ -2491,6 +2491,21 @@ def start_scheduler(db):
         coalesce=True,
     )
 
+    # CRM prospect assignment expiry - hourly at :05
+    async def _crm_assignment_expiry():
+        from .routes.business import expire_overdue_assignments
+        released = await expire_overdue_assignments(db)
+        if released:
+            log.info("CRM assignment expiry released %s prospect(s)", released)
+
+    sched.add_job(
+        _leased("crm_assignment_expiry", _crm_assignment_expiry),
+        CronTrigger(minute=5),
+        id="job:crm_assignment_expiry",
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Backup database - daily 03:30
     async def _backup_job():
         import pathlib

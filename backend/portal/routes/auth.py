@@ -325,6 +325,20 @@ async def register(payload: m.RegisterIn, request: Request):
         # CRM mirroring must never block registration
         pass
 
+    # If registration came via a close-deal CRM token, sync the linked CRM row
+    if payload.crm_token:
+        try:
+            from portal.routes.business import sync_crm_after_registration as _sync_crm
+            await _sync_crm(
+                db,
+                crm_token=payload.crm_token,
+                new_user_id=doc["_id"],
+                reg_email=email,
+                reg_name=doc.get("name", ""),
+            )
+        except Exception:
+            pass
+
     # Fire welcome email (best-effort - never blocks registration)
     try:
         from portal import emails as _em

@@ -50,10 +50,40 @@ def _serialize_crm(d):
         "status": d.get("status", "prospect"),
         "notes": d.get("notes", ""),
         "user_id": str(d["user_id"]) if d.get("user_id") else None,
+        "assigned_to": str(d["assigned_to"]) if d.get("assigned_to") else None,
+        "assigned_at": _iso(d.get("assigned_at", "")),
+        "assignment_expires_at": _iso(d.get("assignment_expires_at", "")),
         "source": d.get("source", ""),
         "created_at": _iso(d.get("created_at", "")),
         "updated_at": _iso(d.get("updated_at", "")),
     }
+
+
+def _crm_sales_scope_filter(staff: dict) -> dict:
+    """Mongo filter restricting CRM visibility for sales.
+
+    Sales can see:
+    - clients assigned to them (user_id in assigned_client_ids)
+    - the shared lead pool: status prospect/partnership (unclaimed)
+    - prospects they currently own (status='assigned', assigned_to=staff id)
+
+    Returns {} for non-sales (no restriction). This is deliberately separate
+    from the strict _sales_scope_filter used by billing/orders/tickets.
+    """
+    if staff.get("role") != "sales":
+        return {}
+    clauses = []
+    assigned = [ObjectId(x) for x in (staff.get("assigned_client_ids") or [])]
+    if assigned:
+        clauses.append({"user_id": {"$in": assigned}})
+    clauses.append({"status": {"$in": ["prospect", "partnership"]}})
+    staff_id = staff.get("_id")
+    if staff_id:
+        clauses.append({"assigned_to": ObjectId(str(staff_id))})
+    if not clauses:
+        return {"_id": None}  # matches nothing
+    return {"$or": clauses}
+
 
 
 # Order statuses that count as "in-progress" (needs attention) vs "won" vs "closed"
@@ -134,7 +164,7 @@ async def crm_list(staff=Depends(get_current_staff),
     Default response stays bare array."""
     _deny_creative(staff)
     db = await _get_db()
-    query = _sales_scope_filter(staff, key="user_id")
+    query = _crm_sales_scope_filter(staff)
     if status and status != "all":
         query["status"] = status
     if q:
@@ -180,16 +210,16 @@ async def crm_list(staff=Depends(get_current_staff),
 async def crm_create(payload: dict, staff=Depends(get_current_staff)):
     """Create a CRM row.
 
-    Sales may only create rows explicitly linked to one of their assigned
-    portal clients.  An unlinked prospect has no client scope, so accepting it
-    would create a globally visible CRM record outside the sales assignment.
+    Sales may create:
+    - prospects (no user_id, shared pool)
+    - CRM rows linked to one of their assigned clients
     """
     db = await _get_db()
     _deny_creative(staff)
     user_id = payload.get("user_id")
-    if staff.get("role") == "sales":
+    if staff.get("role") == "sales" and user_id:
         assigned = {str(client_id) for client_id in (staff.get("assigned_client_ids") or [])}
-        if not user_id or str(user_id) not in assigned:
+        if str(user_id) not in assigned:
             raise HTTPException(status_code=403, detail="CRM client is not assigned to you")
         client = await db.users.find_one({"_id": _oid(str(user_id)), "role": "client"})
         if not client:
@@ -215,15 +245,30 @@ async def crm_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 async def _assert_sales_can_touch_crm(db, staff: dict, cid: str) -> dict:
-    """Load a CRM row and 403 if `staff` is a sales user whose assigned
-    clients don't include the row's linked user_id."""
+    """Load a CRM row and 403 if `staff` is a sales user who cannot access it.
+
+    Sales can touch:
+    - prospects/partnerships in the shared pool
+    - CRM rows linked to their assigned clients
+    - prospects currently assigned to them (status='assigned', assigned_to=their id)
+    """
     _deny_creative(staff)
     d = await db.crm_customers.find_one({"_id": _oid(cid)})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
     if staff.get("role") == "sales":
+        status = d.get("status", "prospect")
         assigned = {str(x) for x in (staff.get("assigned_client_ids") or [])}
-        if not (d.get("user_id") and str(d["user_id"]) in assigned):
+        staff_id = staff.get("_id")
+        assigned_to = d.get("assigned_to")
+        is_shared = status in ("prospect", "partnership")
+        is_own_client = (d.get("user_id") and str(d["user_id"]) in assigned)
+        is_own_assignment = (
+            assigned_to is not None
+            and staff_id is not None
+            and str(assigned_to) == str(staff_id)
+        )
+        if not (is_shared or is_own_client or is_own_assignment):
             raise HTTPException(status_code=403, detail="Not your client")
     return d
 
@@ -283,14 +328,52 @@ def _cell_str(v) -> str:
     return str(v).strip()
 
 
+@router.get("/admin/crm/search")
+async def crm_search(staff=Depends(get_current_staff),
+                    q: Optional[str] = None, limit: int = 20):
+    """Lightweight CRM search for autocomplete widgets.
+
+    Returns rows visible to `staff` (CRM shared-pool scope). Search matches
+    name, email, phone, and company case-insensitively. Always returns a list.
+    """
+    _deny_creative(staff)
+    db = await _get_db()
+    query = _crm_sales_scope_filter(staff)
+    if q and q.strip():
+        query["$or"] = [
+            {field: {"$regex": q.strip(), "$options": "i"}}
+            for field in ("name", "email", "phone", "company")
+        ]
+    limit_n = max(1, min(int(limit or 20), 100))
+    docs = await db.crm_customers.find(query).sort("updated_at", -1).to_list(limit_n)
+    out = []
+    for d in docs:
+        s = _serialize_crm(d)
+        out.append({
+            "id": s["id"],
+            "name": s["name"],
+            "email": s["email"],
+            "phone": s["phone"],
+            "company": s["company"],
+            "status": s["status"],
+            "assigned_to": s["assigned_to"],
+        })
+    return out
+
+
+async def _crm_export_queryset(db, staff: dict) -> list:
+    """Rows visible to `staff` for CRM export, using the CRM shared-pool scope."""
+    q = _crm_sales_scope_filter(staff)
+    return await db.crm_customers.find(q).sort("name", 1).to_list(20000)
+
+
 @router.get("/admin/crm/export.xlsx")
 async def crm_export_xlsx(staff=Depends(get_current_staff)):
     """Export Customer DB ke .xlsx dengan format template Database Marketing
     (Nama, Nomor Telp, E-Mail, Perusahaan, Jabatan, Segmen Industri, Status)."""
     _deny_creative(staff)
     db = await _get_db()
-    q = _sales_scope_filter(staff, key="user_id")
-    docs = await db.crm_customers.find(q).sort("name", 1).to_list(20000)
+    docs = await _crm_export_queryset(db, staff)
 
     import io
     from openpyxl import Workbook
@@ -621,6 +704,12 @@ def _serialize_followup(d):
         "due_date": d.get("due_date", ""),
         "done": bool(d.get("done", False)),
         "owner": d.get("owner", ""),
+        "notes": d.get("notes", {}) or {},
+        "role_tags": d.get("role_tags", []) or [],
+        "assignee_role": d.get("assignee_role", ""),
+        "approvals": [_serialize_approval(a) for a in (d.get("approvals") or [])],
+        "deal_action": d.get("deal_action"),
+        "deal_registration_link": d.get("deal_registration_link", ""),
         "created_at": _iso(d.get("created_at", "")),
     }
 
@@ -680,14 +769,223 @@ async def followups_list(staff=Depends(get_current_staff),
     return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
 
 
+_PROSPECT_ASSIGNMENT_DAYS = 5
+
+# Roles that can be tagged on / own a follow-up task.
+_FOLLOWUP_ROLES = {"sales", "noc", "support", "finance", "admin"}
+
+
+def _clean_role_tags(value) -> list:
+    """Validate a role_tags payload into a de-duplicated ordered list."""
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="role_tags harus berupa list")
+    out = []
+    for raw in value:
+        role = str(raw or "").strip().lower()
+        if role not in _FOLLOWUP_ROLES:
+            raise HTTPException(status_code=400, detail=f"Invalid role tag: {raw}")
+        if role not in out:
+            out.append(role)
+    return out
+
+
+def _serialize_approval(a: dict) -> dict:
+    """Serialize an approval sub-document for API response."""
+    return {
+        "id": str(a.get("id") or a.get("_id") or ""),
+        "requested_by": a.get("requested_by", ""),
+        "requested_by_id": str(a["requested_by_id"]) if a.get("requested_by_id") else None,
+        "requested_role": a.get("requested_role", ""),
+        "target_role": a.get("target_role", ""),
+        "target_user_id": str(a["target_user_id"]) if a.get("target_user_id") else None,
+        "message": a.get("message", ""),
+        "status": a.get("status", "pending"),
+        "responded_by": a.get("responded_by", ""),
+        "responded_at": _iso(a.get("responded_at", "")),
+        "response_note": a.get("response_note", ""),
+        "created_at": _iso(a.get("created_at", "")),
+    }
+
+
+# ---------- Close-deal registration token ----------
+import jwt as _jwt  # noqa: E402
+from portal.auth import _secret as _jwt_secret, JWT_ALGORITHM as _jwt_alg  # noqa: E402
+
+_CRM_TOKEN_TTL_DAYS = 7
+
+
+def _make_crm_registration_token(crm_id: str) -> str:
+    """Sign a short-lived JWT carrying the CRM row id for close-deal registration."""
+    payload = {
+        "crm_id": str(crm_id),
+        "exp": datetime.now(timezone.utc) + timedelta(days=_CRM_TOKEN_TTL_DAYS),
+        "type": "crm_register",
+    }
+    return _jwt.encode(payload, _jwt_secret(), algorithm=_jwt_alg)
+
+
+def _verify_crm_registration_token(token: str) -> str:
+    """Decode and validate a close-deal registration token.
+
+    Returns the crm_id. Raises HTTPException(400) on invalid/expired tokens.
+    """
+    try:
+        data = _jwt.decode(token, _jwt_secret(), algorithms=[_jwt_alg])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Token registrasi tidak valid")
+    if data.get("type") != "crm_register" or not data.get("crm_id"):
+        raise HTTPException(status_code=400, detail="Token registrasi tidak valid")
+    return str(data["crm_id"])
+
+
+async def expire_overdue_assignments(db, now_iso: str | None = None) -> int:
+    """Release expired prospect assignments back to the shared pool.
+
+    Only rows with status='assigned' AND assignment_expires_at < now are
+    touched; existing clients / shared leads are never modified. Intended to
+    run as a scheduled job; returns the number of released rows.
+    """
+    now_value = now_iso or datetime.now(timezone.utc).isoformat()
+    result = await db.crm_customers.update_many(
+        {"status": "assigned", "assignment_expires_at": {"$lt": now_value}},
+        {"$set": {
+            "status": "prospect",
+            "assigned_to": None,
+            "assigned_at": None,
+            "assignment_expires_at": None,
+            "updated_at": now_value,
+        }},
+    )
+    return getattr(result, "modified_count", 0)
+
+
+async def sync_crm_after_registration(db, *, crm_token: str, new_user_id,
+                                       reg_email: str, reg_name: str = "") -> None:
+    """After a user registers with a close-deal crm_token, sync the CRM row.
+
+    If the registered email/name matches the CRM row, the row is upgraded to
+    'existing' and linked to the new user_id. If there's a mismatch (different
+    person using the link), the original CRM row is left untouched — the new
+    user is simply a new customer, not a silent merge.
+    """
+    crm_id_str = _verify_crm_registration_token(crm_token)
+    crm = await db.crm_customers.find_one({"_id": _oid(crm_id_str)})
+    if not crm:
+        return
+    crm_email = (crm.get("email") or "").lower().strip()
+    crm_name = (crm.get("name") or "").strip()
+    reg_email_norm = (reg_email or "").lower().strip()
+    reg_name_norm = (reg_name or "").strip()
+    email_match = crm_email and crm_email == reg_email_norm
+    name_match = (not crm_name) or (not reg_name_norm) or crm_name == reg_name_norm
+    if email_match and name_match:
+        now = datetime.now(timezone.utc)
+        await db.crm_customers.update_one(
+            {"_id": crm["_id"]},
+            {"$set": {
+                "status": "existing",
+                "user_id": new_user_id,
+                "assigned_to": None,
+                "assigned_at": None,
+                "assignment_expires_at": None,
+                "updated_at": now.isoformat(),
+            }},
+        )
+
+
+async def crm_register_prefill(staff, token: str) -> dict:
+    """Public endpoint: validate a crm_token and return CRM data for prefill.
+
+    Returns {name, email, phone, company}. Raises HTTPException(400) if token
+    is invalid/expired or CRM row not found.
+    """
+    crm_id = _verify_crm_registration_token(token)
+    db = await _get_db()
+    crm = await db.crm_customers.find_one({"_id": _oid(crm_id)})
+    if not crm:
+        raise HTTPException(status_code=400, detail="Token registrasi tidak valid")
+    return {
+        "name": crm.get("name", ""),
+        "email": crm.get("email", ""),
+        "phone": crm.get("phone", ""),
+        "company": crm.get("company", ""),
+    }
+
+
+def _merge_role_notes(existing, incoming) -> dict:
+    """Merge per-role notes so updating one role never erases the others."""
+    if not isinstance(incoming, dict):
+        raise HTTPException(status_code=400, detail="notes harus berupa object per role")
+    merged = dict(existing or {})
+    for raw_role, text in incoming.items():
+        role = str(raw_role or "").strip().lower()
+        if role not in _FOLLOWUP_ROLES:
+            raise HTTPException(status_code=400, detail=f"Invalid note role: {raw_role}")
+        merged[role] = str(text or "")
+    return merged
+
+
 @router.post("/admin/followups")
 async def followups_create(payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
+    _deny_creative(staff)
     cust_id = _oid(payload["customer_id"]) if payload.get("customer_id") else None
     if staff.get("role") == "sales":
         visible = await _sales_visible_crm_ids(db, staff) or []
         if not (cust_id and any(str(cust_id) == str(x) for x in visible)):
-            raise HTTPException(status_code=403, detail="Follow-up harus untuk pelanggan yang di-assign ke Anda")
+            raise HTTPException(
+                status_code=403,
+                detail="Follow-up harus untuk pelanggan yang dapat Anda akses",
+            )
+    # Atomic claim: prospect must be prospect/partnership (unclaimed) or
+    # already assigned to this staff. Prevents double-claim by another sales.
+    if cust_id:
+        crm = await db.crm_customers.find_one({"_id": cust_id})
+        if crm and crm.get("status") == "assigned":
+            assigned_to = crm.get("assigned_to")
+            staff_id = staff.get("_id")
+            if staff.get("role") == "sales" and (
+                not assigned_to
+                or not staff_id
+                or str(assigned_to) != str(staff_id)
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Prospect ini sedang di-assign ke sales lain",
+                )
+        # Claim the prospect: only "prospect" status (not partnership) is claimable.
+        # The status guard lives in the filter so two concurrent sales cannot
+        # both win the claim -- the loser matches zero documents.
+        if crm and crm.get("status") == "prospect":
+            now_dt = datetime.now(timezone.utc)
+            expires = now_dt + timedelta(days=_PROSPECT_ASSIGNMENT_DAYS)
+            claimed = await db.crm_customers.update_one(
+                {"_id": cust_id, "status": "prospect"},
+                {"$set": {
+                    "status": "assigned",
+                    "assigned_to": staff.get("_id"),
+                    "assigned_at": now_dt.isoformat(),
+                    "assignment_expires_at": expires.isoformat(),
+                    "updated_at": now_dt.isoformat(),
+                }},
+            )
+            if not getattr(claimed, "modified_count", 0):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Prospect ini baru saja di-assign ke sales lain",
+                )
+        elif crm and crm.get("status") == "assigned" and staff.get("_id"):
+            # Already assigned to this sales — renew the expiry timer
+            now_dt = datetime.now(timezone.utc)
+            expires = now_dt + timedelta(days=_PROSPECT_ASSIGNMENT_DAYS)
+            await db.crm_customers.update_one(
+                {"_id": cust_id},
+                {"$set": {
+                    "assigned_at": now_dt.isoformat(),
+                    "assignment_expires_at": expires.isoformat(),
+                    "updated_at": now_dt.isoformat(),
+                }},
+            )
     doc = {
         "customer_id": cust_id,
         "customer_name": payload.get("customer_name", ""),
@@ -695,7 +993,7 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
         "channel": payload.get("channel", "whatsapp"),
         "due_date": payload.get("due_date", ""),
         "done": False,
-        "owner": payload.get("owner", staff["name"]),
+        "owner": payload.get("owner", staff.get("name", "")),
         "created_at": _now(),
     }
     r = await db.followups.insert_one(doc)
@@ -706,11 +1004,173 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
 @router.put("/admin/followups/{fid}")
 async def followups_update(fid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
-    await _assert_sales_can_touch_followup(db, staff, fid)
-    upd = {k: v for k, v in payload.items() if k in {"task", "channel", "due_date", "done", "owner", "customer_name"}}
+    _deny_creative(staff)
+    d = await _assert_sales_can_touch_followup(db, staff, fid)
+    upd = {}
+    MAPPED = {"task", "channel", "due_date", "done", "owner", "customer_name"}
+    for k, v in payload.items():
+        if k in MAPPED:
+            upd[k] = v
+        elif k == "notes":
+            upd["notes"] = _merge_role_notes(d.get("notes"), v)
+        elif k == "role_tags":
+            upd["role_tags"] = _clean_role_tags(v)
+        elif k == "assignee_role":
+            role = str(v or "").strip().lower()
+            if role not in _FOLLOWUP_ROLES:
+                raise HTTPException(status_code=400, detail=f"Invalid assignee role: {v}")
+            upd["assignee_role"] = role
+    if not upd:
+        raise HTTPException(status_code=400, detail="Tidak ada field yang valid untuk diupdate")
     await db.followups.update_one({"_id": _oid(fid)}, {"$set": upd})
-    d = await db.followups.find_one({"_id": _oid(fid)})
-    return _serialize_followup(d)
+    # If this follow-up has a linked CRM prospect, renew or release it.
+    cust_id = d.get("customer_id")
+    if cust_id:
+        crm = await db.crm_customers.find_one({"_id": cust_id})
+        if crm and crm.get("status") == "assigned":
+            if payload.get("done") is True:
+                # Release prospect back to shared pool
+                now_dt = datetime.now(timezone.utc)
+                await db.crm_customers.update_one(
+                    {"_id": cust_id},
+                    {"$set": {
+                        "status": "prospect",
+                        "assigned_to": None,
+                        "assigned_at": None,
+                        "assignment_expires_at": None,
+                        "updated_at": now_dt.isoformat(),
+                    }},
+                )
+            else:
+                # Any other update renews the 5-day timer
+                now_dt = datetime.now(timezone.utc)
+                expires = now_dt + timedelta(days=_PROSPECT_ASSIGNMENT_DAYS)
+                await db.crm_customers.update_one(
+                    {"_id": cust_id},
+                    {"$set": {
+                        "assigned_at": now_dt.isoformat(),
+                        "assignment_expires_at": expires.isoformat(),
+                        "updated_at": now_dt.isoformat(),
+                    }},
+                )
+    updated = await db.followups.find_one({"_id": _oid(fid)})
+    return _serialize_followup(updated)
+
+
+@router.get("/register/crm-prefill")
+async def crm_register_prefill_route(token: str):
+    """Public: validate a close-deal crm_token and return prefill data."""
+    return await crm_register_prefill(staff=None, token=token)
+
+
+@router.post("/admin/followups/{fid}/close-deal")
+async def followup_close_deal(fid: str, staff=Depends(get_current_staff)):
+    """Mark a follow-up as close-deal and generate a 7-day registration link."""
+    db = await _get_db()
+    _deny_creative(staff)
+    fu = await _assert_sales_can_touch_followup(db, staff, fid)
+    cust_id = fu.get("customer_id")
+    if not cust_id:
+        raise HTTPException(status_code=400, detail="Follow-up tidak memiliki customer CRM")
+    crm = await db.crm_customers.find_one({"_id": cust_id})
+    if not crm:
+        raise HTTPException(status_code=404, detail="Customer CRM tidak ditemukan")
+    token = _make_crm_registration_token(str(cust_id))
+    frontend_base = (os.environ.get("PORTAL_FRONTEND_URL") or "").rstrip("/")
+    path = f"/register?crm_token={quote(token)}"
+    link = f"{frontend_base}{path}" if frontend_base else path
+    now = _now()
+    update = {
+        "deal_action": "close_deal",
+        "deal_registration_link": link,
+        "deal_closed_at": now,
+        "deal_closed_by": staff.get("name") or staff.get("email") or "staff",
+        "updated_at": now,
+    }
+    await db.followups.update_one({"_id": _oid(fid)}, {"$set": update})
+    return {**update, "crm_id": str(cust_id)}
+
+
+@router.post("/admin/followups/{fid}/approval")
+async def followup_approval_request(fid: str, payload: dict,
+                                    staff=Depends(get_current_staff)):
+    """Request an approval from another role/user. Pending request is appended."""
+    db = await _get_db()
+    _deny_creative(staff)
+    await _assert_sales_can_touch_followup(db, staff, fid)
+    target_role = str(payload.get("target_role") or "").strip().lower()
+    target_user_id = payload.get("target_user_id")
+    if target_role not in _FOLLOWUP_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid target role: {target_role}")
+    approval = {
+        "id": ObjectId(),
+        "requested_by": staff.get("name") or staff.get("email") or "staff",
+        "requested_by_id": staff.get("_id"),
+        "requested_role": staff.get("role", ""),
+        "target_role": target_role,
+        "target_user_id": _oid(target_user_id) if target_user_id else None,
+        "message": payload.get("message", ""),
+        "status": "pending",
+        "responded_by": "",
+        "responded_at": "",
+        "response_note": "",
+        "created_at": _now(),
+    }
+    await db.followups.update_one(
+        {"_id": _oid(fid)},
+        {"$push": {"approvals": approval}, "$set": {"updated_at": _now()}},
+    )
+    return _serialize_approval(approval)
+
+
+@router.put("/admin/followups/{fid}/approval/{aid}")
+async def followup_approval_respond(fid: str, aid: str, payload: dict,
+                                    staff=Depends(get_current_staff)):
+    """Accept or reject a pending approval.
+
+    The caller must be the target role (or admin). Accepting/rejecting a
+    non-pending approval is a no-op that surfaces the existing state.
+    """
+    db = await _get_db()
+    _deny_creative(staff)
+    await _assert_sales_can_touch_followup(db, staff, fid)
+    fu = await db.followups.find_one({"_id": _oid(fid)})
+    if not fu:
+        raise HTTPException(status_code=404, detail="Follow-up not found")
+    approvals = fu.get("approvals") or []
+    target = None
+    for a in approvals:
+        if str(a.get("id")) == aid:
+            target = a
+            break
+    if not target:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    if target.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Approval sudah direspon")
+    caller_role = staff.get("role", "")
+    if caller_role not in ("admin",) and caller_role != target.get("target_role"):
+        # Allow targeted user if specified
+        target_user = target.get("target_user_id")
+        if not target_user or str(target_user) != str(staff.get("_id") or ""):
+            raise HTTPException(
+                status_code=403,
+                detail="Anda tidak berhak merespon approval ini",
+            )
+    response = str(payload.get("response") or "").lower() if isinstance(payload, dict) else ""
+    if response not in ("accepted", "rejected"):
+        raise HTTPException(status_code=400, detail="response harus 'accepted' atau 'rejected'")
+    note = payload.get("note", "") if isinstance(payload, dict) else ""
+    now = _now()
+    # Update the approval in-place in the array, then persist the whole array.
+    target["status"] = response
+    target["responded_by"] = staff.get("name") or staff.get("email") or "staff"
+    target["responded_at"] = now
+    target["response_note"] = note
+    await db.followups.update_one(
+        {"_id": _oid(fid)},
+        {"$set": {"approvals": approvals, "updated_at": now}},
+    )
+    return _serialize_approval(target)
 
 
 @router.delete("/admin/followups/{fid}")

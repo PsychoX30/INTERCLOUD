@@ -625,12 +625,14 @@ const ContentForm = ({ c, onClose, onDone }) => {
    Follow-up Checklist
    ========================================================================= */
 export const AdminFollowups = () => {
+  const { user } = useAuth() || {};
   const [rows, setRows] = useState(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
   const [doneF, setDoneF] = useState("open"); // open | done | all
+  const [detail, setDetail] = useState(null); // selected follow-up for detail panel
 
   const params = useMemo(() => ({
     paginate: true,
@@ -651,6 +653,15 @@ export const AdminFollowups = () => {
   if (!rows) return <Loading />;
   const toggle = async (r) => { await api.put(`/admin/followups/${r.id}`, { done: !r.done }); load(); };
   const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/followups/${id}`); load(); } };
+  const closeDeal = async (id) => {
+    try {
+      const { data } = await api.post(`/admin/followups/${id}/close-deal`);
+      alert("Link registrasi:\n" + data.deal_registration_link);
+      load();
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal membuat link close-deal");
+    }
+  };
 
   const grouped = { overdue: [], today: [], upcoming: [], done: [] };
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -699,7 +710,23 @@ export const AdminFollowups = () => {
                   <div className="text-xs text-slate-500">
                     {r.customer_name || "-"} · {r.channel} · due {shortDate(r.due_date) || "no date"} · {r.owner}
                   </div>
+                  {r.deal_action === "close_deal" && (
+                    <div className="text-[10px] font-bold text-emerald-600 mt-0.5">CLOSE DEAL — link registrasi siap</div>
+                  )}
+                  {r.approvals && r.approvals.length > 0 && (
+                    <div className="flex gap-1 mt-1 flex-wrap">
+                      {r.approvals.map((a) => (
+                        <span key={a.id} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${a.status === "accepted" ? "bg-emerald-100 text-emerald-700" : a.status === "rejected" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                          {a.target_role}: {a.status}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
+                <button onClick={() => setDetail(r)} className="text-slate-400 hover:text-[#f5b120]" title="Detail"><Edit className="h-4 w-4" /></button>
+                {!r.done && !r.deal_action && (
+                  <button onClick={() => closeDeal(r.id)} className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100" title="Close Deal">Close Deal</button>
+                )}
                 <button onClick={() => del(r.id)} className="text-slate-400 hover:text-red-600"><Trash2 className="h-4 w-4" /></button>
               </div>
             ))}
@@ -717,26 +744,287 @@ export const AdminFollowups = () => {
         />
       )}
       {modal && <FollowupForm onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
+      {detail && <FollowupDetail fu={detail} onClose={() => setDetail(null)} onDone={() => { setDetail(null); load(); }} currentUser={user} />}
+    </div>
+  );
+};
+
+const FU_ROLES = ["sales", "noc", "support", "finance", "admin"];
+
+/* Customer picker: server-side CRM search on name / email / phone. */
+const CrmCustomerPicker = ({ value, onPick }) => {
+  const [q, setQ] = useState(value?.name || "");
+  const [opts, setOpts] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const term = q.trim();
+    const t = setTimeout(() => {
+      setBusy(true);
+      api.get("/admin/crm/search", { params: { q: term, limit: 20 } })
+        .then((r) => setOpts(Array.isArray(r.data) ? r.data : []))
+        .catch(() => setOpts([]))
+        .finally(() => setBusy(false));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q, open]);
+
+  return (
+    <div className="relative">
+      <input
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); onPick(null); }}
+        onFocus={() => setOpen(true)}
+        className={inputClass}
+        placeholder="Cari nama, email, atau nomor telp…"
+        data-testid="fu-customer-search"
+        autoComplete="off"
+      />
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg" data-testid="fu-customer-options">
+          {busy && <div className="px-3 py-2 text-xs text-slate-400">Mencari…</div>}
+          {!busy && opts.length === 0 && <div className="px-3 py-2 text-xs text-slate-400">Tidak ada kontak cocok</div>}
+          {opts.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => { onPick(o); setQ(o.name || o.email || ""); setOpen(false); }}
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0"
+              data-testid={`fu-customer-opt-${o.id}`}
+            >
+              <div className="text-sm font-semibold text-[#0a2350]">
+                {o.name || "(tanpa nama)"}
+                <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded font-bold ${o.status === "partnership" ? "bg-amber-100 text-amber-700" : o.status === "assigned" ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"}`}>
+                  {o.status}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500">{o.email || "-"} · {o.phone || "-"} · {o.company || "-"}</div>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
 
 const FollowupForm = ({ onClose, onDone }) => {
-  const [f, setF] = useState({ customer_name: "", task: "", channel: "whatsapp", due_date: "", owner: "" });
-  const submit = async (e) => { e.preventDefault(); await api.post("/admin/followups", f); onDone(); };
+  const [f, setF] = useState({ customer_id: "", customer_name: "", task: "", channel: "whatsapp", due_date: "", owner: "" });
+  const [roleTags, setRoleTags] = useState([]);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr(""); setBusy(true);
+    try {
+      const { data } = await api.post("/admin/followups", f);
+      if (roleTags.length) {
+        await api.put(`/admin/followups/${data.id}`, { role_tags: roleTags });
+      }
+      onDone();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Gagal menyimpan follow-up");
+    } finally { setBusy(false); }
+  };
+
   return (
     <Modal onClose={onClose} title="New follow-up">
       <form onSubmit={submit} className="grid grid-cols-2 gap-3">
+        {err && <div className="col-span-2 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2" data-testid="fu-error">{err}</div>}
         <label className="col-span-2"><div className={labelClass}>Task *</div><input required value={f.task} onChange={(e) => setF({ ...f, task: e.target.value })} className={inputClass} placeholder="Call, quote, follow email…" /></label>
-        <label><div className={labelClass}>Customer</div><input value={f.customer_name} onChange={(e) => setF({ ...f, customer_name: e.target.value })} className={inputClass} /></label>
+        <div className="col-span-2">
+          <div className={labelClass}>Customer (dari CRM)</div>
+          <CrmCustomerPicker
+            onPick={(o) => setF((p) => ({ ...p, customer_id: o?.id || "", customer_name: o?.name || "" }))}
+          />
+          <div className="text-[11px] text-slate-400 mt-1">
+            Prospect yang dipilih akan otomatis di-assign ke Anda selama 5 hari. Possible partnership tetap shared.
+          </div>
+        </div>
         <label><div className={labelClass}>Channel</div><select value={f.channel} onChange={(e) => setF({ ...f, channel: e.target.value })} className={inputClass}><option>whatsapp</option><option>call</option><option>email</option><option>meeting</option></select></label>
         <label><div className={labelClass}>Due date</div><input type="date" value={f.due_date} onChange={(e) => setF({ ...f, due_date: e.target.value })} className={inputClass} required /></label>
         <label><div className={labelClass}>Owner</div><input value={f.owner} onChange={(e) => setF({ ...f, owner: e.target.value })} className={inputClass} /></label>
+        <div className="col-span-2">
+          <div className={labelClass}>Tag role</div>
+          <div className="flex gap-1.5 flex-wrap" data-testid="fu-role-tags">
+            {FU_ROLES.map((role) => {
+              const on = roleTags.includes(role);
+              return (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => setRoleTags((p) => on ? p.filter((x) => x !== role) : [...p, role])}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider ${on ? "bg-[#0a2350] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                  data-testid={`fu-tag-${role}`}
+                >
+                  {role}
+                </button>
+              );
+            })}
+          </div>
+        </div>
         <div className="col-span-2 flex justify-end gap-2 mt-2">
           <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
-          <button type="submit" className={btnPrimary}>Save</button>
+          <button type="submit" className={btnPrimary} disabled={busy}>{busy ? "Menyimpan…" : "Save"}</button>
         </div>
       </form>
+    </Modal>
+  );
+};
+
+/* Task detail: per-role notes, role tags, approval requests/responses. */
+const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
+  const [notes, setNotes] = useState(fu.notes || {});
+  const [roleTags, setRoleTags] = useState(fu.role_tags || []);
+  const [approvals, setApprovals] = useState(fu.approvals || []);
+  const [targetRole, setTargetRole] = useState("finance");
+  const [message, setMessage] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const myRole = (currentUser?.role || "").toLowerCase();
+
+  const saveTask = async () => {
+    setErr(""); setBusy(true);
+    try {
+      await api.put(`/admin/followups/${fu.id}`, { notes, role_tags: roleTags });
+      onDone();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal menyimpan perubahan");
+    } finally { setBusy(false); }
+  };
+
+  const requestApproval = async () => {
+    setErr(""); setBusy(true);
+    try {
+      const { data } = await api.post(`/admin/followups/${fu.id}/approval`, {
+        target_role: targetRole, message,
+      });
+      setApprovals((p) => [...p, data]);
+      setMessage("");
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal mengirim pengajuan");
+    } finally { setBusy(false); }
+  };
+
+  const respond = async (aid, response) => {
+    setErr(""); setBusy(true);
+    try {
+      const note = window.prompt(`Catatan untuk keputusan "${response}" (opsional)`) || "";
+      const { data } = await api.put(`/admin/followups/${fu.id}/approval/${aid}`, { response, note });
+      setApprovals((p) => p.map((a) => (a.id === aid ? data : a)));
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal merespon approval");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal onClose={onClose} title={`Task: ${fu.task}`}>
+      <div className="space-y-4" data-testid="fu-detail">
+        {err && <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2">{err}</div>}
+        <div className="text-xs text-slate-500">
+          {fu.customer_name || "-"} · {fu.channel} · due {shortDate(fu.due_date) || "no date"} · owner {fu.owner || "-"}
+        </div>
+
+        {fu.deal_registration_link && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-emerald-700 mb-1">Link registrasi close-deal</div>
+            <div className="text-xs break-all text-slate-700" data-testid="fu-deal-link">{fu.deal_registration_link}</div>
+          </div>
+        )}
+
+        <div>
+          <div className={labelClass}>Tag role</div>
+          <div className="flex gap-1.5 flex-wrap">
+            {FU_ROLES.map((role) => {
+              const on = roleTags.includes(role);
+              return (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => setRoleTags((p) => on ? p.filter((x) => x !== role) : [...p, role])}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider ${on ? "bg-[#0a2350] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                  data-testid={`fu-detail-tag-${role}`}
+                >
+                  {role}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div className={labelClass}>Catatan per role</div>
+          <div className="space-y-2">
+            {FU_ROLES.map((role) => (
+              <label key={role} className="block">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{role}</div>
+                <textarea
+                  rows={2}
+                  value={notes[role] || ""}
+                  onChange={(e) => setNotes((p) => ({ ...p, [role]: e.target.value }))}
+                  className={`${inputClass} h-auto py-2`}
+                  placeholder={`Update dari tim ${role}…`}
+                  data-testid={`fu-note-${role}`}
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className={labelClass}>Pengajuan / approval needed</div>
+          {approvals.length === 0 && <div className="text-xs text-slate-400 mb-2">Belum ada pengajuan.</div>}
+          <div className="space-y-2 mb-3">
+            {approvals.map((a) => (
+              <div key={a.id} className="rounded-xl border border-slate-200 p-3" data-testid={`fu-approval-${a.id}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-bold text-[#0a2350] uppercase tracking-wider">
+                    → {a.target_role}
+                    <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] ${a.status === "accepted" ? "bg-emerald-100 text-emerald-700" : a.status === "rejected" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                      {a.status}
+                    </span>
+                  </div>
+                  {a.status === "pending" && (myRole === "admin" || myRole === a.target_role) && (
+                    <div className="flex gap-1">
+                      <button type="button" onClick={() => respond(a.id, "accepted")} disabled={busy}
+                        className="text-[10px] font-bold px-2 py-1 rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                        data-testid={`fu-approve-${a.id}`}>Accept</button>
+                      <button type="button" onClick={() => respond(a.id, "rejected")} disabled={busy}
+                        className="text-[10px] font-bold px-2 py-1 rounded bg-red-50 text-red-700 hover:bg-red-100"
+                        data-testid={`fu-reject-${a.id}`}>Reject</button>
+                    </div>
+                  )}
+                </div>
+                {a.message && <div className="text-xs text-slate-600 mt-1">{a.message}</div>}
+                <div className="text-[10px] text-slate-400 mt-1">
+                  diminta oleh {a.requested_by || "-"}
+                  {a.status !== "pending" && ` · ${a.status} oleh ${a.responded_by || "-"}`}
+                  {a.response_note ? ` · "${a.response_note}"` : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <select value={targetRole} onChange={(e) => setTargetRole(e.target.value)} className={inputClass} data-testid="fu-approval-role">
+              {FU_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}
+            </select>
+            <input value={message} onChange={(e) => setMessage(e.target.value)} className={inputClass}
+              placeholder="Alasan pengajuan…" data-testid="fu-approval-message" />
+          </div>
+          <button type="button" onClick={requestApproval} disabled={busy} className={`${btnSecondary} mt-2`} data-testid="fu-approval-submit">
+            Kirim pengajuan
+          </button>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+          <button type="button" className={btnSecondary} onClick={onClose}>Tutup</button>
+          <button type="button" className={btnPrimary} onClick={saveTask} disabled={busy} data-testid="fu-detail-save">
+            {busy ? "Menyimpan…" : "Simpan"}
+          </button>
+        </div>
+      </div>
     </Modal>
   );
 };

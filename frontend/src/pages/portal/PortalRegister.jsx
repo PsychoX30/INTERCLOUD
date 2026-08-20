@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { UserPlus, Loader2, AlertTriangle, Cloud, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
+import { api } from "../../portal/api";
 
 /**
  * Public self-registration form.
@@ -10,6 +11,8 @@ import { useAuth } from "../../portal/AuthContext";
 const PortalRegister = () => {
   const { user, register } = useAuth();
   const navigate = useNavigate();
+  const [sp] = useSearchParams();
+  const crmToken = sp.get("crm_token") || "";
 
   const [f, setF] = useState({
     name: "",
@@ -29,9 +32,29 @@ const PortalRegister = () => {
     npwp: "",
     accepts_tos: false,
   });
-  const [step, setStep] = useState(1); // 1: account, 2: billing
+  const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [prefillBanner, setPrefillBanner] = useState("");
+
+  // Prefill from close-deal CRM token if present
+  useEffect(() => {
+    if (!crmToken) return;
+    api.get("/register/crm-prefill", { params: { token: crmToken } })
+      .then(({ data }) => {
+        setF((p) => ({
+          ...p,
+          name: data.name || p.name,
+          email: data.email || p.email,
+          phone: data.phone || p.phone,
+          company: data.company || p.company,
+        }));
+        setPrefillBanner("Data Anda sudah terisi dari undangan. Periksa dan lengkapi jika perlu.");
+      })
+      .catch(() => {
+        setErr("Link undangan tidak valid atau telah kedaluwarsa.");
+      });
+  }, [crmToken]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (user && user.role === "client") navigate("/portal/client/dashboard", { replace: true });
@@ -56,11 +79,11 @@ const PortalRegister = () => {
     try {
       // strip client-only "confirm" field before submitting
       const { confirm, ...payload } = f;
-      const u = await register(payload);
+      const u = await register({ ...payload, crm_token: crmToken || undefined });
       navigate(u.role === "client" ? "/portal/client/dashboard" : "/portal/admin/dashboard", { replace: true });
     } catch (e2) {
       setErr(e2.message || "Registration failed");
-      setStep(1); // let user re-verify credentials if backend rejects them
+      setStep(1);
     } finally {
       setBusy(false);
     }
@@ -150,6 +173,13 @@ const PortalRegister = () => {
             <div className="mt-5 flex items-start gap-2 text-sm bg-red-50 border border-red-200 text-red-700 rounded-xl px-3 py-2.5" data-testid="register-error">
               <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
               <span>{err}</span>
+            </div>
+          )}
+
+          {prefillBanner && (
+            <div className="mt-5 flex items-start gap-2 text-sm bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl px-3 py-2.5" data-testid="register-prefill">
+              <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>{prefillBanner}</span>
             </div>
           )}
 

@@ -30,6 +30,8 @@ class RegisterIn(BaseModel):
     industry: Optional[str] = None
     accepts_tos: bool = True
     recaptcha_token: Optional[str] = None
+    # Optional CRM token for close-deal registration flow
+    crm_token: Optional[str] = None
 
 
 class ChangePasswordIn(BaseModel):

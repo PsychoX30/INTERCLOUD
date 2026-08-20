@@ -32,6 +32,9 @@ def _match_clause(doc: dict, key: str, cond) -> bool:
     if isinstance(cond, dict):
         if "$in" in cond:
             return doc.get(key) in cond["$in"]
+        if "$lt" in cond:
+            value = doc.get(key)
+            return value is not None and value < cond["$lt"]
         if "$regex" in cond:
             val = str(doc.get(key) or "")
             return re.search(cond["$regex"], val, re.IGNORECASE) is not None
@@ -105,6 +108,36 @@ class _Collection:
             if _matches(r, query):
                 return r
         return None
+
+    async def insert_one(self, doc):
+        doc.setdefault("_id", ObjectId())
+        self.rows.append(doc)
+        return type("_R", (), {"inserted_id": doc["_id"]})()
+
+    async def update_one(self, query, update):
+        query = query or {}
+        for r in self.rows:
+            if _matches(r, query):
+                r.update((update or {}).get("$set", {}))
+                return type("_R", (), {"modified_count": 1, "matched_count": 1})()
+        return type("_R", (), {"modified_count": 0, "matched_count": 0})()
+
+    async def update_many(self, query, update):
+        query = query or {}
+        n = 0
+        for r in self.rows:
+            if _matches(r, query):
+                r.update((update or {}).get("$set", {}))
+                n += 1
+        return type("_R", (), {"modified_count": n, "matched_count": n})()
+
+    async def delete_one(self, query):
+        query = query or {}
+        for i, r in enumerate(self.rows):
+            if _matches(r, query):
+                self.rows.pop(i)
+                return type("_R", (), {"deleted_count": 1})()
+        return type("_R", (), {"deleted_count": 0})()
 
 
 class _Db:
@@ -286,18 +319,128 @@ async def test_crm_filter_status_all_noop(db, admin):
 
 
 @pytest.mark.anyio
-async def test_crm_sales_scope_preserved_with_pagination(db):
-    """Sales must only see their assigned clients, even when paginating."""
-    assigned_uid = ObjectId()
-    other_uid = ObjectId()
+async def test_crm_sales_visibility_includes_shared_pool_and_own_assignment(db):
+    """Sales see shared prospects/partnerships, own assigned prospect, and assigned clients only."""
+    sales_id = ObjectId()
+    other_sales_id = ObjectId()
+    assigned_client_id = ObjectId()
+    other_client_id = ObjectId()
     db.crm_customers.rows = [
-        _crm(1, user_id=assigned_uid),
-        _crm(2, user_id=other_uid),
+        _crm(1, status="prospect", user_id=None),
+        _crm(2, status="partnership", user_id=None),
+        _crm(3, status="assigned", assigned_to=sales_id, user_id=None),
+        _crm(4, status="assigned", assigned_to=other_sales_id, user_id=None),
+        _crm(5, status="existing", user_id=assigned_client_id),
+        _crm(6, status="existing", user_id=other_client_id),
     ]
-    sales = {"role": "sales", "assigned_client_ids": [str(assigned_uid)]}
+    sales = {
+        "_id": sales_id,
+        "role": "sales",
+        "assigned_client_ids": [str(assigned_client_id)],
+    }
     res = await business_routes.crm_list(staff=sales, paginate=True)
-    assert res["total"] == 1
-    assert res["items"][0]["user_id"] == str(assigned_uid)
+    assert res["total"] == 4
+    assert {row["name"] for row in res["items"]} == {
+        "Customer 1", "Customer 2", "Customer 3", "Customer 5"
+    }
+
+
+@pytest.mark.anyio
+async def test_crm_sales_without_clients_still_sees_shared_pool_not_other_assignment(db):
+    """Empty client assignment must not hide shared leads or leak another sales assignment."""
+    sales_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, status="prospect"),
+        _crm(2, status="partnership"),
+        _crm(3, status="assigned", assigned_to=ObjectId()),
+    ]
+    res = await business_routes.crm_list(
+        staff={"_id": sales_id, "role": "sales", "assigned_client_ids": []},
+        paginate=True,
+    )
+    assert res["total"] == 2
+    assert {row["status"] for row in res["items"]} == {"prospect", "partnership"}
+
+
+@pytest.mark.anyio
+async def test_crm_sales_can_create_prospect_without_user_id(db):
+    """Sales must be able to create a prospect that has no linked portal user."""
+    sales_id = ObjectId()
+    sales = {
+        "_id": sales_id,
+        "role": "sales",
+        "assigned_client_ids": [],
+        "name": "Sales A",
+    }
+    res = await business_routes.crm_create(
+        staff=sales,
+        payload={"name": "New Lead", "email": "lead@test.id", "status": "prospect"},
+    )
+    assert res["name"] == "New Lead"
+    assert res["status"] == "prospect"
+    assert res["user_id"] is None
+
+
+@pytest.mark.anyio
+async def test_crm_sales_can_touch_shared_prospect(db):
+    """Sales can update/delete a prospect in the shared pool."""
+    sales_id = ObjectId()
+    db.crm_customers.rows = [_crm(1, status="prospect")]
+    sales = {"_id": sales_id, "role": "sales", "assigned_client_ids": []}
+    d = await business_routes._assert_sales_can_touch_crm(
+        db, sales, str(db.crm_customers.rows[0]["_id"])
+    )
+    assert d is not None
+
+
+@pytest.mark.anyio
+async def test_crm_sales_cannot_touch_other_sales_assigned_prospect(db):
+    """Sales cannot edit a prospect assigned to another sales."""
+    sales_id = ObjectId()
+    other_sales_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, status="assigned", assigned_to=other_sales_id),
+    ]
+    sales = {"_id": sales_id, "role": "sales", "assigned_client_ids": []}
+    with pytest.raises(Exception) as exc_info:
+        await business_routes._assert_sales_can_touch_crm(
+            db, sales, str(db.crm_customers.rows[0]["_id"])
+        )
+    assert "403" in str(exc_info.value) or "Not your" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_crm_search_autocomplete(db, admin):
+    """CRM search endpoint returns lightweight rows for autocomplete."""
+    db.crm_customers.rows = [
+        _crm(1, name="Budi Santoso", email="budi@test.id", phone="0811"),
+        _crm(2, name="Siti Aminah", email="siti@test.id", phone="0812"),
+        _crm(3, name="Budi Hartono", email="budi_h@test.id", phone="0813"),
+    ]
+    res = await business_routes.crm_search(staff=admin, q="budi")
+    assert len(res) == 2
+    assert all("budi" in r["name"].lower() or "budi" in r["email"].lower()
+               for r in res)
+    # Each row must have id, name, email, phone, company, status
+    for r in res:
+        assert all(k in r for k in
+                   ("id", "name", "email", "phone", "company", "status"))
+
+
+@pytest.mark.anyio
+async def test_crm_export_uses_crm_scope(db):
+    """CRM XLSX export must respect the shared-pool scope, not strict sales filter."""
+    sales_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, status="prospect"),
+        _crm(2, status="existing", user_id=ObjectId()),
+    ]
+    sales = {"_id": sales_id, "role": "sales", "assigned_client_ids": []}
+    # Export calls find with scope filter; verify prospect is visible
+    docs = await business_routes._crm_export_queryset(db, sales)
+    assert len(docs) == 1
+    assert docs[0]["status"] == "prospect"
+
 
 
 @pytest.mark.anyio
@@ -408,14 +551,490 @@ async def test_followups_filter_done(db, admin):
 
 
 @pytest.mark.anyio
-async def test_followups_sales_scope_empty_short_circuits_with_pagination(db):
-    """Sales with zero visible CRM rows must still short-circuit to an empty
-    result, even when paginate=true (preserves _sales_followup_filter None
-    short-circuit behavior)."""
-    db.followups.rows = [_followup(1)]
-    sales = {"role": "sales", "assigned_client_ids": []}
+async def test_followups_create_claims_shared_prospect(db):
+    """Creating a follow-up for a shared prospect must claim it atomically."""
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="prospect", user_id=None),
+    ]
+    db.followups.rows = []
+    sales = {
+        "_id": sales_id,
+        "role": "sales",
+        "assigned_client_ids": [],
+        "name": "Sales A",
+    }
+    res = await business_routes.followups_create(
+        staff=sales,
+        payload={"customer_id": str(crm_id), "task": "Call prospect", "due_date": "2026-08-25"},
+    )
+    assert res["customer_id"] == str(crm_id)
+    # CRM row must now be "assigned" to this sales
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert crm["status"] == "assigned"
+    assert crm["assigned_to"] == sales_id
+    assert crm["assigned_at"] is not None
+    assert crm["assignment_expires_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_followups_create_keeps_partnership_shared(db):
+    """Possible partnership must stay shared: a follow-up never claims it."""
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [_crm(1, _id=crm_id, status="partnership", user_id=None)]
+    db.followups.rows = []
+    sales = {"_id": sales_id, "role": "sales", "assigned_client_ids": [], "name": "Sales A"}
+    await business_routes.followups_create(
+        staff=sales,
+        payload={"customer_id": str(crm_id), "task": "Explore partnership"},
+    )
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert crm["status"] == "partnership"
+    assert crm.get("assigned_to") is None
+
+
+@pytest.mark.anyio
+async def test_followups_create_second_sales_loses_claim_race(db):
+    """Only one sales may win the claim; the loser must be rejected."""
+    crm_id = ObjectId()
+    db.crm_customers.rows = [_crm(1, _id=crm_id, status="prospect", user_id=None)]
+    db.followups.rows = []
+    first = {"_id": ObjectId(), "role": "sales", "assigned_client_ids": [], "name": "Sales A"}
+    second = {"_id": ObjectId(), "role": "sales", "assigned_client_ids": [], "name": "Sales B"}
+    await business_routes.followups_create(
+        staff=first, payload={"customer_id": str(crm_id), "task": "First call"},
+    )
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followups_create(
+            staff=second, payload={"customer_id": str(crm_id), "task": "Second call"},
+        )
+    assert "403" in str(exc_info.value) or "sales lain" in str(exc_info.value).lower()
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert str(crm["assigned_to"]) == str(first["_id"])
+
+
+@pytest.mark.anyio
+async def test_followups_create_rejects_already_assigned_prospect(db):
+    """Cannot create a follow-up for a prospect already assigned to another sales."""
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", assigned_to=ObjectId()),
+    ]
+    sales = {"_id": sales_id, "role": "sales", "assigned_client_ids": [], "name": "Sales A"}
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followups_create(
+            staff=sales,
+            payload={"customer_id": str(crm_id), "task": "Call", "due_date": "2026-08-25"},
+        )
+    assert "403" in str(exc_info.value) or "assigned" in str(exc_info.value).lower()
+
+
+@pytest.mark.anyio
+async def test_followups_update_renews_assignment_expiry(db):
+    """Any update to a follow-up must renew the assignment expiry."""
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    old_expiry = "2026-08-15T00:00:00Z"
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", assigned_to=sales_id,
+             assigned_at="2026-08-10T00:00:00Z", assignment_expires_at=old_expiry),
+    ]
+    fu_id = ObjectId()
+    db.followups.rows = [
+        _followup(1, _id=fu_id, customer_id=crm_id, done=False),
+    ]
+    sales = {"_id": sales_id, "role": "sales", "assigned_client_ids": [], "name": "Sales A"}
+    await business_routes.followups_update(
+        fid=str(fu_id), payload={"task": "Updated task"}, staff=sales,
+    )
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert crm["assignment_expires_at"] != old_expiry
+
+
+@pytest.mark.anyio
+async def test_followups_mark_done_releases_prospect(db):
+    """Marking a follow-up as done must release the prospect back to shared pool."""
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", assigned_to=sales_id),
+    ]
+    fu_id = ObjectId()
+    db.followups.rows = [
+        _followup(1, _id=fu_id, customer_id=crm_id, done=False),
+    ]
+    sales = {"_id": sales_id, "role": "sales", "assigned_client_ids": [], "name": "Sales A"}
+    await business_routes.followups_update(
+        fid=str(fu_id), payload={"done": True}, staff=sales,
+    )
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert crm["status"] == "prospect"
+    assert crm.get("assigned_to") is None
+    assert crm.get("assigned_at") is None
+    assert crm.get("assignment_expires_at") is None
+
+
+@pytest.mark.anyio
+async def test_followups_sales_scope_includes_followups_on_own_assigned_prospects(db):
+    """Sales must see follow-ups on prospects they claimed (assigned_to=their id)."""
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", assigned_to=sales_id, user_id=None),
+    ]
+    db.followups.rows = [
+        _followup(1, customer_id=crm_id),
+    ]
+    sales = {
+        "_id": sales_id,
+        "role": "sales",
+        "assigned_client_ids": [],
+    }
     res = await business_routes.followups_list(staff=sales, paginate=True)
-    assert res == []
+    assert res["total"] == 1
+
+
+# ============================================================
+# Follow-ups: notes, role tags, approvals, close-deal
+# ============================================================
+
+@pytest.mark.anyio
+async def test_followup_request_approval(db, admin):
+    """Sales can request an approval targeted at a role."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    res = await business_routes.followup_approval_request(
+        fid=str(fu_id),
+        payload={"target_role": "finance", "message": "Need approval for discount"},
+        staff=admin,
+    )
+    assert res["status"] == "pending"
+    assert res["target_role"] == "finance"
+    assert "discount" in res["message"]
+    assert res["requested_by"] is not None
+
+
+@pytest.mark.anyio
+async def test_followup_approval_accept(db, admin):
+    """Finance can accept a pending approval."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    approval = {
+        "id": ObjectId(),
+        "requested_by": "Sales A",
+        "requested_role": "sales",
+        "target_role": "finance",
+        "target_user_id": None,
+        "message": "Discount 10%",
+        "status": "pending",
+        "responded_by": "",
+        "responded_at": "",
+        "response_note": "",
+        "created_at": "2026-08-20T00:00:00Z",
+    }
+    db.followups.rows = [_followup(1, _id=fu_id, approvals=[approval])]
+    res = await business_routes.followup_approval_respond(
+        fid=str(fu_id), aid=str(approval["id"]), staff={"role": "finance", "name": "Finance 1"},
+        payload={"response": "accepted", "note": "OK"},
+    )
+    assert res["status"] == "accepted"
+    assert res["responded_by"] == "Finance 1"
+    assert res["response_note"] == "OK"
+
+
+@pytest.mark.anyio
+async def test_followup_approval_reject(db, admin):
+    """Finance can reject a pending approval."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    approval = {
+        "id": ObjectId(),
+        "requested_by": "Sales A",
+        "requested_role": "sales",
+        "target_role": "finance",
+        "target_user_id": None,
+        "message": "Extra credit",
+        "status": "pending",
+        "responded_by": "",
+        "responded_at": "",
+        "response_note": "",
+        "created_at": "2026-08-20T00:00:00Z",
+    }
+    db.followups.rows = [_followup(1, _id=fu_id, approvals=[approval])]
+    res = await business_routes.followup_approval_respond(
+        fid=str(fu_id), aid=str(approval["id"]), staff={"role": "finance", "name": "Finance 1"},
+        payload={"response": "rejected", "note": "Budget insufficient"},
+    )
+    assert res["status"] == "rejected"
+    assert res["response_note"] == "Budget insufficient"
+
+
+@pytest.mark.anyio
+async def test_followup_approval_wrong_role_rejected(db, admin):
+    """Only the target role (or admin) can respond to an approval."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    approval = {
+        "id": ObjectId(),
+        "requested_by": "Sales A",
+        "requested_role": "sales",
+        "target_role": "finance",
+        "target_user_id": None,
+        "message": "Discount",
+        "status": "pending",
+        "responded_by": "",
+        "responded_at": "",
+        "response_note": "",
+        "created_at": "2026-08-20T00:00:00Z",
+    }
+    db.followups.rows = [_followup(1, _id=fu_id, approvals=[approval])]
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followup_approval_respond(
+            fid=str(fu_id), aid=str(approval["id"]), staff={"role": "noc", "name": "NOC 1"},
+            payload={"response": "accepted", "note": ""},
+        )
+    assert "403" in str(exc_info.value) or "not authorized" in str(exc_info.value).lower()
+
+
+@pytest.mark.anyio
+async def test_followup_close_deal_generates_registration_link(db, admin):
+    """Close-deal must generate a signed registration token/link and mark the CRM row."""
+    fu_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [_crm(1, _id=crm_id, status="assigned", assigned_to=ObjectId())]
+    db.followups.rows = [_followup(1, _id=fu_id, customer_id=crm_id)]
+    res = await business_routes.followup_close_deal(fid=str(fu_id), staff=admin)
+    assert res["deal_action"] == "close_deal"
+    assert res["deal_registration_link"]
+    assert "crm_token=" in res["deal_registration_link"]
+    fu = await db.followups.find_one({"_id": fu_id})
+    assert fu["deal_action"] == "close_deal"
+    assert fu["deal_registration_link"]
+
+
+@pytest.mark.anyio
+async def test_followup_close_deal_requires_linked_customer(db, admin):
+    """Close-deal without a linked CRM customer must fail loudly."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [_followup(1, _id=fu_id, customer_id=None)]
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followup_close_deal(fid=str(fu_id), staff=admin)
+    assert "400" in str(exc_info.value) or "customer" in str(exc_info.value).lower()
+
+
+@pytest.mark.anyio
+async def test_close_deal_registration_token_roundtrip(db):
+    """A close-deal token must decode back to the originating CRM id."""
+    crm_id = ObjectId()
+    token = business_routes._make_crm_registration_token(str(crm_id))
+    decoded_crm_id = business_routes._verify_crm_registration_token(token)
+    assert decoded_crm_id == str(crm_id)
+
+
+@pytest.mark.anyio
+async def test_close_deal_registration_token_rejects_tampering(db):
+    """A tampered/garbage token must not verify."""
+    with pytest.raises(Exception):
+        business_routes._verify_crm_registration_token("not-a-real-token")
+
+
+@pytest.mark.anyio
+async def test_register_with_crm_token_syncs_matching_customer(db):
+    """Registering with a valid crm_token and matching email must sync the
+    CRM row to 'existing' and link the new user_id, not create a duplicate."""
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", email="lead@test.id", name="Budi Lead"),
+    ]
+    token = business_routes._make_crm_registration_token(str(crm_id))
+    new_user_id = ObjectId()
+    await business_routes.sync_crm_after_registration(
+        db, crm_token=token, new_user_id=new_user_id,
+        reg_email="lead@test.id", reg_name="Budi Lead",
+    )
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert crm["status"] == "existing"
+    assert crm["user_id"] == new_user_id
+    assert crm.get("assigned_to") is None
+
+
+@pytest.mark.anyio
+async def test_register_with_crm_token_mismatch_leaves_crm_untouched(db):
+    """If the registered email/name differs from the CRM row, treat as a new
+    customer and leave the original CRM prospect untouched (no silent merge)."""
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", email="lead@test.id", name="Budi Lead"),
+    ]
+    token = business_routes._make_crm_registration_token(str(crm_id))
+    new_user_id = ObjectId()
+    await business_routes.sync_crm_after_registration(
+        db, crm_token=token, new_user_id=new_user_id,
+        reg_email="different@test.id", reg_name="Different Person",
+    )
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert crm["status"] == "assigned"
+    assert crm.get("user_id") is None
+
+
+@pytest.mark.anyio
+async def test_public_crm_prefill_endpoint_returns_crm_data(db):
+    """Public endpoint to prefill registration form from valid crm_token."""
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", email="lead@test.id", name="Budi Lead",
+             phone="08123456789", company="PT Lead"),
+    ]
+    token = business_routes._make_crm_registration_token(str(crm_id))
+    res = await business_routes.crm_register_prefill(staff=None, token=token)
+    assert res["email"] == "lead@test.id"
+    assert res["name"] == "Budi Lead"
+    assert res["phone"] == "08123456789"
+    assert res["company"] == "PT Lead"
+
+
+@pytest.mark.anyio
+async def test_public_crm_prefill_invalid_token_rejected(db):
+    """Invalid/expired token must be rejected."""
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.crm_register_prefill(staff=None, token="invalid")
+    assert "400" in str(exc_info.value) or "invalid" in str(exc_info.value).lower()
+
+
+@pytest.mark.anyio
+async def test_expire_overdue_assignments_releases_expired_only(db):
+    """The expiry job must release overdue assignments but keep fresh ones."""
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    fresh_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", assigned_to=sales_id,
+             assignment_expires_at="2020-01-01T00:00:00Z"),
+        _crm(2, _id=fresh_id, status="assigned", assigned_to=sales_id,
+             assignment_expires_at="2999-01-01T00:00:00Z"),
+    ]
+    await business_routes.expire_overdue_assignments(
+        db, now_iso="2026-08-20T00:00:00Z",
+    )
+    expired = await db.crm_customers.find_one({"_id": crm_id})
+    fresh = await db.crm_customers.find_one({"_id": fresh_id})
+    assert expired["status"] == "prospect"
+    assert expired.get("assigned_to") is None
+    assert expired.get("assignment_expires_at") is None
+    assert fresh["status"] == "assigned"
+    assert fresh.get("assigned_to") == sales_id
+
+
+@pytest.mark.anyio
+async def test_expire_overdue_assignments_skips_non_assigned(db):
+    """Existing clients and shared leads must not be touched by the job."""
+    existing_uid = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, status="existing", user_id=existing_uid,
+             assignment_expires_at="2020-01-01T00:00:00Z"),
+        _crm(2, status="prospect", assignment_expires_at="2020-01-01T00:00:00Z"),
+    ]
+    await business_routes.expire_overdue_assignments(
+        db, now_iso="2026-08-20T00:00:00Z",
+    )
+    assert db.crm_customers.rows[0]["status"] == "existing"
+    assert db.crm_customers.rows[1]["status"] == "prospect"
+
+
+@pytest.mark.anyio
+async def test_followup_serialize_includes_approvals(db, admin):
+    """Serialized follow-up must include approvals array."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [
+        _followup(1, _id=fu_id, approvals=[{"id": ObjectId(), "status": "pending", "target_role": "finance"}])
+    ]
+    res = await business_routes.followups_list(staff=admin)
+    row = next(r for r in res if r["id"] == str(fu_id))
+    assert len(row["approvals"]) == 1
+    assert row["approvals"][0]["target_role"] == "finance"
+    assert row["approvals"][0]["status"] == "pending"
+
+
+@pytest.mark.anyio
+async def test_followup_notes_per_role(db, admin):
+    """Follow-up update must persist per-role notes independently."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    await business_routes.followups_update(
+        fid=str(fu_id),
+        payload={"notes": {"sales": "Interested in fiber", "support": "Needs site survey"}},
+        staff=admin,
+    )
+    d = await db.followups.find_one({"_id": fu_id})
+    assert d["notes"]["sales"] == "Interested in fiber"
+    assert d["notes"]["support"] == "Needs site survey"
+
+
+@pytest.mark.anyio
+async def test_followup_notes_partial_update_preserved(db, admin):
+    """Updating notes for one role must not erase other roles' notes."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [_followup(1, _id=fu_id, notes={"sales": "Original", "noc": "Check link"})]
+    await business_routes.followups_update(
+        fid=str(fu_id),
+        payload={"notes": {"sales": "Updated"}},
+        staff=admin,
+    )
+    d = await db.followups.find_one({"_id": fu_id})
+    assert d["notes"]["sales"] == "Updated"
+    assert d["notes"]["noc"] == "Check link"
+
+
+@pytest.mark.anyio
+async def test_followup_role_tags_set(db, admin):
+    """Follow-up must accept and persist role_tags list."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    await business_routes.followups_update(
+        fid=str(fu_id),
+        payload={"role_tags": ["sales", "support"]},
+        staff=admin,
+    )
+    d = await db.followups.find_one({"_id": fu_id})
+    assert set(d["role_tags"]) == {"sales", "support"}
+
+
+@pytest.mark.anyio
+async def test_followup_role_tags_invalid_value_rejected(db, admin):
+    """role_tags must only accept known roles."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followups_update(
+            fid=str(fu_id),
+            payload={"role_tags": ["sales", "hacker"]},
+            staff=admin,
+        )
+    assert "400" in str(exc_info.value) or "invalid" in str(exc_info.value).lower()
+
+
+@pytest.mark.anyio
+async def test_followup_serialize_includes_notes_and_tags(db, admin):
+    """Serialized follow-up must include notes dict and role_tags list."""
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [
+        _followup(1, _id=fu_id, notes={"sales": "Hi"}, role_tags=["sales"])
+    ]
+    res = await business_routes.followups_list(staff=admin)
+    row = next(r for r in res if r["id"] == str(fu_id))
+    assert row["notes"] == {"sales": "Hi"}
+    assert row["role_tags"] == ["sales"]
 
 
 # ============================================================
