@@ -59,6 +59,19 @@ def _serialize_crm(d):
     }
 
 
+def _staff_oid(staff: dict):
+    """Extract staff ObjectId from either _id (test fixture) or id (real auth).
+
+    Real JWT auth (auth.py line 95) pops _id and creates id string.
+    Test fixtures use _id directly. This helper handles both.
+    """
+    if "_id" in staff:
+        return ObjectId(str(staff["_id"]))
+    if "id" in staff:
+        return ObjectId(str(staff["id"]))
+    return None
+
+
 def _crm_sales_scope_filter(staff: dict) -> dict:
     """Mongo filter restricting CRM visibility for sales.
 
@@ -77,9 +90,9 @@ def _crm_sales_scope_filter(staff: dict) -> dict:
     if assigned:
         clauses.append({"user_id": {"$in": assigned}})
     clauses.append({"status": {"$in": ["prospect", "partnership"]}})
-    staff_id = staff.get("_id")
+    staff_id = _staff_oid(staff)
     if staff_id:
-        clauses.append({"assigned_to": ObjectId(str(staff_id))})
+        clauses.append({"assigned_to": staff_id})
     if not clauses:
         return {"_id": None}  # matches nothing
     return {"$or": clauses}
@@ -259,7 +272,7 @@ async def _assert_sales_can_touch_crm(db, staff: dict, cid: str) -> dict:
     if staff.get("role") == "sales":
         status = d.get("status", "prospect")
         assigned = {str(x) for x in (staff.get("assigned_client_ids") or [])}
-        staff_id = staff.get("_id")
+        staff_id = _staff_oid(staff)
         assigned_to = d.get("assigned_to")
         is_shared = status in ("prospect", "partnership")
         is_own_client = (d.get("user_id") and str(d["user_id"]) in assigned)
@@ -704,7 +717,7 @@ def _serialize_followup(d):
         "due_date": d.get("due_date", ""),
         "done": bool(d.get("done", False)),
         "owner": d.get("owner", ""),
-        "notes": d.get("notes", {}) or {},
+        "notes": _normalize_note_threads(d.get("notes")),
         "role_tags": d.get("role_tags", []) or [],
         "assignee_role": d.get("assignee_role", ""),
         "approvals": [_serialize_approval(a) for a in (d.get("approvals") or [])],
@@ -912,17 +925,65 @@ async def crm_register_prefill(staff, token: str) -> dict:
     }
 
 
-def _merge_role_notes(existing, incoming) -> dict:
-    """Merge per-role notes so updating one role never erases the others."""
-    if not isinstance(incoming, dict):
-        raise HTTPException(status_code=400, detail="notes harus berupa object per role")
-    merged = dict(existing or {})
-    for raw_role, text in incoming.items():
+def _normalize_note_threads(raw) -> dict:
+    """Normalize stored notes into an append-only thread per role.
+
+    Two shapes exist on disk:
+      legacy: {"sales": "free text"}          -> one synthetic legacy entry
+      thread: {"sales": [{author, text, at}]} -> passed through
+
+    Threads are append-only by design: no endpoint rewrites or deletes an
+    entry, so one division can never edit another division's feedback.
+    """
+    out = {role: [] for role in sorted(_FOLLOWUP_ROLES)}
+    if not isinstance(raw, dict):
+        return out
+    for raw_role, value in raw.items():
         role = str(raw_role or "").strip().lower()
         if role not in _FOLLOWUP_ROLES:
-            raise HTTPException(status_code=400, detail=f"Invalid note role: {raw_role}")
-        merged[role] = str(text or "")
-    return merged
+            continue
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                out[role].append({
+                    "author": "",
+                    "author_role": role,
+                    "text": text,
+                    "at": "",
+                    "legacy": True,
+                })
+            continue
+        if isinstance(value, list):
+            for entry in value:
+                if not isinstance(entry, dict):
+                    continue
+                text = str(entry.get("text") or "").strip()
+                if not text:
+                    continue
+                out[role].append({
+                    "author": str(entry.get("author") or ""),
+                    "author_role": str(entry.get("author_role") or role),
+                    "text": text,
+                    "at": _iso(entry.get("at", "")),
+                    "legacy": bool(entry.get("legacy", False)),
+                })
+    return out
+
+
+def _note_author_role(staff: dict) -> str:
+    """Role bucket a staff member is allowed to post notes into.
+
+    A user posts as their own role only. Nobody -- admin included -- may
+    write into another division's thread, which is what the old editable
+    per-role textarea allowed.
+    """
+    role = str(staff.get("role") or "").strip().lower()
+    if role not in _FOLLOWUP_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Role '{role}' tidak dapat menulis catatan follow-up",
+        )
+    return role
 
 
 @router.post("/admin/followups")
@@ -943,7 +1004,7 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
         crm = await db.crm_customers.find_one({"_id": cust_id})
         if crm and crm.get("status") == "assigned":
             assigned_to = crm.get("assigned_to")
-            staff_id = staff.get("_id")
+            staff_id = _staff_oid(staff)
             if staff.get("role") == "sales" and (
                 not assigned_to
                 or not staff_id
@@ -963,7 +1024,7 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
                 {"_id": cust_id, "status": "prospect"},
                 {"$set": {
                     "status": "assigned",
-                    "assigned_to": staff.get("_id"),
+                    "assigned_to": _staff_oid(staff),
                     "assigned_at": now_dt.isoformat(),
                     "assignment_expires_at": expires.isoformat(),
                     "updated_at": now_dt.isoformat(),
@@ -974,7 +1035,7 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
                     status_code=403,
                     detail="Prospect ini baru saja di-assign ke sales lain",
                 )
-        elif crm and crm.get("status") == "assigned" and staff.get("_id"):
+        elif crm and crm.get("status") == "assigned" and _staff_oid(staff):
             # Already assigned to this sales — renew the expiry timer
             now_dt = datetime.now(timezone.utc)
             expires = now_dt + timedelta(days=_PROSPECT_ASSIGNMENT_DAYS)
@@ -1012,7 +1073,14 @@ async def followups_update(fid: str, payload: dict, staff=Depends(get_current_st
         if k in MAPPED:
             upd[k] = v
         elif k == "notes":
-            upd["notes"] = _merge_role_notes(d.get("notes"), v)
+            # Notes are append-only threads now. Rewriting them through the
+            # generic update endpoint is what let one division overwrite
+            # another division's feedback, so it is refused outright.
+            raise HTTPException(
+                status_code=400,
+                detail="Catatan tidak bisa diubah lewat update. "
+                       "Gunakan POST /admin/followups/{id}/notes untuk menambah catatan.",
+            )
         elif k == "role_tags":
             upd["role_tags"] = _clean_role_tags(v)
         elif k == "assignee_role":
@@ -1105,7 +1173,7 @@ async def followup_approval_request(fid: str, payload: dict,
     approval = {
         "id": ObjectId(),
         "requested_by": staff.get("name") or staff.get("email") or "staff",
-        "requested_by_id": staff.get("_id"),
+        "requested_by_id": _staff_oid(staff),
         "requested_role": staff.get("role", ""),
         "target_role": target_role,
         "target_user_id": _oid(target_user_id) if target_user_id else None,
@@ -1151,7 +1219,7 @@ async def followup_approval_respond(fid: str, aid: str, payload: dict,
     if caller_role not in ("admin",) and caller_role != target.get("target_role"):
         # Allow targeted user if specified
         target_user = target.get("target_user_id")
-        if not target_user or str(target_user) != str(staff.get("_id") or ""):
+        if not target_user or str(target_user) != str(_staff_oid(staff) or ""):
             raise HTTPException(
                 status_code=403,
                 detail="Anda tidak berhak merespon approval ini",
@@ -1179,6 +1247,39 @@ async def followups_delete(fid: str, staff=Depends(get_current_staff)):
     await _assert_sales_can_touch_followup(db, staff, fid)
     r = await db.followups.delete_one({"_id": _oid(fid)})
     return {"deleted": r.deleted_count}
+
+
+@router.post("/admin/followups/{fid}/notes")
+async def followup_notes_add(fid: str, payload: dict, staff=Depends(get_current_staff)):
+    """Append one note to the caller's own role thread.
+
+    This is intentionally the only way to write a follow-up note: threads
+    are append-only, and the author role is always derived from the
+    authenticated caller, never from the request body. That is what
+    guarantees admin (or any other role) cannot edit or inject content
+    into another division's thread.
+    """
+    db = await _get_db()
+    _deny_creative(staff)
+    d = await _assert_sales_can_touch_followup(db, staff, fid)
+    text = str((payload or {}).get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Catatan tidak boleh kosong")
+    author_role = _note_author_role(staff)
+    entry = {
+        "author": staff.get("name") or staff.get("email") or "staff",
+        "author_role": author_role,
+        "text": text,
+        "at": _now(),
+        "legacy": False,
+    }
+    threads = _normalize_note_threads(d.get("notes"))
+    threads[author_role].append(entry)
+    await db.followups.update_one(
+        {"_id": _oid(fid)},
+        {"$set": {"notes": threads, "updated_at": _now()}},
+    )
+    return {"notes": threads}
 
 
 # ---------- Documents (metadata + file upload lokal) ----------

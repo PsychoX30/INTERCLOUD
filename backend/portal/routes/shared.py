@@ -144,7 +144,7 @@ async def _sales_visible_crm_ids(db, staff: dict) -> list | None:
     or_clauses = [{"status": {"$in": ["prospect", "partnership"]}}]
     if assigned:
         or_clauses.append({"user_id": {"$in": assigned}})
-    staff_id = staff.get("_id")
+    staff_id = staff.get("_id") or staff.get("id")
     if staff_id:
         or_clauses.append({"assigned_to": ObjectId(str(staff_id))})
     cur = db.crm_customers.find({"$or": or_clauses}, {"_id": 1})

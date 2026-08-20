@@ -708,8 +708,17 @@ export const AdminFollowups = () => {
                 <div className="flex-1 min-w-0">
                   <div className={`font-semibold text-[#0a2350] ${r.done ? "line-through" : ""}`}>{r.task}</div>
                   <div className="text-xs text-slate-500">
-                    {r.customer_name || "-"} · {r.channel} · due {shortDate(r.due_date) || "no date"} · {r.owner}
+                    {r.customer_name || "-"} · {r.channel} · due {shortDate(r.due_date) || "no date"}{r.owner ? ` · ${r.owner}` : ""}
                   </div>
+                  {r.role_tags && r.role_tags.length > 0 && (
+                    <div className="flex gap-1 mt-1 flex-wrap" data-testid={`fu-list-tags-${r.id}`}>
+                      {r.role_tags.map((tag) => (
+                        <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-[#0a2350]/10 text-[#0a2350]">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {r.deal_action === "close_deal" && (
                     <div className="text-[10px] font-bold text-emerald-600 mt-0.5">CLOSE DEAL — link registrasi siap</div>
                   )}
@@ -810,7 +819,7 @@ const CrmCustomerPicker = ({ value, onPick }) => {
 };
 
 const FollowupForm = ({ onClose, onDone }) => {
-  const [f, setF] = useState({ customer_id: "", customer_name: "", task: "", channel: "whatsapp", due_date: "", owner: "" });
+  const [f, setF] = useState({ customer_id: "", customer_name: "", task: "", channel: "whatsapp", due_date: "" });
   const [roleTags, setRoleTags] = useState([]);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -845,7 +854,6 @@ const FollowupForm = ({ onClose, onDone }) => {
         </div>
         <label><div className={labelClass}>Channel</div><select value={f.channel} onChange={(e) => setF({ ...f, channel: e.target.value })} className={inputClass}><option>whatsapp</option><option>call</option><option>email</option><option>meeting</option></select></label>
         <label><div className={labelClass}>Due date</div><input type="date" value={f.due_date} onChange={(e) => setF({ ...f, due_date: e.target.value })} className={inputClass} required /></label>
-        <label><div className={labelClass}>Owner</div><input value={f.owner} onChange={(e) => setF({ ...f, owner: e.target.value })} className={inputClass} /></label>
         <div className="col-span-2">
           <div className={labelClass}>Tag role</div>
           <div className="flex gap-1.5 flex-wrap" data-testid="fu-role-tags">
@@ -877,6 +885,7 @@ const FollowupForm = ({ onClose, onDone }) => {
 /* Task detail: per-role notes, role tags, approval requests/responses. */
 const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
   const [notes, setNotes] = useState(fu.notes || {});
+  const [noteDraft, setNoteDraft] = useState("");
   const [roleTags, setRoleTags] = useState(fu.role_tags || []);
   const [approvals, setApprovals] = useState(fu.approvals || []);
   const [targetRole, setTargetRole] = useState("finance");
@@ -884,14 +893,28 @@ const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const myRole = (currentUser?.role || "").toLowerCase();
+  const canPostNote = FU_ROLES.includes(myRole);
 
   const saveTask = async () => {
     setErr(""); setBusy(true);
     try {
-      await api.put(`/admin/followups/${fu.id}`, { notes, role_tags: roleTags });
+      await api.put(`/admin/followups/${fu.id}`, { role_tags: roleTags });
       onDone();
     } catch (e) {
       setErr(e?.response?.data?.detail || "Gagal menyimpan perubahan");
+    } finally { setBusy(false); }
+  };
+
+  const addNote = async () => {
+    const text = noteDraft.trim();
+    if (!text) return;
+    setErr(""); setBusy(true);
+    try {
+      const { data } = await api.post(`/admin/followups/${fu.id}/notes`, { text });
+      setNotes(data.notes || {});
+      setNoteDraft("");
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal mengirim catatan");
     } finally { setBusy(false); }
   };
 
@@ -955,22 +978,56 @@ const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
         </div>
 
         <div>
-          <div className={labelClass}>Catatan per role</div>
-          <div className="space-y-2">
-            {FU_ROLES.map((role) => (
-              <label key={role} className="block">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{role}</div>
-                <textarea
-                  rows={2}
-                  value={notes[role] || ""}
-                  onChange={(e) => setNotes((p) => ({ ...p, [role]: e.target.value }))}
-                  className={`${inputClass} h-auto py-2`}
-                  placeholder={`Update dari tim ${role}…`}
-                  data-testid={`fu-note-${role}`}
-                />
-              </label>
-            ))}
+          <div className={labelClass}>Catatan (thread per role)</div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 max-h-80 overflow-y-auto space-y-3" data-testid="fu-notes-thread">
+            {FU_ROLES.map((role) => {
+              const thread = notes[role] || [];
+              if (!Array.isArray(thread) || thread.length === 0) return null;
+              return (
+                <div key={role} className="space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#0a2350] sticky top-0 bg-slate-50 pb-1">{role}</div>
+                  {thread.map((entry, idx) => (
+                    <div key={idx} className={`rounded-lg p-2 text-xs ${entry.legacy ? "bg-amber-50 border border-amber-200" : "bg-white border border-slate-200"}`} data-testid={`fu-note-entry-${role}-${idx}`}>
+                      {entry.legacy && <div className="text-[10px] text-amber-700 font-bold uppercase mb-1">Legacy (format lama)</div>}
+                      <div className="text-slate-700">{entry.text}</div>
+                      <div className="text-[10px] text-slate-400 mt-1">
+                        {entry.author || "—"} · {entry.at ? new Date(entry.at).toLocaleString("id-ID") : "—"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+            {FU_ROLES.every((r) => !Array.isArray(notes[r]) || notes[r].length === 0) && (
+              <div className="text-xs text-slate-400 text-center py-4">Belum ada catatan.</div>
+            )}
           </div>
+          {canPostNote && (
+            <div className="mt-2 flex gap-2">
+              <input
+                type="text"
+                placeholder={`Tulis catatan sebagai ${myRole}…`}
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addNote(); } }}
+                className={inputClass}
+                disabled={busy}
+                data-testid="fu-note-input"
+              />
+              <button
+                type="button"
+                onClick={addNote}
+                disabled={busy || !noteDraft.trim()}
+                className="px-4 py-2 rounded-xl bg-[#0a2350] text-white font-bold text-sm hover:bg-[#0a2350]/90 disabled:opacity-50"
+                data-testid="fu-note-send"
+              >
+                Kirim
+              </button>
+            </div>
+          )}
+          {!canPostNote && (
+            <div className="text-xs text-slate-400 mt-2">Anda tidak memiliki role yang dapat menambahkan catatan.</div>
+          )}
         </div>
 
         <div>

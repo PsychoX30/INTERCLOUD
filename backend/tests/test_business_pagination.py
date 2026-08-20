@@ -655,6 +655,54 @@ async def test_followups_update_renews_assignment_expiry(db):
 
 
 @pytest.mark.anyio
+async def test_followups_create_with_production_auth_shape(db):
+    """Regression: staff with `id` (not `_id`) must claim and own a follow-up.
+
+    Real JWT auth (auth.py:95) does `user["id"] = str(user.pop("_id"))`.
+    Before the _staff_oid fix, code that used `staff.get("_id")` got None
+    in production, causing "Not your follow-up" 403 after a successful save.
+    """
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [_crm(1, _id=crm_id, status="prospect", user_id=None)]
+    db.followups.rows = []
+    # Production auth shape: `id` string, no `_id`
+    sales = {"id": str(sales_id), "role": "sales", "assigned_client_ids": [], "name": "Sales A"}
+    res = await business_routes.followups_create(
+        staff=sales,
+        payload={"customer_id": str(crm_id), "task": "Call prospect", "due_date": "2026-08-25"},
+    )
+    assert res["customer_id"] == str(crm_id)
+    crm = await db.crm_customers.find_one({"_id": crm_id})
+    assert crm["status"] == "assigned"
+    assert str(crm["assigned_to"]) == str(sales_id)
+
+
+@pytest.mark.anyio
+async def test_followups_update_with_production_auth_shape(db):
+    """Regression: staff with `id` (not `_id`) must pass _assert_sales_can_touch_followup.
+
+    The old code path used staff.get("_id") for visibility/ownership checks.
+    In production, that returned None, so sales users got 403 "Not your
+    follow-up" immediately after saving. This test proves the fix.
+    """
+    sales_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [
+        _crm(1, _id=crm_id, status="assigned", assigned_to=sales_id),
+    ]
+    fu_id = ObjectId()
+    db.followups.rows = [_followup(1, _id=fu_id, customer_id=crm_id, done=False)]
+    # Production auth shape: `id` string, no `_id`
+    sales = {"id": str(sales_id), "role": "sales", "assigned_client_ids": [], "name": "Sales A"}
+    await business_routes.followups_update(
+        fid=str(fu_id), payload={"task": "Updated task"}, staff=sales,
+    )
+    d = await db.followups.find_one({"_id": fu_id})
+    assert d["task"] == "Updated task"
+
+
+@pytest.mark.anyio
 async def test_followups_mark_done_releases_prospect(db):
     """Marking a follow-up as done must release the prospect back to shared pool."""
     sales_id = ObjectId()
@@ -962,35 +1010,65 @@ async def test_followup_serialize_includes_approvals(db, admin):
 
 
 @pytest.mark.anyio
-async def test_followup_notes_per_role(db, admin):
-    """Follow-up update must persist per-role notes independently."""
+async def test_followup_notes_append_to_own_role(db, admin):
+    """Adding a note appends to the caller's own role thread."""
     fu_id = ObjectId()
     db.crm_customers.rows = []
     db.followups.rows = [_followup(1, _id=fu_id)]
-    await business_routes.followups_update(
+    res = await business_routes.followup_notes_add(
         fid=str(fu_id),
-        payload={"notes": {"sales": "Interested in fiber", "support": "Needs site survey"}},
+        payload={"text": "Interested in fiber"},
         staff=admin,
     )
+    assert len(res["notes"]["admin"]) == 1
+    assert res["notes"]["admin"][0]["text"] == "Interested in fiber"
+    assert res["notes"]["admin"][0]["author_role"] == "admin"
+    assert res["notes"]["admin"][0]["legacy"] is False
+    # persisted
     d = await db.followups.find_one({"_id": fu_id})
-    assert d["notes"]["sales"] == "Interested in fiber"
-    assert d["notes"]["support"] == "Needs site survey"
+    assert d["notes"]["admin"][0]["text"] == "Interested in fiber"
 
 
 @pytest.mark.anyio
-async def test_followup_notes_partial_update_preserved(db, admin):
-    """Updating notes for one role must not erase other roles' notes."""
+async def test_followup_notes_update_endpoint_rejects_notes(db, admin):
+    """The generic update endpoint must refuse notes rewrites outright."""
     fu_id = ObjectId()
     db.crm_customers.rows = []
-    db.followups.rows = [_followup(1, _id=fu_id, notes={"sales": "Original", "noc": "Check link"})]
-    await business_routes.followups_update(
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followups_update(
+            fid=str(fu_id),
+            payload={"notes": {"sales": "Interested in fiber"}},
+            staff=admin,
+        )
+    assert "400" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_followup_notes_thread_is_append_only_across_roles(db, admin):
+    """A note posted as one role must never overwrite another role's thread.
+
+    This is the core fix: the author role is derived from the caller, so the
+    request body cannot inject content into another division's bucket, and
+    existing entries are preserved (append-only).
+    """
+    fu_id = ObjectId()
+    db.crm_customers.rows = []
+    db.followups.rows = [
+        _followup(1, _id=fu_id, notes={"noc": "Existing NOC note"})
+    ]
+    # admin appends into admin thread; NOC thread is untouched, legacy preserved
+    res = await business_routes.followup_notes_add(
         fid=str(fu_id),
-        payload={"notes": {"sales": "Updated"}},
+        payload={"text": "Admin follow-up", "author_role": "noc"},  # body role ignored
         staff=admin,
     )
-    d = await db.followups.find_one({"_id": fu_id})
-    assert d["notes"]["sales"] == "Updated"
-    assert d["notes"]["noc"] == "Check link"
+    assert res["notes"]["admin"][0]["text"] == "Admin follow-up"
+    assert res["notes"]["admin"][0]["author_role"] == "admin"
+    # existing NOC (legacy) note still present and not overwritten
+    assert len(res["notes"]["noc"]) == 1
+    assert res["notes"]["noc"][0]["text"] == "Existing NOC note"
+    assert res["notes"]["noc"][0]["legacy"] is True
 
 
 @pytest.mark.anyio
@@ -1025,7 +1103,11 @@ async def test_followup_role_tags_invalid_value_rejected(db, admin):
 
 @pytest.mark.anyio
 async def test_followup_serialize_includes_notes_and_tags(db, admin):
-    """Serialized follow-up must include notes dict and role_tags list."""
+    """Serialized follow-up must include a per-role note thread and role_tags list.
+
+    Legacy plain-string notes are normalized into a one-entry thread marked
+    legacy=True; the thread shape is stable across all known roles.
+    """
     fu_id = ObjectId()
     db.crm_customers.rows = []
     db.followups.rows = [
@@ -1033,7 +1115,11 @@ async def test_followup_serialize_includes_notes_and_tags(db, admin):
     ]
     res = await business_routes.followups_list(staff=admin)
     row = next(r for r in res if r["id"] == str(fu_id))
-    assert row["notes"] == {"sales": "Hi"}
+    assert set(row["notes"].keys()) == business_routes._FOLLOWUP_ROLES
+    assert len(row["notes"]["sales"]) == 1
+    assert row["notes"]["sales"][0]["text"] == "Hi"
+    assert row["notes"]["sales"][0]["legacy"] is True
+    assert row["notes"]["noc"] == []
     assert row["role_tags"] == ["sales"]
 
 
