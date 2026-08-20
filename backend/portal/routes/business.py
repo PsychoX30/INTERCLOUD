@@ -717,8 +717,11 @@ def _serialize_followup(d):
         "due_date": d.get("due_date", ""),
         "done": bool(d.get("done", False)),
         "owner": d.get("owner", ""),
+        "owner_id": str(d.get("owner_id", "")) if d.get("owner_id") else None,
+        "owner_role": d.get("owner_role", ""),
         "notes": _normalize_note_threads(d.get("notes")),
-        "role_tags": d.get("role_tags", []) or [],
+        "role_tags": [t["value"] for t in _normalize_tags(d.get("role_tags")) if t["scope"] == "role"],
+        "tags": _normalize_tags(d.get("tags") or d.get("role_tags")),
         "assignee_role": d.get("assignee_role", ""),
         "approvals": [_serialize_approval(a) for a in (d.get("approvals") or [])],
         "deal_action": d.get("deal_action"),
@@ -727,10 +730,55 @@ def _serialize_followup(d):
     }
 
 
+async def _followup_visibility_filter(db, staff: dict) -> dict:
+    """Return a Mongo filter restricting follow-ups to those the staff can see.
+
+    Visible if:
+      - staff is admin/owner (super user)
+      - staff is the owner (owner_id matches)
+      - any tag matches the staff (role scope or user scope)
+    Returns {} for no restriction (admin/owner).
+    Returns None for zero visible (e.g. sales with no matches).
+    """
+    role = str(staff.get("role") or "").strip().lower()
+    staff_id = str(staff.get("id") or staff.get("_id") or "").strip()
+
+    # Admin/owner see everything
+    if role in {"admin", "owner"}:
+        return {}
+
+    # Build OR clauses for visibility
+    or_clauses = []
+
+    # 1) Owner match
+    if staff_id:
+        or_clauses.append({"owner_id": staff_id})
+
+    # 2) Tag match: role scope. Include legacy role_tags until old documents
+    # have been migrated, otherwise an existing finance-tagged task disappears.
+    if role in _FOLLOWUP_ROLES:
+        or_clauses.append({"tags": {"$elemMatch": {"scope": "role", "value": role}}})
+        or_clauses.append({"role_tags": role})
+
+    # 3) Tag match: user scope
+    if staff_id:
+        or_clauses.append({"tags": {"$elemMatch": {"scope": "user", "value": staff_id}}})
+
+    if not or_clauses:
+        # Should not happen for known roles, but safe fallback
+        return {"_id": {"$in": []}}  # matches nothing
+
+    return {"$or": or_clauses}
+
+
 async def _sales_followup_filter(db, staff: dict) -> dict | None:
     """Return a Mongo filter that restricts follow-ups to CRM rows the sales
     staff can access. Returns {} for non-sales. Returns None if the caller is
-    a sales user with zero visible CRM rows (endpoint should short-circuit)."""
+    a sales user with zero visible CRM rows (endpoint should short-circuit).
+
+    Kept for backward compatibility; new visibility logic lives in
+    _followup_visibility_filter.
+    """
     if staff.get("role") != "sales":
         return {}
     ids = await _sales_visible_crm_ids(db, staff)
@@ -743,12 +791,26 @@ async def _assert_sales_can_touch_followup(db, staff: dict, fid: str) -> dict:
     d = await db.followups.find_one({"_id": _oid(fid)})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
-    if staff.get("role") == "sales":
+    role = str(staff.get("role") or "").strip().lower()
+    # Admin/owner can touch everything
+    if role in {"admin", "owner"}:
+        return d
+    # Owner can touch their own follow-up
+    staff_id = str(staff.get("id") or staff.get("_id") or "").strip()
+    owner_id = str(d.get("owner_id") or "").strip()
+    if staff_id and owner_id and staff_id == owner_id:
+        return d
+    # Tagged user can touch
+    tags = _normalize_tags(d.get("tags") or d.get("role_tags"))
+    if _is_followup_tagged_for(staff, tags):
+        return d
+    # Sales scoping: backward compat with CRM visibility
+    if role == "sales":
         visible = await _sales_visible_crm_ids(db, staff) or []
         cust_id = d.get("customer_id")
-        if not (cust_id and any(str(cust_id) == str(x) for x in visible)):
-            raise HTTPException(status_code=403, detail="Not your follow-up")
-    return d
+        if cust_id and any(str(cust_id) == str(x) for x in visible):
+            return d
+    raise HTTPException(status_code=403, detail="Not your follow-up")
 
 
 @router.get("/admin/followups")
@@ -757,12 +819,25 @@ async def followups_list(staff=Depends(get_current_staff),
                          order: str = "asc", done: Optional[bool] = None,
                          paginate: Optional[bool] = None):
     """Server-side pagination for follow-ups with done filter.
-    Sales-empty short-circuit and _sales_followup_filter scoping preserved."""
+
+    Visibility: admin/owner see all; others see only their own + tagged tasks
+    (role scope or user scope). Sales scoping via _sales_followup_filter is
+    combined for legacy CRM visibility.
+    """
     _deny_creative(staff)
     db = await _get_db()
-    q = await _sales_followup_filter(db, staff)
+    q = await _followup_visibility_filter(db, staff)
     if q is None:
         return []
+    # For sales: add CRM-scoped follow-ups via $or so they also see follow-ups
+    # on prospects they claimed even if those follow-ups weren't explicitly tagged.
+    # This is a UNION of (tagged/owner) + (CRM customer in their scope).
+    if str(staff.get("role") or "").lower() == "sales":
+        legacy = await _sales_followup_filter(db, staff)
+        if legacy is None:
+            return []
+        if legacy:  # non-empty dict → OR with existing query
+            q = {"$or": [q, legacy]}
     if done is not None:
         q["done"] = done
     sort_field = sort if sort in {
@@ -782,14 +857,53 @@ async def followups_list(staff=Depends(get_current_staff),
     return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
 
 
+@router.get("/admin/followups/taggable-staff")
+async def followups_taggable_staff(staff=Depends(get_current_staff)):
+    """Staff accounts grouped by role, for the follow-up tag picker.
+
+    Returns only roles that are actually taggable on a follow-up, so the UI
+    cannot offer a role that the visibility filter would never match.
+    """
+    _deny_creative(staff)
+    db = await _get_db()
+    cursor = db.users.find(
+        {"role": {"$in": sorted(_FOLLOWUP_ROLES)}},
+        {"_id": 1, "name": 1, "email": 1, "role": 1},
+    )
+    groups: dict[str, list] = {role: [] for role in sorted(_FOLLOWUP_ROLES)}
+    async for u in cursor:
+        role = str(u.get("role") or "").strip().lower()
+        if role not in groups:
+            continue
+        groups[role].append({
+            "id": str(u["_id"]),
+            "name": u.get("name") or u.get("email") or "(tanpa nama)",
+            "email": u.get("email", ""),
+            "role": role,
+        })
+    for role in groups:
+        groups[role].sort(key=lambda x: x["name"].lower())
+    return {
+        "roles": sorted(_FOLLOWUP_ROLES),
+        "staff_by_role": groups,
+    }
+
+
 _PROSPECT_ASSIGNMENT_DAYS = 5
 
 # Roles that can be tagged on / own a follow-up task.
-_FOLLOWUP_ROLES = {"sales", "noc", "support", "finance", "admin"}
+# Aligned with STAFF_ROLES in auth.py — "noc" does not exist as a user role.
+# "owner" and "ticket_only" and "creative" are excluded: owner is a super-admin
+# synonym for admin, ticket_only is read-only, creative is content-scoped.
+_FOLLOWUP_ROLES = {"sales", "support", "finance", "admin"}
 
 
 def _clean_role_tags(value) -> list:
-    """Validate a role_tags payload into a de-duplicated ordered list."""
+    """Validate a role_tags payload into a de-duplicated ordered list.
+
+    Kept for backward-compatibility: old payloads may still send role_tags.
+    New code should use the structured ``tags`` field instead.
+    """
     if not isinstance(value, list):
         raise HTTPException(status_code=400, detail="role_tags harus berupa list")
     out = []
@@ -800,6 +914,75 @@ def _clean_role_tags(value) -> list:
         if role not in out:
             out.append(role)
     return out
+
+
+def _normalize_tags(raw, *, strict: bool = False) -> list:
+    """Normalize tag storage into a list of structured tag dicts.
+
+    Each tag: {"scope": "role"|"user", "value": str, "label": str}
+
+    Legacy ``role_tags`` (list of role strings) is migrated to
+    ``[{"scope": "role", "value": role, "label": role}]``.
+
+    ``strict=True`` is for request payloads: an unusable tag is a client error
+    and raises 400 rather than being silently dropped, so a typo'd role can
+    never quietly leave a division unable to see the task. ``strict=False``
+    is for reading stored documents, where an unknown tag left over from an
+    older schema must not break the read path.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        if strict:
+            raise HTTPException(status_code=400, detail="tags harus berupa list")
+        return []
+    out = []
+    seen = set()
+    for entry in raw:
+        scope = value = label = None
+        if isinstance(entry, str):
+            scope, value = "role", entry.strip().lower()
+            label = value
+        elif isinstance(entry, dict):
+            scope = str(entry.get("scope") or "").strip().lower()
+            value = str(entry.get("value") or "").strip()
+            label = str(entry.get("label") or value).strip()
+        else:
+            if strict:
+                raise HTTPException(status_code=400, detail=f"Invalid tag: {entry!r}")
+            continue
+        if scope not in ("role", "user") or not value:
+            if strict:
+                raise HTTPException(status_code=400, detail=f"Invalid tag: {entry!r}")
+            continue
+        if scope == "role" and value.lower() not in _FOLLOWUP_ROLES:
+            if strict:
+                raise HTTPException(status_code=400, detail=f"Invalid role tag: {value}")
+            continue
+        key = (scope, value.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"scope": scope, "value": value, "label": label or value})
+    return out
+
+
+def _is_followup_tagged_for(staff: dict, tags: list) -> bool:
+    """Check whether a staff member is covered by any of the given tags.
+
+    - role scope: matches if the tag value equals the staff role
+    - user scope: matches if the tag value equals the staff id
+    """
+    my_role = str(staff.get("role") or "").strip().lower()
+    my_id = str(staff.get("id") or staff.get("_id") or "").strip()
+    for tag in tags:
+        scope = tag.get("scope")
+        val = str(tag.get("value") or "").strip()
+        if scope == "role" and val.lower() == my_role:
+            return True
+        if scope == "user" and val == my_id:
+            return True
+    return False
 
 
 def _serialize_approval(a: dict) -> dict:
@@ -1055,6 +1238,12 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
         "due_date": payload.get("due_date", ""),
         "done": False,
         "owner": payload.get("owner", staff.get("name", "")),
+        "owner_id": str(staff.get("id") or staff.get("_id") or ""),
+        "owner_role": str(staff.get("role") or "").lower(),
+        "tags": _normalize_tags(payload.get("tags") or payload.get("role_tags"), strict=True),
+        # Mirror role tags into the legacy field so old clients / filters that
+        # still read role_tags keep working until full migration.
+        "role_tags": [t["value"] for t in _normalize_tags(payload.get("tags") or payload.get("role_tags"), strict=True) if t["scope"] == "role"],
         "created_at": _now(),
     }
     r = await db.followups.insert_one(doc)
@@ -1081,8 +1270,39 @@ async def followups_update(fid: str, payload: dict, staff=Depends(get_current_st
                 detail="Catatan tidak bisa diubah lewat update. "
                        "Gunakan POST /admin/followups/{id}/notes untuk menambah catatan.",
             )
-        elif k == "role_tags":
-            upd["role_tags"] = _clean_role_tags(v)
+        elif k in ("tags", "role_tags"):
+            # Tags gate visibility, so removing one silently hides the task from
+            # a division that still owes work on it. Tags are therefore
+            # append-only until the task is actually finished: either marked
+            # done, or closed as a deal.
+            incoming = _normalize_tags(v, strict=True)
+            existing = _normalize_tags(d.get("tags") or d.get("role_tags"))
+            finishing = payload.get("done") is True
+            unlocked = (
+                finishing
+                or bool(d.get("done"))
+                or d.get("deal_action") == "close_deal"
+            )
+            if not unlocked:
+                incoming_keys = {(t["scope"], t["value"].lower()) for t in incoming}
+                removed = [
+                    t for t in existing
+                    if (t["scope"], t["value"].lower()) not in incoming_keys
+                ]
+                if removed:
+                    names = ", ".join(f"{t['scope']}:{t['label']}" for t in removed)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Tag tidak bisa dihapus sebelum task selesai "
+                            f"(mark as done atau close deal). Tag terkunci: {names}"
+                        ),
+                    )
+            upd["tags"] = incoming
+            # Keep the legacy field in sync so older clients still read roles.
+            upd["role_tags"] = [
+                t["value"] for t in incoming if t["scope"] == "role"
+            ]
         elif k == "assignee_role":
             role = str(v or "").strip().lower()
             if role not in _FOLLOWUP_ROLES:
@@ -1201,7 +1421,12 @@ async def followup_approval_respond(fid: str, aid: str, payload: dict,
     """
     db = await _get_db()
     _deny_creative(staff)
-    await _assert_sales_can_touch_followup(db, staff, fid)
+    # NOTE: no _assert_sales_can_touch_followup here. Responding to an approval
+    # is authorized by being the *target* of that approval (target role or
+    # target user), which is checked below. A finance/support reviewer is
+    # frequently NOT tagged on the follow-up itself, so requiring touch access
+    # would make it impossible for them to answer the very request addressed
+    # to them.
     fu = await db.followups.find_one({"_id": _oid(fid)})
     if not fu:
         raise HTTPException(status_code=404, detail="Follow-up not found")

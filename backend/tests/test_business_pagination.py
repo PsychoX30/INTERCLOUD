@@ -29,6 +29,8 @@ from portal.routes import business as business_routes
 def _match_clause(doc: dict, key: str, cond) -> bool:
     if key == "$or":
         return any(all(_match_clause(doc, k, v) for k, v in clause.items()) for clause in cond)
+    if key == "$and":
+        return all(_match_clause(doc, k, v) for clause in cond for k, v in clause.items())
     if isinstance(cond, dict):
         if "$in" in cond:
             return doc.get(key) in cond["$in"]
@@ -38,6 +40,17 @@ def _match_clause(doc: dict, key: str, cond) -> bool:
         if "$regex" in cond:
             val = str(doc.get(key) or "")
             return re.search(cond["$regex"], val, re.IGNORECASE) is not None
+        if "$elemMatch" in cond:
+            elem_cond = cond["$elemMatch"]
+            if not isinstance(elem_cond, dict):
+                return False
+            arr = doc.get(key)
+            if not isinstance(arr, list):
+                return False
+            return any(
+                all(_match_clause(elem, k, v) for k, v in elem_cond.items())
+                for elem in arr
+            )
         return doc.get(key) == cond
     if cond is None and key == "_id":
         return False  # sales-with-no-assignment sentinel: matches nothing
@@ -149,6 +162,7 @@ class _Db:
         self.content_plan = _Collection()
         self.followups = _Collection()
         self.documents = _Collection()
+        self.users = _Collection()
 
 
 @pytest.fixture
@@ -1055,20 +1069,20 @@ async def test_followup_notes_thread_is_append_only_across_roles(db, admin):
     fu_id = ObjectId()
     db.crm_customers.rows = []
     db.followups.rows = [
-        _followup(1, _id=fu_id, notes={"noc": "Existing NOC note"})
+        _followup(1, _id=fu_id, notes={"support": "Existing support note"})
     ]
-    # admin appends into admin thread; NOC thread is untouched, legacy preserved
+    # admin appends into admin thread; support thread is untouched, legacy preserved
     res = await business_routes.followup_notes_add(
         fid=str(fu_id),
-        payload={"text": "Admin follow-up", "author_role": "noc"},  # body role ignored
+        payload={"text": "Admin follow-up", "author_role": "support"},  # body role ignored
         staff=admin,
     )
     assert res["notes"]["admin"][0]["text"] == "Admin follow-up"
     assert res["notes"]["admin"][0]["author_role"] == "admin"
-    # existing NOC (legacy) note still present and not overwritten
-    assert len(res["notes"]["noc"]) == 1
-    assert res["notes"]["noc"][0]["text"] == "Existing NOC note"
-    assert res["notes"]["noc"][0]["legacy"] is True
+    # existing support (legacy) note still present and not overwritten
+    assert len(res["notes"]["support"]) == 1
+    assert res["notes"]["support"][0]["text"] == "Existing support note"
+    assert res["notes"]["support"][0]["legacy"] is True
 
 
 @pytest.mark.anyio
@@ -1119,7 +1133,7 @@ async def test_followup_serialize_includes_notes_and_tags(db, admin):
     assert len(row["notes"]["sales"]) == 1
     assert row["notes"]["sales"][0]["text"] == "Hi"
     assert row["notes"]["sales"][0]["legacy"] is True
-    assert row["notes"]["noc"] == []
+    assert row["notes"]["support"] == []
     assert row["role_tags"] == ["sales"]
 
 
@@ -1151,3 +1165,62 @@ async def test_documents_search_q(db, admin):
     res = await business_routes.docs_list(staff=admin, q="kontrak")
     assert len(res) == 1
     assert "Kontrak" in res[0]["title"]
+
+
+# ============================================================
+# Follow-up structured tags and visibility
+# ============================================================
+@pytest.mark.anyio
+async def test_followups_visibility_requires_matching_tag_or_owner(db):
+    finance_id = ObjectId()
+    other_finance_id = ObjectId()
+    db.followups.rows = [
+        _followup(1, owner_id=str(ObjectId()), tags=[]),
+        _followup(2, owner_id=str(ObjectId()), tags=[
+            {"scope": "role", "value": "finance", "label": "finance"},
+        ]),
+        _followup(3, owner_id=str(ObjectId()), tags=[
+            {"scope": "user", "value": str(finance_id), "label": "Finance A"},
+        ]),
+        _followup(4, owner_id=str(finance_id), tags=[]),
+        _followup(5, owner_id=str(ObjectId()), tags=[
+            {"scope": "user", "value": str(other_finance_id), "label": "Finance B"},
+        ]),
+    ]
+    finance = {"id": str(finance_id), "role": "finance"}
+    res = await business_routes.followups_list(staff=finance)
+    assert {row["task"] for row in res} == {"Follow up 2", "Follow up 3", "Follow up 4"}
+
+
+@pytest.mark.anyio
+async def test_followup_tag_removal_locked_until_done(db, admin):
+    fu_id = ObjectId()
+    original = {"scope": "role", "value": "finance", "label": "finance"}
+    db.followups.rows = [_followup(1, _id=fu_id, tags=[original], role_tags=["finance"])]
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followups_update(
+            fid=str(fu_id), payload={"tags": []}, staff=admin,
+        )
+    assert "400" in str(exc_info.value)
+
+    result = await business_routes.followups_update(
+        fid=str(fu_id), payload={"done": True, "tags": []}, staff=admin,
+    )
+    assert result["done"] is True
+    assert result["tags"] == []
+
+
+@pytest.mark.anyio
+async def test_followups_taggable_staff_excludes_noc(db, admin):
+    finance_id = ObjectId()
+    db.users.rows = [
+        {"_id": finance_id, "name": "Finance A", "email": "finance@example.test", "role": "finance"},
+        {"_id": ObjectId(), "name": "Support A", "email": "support@example.test", "role": "support"},
+        {"_id": ObjectId(), "name": "NOC legacy", "email": "noc@example.test", "role": "noc"},
+    ]
+    result = await business_routes.followups_taggable_staff(staff=admin)
+    assert result["roles"] == ["admin", "finance", "sales", "support"]
+    assert "noc" not in result["staff_by_role"]
+    assert result["staff_by_role"]["finance"] == [{
+        "id": str(finance_id), "name": "Finance A", "email": "finance@example.test", "role": "finance",
+    }]

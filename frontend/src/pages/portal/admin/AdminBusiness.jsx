@@ -710,11 +710,11 @@ export const AdminFollowups = () => {
                   <div className="text-xs text-slate-500">
                     {r.customer_name || "-"} · {r.channel} · due {shortDate(r.due_date) || "no date"}{r.owner ? ` · ${r.owner}` : ""}
                   </div>
-                  {r.role_tags && r.role_tags.length > 0 && (
+                  {(r.tags || r.role_tags || []).length > 0 && (
                     <div className="flex gap-1 mt-1 flex-wrap" data-testid={`fu-list-tags-${r.id}`}>
-                      {r.role_tags.map((tag) => (
-                        <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-[#0a2350]/10 text-[#0a2350]">
-                          {tag}
+                      {(r.tags || (r.role_tags || []).map((role) => ({ scope: "role", value: role, label: role }))).map((t, i) => (
+                        <span key={`${t.scope}:${t.value}:${i}`} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${t.scope === "role" ? "uppercase tracking-wider bg-[#0a2350]/10 text-[#0a2350]" : "bg-amber-100 text-amber-800"}`}>
+                          {t.scope === "role" ? t.label : `@${t.label}`}
                         </span>
                       ))}
                     </div>
@@ -758,7 +758,112 @@ export const AdminFollowups = () => {
   );
 };
 
-const FU_ROLES = ["sales", "noc", "support", "finance", "admin"];
+/* Must mirror _FOLLOWUP_ROLES in backend/portal/routes/business.py.
+   There is no "noc" user role — NOC is a monitoring module, not a role. */
+const FU_ROLES = ["sales", "support", "finance", "admin"];
+
+/* Tag picker: pick a whole role, or specific users inside a role.
+   A role tag makes the task visible to every user in that role; a user tag
+   makes it visible only to that person. */
+const FollowupTagPicker = ({ tags, onChange, lockedValues = [], testid = "fu-tag-picker" }) => {
+  const [staffByRole, setStaffByRole] = useState(null);
+  const [openRole, setOpenRole] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    api.get("/admin/followups/taggable-staff")
+      .then((r) => { if (alive) setStaffByRole(r.data?.staff_by_role || {}); })
+      .catch(() => { if (alive) setStaffByRole({}); });
+    return () => { alive = false; };
+  }, []);
+
+  const has = (scope, value) => tags.some((t) => t.scope === scope && String(t.value) === String(value));
+  const isLocked = (scope, value) => lockedValues.some((l) => l.scope === scope && String(l.value) === String(value));
+
+  const toggle = (scope, value, label) => {
+    if (has(scope, value)) {
+      if (isLocked(scope, value)) return;
+      onChange(tags.filter((t) => !(t.scope === scope && String(t.value) === String(value))));
+    } else {
+      onChange([...tags, { scope, value: String(value), label }]);
+    }
+  };
+
+  return (
+    <div data-testid={testid}>
+      <div className="flex gap-1.5 flex-wrap">
+        {FU_ROLES.map((role) => {
+          const roleOn = has("role", role);
+          const users = (staffByRole || {})[role] || [];
+          const pickedUsers = tags.filter((t) => t.scope === "user" && users.some((u) => u.id === t.value));
+          return (
+            <div key={role} className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenRole((p) => (p === role ? "" : role))}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider ${roleOn || pickedUsers.length ? "bg-[#0a2350] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                data-testid={`fu-tag-role-${role}`}
+              >
+                {role}
+                {pickedUsers.length > 0 && !roleOn && ` (${pickedUsers.length})`}
+                {isLocked("role", role) && " 🔒"}
+              </button>
+              {openRole === role && (
+                <div className="absolute z-20 mt-1 w-60 rounded-xl border border-slate-200 bg-white shadow-lg p-1 max-h-64 overflow-y-auto" data-testid={`fu-tag-menu-${role}`}>
+                  <button
+                    type="button"
+                    onClick={() => toggle("role", role, role)}
+                    disabled={roleOn && isLocked("role", role)}
+                    className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-bold ${roleOn ? "bg-[#0a2350] text-white" : "hover:bg-slate-100 text-slate-700"} disabled:opacity-50`}
+                    data-testid={`fu-tag-all-${role}`}
+                  >
+                    {roleOn ? "✓ " : ""}All User on {role.toUpperCase()}
+                    {isLocked("role", role) ? " 🔒" : ""}
+                  </button>
+                  <div className="my-1 border-t border-slate-100" />
+                  {staffByRole === null && <div className="px-2 py-1.5 text-xs text-slate-400">Memuat…</div>}
+                  {staffByRole !== null && users.length === 0 && (
+                    <div className="px-2 py-1.5 text-xs text-slate-400">Belum ada user {role}.</div>
+                  )}
+                  {users.map((u) => {
+                    const on = has("user", u.id);
+                    return (
+                      <button
+                        key={u.id}
+                        type="button"
+                        onClick={() => toggle("user", u.id, u.name)}
+                        disabled={on && isLocked("user", u.id)}
+                        className={`w-full text-left px-2 py-1.5 rounded-lg text-xs ${on ? "bg-[#0a2350]/10 text-[#0a2350] font-bold" : "hover:bg-slate-100 text-slate-700"} disabled:opacity-50`}
+                        data-testid={`fu-tag-user-${u.id}`}
+                      >
+                        {on ? "✓ " : ""}{u.name}
+                        {isLocked("user", u.id) ? " 🔒" : ""}
+                        <span className="block text-[10px] text-slate-400 font-normal">{u.email}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {tags.length > 0 && (
+        <div className="flex gap-1 mt-2 flex-wrap" data-testid={`${testid}-selected`}>
+          {tags.map((t) => (
+            <span
+              key={`${t.scope}:${t.value}`}
+              className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${t.scope === "role" ? "bg-[#0a2350]/10 text-[#0a2350] uppercase tracking-wider" : "bg-amber-100 text-amber-800"}`}
+            >
+              {t.scope === "role" ? t.label : `@${t.label}`}
+              {isLocked(t.scope, t.value) ? " 🔒" : ""}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 /* Customer picker: server-side CRM search on name / email / phone. */
 const CrmCustomerPicker = ({ value, onPick }) => {
@@ -820,7 +925,7 @@ const CrmCustomerPicker = ({ value, onPick }) => {
 
 const FollowupForm = ({ onClose, onDone }) => {
   const [f, setF] = useState({ customer_id: "", customer_name: "", task: "", channel: "whatsapp", due_date: "" });
-  const [roleTags, setRoleTags] = useState([]);
+  const [tags, setTags] = useState([]);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -828,10 +933,7 @@ const FollowupForm = ({ onClose, onDone }) => {
     e.preventDefault();
     setErr(""); setBusy(true);
     try {
-      const { data } = await api.post("/admin/followups", f);
-      if (roleTags.length) {
-        await api.put(`/admin/followups/${data.id}`, { role_tags: roleTags });
-      }
+      const { data } = await api.post("/admin/followups", { ...f, tags });
       onDone();
     } catch (e2) {
       setErr(e2?.response?.data?.detail || "Gagal menyimpan follow-up");
@@ -849,28 +951,16 @@ const FollowupForm = ({ onClose, onDone }) => {
             onPick={(o) => setF((p) => ({ ...p, customer_id: o?.id || "", customer_name: o?.name || "" }))}
           />
           <div className="text-[11px] text-slate-400 mt-1">
-            Prospect yang dipilih akan otomatis di-assign ke Anda selama 5 hari. Possible partnership tetap shared.
+            Prospect yang dipilih akan otomatis di-assign ke Anda selama 5 hari. Partnership tetap shared.
           </div>
         </div>
         <label><div className={labelClass}>Channel</div><select value={f.channel} onChange={(e) => setF({ ...f, channel: e.target.value })} className={inputClass}><option>whatsapp</option><option>call</option><option>email</option><option>meeting</option></select></label>
         <label><div className={labelClass}>Due date</div><input type="date" value={f.due_date} onChange={(e) => setF({ ...f, due_date: e.target.value })} className={inputClass} required /></label>
         <div className="col-span-2">
-          <div className={labelClass}>Tag role</div>
-          <div className="flex gap-1.5 flex-wrap" data-testid="fu-role-tags">
-            {FU_ROLES.map((role) => {
-              const on = roleTags.includes(role);
-              return (
-                <button
-                  key={role}
-                  type="button"
-                  onClick={() => setRoleTags((p) => on ? p.filter((x) => x !== role) : [...p, role])}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider ${on ? "bg-[#0a2350] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
-                  data-testid={`fu-tag-${role}`}
-                >
-                  {role}
-                </button>
-              );
-            })}
+          <div className={labelClass}>Tag role / user</div>
+          <FollowupTagPicker tags={tags} onChange={setTags} />
+          <div className="text-[11px] text-slate-400 mt-1">
+            Tag menentukan siapa yang bisa melihat task ini. Role = semua user di role tersebut. User = orang spesifik. Tag tidak bisa dihapus sebelum task selesai.
           </div>
         </div>
         <div className="col-span-2 flex justify-end gap-2 mt-2">
@@ -886,7 +976,7 @@ const FollowupForm = ({ onClose, onDone }) => {
 const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
   const [notes, setNotes] = useState(fu.notes || {});
   const [noteDraft, setNoteDraft] = useState("");
-  const [roleTags, setRoleTags] = useState(fu.role_tags || []);
+  const [tags, setTags] = useState(fu.tags || (fu.role_tags || []).map((r) => ({ scope: "role", value: r, label: r })));
   const [approvals, setApprovals] = useState(fu.approvals || []);
   const [targetRole, setTargetRole] = useState("finance");
   const [message, setMessage] = useState("");
@@ -894,11 +984,15 @@ const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
   const [busy, setBusy] = useState(false);
   const myRole = (currentUser?.role || "").toLowerCase();
   const canPostNote = FU_ROLES.includes(myRole);
+  const isUnlocked = fu.done || fu.deal_action === "close_deal";
+  // Tags that were present when the detail opened — these are locked from removal
+  // until the task is marked done or close-deal.
+  const lockedTags = isUnlocked ? [] : (fu.tags || (fu.role_tags || []).map((r) => ({ scope: "role", value: r, label: r })));
 
   const saveTask = async () => {
     setErr(""); setBusy(true);
     try {
-      await api.put(`/admin/followups/${fu.id}`, { role_tags: roleTags });
+      await api.put(`/admin/followups/${fu.id}`, { tags });
       onDone();
     } catch (e) {
       setErr(e?.response?.data?.detail || "Gagal menyimpan perubahan");
@@ -958,23 +1052,11 @@ const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
         )}
 
         <div>
-          <div className={labelClass}>Tag role</div>
-          <div className="flex gap-1.5 flex-wrap">
-            {FU_ROLES.map((role) => {
-              const on = roleTags.includes(role);
-              return (
-                <button
-                  key={role}
-                  type="button"
-                  onClick={() => setRoleTags((p) => on ? p.filter((x) => x !== role) : [...p, role])}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider ${on ? "bg-[#0a2350] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
-                  data-testid={`fu-detail-tag-${role}`}
-                >
-                  {role}
-                </button>
-              );
-            })}
-          </div>
+          <div className={labelClass}>Tag role / user</div>
+          <FollowupTagPicker tags={tags} onChange={setTags} lockedValues={lockedTags} testid="fu-detail-tag-picker" />
+          {!isUnlocked && tags.length > 0 && (
+            <div className="text-[11px] text-amber-600 mt-1">Tag terkunci: tidak bisa dihapus sebelum task selesai (done / close deal).</div>
+          )}
         </div>
 
         <div>
