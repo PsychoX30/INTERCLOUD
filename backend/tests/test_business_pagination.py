@@ -1224,3 +1224,78 @@ async def test_followups_taggable_staff_excludes_noc(db, admin):
     assert result["staff_by_role"]["finance"] == [{
         "id": str(finance_id), "name": "Finance A", "email": "finance@example.test", "role": "finance",
     }]
+
+
+@pytest.mark.anyio
+async def test_close_deal_link_is_absolute_and_not_double_portal(db, admin, monkeypatch):
+    """The close-deal registration link must be a full absolute URL to the
+    public portal register page, with exactly one /portal segment (no bare
+    relative path, no doubled /portal/portal)."""
+    monkeypatch.delenv("PORTAL_FRONTEND_URL", raising=False)
+    fu_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [_crm(1, _id=crm_id, status="assigned", assigned_to=ObjectId())]
+    db.followups.rows = [_followup(1, _id=fu_id, customer_id=crm_id)]
+    res = await business_routes.followup_close_deal(fid=str(fu_id), staff=admin)
+    link = res["deal_registration_link"]
+    assert link.startswith("https://"), f"link not absolute: {link}"
+    assert link.count("/portal") == 1, f"portal segment count wrong: {link}"
+    assert "/portal/register?crm_token=" in link, f"wrong register path: {link}"
+
+
+@pytest.mark.anyio
+async def test_close_deal_link_respects_env_override(db, admin, monkeypatch):
+    """When PORTAL_FRONTEND_URL is set, it is used verbatim as the base."""
+    monkeypatch.setenv("PORTAL_FRONTEND_URL", "https://portal.example.id")
+    fu_id = ObjectId()
+    crm_id = ObjectId()
+    db.crm_customers.rows = [_crm(1, _id=crm_id, status="assigned", assigned_to=ObjectId())]
+    db.followups.rows = [_followup(1, _id=fu_id, customer_id=crm_id)]
+    res = await business_routes.followup_close_deal(fid=str(fu_id), staff=admin)
+    link = res["deal_registration_link"]
+    assert link.startswith("https://portal.example.id/portal/register?crm_token="), link
+
+
+@pytest.mark.anyio
+async def test_followups_delete_denied_for_sales(db):
+    """Sales must not be able to delete follow-ups; only admin/owner/support."""
+    fu_id = ObjectId()
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    sales = {"id": str(ObjectId()), "role": "sales", "assigned_client_ids": []}
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followups_delete(fid=str(fu_id), staff=sales)
+    assert "403" in str(exc_info.value)
+    # Row still present (not deleted)
+    assert await db.followups.find_one({"_id": fu_id}) is not None
+
+
+@pytest.mark.anyio
+async def test_followups_delete_denied_for_finance(db):
+    """Finance must not be able to delete follow-ups either."""
+    fu_id = ObjectId()
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    finance = {"id": str(ObjectId()), "role": "finance"}
+    with pytest.raises(Exception) as exc_info:
+        await business_routes.followups_delete(fid=str(fu_id), staff=finance)
+    assert "403" in str(exc_info.value)
+    assert await db.followups.find_one({"_id": fu_id}) is not None
+
+
+@pytest.mark.anyio
+async def test_followups_delete_allowed_for_support(db):
+    """Support is explicitly allowed to delete follow-ups."""
+    fu_id = ObjectId()
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    support = {"id": str(ObjectId()), "role": "support"}
+    res = await business_routes.followups_delete(fid=str(fu_id), staff=support)
+    assert res["deleted"] == 1
+    assert await db.followups.find_one({"_id": fu_id}) is None
+
+
+@pytest.mark.anyio
+async def test_followups_delete_allowed_for_admin(db, admin):
+    """Admin is allowed to delete follow-ups."""
+    fu_id = ObjectId()
+    db.followups.rows = [_followup(1, _id=fu_id)]
+    res = await business_routes.followups_delete(fid=str(fu_id), staff=admin)
+    assert res["deleted"] == 1

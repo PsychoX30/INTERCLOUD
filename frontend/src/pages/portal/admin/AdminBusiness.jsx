@@ -736,7 +736,7 @@ export const AdminFollowups = () => {
                 {!r.done && !r.deal_action && (
                   <button onClick={() => closeDeal(r.id)} className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100" title="Close Deal">Close Deal</button>
                 )}
-                {(user?.role === "admin" || user?.role === "owner" || user?.role === "support") && (
+                {["admin", "owner", "support"].includes(String(user?.role || "").toLowerCase()) && (
                   <button onClick={() => del(r.id)} className="text-slate-400 hover:text-red-600"><Trash2 className="h-4 w-4" /></button>
                 )}
               </div>
