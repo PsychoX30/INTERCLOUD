@@ -185,6 +185,89 @@ def _selection_extras(prod: dict, selections: list) -> dict:
     return extras
 
 
+def _match_whm_package(requested: Optional[str], available: list) -> Optional[str]:
+    """Resolve a catalog package to the actual WHM package name.
+
+    Reseller-owned packages are commonly prefixed by WHM (for example,
+    ``reseller_starter``). Exact matches win. A suffix match is accepted only
+    at an underscore boundary and only when it is unambiguous.
+    """
+    want = str(requested or "").strip().lower()
+    packages = [str(p).strip() for p in (available or []) if str(p).strip()]
+    if not want or not packages:
+        return None
+    exact = [p for p in packages if p.lower() == want]
+    if exact:
+        return exact[0]
+    suffix = [p for p in packages if p.lower().endswith("_" + want)]
+    return suffix[0] if len(suffix) == 1 else None
+
+
+def _resolve_hosting_config(prod: dict, order_cfg: dict) -> dict:
+    """Build the stable hosting provisioning contract from product + order.
+
+    Product defaults live in ``product.provision``. Per-order ``package`` and
+    ``domain`` remain supported for backwards compatibility.
+    """
+    provision = prod.get("provision") if isinstance(prod.get("provision"), dict) else {}
+    cfg = order_cfg if isinstance(order_cfg, dict) else {}
+    nameservers = provision.get("nameservers") or []
+    if not isinstance(nameservers, list):
+        nameservers = []
+    return {
+        "package": (cfg.get("package") or provision.get("package") or None),
+        "domain": (cfg.get("domain") or "").strip(),
+        "domain_policy": provision.get("domain_policy") or "subdomain",
+        "subdomain_suffix": provision.get("subdomain_suffix") or "",
+        "nameservers": [str(v).strip() for v in nameservers if str(v).strip()],
+        "set_registrar_ns": provision.get("set_registrar_ns") is True,
+    }
+
+
+def _generate_whm_username(email: str) -> str:
+    """Create a cPanel-compatible, deterministic base username (max 8 chars)."""
+    local = str(email or "").split("@", 1)[0].lower()
+    username = re.sub(r"[^a-z0-9]", "", local)[:8] or "icduser"
+    if username[0].isdigit():
+        username = "u" + username[:7]
+    return username
+
+
+async def _generate_unique_whm_username(cp, email: str, max_tries: int = 20) -> str:
+    """Find an available WHM username without racing through arbitrary names."""
+    base = _generate_whm_username(email)
+    last_reason = "taken"
+    for attempt in range(max_tries):
+        suffix = "" if attempt == 0 else str(attempt)
+        candidate = base[:8 - len(suffix)] + suffix
+        result = await cp.verify_username(candidate)
+        if result.get("available"):
+            return candidate
+        last_reason = result.get("reason") or last_reason
+    raise RuntimeError(f"WHM username taken setelah {max_tries} percobaan: {last_reason}")
+
+
+def _resolve_hosting_domain(hosting_cfg: dict, order_cfg: dict, *, username: str,
+                            server_settings: dict) -> str:
+    """Resolve and validate the account domain from the configured policy."""
+    policy = hosting_cfg.get("domain_policy") or "subdomain"
+    if policy == "customer_domain":
+        domain = str((order_cfg or {}).get("domain") or hosting_cfg.get("domain") or "").strip().lower()
+        if not domain:
+            raise ValueError("customer domain required untuk produk hosting ini")
+    elif policy == "subdomain":
+        suffix = (hosting_cfg.get("subdomain_suffix") or
+                  (server_settings.get("options") or {}).get("subdomain_suffix") or
+                  "icd-cust.net")
+        domain = f"{username}.{str(suffix).strip().strip('.').lower()}"
+    else:
+        raise ValueError(f"domain policy tidak didukung: {policy}")
+    if (len(domain) > 253 or not re.fullmatch(
+            r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", domain)):
+        raise ValueError("domain hosting tidak valid")
+    return domain
+
+
 async def _order_resource_extras(db, order: dict, prod: dict) -> dict:
     """Total extra resource order: opsi konfigurasi + add-on (field provision add-on)."""
     extras = _selection_extras(prod, order.get("selections") or [])
@@ -243,7 +326,8 @@ async def _auto_provision(db, order: dict) -> dict:
 
     hosting_credentials = None
     if cat in ("hosting",):
-        # Live provisioning cPanel/Plesk/DirectAdmin bila integrasi aktif; fallback mock.
+        # Live provisioning cPanel/Plesk/DirectAdmin bila integrasi aktif.
+        hosting_cfg = _resolve_hosting_config(prod, cfg)
         _PANELS = [
             ("cpanel", "cPanel/WHM", iv2.CpanelClient, "package"),
             ("plesk", "Plesk", iv2.PleskClient, "plan"),
@@ -253,32 +337,51 @@ async def _auto_provision(db, order: dict) -> dict:
         for key, label, cls, pkg_kw in _PANELS:
             if key == "cpanel":
                 # Multi-server WHM: pick best node via registry, fallback legacy
-                pkg_name = cfg.get("package") or ""
+                pkg_name = hosting_cfg.get("package") or ""
                 s, report = await _pick_cp_server(db, package_name=pkg_name)
                 if s:
-                    chosen = (key, label, cls, pkg_kw, s)
+                    # Prefer the report row for the chosen node; fall back to any
+                    # row that resolved a package, then to the requested name.
+                    # Never silently fall through to None, which would make WHM
+                    # apply its own default package.
+                    resolved_pkg = (
+                        next((r.get("resolved_package") for r in report
+                              if r.get("server_id") == s.get("server_id")
+                              and r.get("resolved_package")), None)
+                        or next((r.get("resolved_package") for r in report
+                                 if r.get("resolved_package")), None)
+                        or (pkg_name or None)
+                    )
+                    chosen = (key, label, cls, pkg_kw, s, resolved_pkg)
                     break
             else:
                 s = await iv2.get_settings(db, key)
                 if s and s.get("enabled"):
-                    chosen = (key, label, cls, pkg_kw, s)
+                    chosen = (key, label, cls, pkg_kw, s, hosting_cfg.get("package"))
                     break
         if chosen:
-            key, panel_label, cls, pkg_kw, settings = chosen
-            domain = cfg.get("domain") or f"{order['user_email'].split('@')[0]}.icd-cust.net"
-            uname = re.sub(r"[^a-z0-9]", "", order["user_email"].split("@")[0].lower())[:8] or "icduser"
-            if uname[0].isdigit():
-                uname = "u" + uname[:7]
+            key, panel_label, cls, pkg_kw, settings, resolved_package = chosen
+            panel_client = cls(settings)
+            if key == "cpanel":
+                uname = await _generate_unique_whm_username(panel_client, order["user_email"])
+            else:
+                uname = _generate_whm_username(order["user_email"])
+            domain = _resolve_hosting_domain(hosting_cfg, cfg, username=uname,
+                                             server_settings=settings)
             pw_alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%"
             password = "".join(secrets.choice(pw_alphabet) for _ in range(16))
             try:
-                await cls(settings).create_account(
+                await panel_client.create_account(
                     domain=domain, username=uname, password=password,
-                    contact_email=order["user_email"], **{pkg_kw: cfg.get("package") or None})
+                    contact_email=order["user_email"], **{pkg_kw: resolved_package})
                 cfg.update({"control_panel": panel_label, "domain": domain,
                             "username": uname, "provision_status": "provisioned",
                             "provisioned_at": _now(),
-                            "server_id": settings.get("server_id") or ""})
+                            "server_id": settings.get("server_id") or "",
+                            "server_name": settings.get("name") or "",
+                            "whm_package": resolved_package or "",
+                            "nameservers": hosting_cfg.get("nameservers") or [],
+                            "set_registrar_ns": hosting_cfg.get("set_registrar_ns") is True})
                 await _log("panel_account_created",
                            f"{panel_label} account '{uname}' created for {domain} (live).")
                 bare_host = re.sub(r"^https?://", "", (settings.get("credentials") or {}).get("host") or "").split(":")[0].split("/")[0]
@@ -1356,6 +1459,114 @@ async def admin_provision_hosting_account(payload: dict, admin=Depends(require_r
     return {"ok": True, "panel": label, "domain": payload["domain"], "username": payload["username"]}
 
 
+async def _hosting_service_for_lifecycle(db, sid: str) -> tuple:
+    try:
+        service_id = _oid(sid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Hosting service not found")
+    svc = await db.services.find_one({"_id": service_id})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Hosting service not found")
+    if svc.get("category") != "hosting":
+        raise HTTPException(status_code=400, detail="Service bukan layanan hosting")
+    username = ((svc.get("config") or {}).get("username") or "").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username hosting belum tersimpan")
+    settings = await _cp_settings_for_service(db, svc)
+    if not settings:
+        raise HTTPException(status_code=400, detail="WHM server untuk service ini tidak ditemukan")
+    return svc, username, iv2.CpanelClient(settings)
+
+
+@router.post("/admin/hosting/{sid}/suspend")
+async def admin_hosting_suspend(sid: str, payload: dict,
+                                admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    svc, username, cp = await _hosting_service_for_lifecycle(db, sid)
+    reason = (payload.get("reason") or "Suspended by administrator").strip()
+    try:
+        await cp.suspend_account(username, reason)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"WHM suspend gagal: {str(e)[:180]}")
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+        "status": "suspended", "config.provision_status": "suspended",
+        "config.suspended_at": _now(), "config.suspend_reason": reason}})
+    return {"ok": True, "status": "suspended"}
+
+
+@router.post("/admin/hosting/{sid}/unsuspend")
+async def admin_hosting_unsuspend(sid: str, payload: dict = {},
+                                  admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    svc, username, cp = await _hosting_service_for_lifecycle(db, sid)
+    try:
+        await cp.unsuspend_account(username)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"WHM unsuspend gagal: {str(e)[:180]}")
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+        "status": "active", "config.provision_status": "provisioned",
+        "config.unsuspended_at": _now()}, "$unset": {"config.suspend_reason": ""}})
+    return {"ok": True, "status": "active"}
+
+
+@router.post("/admin/hosting/{sid}/terminate")
+async def admin_hosting_terminate(sid: str, payload: dict,
+                                  admin=Depends(require_roles("admin", "support"))):
+    if payload.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="confirm=true wajib untuk terminasi permanen")
+    db = await _get_db()
+    svc, username, cp = await _hosting_service_for_lifecycle(db, sid)
+    try:
+        await cp.remove_account(username)
+    except Exception as e:
+        await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+            "config.provision_status": "termination_pending",
+            "config.termination_error": str(e)[:180]}})
+        raise HTTPException(status_code=502, detail=f"WHM terminate gagal: {str(e)[:180]}")
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+        "status": "terminated", "config.provision_status": "terminated",
+        "config.terminated_at": _now()}, "$unset": {"config.termination_error": ""}})
+    return {"ok": True, "status": "terminated"}
+
+
+@router.post("/admin/hosting/{sid}/password")
+async def admin_hosting_password(sid: str, payload: dict,
+                                 admin=Depends(require_roles("admin", "support"))):
+    password = payload.get("new_password") or ""
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password baru minimal 8 karakter")
+    db = await _get_db()
+    _svc, username, cp = await _hosting_service_for_lifecycle(db, sid)
+    try:
+        await cp.change_password(username, password)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"WHM password reset gagal: {str(e)[:180]}")
+    return {"ok": True}
+
+
+@router.post("/admin/hosting/{sid}/package")
+async def admin_hosting_package(sid: str, payload: dict,
+                                admin=Depends(require_roles("admin", "support"))):
+    requested = (payload.get("package") or "").strip()
+    if not requested:
+        raise HTTPException(status_code=400, detail="Package wajib diisi")
+    db = await _get_db()
+    svc, username, cp = await _hosting_service_for_lifecycle(db, sid)
+    try:
+        available = await cp.list_packages()
+        resolved = _match_whm_package(requested, available)
+        if not resolved:
+            raise HTTPException(status_code=400, detail="Package tidak ditemukan atau ambigu di WHM server")
+        await cp.change_package(username, resolved)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"WHM package change gagal: {str(e)[:180]}")
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
+        "config.whm_package": resolved, "config.package_changed_at": _now()}})
+    return {"ok": True, "package": resolved}
+
+
 @router.get("/admin/proxmox/templates")
 async def admin_proxmox_templates(admin=Depends(require_roles("admin", "support"))):
     """LIVE list of clone templates on the Proxmox cluster + the configured VMID."""
@@ -1462,11 +1673,14 @@ async def _pick_cp_server(db, *, package_name: str = "") -> tuple:
         max_acct = int((s.get("options") or {}).get("max_accounts") or 0)
         current = int(cap.get("accounts") or 0)
         slots = max_acct - current if max_acct > 0 else 999999
-        has_pkg = (not package_name) or (package_name in cap.get("packages", []))
+        resolved_pkg = (_match_whm_package(package_name, cap.get("packages", []))
+                        if package_name else None)
+        has_pkg = (not package_name) or bool(resolved_pkg)
         entry = {"server": s.get("name", ""), "server_id": s.get("server_id", ""),
                  "ok": cap.get("ok"), "error": cap.get("error"),
                  "accounts": current, "max_accounts": max_acct, "slots": slots,
-                 "has_package": has_pkg, "loadavg": cap.get("loadavg", {})}
+                 "has_package": has_pkg, "resolved_package": resolved_pkg,
+                 "loadavg": cap.get("loadavg", {})}
         report.append(entry)
         if not cap.get("ok") or slots <= 0 or not has_pkg:
             continue
