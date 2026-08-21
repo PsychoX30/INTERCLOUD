@@ -1364,9 +1364,9 @@ async def followup_close_deal(fid: str, staff=Depends(get_current_staff)):
     if not crm:
         raise HTTPException(status_code=404, detail="Customer CRM tidak ditemukan")
     token = _make_crm_registration_token(str(cust_id))
-    frontend_base = (os.environ.get("PORTAL_FRONTEND_URL") or "").rstrip("/")
-    path = f"/register?crm_token={quote(token)}"
-    link = f"{frontend_base}{path}" if frontend_base else path
+    frontend_base = (os.environ.get("PORTAL_FRONTEND_URL") or "https://intercloud-digital.com/portal").rstrip("/")
+    path = f"/portal/register?crm_token={quote(token)}"
+    link = f"{frontend_base}{path}"
     now = _now()
     update = {
         "deal_action": "close_deal",
@@ -1468,6 +1468,8 @@ async def followup_approval_respond(fid: str, aid: str, payload: dict,
 
 @router.delete("/admin/followups/{fid}")
 async def followups_delete(fid: str, staff=Depends(get_current_staff)):
+    if staff.get("role") not in {"admin", "owner", "support"}:
+        raise HTTPException(status_code=403, detail="Only admin, owner, and support can delete follow-ups")
     db = await _get_db()
     await _assert_sales_can_touch_followup(db, staff, fid)
     r = await db.followups.delete_one({"_id": _oid(fid)})

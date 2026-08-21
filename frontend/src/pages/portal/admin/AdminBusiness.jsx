@@ -736,7 +736,9 @@ export const AdminFollowups = () => {
                 {!r.done && !r.deal_action && (
                   <button onClick={() => closeDeal(r.id)} className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100" title="Close Deal">Close Deal</button>
                 )}
-                <button onClick={() => del(r.id)} className="text-slate-400 hover:text-red-600"><Trash2 className="h-4 w-4" /></button>
+                {(user?.role === "admin" || user?.role === "owner" || user?.role === "support") && (
+                  <button onClick={() => del(r.id)} className="text-slate-400 hover:text-red-600"><Trash2 className="h-4 w-4" /></button>
+                )}
               </div>
             ))}
           </div>
@@ -1047,7 +1049,22 @@ const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
         {fu.deal_registration_link && (
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
             <div className="text-[11px] font-bold uppercase tracking-widest text-emerald-700 mb-1">Link registrasi close-deal</div>
-            <div className="text-xs break-all text-slate-700" data-testid="fu-deal-link">{fu.deal_registration_link}</div>
+            <div className="text-xs break-all text-slate-700 mb-2" data-testid="fu-deal-link">{fu.deal_registration_link}</div>
+            <button
+              type="button"
+              data-testid="fu-copy-deal-link"
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(fu.deal_registration_link);
+                  setErr("");
+                } catch {
+                  setErr("Gagal menyalin link");
+                }
+              }}
+            >
+              Salin Link
+            </button>
           </div>
         )}
 
