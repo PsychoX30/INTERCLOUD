@@ -193,7 +193,11 @@ const ServiceDetailModal = ({ serviceId, onClose }) => {
               <div className="text-xs text-slate-500">{d.user?.email}{d.user?.company ? ` - ${d.user.company}` : ""}</div>
             </Card>
 
-            <ServiceLifecycleCard d={d} serviceId={serviceId} onChanged={load} />
+            {d.category === "hosting" ? (
+              <HostingLifecycleCard d={d} serviceId={serviceId} onChanged={load} />
+            ) : (
+              <ServiceLifecycleCard d={d} serviceId={serviceId} onChanged={load} />
+            )}
 
             <Card className="p-4">
               <div className="text-sm font-extrabold text-[#0a2350] mb-2">Provisioning config</div>
@@ -363,6 +367,191 @@ const ServiceLifecycleCard = ({ d, serviceId, onChanged }) => {
       )}
       {msg && (
         <div className={`mt-2 text-xs rounded-lg px-2.5 py-1.5 border ${msg.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`} data-testid="lifecycle-msg">
+          {msg.text}
+        </div>
+      )}
+    </Card>
+  );
+};
+
+const HostingLifecycleCard = ({ d, serviceId, onChanged }) => {
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newPackage, setNewPackage] = useState("");
+  const cfg = d.config || {};
+  const username = cfg.username || "-";
+  const currentPackage = cfg.whm_package || cfg.package || "-";
+
+  const run = async (fn, label) => {
+    setBusy(label); setMsg(null);
+    try {
+      const { data } = await fn();
+      setMsg({ ok: true, text: data?.message ? `${label} berhasil: ${data.message}` : `${label} berhasil.` });
+      onChanged && onChanged();
+    } catch (e) {
+      setMsg({ ok: false, text: e?.response?.data?.detail || `${label} gagal` });
+    } finally { setBusy(""); }
+  };
+
+  const isSuspended = d.status === "suspended";
+  const isTerminated = d.status === "terminated";
+
+  if (isTerminated) {
+    return (
+      <Card className="p-4" data-testid="hosting-lifecycle-card">
+        <div className="text-sm font-extrabold text-[#0a2350] mb-2">Hosting lifecycle</div>
+        <p className="text-xs font-semibold text-red-700">Layanan sudah diterminasi permanen.</p>
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <div className="text-[10px] font-bold uppercase text-slate-500">Username WHM</div>
+            <div className="mt-1 font-mono text-[#0a2350]">{username}</div>
+          </div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <div className="text-[10px] font-bold uppercase text-slate-500">Package WHM</div>
+            <div className="mt-1 font-mono text-[#0a2350]">{currentPackage}</div>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-4" data-testid="hosting-lifecycle-card">
+      <div className="text-sm font-extrabold text-[#0a2350] mb-2">Hosting lifecycle</div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <div className="text-[10px] font-bold uppercase text-slate-500">Username WHM</div>
+          <div className="mt-1 font-mono text-[#0a2350]">{username}</div>
+        </div>
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <div className="text-[10px] font-bold uppercase text-slate-500">Package WHM</div>
+          <div className="mt-1 font-mono text-[#0a2350]">{currentPackage}</div>
+        </div>
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <div className="text-[10px] font-bold uppercase text-slate-500">Status</div>
+          <div className="mt-1">
+            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${isSuspended ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
+              {isSuspended ? "Suspended" : "Active"}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {isSuspended ? (
+        <div className="mb-3">
+          {d.config?.suspend_reason && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+              Disuspend: {d.config.suspend_reason}
+            </p>
+          )}
+          <button
+            data-testid="hosting-unsuspend-btn"
+            onClick={() => run(() => api.post(`/admin/hosting/${serviceId}/unsuspend`), "Unsuspend")}
+            disabled={!!busy}
+            className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold disabled:opacity-50"
+          >
+            {busy === "Unsuspend" ? "Memproses..." : "Aktifkan kembali (Unsuspend)"}
+          </button>
+        </div>
+      ) : (
+        <div className="mb-3 space-y-2">
+          <input
+            data-testid="hosting-suspend-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Alasan suspend (mis. toleransi telat bayar)"
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          />
+          <button
+            data-testid="hosting-suspend-btn"
+            onClick={() => run(() => api.post(`/admin/hosting/${serviceId}/suspend`, { reason }), "Suspend")}
+            disabled={!!busy}
+            className="px-3 py-2 rounded-lg bg-amber-600 text-white text-xs font-bold disabled:opacity-50"
+          >
+            {busy === "Suspend" ? "Memproses..." : "Suspend layanan"}
+          </button>
+        </div>
+      )}
+
+      <div className="mt-3 border-t border-slate-200 pt-3 space-y-3">
+        <div>
+          <div className="text-xs font-bold uppercase text-slate-500 mb-1">Ganti password cPanel</div>
+          <div className="flex items-center gap-2">
+            <input
+              data-testid="hosting-password-input"
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Password baru (min 8 karakter)"
+              className="flex-1 h-9 rounded-lg border border-slate-300 px-3 text-sm"
+            />
+            <button
+              data-testid="hosting-password-btn"
+              onClick={() => run(() => api.post(`/admin/hosting/${serviceId}/password`, { new_password: newPassword }), "Ganti password")}
+              disabled={!!busy || newPassword.length < 8}
+              className="px-3 py-2 rounded-lg bg-[#0a2350] text-white text-xs font-bold disabled:opacity-50 whitespace-nowrap"
+            >
+              {busy === "Ganti password" ? "Memproses..." : "Ganti password"}
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-bold uppercase text-slate-500 mb-1">Ganti package WHM</div>
+          <div className="flex items-center gap-2">
+            <input
+              data-testid="hosting-package-input"
+              value={newPackage}
+              onChange={(e) => setNewPackage(e.target.value)}
+              placeholder="Nama package WHM (mis. starter, business)"
+              className="flex-1 h-9 rounded-lg border border-slate-300 px-3 text-sm"
+            />
+            <button
+              data-testid="hosting-package-btn"
+              onClick={() => run(() => api.post(`/admin/hosting/${serviceId}/package`, { package: newPackage }), "Ganti package")}
+              disabled={!!busy || !newPackage.trim()}
+              className="px-3 py-2 rounded-lg bg-[#f5b120] text-[#0a2350] text-xs font-bold disabled:opacity-50 whitespace-nowrap"
+            >
+              {busy === "Ganti package" ? "Memproses..." : "Ganti package"}
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-xl border-2 border-red-200 bg-red-50/40 p-3">
+          <div className="text-xs font-extrabold text-red-800 mb-2">Terminasi permanen</div>
+          <p className="text-[11px] text-red-700 mb-2">
+            Aksi ini menghapus akun cPanel secara permanen via WHM <code>removeacct</code> dan tidak bisa dibatalkan.
+          </p>
+          <input
+            data-testid="hosting-terminate-note"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Konfirmasi: ketik 'terminate' untuk melanjutkan"
+            className="w-full rounded-lg border border-red-200 px-3 py-1.5 text-xs"
+          />
+          <button
+            data-testid="hosting-terminate-btn"
+            onClick={() => {
+              if (note.trim().toLowerCase() !== "terminate") {
+                setMsg({ ok: false, text: "Ketik 'terminate' untuk konfirmasi" });
+                return;
+              }
+              run(() => api.post(`/admin/hosting/${serviceId}/terminate`, { confirm: true }), "Terminasi");
+            }}
+            disabled={!!busy}
+            className="mt-2 px-3 py-2 rounded-lg bg-red-600 text-white text-xs font-bold disabled:opacity-50"
+          >
+            {busy === "Terminasi" ? "Memproses..." : "Terminasi permanen"}
+          </button>
+        </div>
+      </div>
+
+      {msg && (
+        <div className={`mt-2 text-xs rounded-lg px-2.5 py-1.5 border ${msg.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`} data-testid="hosting-lifecycle-msg">
           {msg.text}
         </div>
       )}
