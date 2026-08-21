@@ -10,6 +10,7 @@ import re
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse
 from bson import ObjectId
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -26,7 +27,7 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
-from .provision import _proxmox_settings_for_service  # noqa: E402
+from .provision import _proxmox_settings_for_service, _cp_settings_for_service  # noqa: E402
 from .shared import _get_db, _get_setting_value, _insert_numbered, _mark_overdue, _now, _oid, _serialize_invoice  # noqa: E402
 
 router = APIRouter()
@@ -715,3 +716,101 @@ async def client_service_traffic(sid: str, user=Depends(get_current_user)):
         "peak_in_mbps": max(p["in_mbps"] for p in points),
         "peak_out_mbps": max(p["out_mbps"] for p in points),
     }
+
+
+# ---------------- Client self-service hosting (cPanel) ----------------
+async def _client_hosting_service(db, sid: str, user: dict) -> tuple:
+    """Resolve a hosting service owned by the requesting user + its WHM client.
+
+    Enforces ownership (user_id match), hosting category, active status, and
+    that a WHM username + server affinity exist. Raises HTTPException otherwise.
+    Returns (service_doc, whm_username, CpanelClient).
+    """
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("category") != "hosting":
+        raise HTTPException(status_code=400, detail="Layanan ini bukan hosting")
+    if svc.get("status") == "terminated":
+        raise HTTPException(status_code=403, detail="Layanan sudah diterminasi.")
+    if svc.get("status") == "suspended":
+        raise HTTPException(status_code=403,
+                            detail="Layanan ditangguhkan. Lunasi tagihan untuk mengaktifkan kembali.")
+    username = ((svc.get("config") or {}).get("username") or "").strip()
+    if not username:
+        raise HTTPException(status_code=400,
+                            detail="Akun hosting belum terhubung. Hubungi support.")
+    settings = await _cp_settings_for_service(db, svc)
+    if not settings:
+        raise HTTPException(status_code=400,
+                            detail="Integrasi panel hosting belum aktif. Hubungi support.")
+    return svc, username, iv2.CpanelClient(settings)
+
+
+@router.post("/client/services/{sid}/cpanel-sso")
+async def client_cpanel_sso(sid: str, request: Request, user=Depends(get_current_user)):
+    """Return a short-lived cPanel SSO login URL for the service owner.
+
+    SECURITY: the URL is a login capability. It is returned only to the
+    authenticated owner over HTTPS, never persisted to the DB or audit log,
+    and the response carries Cache-Control: no-store.
+    """
+    db = await _get_db()
+    svc, username, cp = await _client_hosting_service(db, sid, user)
+    try:
+        data = await cp.create_sso_session(username)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gagal membuat sesi cPanel: {str(e)[:160]}")
+    url = (data or {}).get("url") or ""
+    if not url:
+        raise HTTPException(status_code=502, detail="WHM tidak mengembalikan URL sesi cPanel.")
+    # Audit the fact of an SSO issuance WITHOUT recording the URL/token.
+    await log_audit(db, actor=user, action="client_hosting.cpanel_sso", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""),
+                    metadata={"whm_username": username}, request=request)
+    # Return URL with explicit no-store header — never persist the URL anywhere.
+    return JSONResponse(
+        content={"url": url},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/client/services/{sid}/reset-password")
+async def client_hosting_reset_password(sid: str, payload: dict, request: Request,
+                                        user=Depends(get_current_user)):
+    """Self-service cPanel password reset for the service owner.
+
+    A strong password is generated server-side, applied via WHM `passwd`, and
+    returned once in the HTTPS response. It is NEVER stored in the DB or audit
+    log; the customer is expected to save it / change it in cPanel.
+    """
+    db = await _get_db()
+    svc, username, cp = await _client_hosting_service(db, sid, user)
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%"
+    password = "".join(secrets.choice(alphabet) for _ in range(16))
+    try:
+        await cp.change_password(username, password)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Reset password gagal: {str(e)[:160]}")
+    # Audit the action WITHOUT the password value.
+    await log_audit(db, actor=user, action="client_hosting.reset_password", category="services",
+                    target_type="service", target_id=str(svc["_id"]),
+                    target_label=svc.get("name", ""),
+                    metadata={"whm_username": username}, severity="warning", request=request)
+    return {"ok": True, "username": username, "generated_password": password,
+            "message": ("Password cPanel berhasil direset. Simpan password ini sekarang - "
+                        "kami tidak menyimpannya. Disarankan menggantinya di cPanel.")}
+
+
+@router.get("/client/services/{sid}/packages")
+async def client_hosting_packages(sid: str, user=Depends(get_current_user)):
+    """List WHM packages available on the service's node, for upgrade UX."""
+    db = await _get_db()
+    svc, _username, cp = await _client_hosting_service(db, sid, user)
+    try:
+        packages = await cp.list_packages()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gagal mengambil paket: {str(e)[:160]}")
+    current = ((svc.get("config") or {}).get("whm_package") or "").strip()
+    return {"packages": packages, "current_package": current}

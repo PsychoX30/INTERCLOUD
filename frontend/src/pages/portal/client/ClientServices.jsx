@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Link as RLink } from "react-router-dom";
 import { api, money, shortDate, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, StatusBadge, EmptyState, btnSecondary } from "../ui";
-import { ServerCog, Cpu, Globe, ArrowRight, Copy, Play, Square, RotateCw, KeyRound, Monitor, X } from "lucide-react";
+import { ServerCog, Cpu, Globe, ArrowRight, Copy, Play, Square, RotateCw, KeyRound, Monitor, X, ExternalLink, PackageSearch } from "lucide-react";
 import RFB from "@novnc/novnc";
 import { VmMetricsPanel } from "./VmMetricsPanel";
 
@@ -393,6 +393,143 @@ const ResetPasswordPanel = ({ serviceId, running }) => {
   );
 };
 
+const HostingControls = ({ service }) => {
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [password, setPassword] = useState("");
+  const [packages, setPackages] = useState(null);
+  const [showReset, setShowReset] = useState(false);
+  const blocked = service.status === "suspended" || service.status === "terminated";
+  const username = service.config?.username || "-";
+  const currentPackage = service.config?.whm_package || "-";
+
+  useEffect(() => {
+    if (blocked) return;
+    api.get(`/client/services/${service.id}/packages`)
+      .then((r) => setPackages(r.data))
+      .catch(() => setPackages(false));
+  }, [service.id, blocked]);
+
+  const openCpanel = async () => {
+    // Open synchronously so browsers do not block the new tab after await.
+    const tab = window.open("", "_blank");
+    if (tab) {
+      tab.opener = null;
+      tab.document.title = "Membuka cPanel...";
+      tab.document.body.textContent = "Membuat sesi cPanel yang aman...";
+    }
+    setBusy("sso");
+    setMsg(null);
+    try {
+      const { data } = await api.post(`/client/services/${service.id}/cpanel-sso`);
+      if (!data?.url) throw new Error("URL sesi cPanel tidak tersedia");
+      if (tab) tab.location.replace(data.url);
+      else window.location.assign(data.url);
+    } catch (e) {
+      if (tab) tab.close();
+      setMsg({ ok: false, text: e?.response?.data?.detail || e.message || "Gagal membuka cPanel." });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const resetPassword = async () => {
+    setBusy("password");
+    setMsg(null);
+    setPassword("");
+    try {
+      const { data } = await api.post(`/client/services/${service.id}/reset-password`, {});
+      setPassword(data.generated_password || "");
+      setMsg({ ok: true, text: "Password berhasil direset. Salin sekarang; portal tidak menyimpannya." });
+      setShowReset(false);
+    } catch (e) {
+      setMsg({ ok: false, text: e?.response?.data?.detail || "Reset password gagal." });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <Card className="p-5" data-testid="hosting-controls">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <div className="text-sm font-extrabold text-[#0a2350]">Hosting management</div>
+          <div className="mt-0.5 text-[11px] text-slate-500">Akun cPanel: <span className="font-mono font-semibold">{username}</span></div>
+        </div>
+        <span className="rounded-full bg-slate-100 border border-slate-200 px-2.5 py-1 text-[10px] font-bold text-slate-600">{currentPackage}</span>
+      </div>
+
+      {blocked && (
+        <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+          {service.status === "suspended" ? "Layanan ditangguhkan. Lunasi tagihan atau hubungi support." : "Layanan telah diterminasi."}
+        </div>
+      )}
+
+      <div className="grid sm:grid-cols-2 gap-2">
+        <button
+          data-testid="hosting-cpanel-sso"
+          className={btnSecondary}
+          disabled={blocked || !!busy}
+          onClick={openCpanel}
+        >
+          <ExternalLink className="h-4 w-4" /> {busy === "sso" ? "Membuka..." : "Masuk ke cPanel"}
+        </button>
+        <button
+          data-testid="hosting-reset-password"
+          className={btnSecondary}
+          disabled={blocked || !!busy}
+          onClick={() => { setShowReset(true); setMsg(null); setPassword(""); }}
+        >
+          <KeyRound className="h-4 w-4" /> Reset password
+        </button>
+      </div>
+
+      {showReset && (
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <div className="text-xs font-bold text-amber-900">Reset password cPanel?</div>
+          <p className="mt-1 text-[11px] text-amber-800">Sesi yang aktif mungkin terputus. Password baru hanya ditampilkan satu kali.</p>
+          <div className="mt-2 flex gap-2">
+            <button data-testid="hosting-reset-confirm" onClick={resetPassword} disabled={!!busy} className="rounded-lg bg-[#0a2350] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+              {busy === "password" ? "Memproses..." : "Ya, reset"}
+            </button>
+            <button onClick={() => setShowReset(false)} disabled={!!busy} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-600">Batal</button>
+          </div>
+        </div>
+      )}
+
+      {password && (
+        <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3" data-testid="hosting-generated-password">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Password baru — tampil sekali</div>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all rounded-lg bg-white px-3 py-2 text-sm font-bold text-[#0a2350]">{password}</code>
+            <button onClick={() => navigator.clipboard.writeText(password)} className="rounded-lg border border-emerald-300 bg-white p-2 text-emerald-700" title="Salin password"><Copy className="h-4 w-4" /></button>
+          </div>
+        </div>
+      )}
+
+      {msg && <p data-testid="hosting-message" className={`mt-3 text-xs font-semibold ${msg.ok ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>}
+
+      <div className="mt-4 border-t border-slate-100 pt-3">
+        <div className="flex items-center gap-2 text-xs font-bold text-[#0a2350]"><PackageSearch className="h-4 w-4" /> Paket pada server ini</div>
+        {packages === null ? (
+          <p className="mt-1 text-[11px] text-slate-400">Memuat paket...</p>
+        ) : packages === false ? (
+          <p className="mt-1 text-[11px] text-slate-500">Daftar paket tidak tersedia.</p>
+        ) : (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {(packages.packages || []).map((pkg) => (
+              <span key={pkg} className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${pkg === packages.current_package ? "border-[#f5b120] bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                {pkg}{pkg === packages.current_package ? " (aktif)" : ""}
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="mt-2 text-[10px] text-slate-400">Upgrade paket harus melalui order agar tagihan dan resource tetap sinkron.</p>
+      </div>
+    </Card>
+  );
+};
+
 const Stepper = ({ label, unit, value, onChange, max, step = 1 }) => (
   <div className="flex items-center justify-between gap-2">
     <span className="text-xs font-semibold text-slate-600 w-16">{label}</span>
@@ -747,12 +884,7 @@ const ServiceDetail = ({ service, onClose }) => {
           <AutoRenewToggle service={s} />
           <TerminateRequestPanel service={s} />
 
-          {isHosting && (
-            <Card className="p-5">
-              <div className="text-sm font-extrabold text-[#0a2350] mb-3">Hosting management</div>
-              <p className="mt-3 text-[11px] text-slate-500">Manajemen hosting (cPanel/Plesk) tampil di sini setelah admin mengaktifkan integrasi panel di portal.</p>
-            </Card>
-          )}
+          {isHosting && <HostingControls service={s} />}
         </div>
       </div>
     </div>
