@@ -500,6 +500,90 @@ class CpanelClient:
             raise RuntimeError(meta.get("reason") or "unsuspendacct failed")
         return meta
 
+    async def remove_account(self, username: str) -> dict:
+        """Remove (terminate) a cPanel account."""
+        data = await self._call("removeacct", {"user": username})
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "removeacct failed")
+        return meta
+
+    async def change_package(self, username: str, package: str) -> dict:
+        """Change hosting package. Parameter is 'pkg', not 'package' (live-verified)."""
+        data = await self._call("changepackage", {"user": username, "pkg": package})
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "changepackage failed")
+        return meta
+
+    async def change_password(self, username: str, password: str) -> dict:
+        """Change account password."""
+        data = await self._call("passwd", {"user": username, "password": password})
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "passwd failed")
+        return meta
+
+    async def account_summary(self, username: str) -> dict:
+        """Get detailed account info."""
+        data = await self._call("accountsummary", {"user": username})
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "accountsummary failed")
+        acct = (data.get("data") or {}).get("acct", [])
+        return acct[0] if acct else {}
+
+    async def count_accounts(self) -> int:
+        """Count total accounts under this WHM user (for capacity calc)."""
+        data = await self._call("listaccts", {})
+        acct = (data.get("data") or {}).get("acct", [])
+        return len(acct)
+
+    async def load_average(self) -> dict:
+        """Get server load. Returns {one, five, fifteen} as strings, no metadata wrapper."""
+        try:
+            data = await self._call("loadavg", {})
+            # loadavg returns raw JSON without metadata wrapper
+            return {
+                "one": float(data.get("one", 0)),
+                "five": float(data.get("five", 0)),
+                "fifteen": float(data.get("fifteen", 0)),
+            }
+        except Exception:
+            return {"one": 0.0, "five": 0.0, "fifteen": 0.0}
+
+    async def verify_username(self, username: str) -> dict:
+        """Verify if username is available. Returns {available: bool, reason: str}."""
+        data = await self._call("verify_new_username", {"user": username})
+        meta = data.get("metadata") or {}
+        available = str(meta.get("result")) == "1"
+        return {"available": available, "reason": meta.get("reason", "")}
+
+    async def create_sso_session(self, username: str, service: str = "cpaneld") -> dict:
+        """Create SSO session URL for customer portal. Returns {url, session, cp_security_token, expires}.
+        SECURITY: Caller MUST sanitize/not-log the URL and never persist it."""
+        data = await self._call("create_user_session", {"user": username, "service": service})
+        meta = data.get("metadata") or {}
+        if str(meta.get("result")) != "1":
+            raise RuntimeError(meta.get("reason") or "create_user_session failed")
+        return data.get("data") or {}
+
+    async def capacity(self) -> dict:
+        """Multi-purpose capacity check: accounts, loadavg, packages.
+        Returns {ok, accounts, loadavg, packages, error}."""
+        try:
+            accounts = await self.count_accounts()
+            load = await self.load_average()
+            packages = await self.list_packages()
+            return {
+                "ok": True,
+                "accounts": accounts,
+                "loadavg": load,
+                "packages": packages,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
 
 class PleskClient:
     """Plesk REST API client - provisioning akun hosting (subscription)."""

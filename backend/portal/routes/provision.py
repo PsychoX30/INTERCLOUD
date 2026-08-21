@@ -251,10 +251,18 @@ async def _auto_provision(db, order: dict) -> dict:
         ]
         chosen = None
         for key, label, cls, pkg_kw in _PANELS:
-            s = await iv2.get_settings(db, key)
-            if s and s.get("enabled"):
-                chosen = (key, label, cls, pkg_kw, s)
-                break
+            if key == "cpanel":
+                # Multi-server WHM: pick best node via registry, fallback legacy
+                pkg_name = cfg.get("package") or ""
+                s, report = await _pick_cp_server(db, package_name=pkg_name)
+                if s:
+                    chosen = (key, label, cls, pkg_kw, s)
+                    break
+            else:
+                s = await iv2.get_settings(db, key)
+                if s and s.get("enabled"):
+                    chosen = (key, label, cls, pkg_kw, s)
+                    break
         if chosen:
             key, panel_label, cls, pkg_kw, settings = chosen
             domain = cfg.get("domain") or f"{order['user_email'].split('@')[0]}.icd-cust.net"
@@ -269,7 +277,8 @@ async def _auto_provision(db, order: dict) -> dict:
                     contact_email=order["user_email"], **{pkg_kw: cfg.get("package") or None})
                 cfg.update({"control_panel": panel_label, "domain": domain,
                             "username": uname, "provision_status": "provisioned",
-                            "provisioned_at": _now()})
+                            "provisioned_at": _now(),
+                            "server_id": settings.get("server_id") or ""})
                 await _log("panel_account_created",
                            f"{panel_label} account '{uname}' created for {domain} (live).")
                 bare_host = re.sub(r"^https?://", "", (settings.get("credentials") or {}).get("host") or "").split(":")[0].split("/")[0]
@@ -1378,6 +1387,213 @@ def _px_server_public(d: dict) -> dict:
             "enabled": d.get("enabled", True) is not False,
             "sort_order": d.get("sort_order", 0),
             "created_at": d.get("created_at", "")}
+
+
+# ---------------- Multi-server WHM/cPanel registry (admin) ----------------
+def _cp_server_to_settings(doc: dict) -> dict:
+    return {
+        "provider": "cpanel",
+        "enabled": bool(doc.get("enabled", True)),
+        "name": doc.get("name") or "Server",
+        "server_id": str(doc.get("_id") or ""),
+        "credentials": {"host": doc.get("host") or "",
+                        "username": doc.get("username") or "",
+                        "api_token": _sb_dec(doc.get("api_token") or ""),
+                        "password": _sb_dec(doc.get("password") or "")},
+        "options": {"max_accounts": int(doc.get("max_accounts") or 0),
+                    "ssl_verify": bool(doc.get("ssl_verify", True))},
+    }
+
+
+def _cp_server_public(d: dict) -> dict:
+    return {"id": str(d["_id"]), "name": d.get("name", ""), "host": d.get("host", ""),
+            "username": d.get("username", ""), "has_api_token": bool(d.get("api_token")),
+            "has_password": bool(d.get("password")),
+            "max_accounts": int(d.get("max_accounts") or 0),
+            "ssl_verify": bool(d.get("ssl_verify", True)),
+            "enabled": d.get("enabled", True) is not False,
+            "sort_order": d.get("sort_order", 0),
+            "created_at": d.get("created_at", "")}
+
+
+async def _cp_servers(db) -> list:
+    """Semua WHM server aktif (multi-server). Bila registry kosong, fallback ke
+    konfigurasi tunggal legacy (Integrations)."""
+    docs = await db.whm_servers.find({"enabled": {"$ne": False}}).sort("sort_order", 1).to_list(50)
+    out = [_cp_server_to_settings(d) for d in docs if d.get("host")]
+    if out:
+        return out
+    legacy = await iv2.get_settings(db, "cpanel")
+    if legacy and legacy.get("enabled"):
+        legacy = dict(legacy)
+        legacy.setdefault("name", "Default")
+        legacy.setdefault("server_id", "legacy")
+        return [legacy]
+    return []
+
+
+async def _cp_settings_by_id(db, server_id: str) -> Optional[dict]:
+    if not server_id or server_id == "legacy":
+        return (await iv2.get_settings(db, "cpanel")) or None
+    try:
+        doc = await db.whm_servers.find_one({"_id": _oid(server_id)})
+    except Exception:
+        doc = None
+    if doc:
+        return _cp_server_to_settings(doc)
+    return (await iv2.get_settings(db, "cpanel")) or None
+
+
+async def _cp_settings_for_service(db, svc: dict) -> Optional[dict]:
+    """Settings WHM server yang menaungi hosting service ini (config.server_id), fallback legacy."""
+    sid = ((svc.get("config") or {}).get("server_id") or "").strip()
+    return await _cp_settings_by_id(db, sid)
+
+
+async def _pick_cp_server(db, *, package_name: str = "") -> tuple:
+    """Placement: pilih WHM server aktif dengan slot terbanyak (max_accounts - current)
+    yang memiliki package_name, tie-breaker loadavg five. Return (settings, report)."""
+    servers = await _cp_servers(db)
+    report = []
+    best = None
+    for s in servers:
+        cp = iv2.CpanelClient(s)
+        cap = await cp.capacity()
+        max_acct = int((s.get("options") or {}).get("max_accounts") or 0)
+        current = int(cap.get("accounts") or 0)
+        slots = max_acct - current if max_acct > 0 else 999999
+        has_pkg = (not package_name) or (package_name in cap.get("packages", []))
+        entry = {"server": s.get("name", ""), "server_id": s.get("server_id", ""),
+                 "ok": cap.get("ok"), "error": cap.get("error"),
+                 "accounts": current, "max_accounts": max_acct, "slots": slots,
+                 "has_package": has_pkg, "loadavg": cap.get("loadavg", {})}
+        report.append(entry)
+        if not cap.get("ok") or slots <= 0 or not has_pkg:
+            continue
+        load_five = (cap.get("loadavg") or {}).get("five", 9999.0)
+        score = (slots, -float(load_five))
+        if best is None or score > best[0]:
+            best = (score, s)
+    if best:
+        return best[1], report
+    return None, report
+
+
+@router.get("/admin/cpanel/servers")
+async def admin_cp_servers_list(staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    docs = await db.whm_servers.find({}).sort("sort_order", 1).to_list(100)
+    return [_cp_server_public(d) for d in docs]
+
+
+@router.get("/admin/cpanel/servers/capacity")
+async def admin_cp_servers_capacity(staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    s, report = await _pick_cp_server(db)
+    best = None
+    if s:
+        best = {"server": s.get("name", ""), "server_id": s.get("server_id", "")}
+    return {"best": best, "report": report}
+
+
+@router.post("/admin/cpanel/servers")
+async def admin_cp_servers_create(payload: dict, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    host = (payload.get("host") or "").strip()
+    if not host:
+        raise HTTPException(status_code=400, detail="Host URL wajib diisi")
+    doc = {"name": (payload.get("name") or "").strip() or host,
+           "host": host,
+           "username": (payload.get("username") or "").strip(),
+           "api_token": _sb_enc((payload.get("api_token") or "").strip()),
+           "password": _sb_enc(payload.get("password") or ""),
+           "max_accounts": int(payload.get("max_accounts") or 0),
+           "ssl_verify": payload.get("ssl_verify", True) is not False,
+           "enabled": payload.get("enabled", True) is not False,
+           "sort_order": int(payload.get("sort_order") or 100),
+           "created_at": _now()}
+    r = await db.whm_servers.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="cpanel_server.create", category="integrations",
+                    target_type="cpanel_server", target_id=str(r.inserted_id),
+                    target_label=doc["name"], request=request)
+    return _cp_server_public(doc)
+
+
+@router.put("/admin/cpanel/servers/{spid}")
+async def admin_cp_servers_update(spid: str, payload: dict, request: Request,
+                                  admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = await db.whm_servers.find_one({"_id": _oid(spid)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Server not found")
+    upd = {}
+    for k in ("name", "host", "username"):
+        if k in payload:
+            upd[k] = (payload.get(k) or "").strip()
+    if (payload.get("api_token") or "").strip():
+        upd["api_token"] = _sb_enc(payload["api_token"].strip())
+    if payload.get("password"):
+        upd["password"] = _sb_enc(payload["password"])
+    if "max_accounts" in payload:
+        upd["max_accounts"] = int(payload.get("max_accounts") or 0)
+    if "ssl_verify" in payload:
+        upd["ssl_verify"] = payload.get("ssl_verify") is not False
+    if "enabled" in payload:
+        upd["enabled"] = payload.get("enabled") is not False
+    if "sort_order" in payload:
+        upd["sort_order"] = int(payload.get("sort_order") or 100)
+    if upd.get("host") == "":
+        raise HTTPException(status_code=400, detail="Host URL wajib diisi")
+    await db.whm_servers.update_one({"_id": doc["_id"]}, {"$set": upd})
+    doc = await db.whm_servers.find_one({"_id": doc["_id"]})
+    await log_audit(db, actor=admin, action="cpanel_server.update", category="integrations",
+                    target_type="cpanel_server", target_id=spid,
+                    target_label=doc.get("name", ""), request=request)
+    return _cp_server_public(doc)
+
+
+@router.delete("/admin/cpanel/servers/{spid}")
+async def admin_cp_servers_delete(spid: str, request: Request, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    doc = await db.whm_servers.find_one({"_id": _oid(spid)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Server not found")
+    await db.whm_servers.delete_one({"_id": doc["_id"]})
+    await log_audit(db, actor=admin, action="cpanel_server.delete", category="integrations",
+                    target_type="cpanel_server", target_id=spid,
+                    target_label=doc.get("name", ""), severity="warning", request=request)
+    return {"ok": True}
+
+
+@router.post("/admin/cpanel/servers/{spid}/test")
+async def admin_cp_servers_test(spid: str, staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    doc = await db.whm_servers.find_one({"_id": _oid(spid)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Server not found")
+    cp = iv2.CpanelClient(_cp_server_to_settings(doc))
+    res = await cp.test_connection()
+    if not res.get("ok"):
+        return {"ok": False, "message": res.get("message", "Connection failed")}
+    cap = await cp.capacity()
+    return {"ok": True, "message": res.get("message", "OK"),
+            "accounts": cap.get("accounts"), "loadavg": cap.get("loadavg"),
+            "packages": cap.get("packages")}
+
+
+@router.get("/admin/cpanel/servers/{spid}/packages")
+async def admin_cp_server_packages(spid: str, staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    doc = await db.whm_servers.find_one({"_id": _oid(spid)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Server not found")
+    cp = iv2.CpanelClient(_cp_server_to_settings(doc))
+    try:
+        packages = await cp.list_packages()
+        return {"packages": packages}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)[:200])
 
 
 @router.get("/admin/proxmox/servers")

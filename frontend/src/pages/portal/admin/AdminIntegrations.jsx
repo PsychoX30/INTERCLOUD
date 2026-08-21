@@ -8,6 +8,7 @@ import {
   Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck, Send, Globe2,
 } from "lucide-react";
 import { ProxmoxServersCard } from "./ProxmoxServersCard";
+import { WhmServersCard } from "./WhmServersCard";
 
 /* Unified Integrations page - replaces the old split "Integrations" + "Real APIs".
    Drives the /admin/integrations-v2 schema (single source of truth). Adds IMAP
@@ -112,6 +113,7 @@ const AdminIntegrations = () => {
                 />
               ))}
               {cat === "virtualization" && <ProxmoxServersCard />}
+              {cat === "provisioning" && <WhmServersCard />}
             </div>
           </div>
         ))}
