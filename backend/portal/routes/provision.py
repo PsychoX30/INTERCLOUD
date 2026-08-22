@@ -282,6 +282,55 @@ async def _order_resource_extras(db, order: dict, prod: dict) -> dict:
     return {k: int(v) for k, v in extras.items()}
 
 
+async def _maybe_update_rna_ns(db, order: dict, domain: str, nameservers: list) -> None:
+    """If nameservers are provided and the customer's domain is registered via
+    RNA.id, push those nameservers to the registrar (best-effort).
+
+    Called after a hosting account is successfully created. Never raises: the
+    hosting account already exists and must not be marked failed if the
+    registrar NS update fails. Writes its own provision_log entries directly.
+    """
+    if not nameservers:
+        return
+    user_id = order.get("user_id")
+    if not domain or not user_id:
+        return
+    s = await iv2.get_settings(db, "rna")
+    if not s or not s.get("enabled"):
+        await _order_log(db, order, "rna_ns_skipped", "Integrasi RNA.id tidak aktif.")
+        return
+    try:
+        user_oid = ObjectId(user_id)
+    except Exception:
+        user_oid = user_id
+    dom = await db.domains.find_one({"domain": domain, "user_id": user_oid})
+    if not dom:
+        await _order_log(db, order, "rna_ns_skipped",
+                         f"Domain {domain} tidak ditemukan di RNA (registrar eksternal).")
+        return
+    order_ref = dom.get("order_ref")
+    if not order_ref:
+        await _order_log(db, order, "rna_ns_skipped",
+                         f"Domain {domain} belum punya order_ref RNA.")
+        return
+    rna = iv2.RdashClient(s)
+    try:
+        await rna.update_ns(order_ref, list(nameservers))
+        await _order_log(db, order, "rna_ns_updated",
+                         f"Nameserver {', '.join(nameservers)} di-update via RNA untuk {domain}.")
+    except Exception as e:
+        await _order_log(db, order, "rna_ns_error",
+                         f"Gagal update nameserver RNA untuk {domain}: {str(e)[:150]}")
+
+
+async def _order_log(db, order: dict, step: str, msg: str) -> None:
+    """Append a provision_log entry for an order."""
+    await db.orders.update_one(
+        {"_id": order["_id"]},
+        {"$push": {"provision_log": {"at": _now(), "step": step, "message": msg}}},
+    )
+
+
 async def _auto_provision(db, order: dict) -> dict:
     """Run auto-provisioning based on product category.
     Uses LIVE integration APIs (cPanel/Plesk/DirectAdmin/Proxmox) when they are
@@ -384,6 +433,9 @@ async def _auto_provision(db, order: dict) -> dict:
                             "set_registrar_ns": hosting_cfg.get("set_registrar_ns") is True})
                 await _log("panel_account_created",
                            f"{panel_label} account '{uname}' created for {domain} (live).")
+                # Push nameservers to RNA.id if set_registrar_ns=True and domain is managed by RNA
+                await _maybe_update_rna_ns(db, order, domain,
+                                           hosting_cfg.get("nameservers") or [])
                 bare_host = re.sub(r"^https?://", "", (settings.get("credentials") or {}).get("host") or "").split(":")[0].split("/")[0]
                 panel_port = {"cpanel": 2083, "plesk": 8443, "directadmin": 2222}[key]
                 hosting_credentials = {
