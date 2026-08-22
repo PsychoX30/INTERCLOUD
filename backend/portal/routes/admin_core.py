@@ -36,6 +36,20 @@ import io as _io  # noqa: E402
 
 router = APIRouter()
 
+# Role sets for notification scoping (mirror _FOLLOWUP_ROLES in business.py:
+# "noc" bukan role user; ticket_only read-only; creative content-scoped).
+_FOLLOWUP_ALERT_ROLES = {"admin", "sales", "support", "finance"}
+_CRM_ASSIGN_ALERT_ROLES = {"admin", "sales"}
+
+
+def _staff_object_id(staff):
+    """Best-effort ObjectId for the staff user (None when unparseable)."""
+    raw = staff.get("id") or staff.get("_id") or ""
+    try:
+        return ObjectId(str(raw))
+    except Exception:
+        return None
+
 
 # ============================================================
 # ADMIN
@@ -147,6 +161,60 @@ async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
                     "detail": issue,
                     "link": "/portal/admin/diagnostics",
                 })
+    # Follow-up jatuh tempo / lewat tempo. Sales hanya melihat tugasnya sendiri;
+    # admin/support/finance melihat seluruh follow-up terbuka.
+    if staff["role"] in _FOLLOWUP_ALERT_ROLES:
+        today_iso = datetime.now(timezone.utc).date().isoformat()
+        fu_q: dict = {"done": {"$ne": True}, "due_date": {"$lte": today_iso}}
+        if staff["role"] == "sales":
+            fu_q["owner_id"] = str(staff.get("id") or "")
+        overdue_fu = await db.followups.find(fu_q).sort("due_date", 1).to_list(5)
+        for d in overdue_fu:
+            due = d.get("due_date", "")
+            late = bool(due) and due < today_iso
+            alerts.append({
+                "type": "followup_overdue",
+                "severity": "warning" if late else "info",
+                "title": ("Follow-up lewat tempo: " if late else "Follow-up jatuh tempo: ")
+                         + (d.get("customer_name") or d.get("task") or "(tanpa nama)"),
+                "detail": f"{d.get('task', '')} — jatuh tempo {due}".strip(" —"),
+                "link": "/portal/admin/crm",
+            })
+    # CRM prospect assignment akan kedaluwarsa. Sales hanya melihat prospect
+    # yang di-assign ke dirinya sendiri.
+    if staff["role"] in _CRM_ASSIGN_ALERT_ROLES:
+        soon_iso = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        crm_q: dict = {"status": "assigned",
+                       "assignment_expires_at": {"$ne": None, "$lte": soon_iso}}
+        if staff["role"] == "sales":
+            crm_q["assigned_to"] = _staff_object_id(staff)
+        expiring = await db.crm_customers.find(crm_q).sort(
+            "assignment_expires_at", 1).to_list(5)
+        for d in expiring:
+            alerts.append({
+                "type": "crm_assignment_expiry",
+                "severity": "warning",
+                "title": f"Assignment prospect segera lepas: {d.get('name') or '(tanpa nama)'}",
+                "detail": "Selesaikan follow-up agar prospect tidak kembali ke pool bersama",
+                "link": "/portal/admin/crm",
+            })
+    # Layanan hosting/lain segera perpanjangan. Relevan untuk finance/admin.
+    if staff["role"] in FINANCE_ROLES:
+        today = datetime.now(timezone.utc).date()
+        renew_by = (today + timedelta(days=7)).isoformat()
+        renew_q = {"status": "active",
+                   "next_renewal": {"$gte": today.isoformat(), "$lte": renew_by}}
+        if scope_user_ids is not None:
+            renew_q["user_id"] = {"$in": scope_user_ids}
+        renewing = await db.services.find(renew_q).sort("next_renewal", 1).to_list(5)
+        for s in renewing:
+            alerts.append({
+                "type": "service_renewal",
+                "severity": "info",
+                "title": f"Perpanjangan: {s.get('product_name') or s.get('name', '')}",
+                "detail": f"Jatuh tempo perpanjangan {s.get('next_renewal', '')}",
+                "link": "/portal/admin/services",
+            })
     order = {"danger": 0, "warning": 1, "info": 2}
     alerts.sort(key=lambda a: order.get(a["severity"], 9))
     return alerts

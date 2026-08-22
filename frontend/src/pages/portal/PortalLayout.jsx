@@ -62,7 +62,7 @@ const ADMIN_NAV_GROUPS = [
     items: [
       { key: "users",    to: "/portal/admin/users",    label: "Users / Clients", icon: Users,   testid: "nav-users",    roles: ["admin", "sales", "finance", "support"] },
       { key: "tickets",  to: "/portal/admin/tickets",  label: "Tickets",         icon: LifeBuoy, testid: "nav-tickets",  roles: ["admin", "sales", "finance", "support", "ticket_only"] },
-      { key: "mail",     to: "/portal/admin/mail",     label: "Webmail",         icon: Send,    testid: "nav-mail",     roles: ["admin", "sales", "finance", "support"] },
+      { key: "mail",     to: "/portal/admin/mail",     label: "Webmail",         icon: Send,    testid: "nav-mail",     roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
       { key: "email",    to: "/portal/admin/email",    label: "Email Automation", icon: Send,    testid: "nav-email",    roles: ["admin"] },
       { key: "articles", to: "/portal/admin/articles", label: "Articles",         icon: Newspaper, testid: "nav-articles", roles: ["admin", "sales", "finance", "support", "creative"] },
     ],

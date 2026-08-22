@@ -50,6 +50,7 @@ export const AdminCRM = () => {
   const isSales = user?.role?.toLowerCase() === "sales";
   const [rows, setRows] = useState(null);
   const [total, setTotal] = useState(0);
+  const [loadErr, setLoadErr] = useState("");
   const [page, setPage] = useState(0);
   const [limit, setLimit] = useState(50);
   const [clients, setClients] = useState([]);
@@ -69,9 +70,14 @@ export const AdminCRM = () => {
   }), [page, limit, q, statusF]);
 
   const load = useCallback(() => {
+    setLoadErr("");
     api.get("/admin/crm", { params }).then((r) => {
       setRows(r.data?.items || []);
       setTotal(r.data?.total || 0);
+    }).catch((e) => {
+      setRows([]);
+      setTotal(0);
+      setLoadErr(e?.response?.data?.detail || e?.message || "Gagal memuat data CRM");
     });
   }, [params]);
 
@@ -82,7 +88,7 @@ export const AdminCRM = () => {
         const list = Array.isArray(r.data) ? r.data : (r.data?.items || []);
         const assigned = new Set((user?.assigned_client_ids || []).map(String));
         setClients(list.filter((u) => u.role === "client" && assigned.has(String(u.id))));
-      });
+      }).catch(() => {});
     }
   }, [load, isSales, user?.assigned_client_ids]);
 
@@ -124,6 +130,13 @@ export const AdminCRM = () => {
           </div>
         }
       />
+
+      {loadErr && (
+        <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-center gap-2">
+          <span className="font-semibold">Error:</span> {loadErr}
+          <button className="ml-auto text-red-500 hover:text-red-700 underline text-xs" onClick={load}>Coba lagi</button>
+        </div>
+      )}
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
