@@ -54,7 +54,9 @@ def _pagination_response(items: list, total: int, skip: int, limit: int | None,
     return {"items": items, "total": total, "limit": 0 if limit is None else limit, "skip": skip}
 
 
-def _iso(dt: datetime | str) -> str:
+def _iso(dt: datetime | str | None) -> str:
+    if dt is None:
+        return ""
     if isinstance(dt, str):
         return dt
     return dt.isoformat()
