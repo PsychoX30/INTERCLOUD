@@ -1,10 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, Suspense, lazy } from "react";
 import { Link as RLink } from "react-router-dom";
 import { api, money, shortDate, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, StatusBadge, EmptyState, btnSecondary } from "../ui";
 import { ServerCog, Cpu, Globe, ArrowRight, Copy, Play, Square, RotateCw, KeyRound, Monitor, X, ExternalLink, PackageSearch } from "lucide-react";
-import RFB from "@novnc/novnc";
-import { VmMetricsPanel } from "./VmMetricsPanel";
+const VmMetricsPanel = lazy(() => import("./VmMetricsPanel").then(m => ({ default: m.default })));
 
 const catIcon = { vps: Cpu, hosting: Globe, colocation: ServerCog, dedicated: Cpu, cloud: Cpu };
 
@@ -108,6 +107,7 @@ const KS = {
 };
 
 const VncConsoleModal = ({ serviceId, onClose }) => {
+  const [RFB, setRFB] = useState(null);
   const screenRef = useRef(null);
   const rfbRef = useRef(null);
   const [state, setState] = useState("connecting");
@@ -120,14 +120,18 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
 
   useEffect(() => {
     let cancelled = false;
-    api.get(`/client/services/${serviceId}/vm/console`)
-      .then(({ data }) => {
+    Promise.all([
+      api.get(`/client/services/${serviceId}/vm/console`),
+      import("@novnc/novnc").then((m) => m.default || m.RFB || m),
+    ])
+      .then(([{ data }, RFBMod]) => {
         if (cancelled || !screenRef.current) return;
         setInfo(data);
+        setRFB(RFBMod);
         const base = process.env.REACT_APP_BACKEND_URL.replace(/^http/, "ws");
         const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
                     `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}`;
-        const rfb = new RFB(screenRef.current, url, {
+        const rfb = new RFBMod(screenRef.current, url, {
           credentials: { password: data.ticket },
           wsProtocols: ["binary"],
         });
@@ -627,13 +631,25 @@ const UpgradePanel = ({ serviceId }) => {
 
 const ClientServices = () => {
   const [rows, setRows] = useState(null);
+  const [loadErr, setLoadErr] = useState("");
   const [active, setActive] = useState(null);
 
   useEffect(() => {
-    api.get("/client/services").then((r) => setRows(r.data));
+    api.get("/client/services")
+      .then((r) => setRows(r.data))
+      .catch((e) => {
+        setRows([]);
+        setLoadErr(e?.response?.data?.detail || "Gagal memuat daftar layanan. Coba muat ulang halaman.");
+      });
   }, []);
 
   if (!rows) return <Loading />;
+  if (loadErr) return (
+    <div>
+      <PageHeader title="My Services" />
+      <EmptyState title="Gagal memuat" body={loadErr} />
+    </div>
+  );
 
   return (
     <div>
@@ -879,7 +895,11 @@ const ServiceDetail = ({ service, onClose }) => {
           </Card>
 
           {isVPS && s.status !== "terminated" && <VMControls serviceId={s.id} />}
-          {isVPS && s.status !== "terminated" && <VmMetricsPanel serviceId={s.id} />}
+          {isVPS && s.status !== "terminated" && (
+            <Suspense fallback={<Card className="p-5"><Loading /></Card>}>
+              <VmMetricsPanel serviceId={s.id} />
+            </Suspense>
+          )}
           {isVPS && s.status === "active" && <UpgradePanel serviceId={s.id} />}
           <AutoRenewToggle service={s} />
           <TerminateRequestPanel service={s} />
