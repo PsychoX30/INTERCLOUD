@@ -96,14 +96,14 @@ const ADMIN_NAV_GROUPS = [
       { key: "projects",  to: "/portal/admin/projects",  label: "Project Tracker",   icon: ClipboardList, testid: "nav-projects",  roles: ["admin", "sales", "support"] },
       { key: "content",   to: "/portal/admin/content",   label: "Content Planner",   icon: CalendarDays,  testid: "nav-content",   roles: ["admin", "sales", "finance", "support", "creative"] },
       { key: "followups", to: "/portal/admin/followups", label: "Follow-ups",        icon: CheckSquare,   testid: "nav-followups", roles: ["admin", "sales", "finance", "support"] },
-      { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "finance", "support"] },
+      { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
     ],
   },
   {
     label: "Creative",
     items: [
-      { key: "media_library",    to: "/portal/admin/media-library",    label: "Media Library",    icon: Images,       testid: "nav-media-library",    roles: ["admin", "creative"] },
-      { key: "content_calendar", to: "/portal/admin/content-calendar", label: "Content Calendar", icon: CalendarDays, testid: "nav-content-calendar", roles: ["admin", "creative"] },
+      { key: "media_library",    to: "/portal/admin/media-library",    label: "Media Library",    icon: Images,       testid: "nav-media-library",    roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
+      { key: "content_calendar", to: "/portal/admin/content-calendar", label: "Content Calendar", icon: CalendarDays, testid: "nav-content-calendar", roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
       { key: "utm_builder",      to: "/portal/admin/utm-builder",      label: "UTM Builder",      icon: Link2,        testid: "nav-utm-builder",      roles: ["admin", "creative", "sales"] },
       { key: "form_builder",     to: "/portal/admin/form-builder",     label: "Form Builder",     icon: FormInput,    testid: "nav-form-builder",     roles: ["admin", "creative", "sales"] },
     ],

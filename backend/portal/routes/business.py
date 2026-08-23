@@ -1542,20 +1542,38 @@ def _serialize_doc(d):
         "filename": d.get("filename", ""),
         "size_bytes": d.get("size_bytes", 0),
         "has_file": bool(d.get("stored_name")),
+        "folder": d.get("folder", ""),
+        "shared": bool(d.get("shared", False)),
+        "owner_id": str(d["owner_id"]) if d.get("owner_id") else None,
+        "owner_name": d.get("owner_name", ""),
         "created_at": _iso(d.get("created_at", "")),
     }
 
 
 def _require_internal_document_access(staff: dict) -> None:
-    """Restrict unscoped internal documents to internal operations roles.
+    """Document read access is now open to all staff roles.
 
-    Documents do not yet carry client ownership, therefore sales cannot be
-    scoped safely. Creative is content-scoped and must not access business
-    document operations.
+    Delete/write operations are protected separately by the endpoint: owners
+    can mutate their own documents; admin can mutate any document.
     """
-    _deny_creative(staff)
-    if staff.get("role") == "sales":
-        raise HTTPException(status_code=403, detail="Sales cannot access business documents")
+    pass
+
+
+def _assert_doc_owner_or_admin(staff: dict, doc: dict) -> None:
+    """Write/delete guard.
+
+    - Private documents: only the owner or admin.
+    - Shared/common documents: admin only, because they have no individual owner.
+    """
+    if staff.get("role") == "admin":
+        return
+    if doc.get("shared"):
+        raise HTTPException(status_code=403, detail="Only admin can mutate shared documents")
+    owner_id = str(doc.get("owner_id")) if doc.get("owner_id") else None
+    if owner_id is None:
+        raise HTTPException(status_code=403, detail="Only admin can mutate shared documents")
+    if str(staff.get("id")) != owner_id:
+        raise HTTPException(status_code=403, detail="Not the document owner")
 
 
 @router.get("/admin/documents")
@@ -1563,10 +1581,22 @@ async def docs_list(staff=Depends(get_current_staff),
                     skip: int = 0, limit: int = 50, sort: str = "created_at",
                     order: str = "desc", q: Optional[str] = None,
                     paginate: Optional[bool] = None):
-    """Server-side pagination + q-search for documents. Default stays bare array."""
+    """Server-side pagination + q-search for documents. Default stays bare array.
+
+    Visibility: shared/common documents plus the caller's own private documents.
+    Legacy documents (no owner_id/shared field) stay visible to every staff role
+    so nothing that used to be listed disappears after this change.
+    """
     _require_internal_document_access(staff)
     db = await _get_db()
     query: dict = {}
+    if staff.get("role") != "admin":
+        query["$and"] = [{"$or": [
+            {"shared": True},
+            {"owner_id": None},
+            {"owner_id": {"$exists": False}},
+            {"owner_id": staff.get("id")},
+        ]}]
     if q:
         query["$or"] = [
             {field: {"$regex": q.strip(), "$options": "i"}}
@@ -1593,12 +1623,28 @@ async def docs_list(staff=Depends(get_current_staff),
 async def docs_create(payload: dict, staff=Depends(get_current_staff)):
     _require_internal_document_access(staff)
     db = await _get_db()
+    folder = (payload.get("folder") or "").strip()
+    shared = bool(payload.get("shared", False))
+    # If folder is "shared" or shared=True, it's a common document; otherwise
+    # it's private to the creator.
+    if shared or folder == "shared":
+        shared = True
+        folder = folder or "shared"
+        owner_id = None
+    else:
+        owner_id = staff.get("id")
+        if not folder:
+            folder = f"private/{staff.get('id', 'unknown')}"
     doc = {
         "title": payload.get("title", ""),
         "category": payload.get("category", "contract"),
         "customer_name": payload.get("customer_name", ""),
         "url": payload.get("url", ""),
         "notes": payload.get("notes", ""),
+        "folder": folder,
+        "shared": shared,
+        "owner_id": owner_id,
+        "owner_name": staff.get("name") or staff.get("email", ""),
         "created_at": _now(),
     }
     r = await db.documents.insert_one(doc)
@@ -1611,7 +1657,10 @@ async def docs_delete(did: str, staff=Depends(get_current_staff)):
     _require_internal_document_access(staff)
     db = await _get_db()
     d = await db.documents.find_one({"_id": _oid(did)})
-    if d and d.get("stored_name"):
+    if not d:
+        raise HTTPException(status_code=404, detail="Document not found")
+    _assert_doc_owner_or_admin(staff, d)
+    if d.get("stored_name"):
         try:
             (DOCS_DIR / d["stored_name"]).unlink(missing_ok=True)
         except Exception:
@@ -1628,6 +1677,11 @@ async def docs_file(did: str, staff=Depends(get_current_staff)):
     d = await db.documents.find_one({"_id": _oid(did)})
     if not d or not d.get("stored_name"):
         raise HTTPException(status_code=404, detail="Document not found")
+    # Private documents (owner_id set, not shared) are only visible to the
+    # owner or admin. Shared and legacy documents stay visible to all staff.
+    if d.get("owner_id") and not d.get("shared"):
+        if staff.get("role") != "admin" and str(d.get("owner_id")) != str(staff.get("id")):
+            raise HTTPException(status_code=403, detail="Dokumen ini privat")
     fp = DOCS_DIR / d["stored_name"]
     if not fp.exists():
         raise HTTPException(status_code=404, detail="File missing on disk")
@@ -1782,7 +1836,7 @@ async def media_list(staff=Depends(get_current_staff),
 async def media_upload(file: UploadFile = File(...),
                        alt_text: str = Form(""),
                        tags: str = Form(""),
-                       staff=Depends(get_current_content)):
+                       staff=Depends(get_current_staff)):
     db = await _get_db()
     if file.content_type not in _MEDIA_ALLOWED_TYPES:
         raise HTTPException(status_code=400,
@@ -1815,10 +1869,18 @@ async def media_upload(file: UploadFile = File(...),
 @router.post("/admin/documents/upload")
 async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
                       category: str = Form("contract"), customer_name: str = Form(""),
-                      notes: str = Form(""), staff=Depends(get_current_staff)):
+                      notes: str = Form(""), shared: str = Form(""),
+                      staff=Depends(get_current_staff)):
     """UAT-003: upload dokumen lokal (drag & drop) selain link URL."""
     _require_internal_document_access(staff)
     db = await _get_db()
+    is_shared = shared.lower() in ("true", "1", "yes", "on")
+    if is_shared:
+        folder = "shared"
+        owner_id = None
+    else:
+        folder = f"private/{staff.get('id', 'unknown')}"
+        owner_id = staff.get("id")
     ctype = file.content_type or "application/octet-stream"
     if ctype not in _DOC_ALLOWED_TYPES:
         raise HTTPException(status_code=400,
@@ -1844,13 +1906,17 @@ async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
         "size_bytes": len(raw),
         "uploaded_by": staff["email"],
         "created_at": _now(),
+        "folder": folder,
+        "shared": is_shared,
+        "owner_id": owner_id,
+        "owner_name": staff.get("name") or staff.get("email", ""),
     }
     await db.documents.insert_one(doc)
     return _serialize_doc(doc)
 
 
 @router.put("/admin/media/{mid}")
-async def media_update(mid: str, payload: dict, staff=Depends(get_current_content)):
+async def media_update(mid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
     d = await db.media_assets.find_one({"_id": _oid(mid)})
     if not d:
@@ -1870,7 +1936,7 @@ async def media_update(mid: str, payload: dict, staff=Depends(get_current_conten
 
 
 @router.delete("/admin/media/{mid}")
-async def media_delete(mid: str, staff=Depends(get_current_content)):
+async def media_delete(mid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
     d = await db.media_assets.find_one({"_id": _oid(mid)})
     if not d:
@@ -1901,6 +1967,60 @@ async def media_file(mid: str):
         raise HTTPException(status_code=404, detail="File missing on disk")
     return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
                         headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ============================================================
+# MEDIA COMMENTS - feedback thread per media asset
+# ============================================================
+def _serialize_comment(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "media_id": str(d.get("media_id", "")),
+        "author_id": d.get("author_id", ""),
+        "author_name": d.get("author_name", ""),
+        "author_role": d.get("author_role", ""),
+        "body": d.get("body", ""),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/admin/media/{mid}/comments")
+async def media_comment_list(mid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    docs = await db.media_comments.find({"media_id": mid}).sort("created_at", 1).to_list(500)
+    return [_serialize_comment(d) for d in docs]
+
+
+@router.post("/admin/media/{mid}/comments")
+async def media_comment_create(mid: str, payload: dict, staff=Depends(get_current_staff)):
+    body = (payload.get("body") or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Comment body is required")
+    db = await _get_db()
+    doc = {
+        "media_id": mid,
+        "author_id": staff.get("id", ""),
+        "author_name": staff.get("name") or staff.get("email", ""),
+        "author_role": staff.get("role", ""),
+        "body": body,
+        "created_at": _now(),
+    }
+    r = await db.media_comments.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_comment(doc)
+
+
+@router.delete("/admin/media/{mid}/comments/{cid}")
+async def media_comment_delete(mid: str, cid: str, staff=Depends(get_current_staff)):
+    db = await _get_db()
+    d = await db.media_comments.find_one({"_id": _oid(cid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    # Author or admin can delete
+    if staff.get("role") != "admin" and d.get("author_id") != staff.get("id"):
+        raise HTTPException(status_code=403, detail="Only the comment author or admin can delete")
+    r = await db.media_comments.delete_one({"_id": _oid(cid)})
+    return {"deleted": r.deleted_count}
 
 
 # ============================================================
@@ -1978,7 +2098,7 @@ async def calendar_list(staff=Depends(get_current_staff),
 
 
 @router.post("/admin/content-calendar")
-async def calendar_create(payload: dict, staff=Depends(get_current_content)):
+async def calendar_create(payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
     title = (payload.get("title") or "").strip()
     if not title:
@@ -2005,7 +2125,7 @@ async def calendar_create(payload: dict, staff=Depends(get_current_content)):
 
 
 @router.put("/admin/content-calendar/{cid}")
-async def calendar_update(cid: str, payload: dict, staff=Depends(get_current_content)):
+async def calendar_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
     d = await db.content_calendar.find_one({"_id": _oid(cid)})
     if not d:
@@ -2029,7 +2149,7 @@ async def calendar_update(cid: str, payload: dict, staff=Depends(get_current_con
 
 
 @router.delete("/admin/content-calendar/{cid}")
-async def calendar_delete(cid: str, staff=Depends(get_current_content)):
+async def calendar_delete(cid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
     r = await db.content_calendar.delete_one({"_id": _oid(cid)})
     if not r.deleted_count:

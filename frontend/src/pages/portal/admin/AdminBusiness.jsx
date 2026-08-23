@@ -1202,11 +1202,13 @@ const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
    Documents
    ========================================================================= */
 export const AdminDocuments = () => {
+  const { user } = useAuth() || {};
   const [rows, setRows] = useState(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
+  const [scope, setScope] = useState("all"); // all | shared | private
 
   const params = useMemo(() => ({
     paginate: true,
@@ -1224,7 +1226,21 @@ export const AdminDocuments = () => {
   useEffect(() => { load(); }, [load]);
 
   if (!rows) return <Loading />;
-  const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/documents/${id}`); load(); } };
+  const canDelete = (d) => user?.role === "admin" || (d.owner_id && d.owner_id === user?.id);
+  const visible = rows.filter((d) => {
+    if (scope === "shared") return d.shared;
+    if (scope === "private") return !d.shared;
+    return true;
+  });
+  const del = async (id) => {
+    if (!window.confirm("Delete?")) return;
+    try {
+      await api.delete(`/admin/documents/${id}`);
+      load();
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal menghapus dokumen");
+    }
+  };
   const openDocument = async (path) => {
     // Only an API-relative protected-file path receives the portal Bearer
     // token. External document URLs remain ordinary browser navigation.
@@ -1248,13 +1264,20 @@ export const AdminDocuments = () => {
     <div>
       <PageHeader
         title="Documents"
-        subtitle="Contracts, MSAs, network diagrams, and other business documents."
+        subtitle="Folder bersama terlihat oleh semua staf; folder pribadi hanya milik Anda."
         actions={<button className={btnPrimary} onClick={() => setModal(true)}><Plus className="h-4 w-4" /> New Document</button>}
       />
-      {rows.length === 0 && <EmptyState title="No documents yet" body="Track your contracts, MSAs, and diagrams here." />}
-      {rows.length > 0 && (
+      <div className="flex gap-2 mb-4">
+        {[["all", "Semua"], ["shared", "Bersama"], ["private", "Pribadi"]].map(([key, label]) => (
+          <button key={key} onClick={() => setScope(key)}
+                  className={`px-3 h-8 rounded-full text-xs font-bold border transition-colors ${scope === key ? "bg-[#0a2350] text-white border-[#0a2350]" : "bg-white text-slate-600 border-slate-200 hover:border-[#f5b120]"}`}
+                  data-testid={`docs-scope-${key}`}>{label}</button>
+        ))}
+      </div>
+      {visible.length === 0 && <EmptyState title="No documents yet" body="Track your contracts, MSAs, and diagrams here." />}
+      {visible.length > 0 && (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {rows.map((d) => (
+          {visible.map((d) => (
             <Card key={d.id} className="p-5">
               <div className="flex items-start justify-between">
                 <div className="h-10 w-10 rounded-lg bg-[#0a2350] flex items-center justify-center"><FileText className="h-5 w-5 text-[#f5b120]" /></div>
@@ -1262,6 +1285,12 @@ export const AdminDocuments = () => {
               </div>
               <div className="mt-4 text-base font-extrabold text-[#0a2350] leading-tight">{d.title}</div>
               <div className="text-xs text-slate-500 mt-1">{d.customer_name || "-"} · {fullDateTime(d.created_at)}</div>
+              <div className="mt-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider">
+                <span className={`px-2 py-0.5 rounded ${d.shared ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`} data-testid={`doc-scope-${d.id}`}>
+                  {d.shared ? "Bersama" : "Pribadi"}
+                </span>
+                {d.folder && <span className="text-slate-400 normal-case font-semibold truncate" title={d.folder}>{d.folder}</span>}
+              </div>
               {d.notes && <p className="mt-2 text-sm text-slate-600 line-clamp-2">{d.notes}</p>}
               <div className="mt-4 flex gap-2">
                 {d.has_file && d.id ? (
@@ -1276,7 +1305,9 @@ export const AdminDocuments = () => {
                     Open
                   </a>
                 ) : null}
-                <button className="text-slate-500 hover:text-red-600 text-sm" onClick={() => del(d.id)}>Delete</button>
+                {canDelete(d) && (
+                  <button className="text-slate-500 hover:text-red-600 text-sm" onClick={() => del(d.id)} data-testid={`doc-delete-${d.id}`}>Delete</button>
+                )}
               </div>
             </Card>
           ))}

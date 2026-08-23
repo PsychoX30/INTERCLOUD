@@ -184,7 +184,7 @@ function App() {
                   <Route path="integrations" element={<AdminIntegrations />} />
                   <Route path="security" element={<AdminSecurity />} />
                   <Route path="audit-log" element={<AdminAuditLog />} />
-                  <Route path="noc" element={<AdminNOC />} />
+                  <Route path="noc" element={<RequireAuth role={["admin", "support"]}><AdminNOC /></RequireAuth>} />
                   <Route path="monitoring" element={<RequireAuth role={["admin", "support"]}><AdminMonitoring /></RequireAuth>} />
                   <Route path="credit-notes" element={<AdminCreditNotes />} />
                   <Route path="transactions" element={<AdminTransactions />} />

@@ -3,6 +3,7 @@ import { api, money } from "../../../portal/api";
 import { PageHeader, Card, Loading, StatCard, StatusBadge } from "../ui";
 import { Users, Package, ShoppingCart, Receipt, LifeBuoy, TrendingUp, Bell, CheckCircle2 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useAuth } from "../../../portal/AuthContext";
 
 const AdminDashboard = () => {
   const [d, setD] = useState(null);
@@ -72,19 +73,23 @@ const NotificationCenter = ({ alerts }) => (
   </Card>
 );
 
-const QuickLinks = () => (
-  <Card className="p-6 min-w-0">
-    <h3 className="text-lg font-extrabold">Aksi Cepat</h3>
-    <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-      <QL to="/portal/admin/invoices" icon={Receipt} label="Buat Tagihan" testid="ql-invoices" />
-      <QL to="/portal/admin/tickets" icon={LifeBuoy} label="Buka Tiket" testid="ql-tickets" />
-      <QL to="/portal/admin/noc" icon={TrendingUp} label="Cek NOC" testid="ql-noc" />
-      <QL to="/portal/admin/orders" icon={ShoppingCart} label="Orders" testid="ql-orders" />
-      <QL to="/portal/admin/users" icon={Users} label="Manage Users" testid="ql-users" />
-      <QL to="/portal/admin/products" icon={Package} label="Products" testid="ql-products" />
-    </div>
-  </Card>
-);
+const QuickLinks = () => {
+  const { user } = useAuth();
+  const canAccessNoc = ["admin", "support"].includes(user?.role);
+  return (
+    <Card className="p-6 min-w-0">
+      <h3 className="text-lg font-extrabold">Aksi Cepat</h3>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <QL to="/portal/admin/invoices" icon={Receipt} label="Buat Tagihan" testid="ql-invoices" />
+        <QL to="/portal/admin/tickets" icon={LifeBuoy} label="Buka Tiket" testid="ql-tickets" />
+        {canAccessNoc && <QL to="/portal/admin/noc" icon={TrendingUp} label="Cek NOC" testid="ql-noc" />}
+        <QL to="/portal/admin/orders" icon={ShoppingCart} label="Orders" testid="ql-orders" />
+        <QL to="/portal/admin/users" icon={Users} label="Manage Users" testid="ql-users" />
+        <QL to="/portal/admin/products" icon={Package} label="Products" testid="ql-products" />
+      </div>
+    </Card>
+  );
+};
 
 const QL = ({ to, icon: Icon, label, testid }) => (
   <Link to={to} data-testid={testid} className="flex items-center gap-2 rounded-xl border border-slate-200 hover:border-[#f5b120] px-3 py-2.5 transition-colors">

@@ -69,8 +69,8 @@ async def client_services(user=Depends(get_current_user)):
     for d in docs:
         result.append({
             "id": str(d["_id"]),
-            "user_id": str(d["user_id"]),
-            "product_id": str(d["product_id"]),
+            "user_id": str(d["user_id"]) if d.get("user_id") else None,
+            "product_id": str(d["product_id"]) if d.get("product_id") else None,
             "product_name": d.get("product_name", ""),
             "category": d.get("category", ""),
             "name": d.get("name", ""),

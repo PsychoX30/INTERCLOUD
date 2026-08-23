@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, btnDanger, inputClass, labelClass } from "../ui";
-import { UploadCloud, Trash2, Tag, Search, Copy, CheckCircle2, X, Loader2 } from "lucide-react";
+import { UploadCloud, Trash2, Tag, Search, Copy, CheckCircle2, X, Loader2, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
 
 const BACKEND = process.env.REACT_APP_BACKEND_URL;
@@ -133,6 +134,7 @@ const AdminMediaLibrary = () => {
 
 const MediaCard = ({ m, onDelete, onSaved }) => {
   const [editing, setEditing] = useState(false);
+  const [commenting, setCommenting] = useState(false);
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     await navigator.clipboard.writeText(mediaUrl(m));
@@ -157,6 +159,9 @@ const MediaCard = ({ m, onDelete, onSaved }) => {
           <button onClick={copy} className="flex-1 h-8 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:border-[#f5b120] inline-flex items-center justify-center gap-1 focus-visible:ring-2 focus-visible:ring-[#f5b120]" data-testid={`media-copy-${m.id}`}>
             {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />} URL
           </button>
+          <button onClick={() => setCommenting(true)} className="h-8 px-2 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:border-[#f5b120] inline-flex items-center gap-1 focus-visible:ring-2 focus-visible:ring-[#f5b120]" data-testid={`media-comments-${m.id}`} title="Feedback tim">
+            <MessageSquare className="h-3.5 w-3.5" />
+          </button>
           <button onClick={() => setEditing(true)} className="h-8 px-2 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:border-[#f5b120] focus-visible:ring-2 focus-visible:ring-[#f5b120]" data-testid={`media-edit-${m.id}`}>Edit</button>
           <button onClick={onDelete} className="h-8 px-2 rounded-lg border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-300 focus-visible:ring-2 focus-visible:ring-red-300" data-testid={`media-delete-${m.id}`}>
             <Trash2 className="h-3.5 w-3.5" />
@@ -164,6 +169,7 @@ const MediaCard = ({ m, onDelete, onSaved }) => {
         </div>
       </div>
       {editing && <EditModal m={m} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); onSaved(); }} />}
+      {commenting && <CommentsModal m={m} onClose={() => setCommenting(false)} />}
     </div>
   );
 };
@@ -196,6 +202,81 @@ const EditModal = ({ m, onClose, onSaved }) => {
           <button className={btnSecondary} onClick={onClose}>Cancel</button>
           <button className={btnPrimary} onClick={save} disabled={busy} data-testid="media-save-btn">{busy ? "Saving…" : "Save details"}</button>
         </div>
+      </div>
+    </div>
+  );
+};
+
+const CommentsModal = ({ m, onClose }) => {
+  const { user } = useAuth();
+  const [rows, setRows] = useState(null);
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await api.get(`/admin/media/${m.id}/comments`);
+      setRows(r.data || []);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Gagal memuat komentar");
+      setRows([]);
+    }
+  };
+  useEffect(() => { load(); }, [m.id]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const text = body.trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await api.post(`/admin/media/${m.id}/comments`, { body: text });
+      setBody("");
+      await load();
+    } catch (e2) {
+      toast.error(e2?.response?.data?.detail || "Gagal menambah komentar");
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Hapus komentar ini?")) return;
+    try {
+      await api.delete(`/admin/media/${m.id}/comments/${id}`);
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Gagal menghapus komentar");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg bg-white rounded-3xl p-6 max-h-[85vh] flex flex-col" data-testid={`media-comments-modal-${m.id}`}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-extrabold text-[#0a2350]">Feedback desain</h3>
+            <p className="text-xs text-slate-500 truncate max-w-[360px]">{m.filename}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto space-y-3 min-h-[130px] pr-1">
+          {rows === null ? <Loading label="Memuat komentar…" /> : rows.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-8">Belum ada feedback. Mulai diskusi desain di bawah.</p>
+          ) : rows.map((c) => {
+            const canDelete = user?.role === "admin" || c.author_id === user?.id;
+            return <div key={c.id} className="rounded-xl border border-slate-200 p-3" data-testid={`media-comment-${c.id}`}>
+              <div className="flex gap-2 text-xs">
+                <b className="text-[#0a2350]">{c.author_name || "Staff"}</b>
+                <span className="text-slate-400 uppercase">{c.author_role}</span>
+                {canDelete && <button onClick={() => remove(c.id)} className="ml-auto text-red-600 hover:underline" data-testid={`media-comment-delete-${c.id}`}>Hapus</button>}
+              </div>
+              <p className="mt-1 text-sm text-slate-700 whitespace-pre-wrap">{c.body}</p>
+            </div>;
+          })}
+        </div>
+        <form onSubmit={submit} className="border-t border-slate-100 mt-4 pt-4 flex gap-2">
+          <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={2} placeholder="Tulis masukan untuk desain ini…" className={`${inputClass} h-auto py-2 resize-none`} data-testid={`media-comment-input-${m.id}`} />
+          <button type="submit" className={btnPrimary} disabled={busy || !body.trim()} data-testid={`media-comment-send-${m.id}`}>{busy ? "…" : "Kirim"}</button>
+        </form>
       </div>
     </div>
   );
