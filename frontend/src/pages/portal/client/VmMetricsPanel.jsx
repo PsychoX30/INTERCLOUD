@@ -9,12 +9,32 @@ import {
 const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
 const fmtKb = (v) => (v >= 1024 ? `${(v / 1024).toFixed(1)} MB/s` : `${Math.round(v)} KB/s`);
 
-const ChartBox = ({ title, children, testid }) => (
-  <div data-testid={testid}>
-    <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1">{title}</div>
-    <div className="h-40">{children}</div>
-  </div>
-);
+const ChartBox = ({ title, children, testid }) => {
+  const ref = useRef(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[0];
+      if (e.contentRect.width > 0 && e.contentRect.height > 0) setReady(true);
+    });
+    if (ref.current) ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  if (!ready) {
+    return (
+      <div data-testid={testid} ref={ref} className="h-40" aria-hidden="true">
+        <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1">{title}</div>
+        <div className="h-full animate-pulse bg-slate-100 rounded" />
+      </div>
+    );
+  }
+  return (
+    <div data-testid={testid} ref={ref}>
+      <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1">{title}</div>
+      <div className="h-40">{children}</div>
+    </div>
+  );
+};
 
 export const VmMetricsPanel = ({ serviceId }) => {
   const [data, setData] = useState(null);

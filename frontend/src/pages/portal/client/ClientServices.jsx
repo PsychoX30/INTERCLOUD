@@ -122,10 +122,18 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
     let cancelled = false;
     Promise.all([
       api.get(`/client/services/${serviceId}/vm/console`),
+      // @novnc/novnc 1.7.0 ships RFB as a DEFAULT export (core/rfb.js:
+      // `export default class RFB`). Prefer m.default; fall back to m.RFB / m
+      // to stay robust across bundler interop shapes.
       import("@novnc/novnc").then((m) => m.default || m.RFB || m),
     ])
       .then(([{ data }, RFBMod]) => {
         if (cancelled || !screenRef.current) return;
+        if (typeof RFBMod !== "function") {
+          setState("error");
+          setErr("noVNC library gagal dimuat. Coba refresh halaman.");
+          return;
+        }
         setInfo(data);
         RFB.current = RFBMod;
         const base = (process.env.REACT_APP_BACKEND_URL || window.location.origin).replace(/^http/, "ws");
