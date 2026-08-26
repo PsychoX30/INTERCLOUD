@@ -122,7 +122,7 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
     let cancelled = false;
     Promise.all([
       api.get(`/client/services/${serviceId}/vm/console`),
-      import("@novnc/novnc").then((m) => m.default || m.RFB || m),
+      import("@novnc/novnc").then((m) => m.default || m.RFB),
     ])
       .then(([{ data }, RFBMod]) => {
         if (cancelled || !screenRef.current) return;

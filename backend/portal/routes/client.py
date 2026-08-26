@@ -362,7 +362,7 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
             for p in pending:
                 p.cancel()
     except Exception:
-        pass
+        logging.getLogger(__name__).exception("noVNC relay error sid=%s", sid)
     finally:
         try:
             await ws.close()
