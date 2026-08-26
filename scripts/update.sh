@@ -128,9 +128,9 @@ main() {
     local STAMP ARCHIVE
     STAMP=$(date -u +'%Y%m%dT%H%M%SZ')
     ARCHIVE="$BACKUP_DIR/pre-update-$STAMP.archive.gz"
-
-    # ---- 1. Snapshot DB first (atomic swap so a full disk can't produce a
+    # ---- 1. Snapshot DB first (atomic swap so a full disk cannot produce a
     # ----    half-written archive that later mongorestore would happily eat) --
+    # To restore: mongorestore --uri "$MONGO_URL" --db "$DB_NAME" --archive="$BACKUP_FILE" --gzip --drop
     log "Snapshotting DB → $ARCHIVE"
     source "$APP_DIR/backend/.env" 2>/dev/null || true
     MONGO_URL="${MONGO_URL:-mongodb://127.0.0.1:27017}"
