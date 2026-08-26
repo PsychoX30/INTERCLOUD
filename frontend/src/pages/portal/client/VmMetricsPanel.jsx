@@ -58,7 +58,7 @@ export const VmMetricsPanel = ({ serviceId }) => {
       </div>
       <div className="space-y-5">
         <ChartBox title="CPU (%)" testid="vm-metrics-cpu">
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} initialDimension={{ width: 600, height: 160 }}>
             <AreaChart data={series} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={40} />
@@ -70,7 +70,7 @@ export const VmMetricsPanel = ({ serviceId }) => {
         </ChartBox>
 
         <ChartBox title={`RAM (MB${memTotal ? ` / total ${Math.round(memTotal)} MB` : ""})`} testid="vm-metrics-ram">
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} initialDimension={{ width: 600, height: 160 }}>
             <AreaChart data={series} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={40} />
@@ -82,7 +82,7 @@ export const VmMetricsPanel = ({ serviceId }) => {
         </ChartBox>
 
         <ChartBox title="Disk I/O (KB/s)" testid="vm-metrics-disk">
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} initialDimension={{ width: 600, height: 160 }}>
             <AreaChart data={series} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={40} />

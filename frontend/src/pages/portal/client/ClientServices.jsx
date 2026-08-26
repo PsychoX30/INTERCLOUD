@@ -127,7 +127,7 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
       .then(([{ data }, RFBMod]) => {
         if (cancelled || !screenRef.current) return;
         setInfo(data);
-        setRFB(RFBMod);
+        setRFB(() => RFBMod);
         const base = process.env.REACT_APP_BACKEND_URL.replace(/^http/, "ws");
         const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
                     `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}`;
