@@ -183,7 +183,7 @@ const emptyGroup = () => ({
   min_qty: 0, max_qty: 10, step_qty: 1, unit_label: "", unit_price_monthly: 0, unit_price_setup: 0,
 });
 // Baris tier hosting (paket WHM) untuk editor provisioning hosting
-const emptyHostingTier = () => ({ name: "", label: "", disk_gb: 0, bandwidth_gb: 0, price: 0 });
+const emptyHostingTier = () => ({ name: "", label: "", whm_package: "", disk_gb: 0, bandwidth_gb: 0, price: 0 });
 
 const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
   const [f, setF] = useState({
@@ -239,6 +239,7 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
         packages: (f.provision?.packages || []).map((tier) => ({
           name: String(tier.name || "").trim(),
           label: String(tier.label || "").trim(),
+          whm_package: String(tier.whm_package || "").trim(),
           disk_gb: Number(tier.disk_gb) || 0,
           bandwidth_gb: Number(tier.bandwidth_gb) || 0,
           price: Number(tier.price) || 0,
@@ -348,8 +349,8 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
                 <div className={labelClass}>Paket/Tier Hosting</div>
                 <button type="button" onClick={() => setF({ ...f, provision: { ...f.provision, packages: [...(f.provision?.packages || []), emptyHostingTier()] } })} className="text-xs font-bold text-[#0a2350] bg-slate-100 hover:bg-[#f5b120] hover:text-[#0a2350] px-3 py-1.5 rounded-lg" data-testid="p-provision-tier-add"><Plus className="h-3 w-3 inline" /> Tambah paket</button>
               </div>
-              <div className="grid grid-cols-[1fr_1fr_90px_110px_120px_20px] gap-2 mb-1 px-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                <div>WHM package</div><div>Label</div><div>Disk GB</div><div>Bandwidth GB</div><div>Harga IDR</div><div></div>
+              <div className="grid grid-cols-[1fr_1fr_1fr_90px_110px_120px_20px] gap-2 mb-1 px-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                <div>Nama tier</div><div>Label</div><div>WHM package</div><div>Disk GB</div><div>Bandwidth GB</div><div>Harga IDR</div><div></div>
               </div>
               {(f.provision?.packages || []).map((tier, ti) => {
                 const setTier = (patch) => {
@@ -358,9 +359,10 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
                   setF({ ...f, provision: { ...f.provision, packages } });
                 };
                 return (
-                  <div key={ti} className="grid grid-cols-[1fr_1fr_90px_110px_120px_20px] gap-2 mb-1.5 items-center">
+                  <div key={ti} className="grid grid-cols-[1fr_1fr_1fr_90px_110px_120px_20px] gap-2 mb-1.5 items-center">
                     <input placeholder="starter" value={tier.name || ""} onChange={(e) => setTier({ name: e.target.value })} className={`${inputClass} h-9`} />
                     <input placeholder="Starter" value={tier.label || ""} onChange={(e) => setTier({ label: e.target.value })} className={`${inputClass} h-9`} />
+                    <input placeholder="uxzjdmsf_pkg" value={tier.whm_package || ""} onChange={(e) => setTier({ whm_package: e.target.value })} className={`${inputClass} h-9`} data-testid="p-provision-tier-whm-package" />
                     <input type="number" min="0" value={tier.disk_gb ?? 0} onChange={(e) => setTier({ disk_gb: e.target.value })} className={`${inputClass} h-9`} />
                     <input type="number" min="0" value={tier.bandwidth_gb ?? 0} onChange={(e) => setTier({ bandwidth_gb: e.target.value })} className={`${inputClass} h-9`} />
                     <input type="number" min="0" value={tier.price ?? 0} onChange={(e) => setTier({ price: e.target.value })} className={`${inputClass} h-9`} />
