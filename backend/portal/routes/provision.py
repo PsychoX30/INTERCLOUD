@@ -214,8 +214,15 @@ def _resolve_hosting_config(prod: dict, order_cfg: dict) -> dict:
     nameservers = provision.get("nameservers") or []
     if not isinstance(nameservers, list):
         nameservers = []
+    # Tier terpilih klien (order.config.whm_package) menang jika valid terhadap
+    # daftar tier di product.provision.packages; fallback ke package/base bawaan.
+    chosen_tier = str(cfg.get("whm_package") or "").strip()
+    tier_names = {str((t or {}).get("name") or "").strip()
+                  for t in (provision.get("packages") or [])
+                  if isinstance(t, dict)}
+    tier_pkg = chosen_tier if (chosen_tier and chosen_tier in tier_names) else None
     return {
-        "package": (cfg.get("package") or provision.get("package") or None),
+        "package": (tier_pkg or cfg.get("package") or provision.get("package") or None),
         "domain": (cfg.get("domain") or "").strip(),
         "domain_policy": provision.get("domain_policy") or "subdomain",
         "subdomain_suffix": provision.get("subdomain_suffix") or "",

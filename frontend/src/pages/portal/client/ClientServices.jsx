@@ -534,6 +534,96 @@ const HostingControls = ({ service }) => {
   );
 };
 
+const HostingUpgradePanel = ({ serviceId }) => {
+  const [open, setOpen] = useState(false);
+  const [opts, setOpts] = useState(null);
+  const [selected, setSelected] = useState("");
+  const [quote, setQuote] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!open || opts !== null) return;
+    api.get(`/client/services/${serviceId}/hosting/upgrade/options`)
+      .then((r) => {
+        setOpts(r.data);
+        const tiers = r.data?.tiers || [];
+        const current = r.data?.current?.name;
+        setSelected(tiers.find((t) => t.name !== current)?.name || "");
+      })
+      .catch((e) => { setOpts(false); setErr(e?.response?.data?.detail || "Gagal memuat opsi upgrade hosting"); });
+  }, [open, opts, serviceId]);
+
+  useEffect(() => {
+    setQuote(null);
+    setErr("");
+    if (!open || !selected || opts?.pending_upgrade) return;
+    const t = setTimeout(() => {
+      api.post(`/client/services/${serviceId}/hosting/upgrade/preview`, { package: selected })
+        .then((r) => setQuote(r.data))
+        .catch((e) => setErr(e?.response?.data?.detail || "Gagal menghitung harga upgrade"));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [open, selected, opts, serviceId]);
+
+  const submit = async () => {
+    setBusy(true); setErr("");
+    try {
+      const r = await api.post(`/client/services/${serviceId}/hosting/upgrade`, { package: selected });
+      setDone(r.data);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal membuat invoice upgrade hosting");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Card className="p-5" data-testid="hosting-upgrade-panel">
+      <button className="w-full flex items-center justify-between text-left" onClick={() => setOpen(!open)} data-testid="hosting-upgrade-toggle">
+        <div><div className="text-sm font-extrabold text-[#0a2350]">Upgrade Paket</div><p className="mt-0.5 text-[11px] text-slate-500">Naikkan tier hosting dan buat invoice selisih biaya.</p></div>
+        <span className="text-xs font-bold text-[#0a2350]">{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
+        <div className="mt-3" data-testid="hosting-upgrade-content">
+          {opts === null ? (
+            <p className="text-[11px] text-slate-400" data-testid="hosting-upgrade-loading">Memuat opsi upgrade...</p>
+          ) : done ? (
+            <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4 text-sm" data-testid="hosting-upgrade-success">
+              <div className="font-extrabold text-emerald-700">Invoice upgrade dibuat - {money(done.amount)}</div>
+              <p className="text-xs text-emerald-700/90 mt-1">Upgrade diterapkan setelah pembayaran terverifikasi.</p>
+              <RLink to="/portal/client/invoices" className="inline-flex items-center gap-1 mt-2 text-xs font-bold text-[#0a2350] hover:text-[#f5b120]">Buka Invoices <ArrowRight className="h-3 w-3" /></RLink>
+            </div>
+          ) : opts?.pending_upgrade ? (
+            <p className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2" data-testid="hosting-upgrade-pending">Upgrade sedang diproses/menunggu pembayaran. Selesaikan invoice terlebih dahulu.</p>
+          ) : opts && (opts.tiers || []).length === 0 ? (
+            <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2" data-testid="hosting-upgrade-empty">Belum ada paket upgrade yang tersedia.</p>
+          ) : opts ? (
+            <>
+              {opts.current && <p className="mb-2 text-[11px] text-slate-500">Paket aktif: <b>{opts.current.label || opts.current.name}</b></p>}
+              <select value={selected} onChange={(e) => setSelected(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" data-testid="hosting-upgrade-select">
+                <option value="">Pilih paket tujuan</option>
+                {(opts.tiers || []).filter((tier) => tier.name !== opts.current?.name).map((tier) => <option key={tier.name} value={tier.name}>{tier.label || tier.name} - {tier.disk_gb} GB disk / {tier.bandwidth_gb} GB bandwidth - {money(tier.price)}</option>)}
+              </select>
+              {quote && (
+                <div className="mt-3 rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs space-y-1" data-testid="hosting-upgrade-preview">
+                  <div className="flex justify-between"><span className="text-slate-500">Biaya upgrade</span><span className="font-semibold">{money(quote.amount)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Pajak</span><span className="font-semibold">{money(quote.tax)}</span></div>
+                  <div className="flex justify-between border-t border-slate-200 pt-1"><span className="font-bold text-[#0a2350]">Tagihan sekarang</span><span className="font-extrabold text-[#0a2350]" data-testid="hosting-upgrade-total">{money(quote.total)}</span></div>
+                  {quote.period_end && <div className="pt-1 text-[10px] text-slate-400">Periode sampai {shortDate(quote.period_end)}</div>}
+                </div>
+              )}
+              {err && <p className="mt-2 text-xs font-semibold text-red-600" data-testid="hosting-upgrade-error">{err}</p>}
+              <button className={`${btnSecondary} mt-3`} disabled={busy || !quote} onClick={submit} data-testid="hosting-upgrade-submit">{busy ? "Memproses..." : "Buat Invoice Upgrade"}</button>
+            </>
+          ) : (
+            <p className="text-xs font-semibold text-red-600" data-testid="hosting-upgrade-error">{err}</p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+};
+
 const Stepper = ({ label, unit, value, onChange, max, step = 1 }) => (
   <div className="flex items-center justify-between gap-2">
     <span className="text-xs font-semibold text-slate-600 w-16">{label}</span>
@@ -901,6 +991,7 @@ const ServiceDetail = ({ service, onClose }) => {
             </Suspense>
           )}
           {isVPS && s.status === "active" && <UpgradePanel serviceId={s.id} />}
+          {isHosting && s.status === "active" && <HostingUpgradePanel serviceId={s.id} />}
           <AutoRenewToggle service={s} />
           <TerminateRequestPanel service={s} />
 

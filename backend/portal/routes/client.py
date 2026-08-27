@@ -814,3 +814,122 @@ async def client_hosting_packages(sid: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=502, detail=f"Gagal mengambil paket: {str(e)[:160]}")
     current = ((svc.get("config") or {}).get("whm_package") or "").strip()
     return {"packages": packages, "current_package": current}
+
+
+# ---------------- Client self-service hosting package upgrade ----------------
+def _hosting_tiers(product: dict) -> list:
+    """Normalize the catalog-owned, billable hosting tiers for client use."""
+    provision = product.get("provision") if isinstance(product.get("provision"), dict) else {}
+    out = []
+    for tier in provision.get("packages") or []:
+        if not isinstance(tier, dict) or not str(tier.get("name") or "").strip():
+            continue
+        try:
+            price = float(tier.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        out.append({"name": str(tier["name"]).strip(),
+                    "label": str(tier.get("label") or tier["name"]).strip(),
+                    "disk_gb": tier.get("disk_gb"),
+                    "bandwidth_gb": tier.get("bandwidth_gb"), "price": price})
+    return out
+
+
+async def _hosting_upgrade_ctx(db, sid: str, user: dict) -> tuple:
+    svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if svc.get("category") != "hosting":
+        raise HTTPException(status_code=400, detail="Layanan ini bukan hosting")
+    if svc.get("status") != "active":
+        raise HTTPException(status_code=403, detail="Layanan harus aktif untuk melakukan upgrade")
+    product_id = svc.get("product_id")
+    try:
+        product = await db.products.find_one({"_id": _oid(str(product_id))}) if product_id else None
+    except Exception:
+        product = None
+    tiers = _hosting_tiers(product or {})
+    cfg = svc.get("config") or {}
+    current_name = str(cfg.get("whm_package") or "").strip()
+    current = next((tier for tier in tiers if tier["name"] == current_name), None)
+    return svc, tiers, current
+
+
+def _hosting_upgrade_quote(svc: dict, current: dict, target: dict, tax_percent: float) -> dict:
+    monthly_delta = round(float(target["price"]) - float(current["price"]), 2)
+    today = datetime.now(timezone.utc).date()
+    try:
+        renewal = datetime.fromisoformat(svc.get("next_renewal", "")).date()
+        days_left = max(0, min(31, (renewal - today).days))
+    except Exception:
+        days_left = 30
+    prorated = round(monthly_delta * days_left / 30.0, 2)
+    tax = round(prorated * tax_percent / 100.0, 2)
+    return {"current": current, "target": target, "monthly_delta": monthly_delta,
+            "days_left": days_left, "prorated_charge": prorated,
+            "tax_percent": tax_percent, "tax_amount": tax,
+            "total": round(prorated + tax, 2)}
+
+
+async def _hosting_upgrade_target(db, sid: str, user: dict, package: str) -> tuple:
+    svc, tiers, current = await _hosting_upgrade_ctx(db, sid, user)
+    if not ((svc.get("config") or {}).get("username") or "").strip() or not tiers:
+        raise HTTPException(status_code=400, detail="Upgrade paket hosting belum tersedia untuk layanan ini")
+    target = next((tier for tier in tiers if tier["name"] == str(package or "").strip()), None)
+    if not target or not current:
+        raise HTTPException(status_code=400, detail="Package upgrade tidak valid")
+    if target["name"] == current["name"]:
+        raise HTTPException(status_code=400, detail="Package yang dipilih sama dengan package saat ini")
+    tax_percent = float(await _get_setting_value(db, "default_tax_percent", 11.0))
+    quote = _hosting_upgrade_quote(svc, current, target, tax_percent)
+    if quote["monthly_delta"] < 0:
+        raise HTTPException(status_code=400, detail="downgrade memerlukan persetujuan admin")
+    return svc, current, target, quote
+
+
+@router.get("/client/services/{sid}/hosting/upgrade/options")
+async def client_hosting_upgrade_options(sid: str, user=Depends(get_current_user)):
+    db = await _get_db()
+    svc, tiers, current = await _hosting_upgrade_ctx(db, sid, user)
+    username = ((svc.get("config") or {}).get("username") or "").strip()
+    if not username or not tiers:
+        return {"tiers": [], "current": current, "pending_upgrade": bool(svc.get("pending_upgrade"))}
+    return {"tiers": [tier for tier in tiers if not current or tier["name"] != current["name"]],
+            "current": current, "pending_upgrade": bool(svc.get("pending_upgrade"))}
+
+
+@router.post("/client/services/{sid}/hosting/upgrade/preview")
+async def client_hosting_upgrade_preview(sid: str, payload: dict, user=Depends(get_current_user)):
+    db = await _get_db()
+    _svc, _current, _target, quote = await _hosting_upgrade_target(db, sid, user, payload.get("package"))
+    return quote
+
+
+@router.post("/client/services/{sid}/hosting/upgrade")
+async def client_hosting_upgrade_request(sid: str, payload: dict, request: Request,
+                                         user=Depends(get_current_user)):
+    db = await _get_db()
+    svc, current, target, quote = await _hosting_upgrade_target(db, sid, user, payload.get("package"))
+    if svc.get("pending_upgrade"):
+        raise HTTPException(status_code=409, detail="Masih ada upgrade yang menunggu pembayaran untuk layanan ini")
+    due = (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
+    item = {"description": (f"Upgrade hosting {current['label']} ke {target['label']} - "
+                            f"{svc.get('product_name', '')} (prorata {quote['days_left']} hari)"),
+            "qty": 1, "price": quote["prorated_charge"], "total": quote["prorated_charge"]}
+    inv = {"user_id": ObjectId(user["id"]), "items": [item], "subtotal": quote["prorated_charge"],
+           "tax_percent": quote["tax_percent"], "tax_amount": quote["tax_amount"],
+           "total": quote["total"], "due_date": due, "status": "unpaid", "payment_method": None,
+           "paid_at": None, "notes": f"Upgrade paket hosting {svc.get('name', '')} - berlaku setelah pembayaran.",
+           "service_id": str(svc["_id"]),
+           "upgrade": {"type": "hosting_package", "package": target["name"], "tier": target,
+                       "monthly_delta": quote["monthly_delta"]}, "created_at": _now()}
+    inv = await _insert_numbered(db, "invoices", "INV", inv)
+    await db.services.update_one({"_id": svc["_id"]}, {"$set": {"pending_upgrade": {
+        "type": "hosting_package", "package": target["name"], "tier": target,
+        "monthly_delta": quote["monthly_delta"], "invoice_id": str(inv["_id"]),
+        "requested_at": _now()}}})
+    await log_audit(db, actor=user, action="client_hosting.upgrade_requested", category="services",
+                    target_type="service", target_id=str(svc["_id"]), target_label=svc.get("name", ""),
+                    metadata={"package": target["name"], "invoice": inv["number"], "total": inv["total"]},
+                    request=request)
+    return {"invoice_id": str(inv["_id"]), "amount": inv["total"], "due_date": due}

@@ -252,10 +252,12 @@ class SelfServiceLogEntry(BaseModel):
 
 
 class PendingUpgrade(BaseModel):
-    """Upgrade resource yang menunggu pembayaran invoice selisih."""
+    """Upgrade resource atau paket hosting yang menunggu pembayaran invoice selisih."""
+    type: str = "resource"  # resource | hosting_package
     cpu: int = 0
     ram_gb: int = 0
     disk_gb: int = 0
+    package: str = ""  # untuk hosting_package upgrade
     monthly_delta: float = 0
     invoice_id: str
     requested_at: str

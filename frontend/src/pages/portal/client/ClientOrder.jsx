@@ -191,9 +191,53 @@ const OsPicker = ({ value, onChange }) => {
   );
 };
 
-const StepConfigure = ({ product, selections, setSelections, osChoice, setOsChoice, onNext, onBack }) => {
+const domainRe = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+
+const HostingConfigCard = ({ product, value, onChange }) => {
+  const provision = product.provision || {};
+  const tiers = provision.packages || [];
+  const customerDomain = provision.domain_policy === "customer_domain";
+  const mode = value.domain_mode || (customerDomain ? "customer_domain" : "subdomain");
+  const domainInvalid = mode === "customer_domain" && value.domain && !domainRe.test(value.domain.trim());
+  return (
+    <Card className="p-5" data-testid="hosting-config">
+      <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400">hosting · required</div>
+      <div className="font-extrabold text-[#0a2350] text-lg">Konfigurasi Hosting</div>
+      {tiers.length > 0 && (
+        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2" data-testid="hosting-tier-selector">
+          {tiers.map((tier) => (
+            <label key={tier.name} className={`cursor-pointer p-3 rounded-xl border-2 ${value.whm_package === tier.name ? "border-[#f5b120] bg-orange-50/60" : "border-slate-200 hover:border-[#0a2350]"}`}>
+              <input type="radio" className="sr-only" name="hosting-tier" checked={value.whm_package === tier.name} onChange={() => onChange({ ...value, whm_package: tier.name })} data-testid={`hosting-tier-${tier.name}`} />
+              <div className="font-bold text-[#0a2350]">{tier.label || tier.name}</div>
+              <div className="text-xs text-slate-500 mt-1">{Number(tier.disk_gb || 0)} GB disk · {Number(tier.bandwidth_gb || 0)} GB bandwidth</div>
+              <div className="text-sm font-extrabold text-[#0a2350] mt-1">{idr(tier.price)}/bln</div>
+            </label>
+          ))}
+        </div>
+      )}
+      <div className="mt-4">
+        {customerDomain && (
+          <div className="flex flex-wrap gap-4 mb-2 text-sm font-semibold text-slate-700">
+            <label className="flex items-center gap-2"><input type="radio" checked={mode === "customer_domain"} onChange={() => onChange({ ...value, domain_mode: "customer_domain", domain: "" })} /> Gunakan domain sendiri</label>
+            <label className="flex items-center gap-2"><input type="radio" checked={mode === "subdomain"} onChange={() => onChange({ ...value, domain_mode: "subdomain", domain: "" })} /> Gunakan subdomain {provision.subdomain_suffix ? `.${provision.subdomain_suffix}` : ""}</label>
+          </div>
+        )}
+        <label><div className={labelClass}>{mode === "customer_domain" ? "Domain Anda *" : "Nama subdomain preferred (opsional)"}</div>
+          <div className="flex items-center gap-2">
+            <input value={value.domain || ""} onChange={(e) => onChange({ ...value, domain: e.target.value })} className={inputClass} placeholder={mode === "customer_domain" ? "contoh.com" : "nama-anda"} required={mode === "customer_domain"} data-testid="hosting-domain" />
+            {mode === "subdomain" && provision.subdomain_suffix && <span className="text-sm text-slate-500 whitespace-nowrap">.{provision.subdomain_suffix}</span>}
+          </div>
+        </label>
+        {domainInvalid && <p className="mt-1 text-xs font-semibold text-red-600" data-testid="hosting-domain-error">Format domain tidak valid.</p>}
+      </div>
+    </Card>
+  );
+};
+
+const StepConfigure = ({ product, selections, setSelections, osChoice, setOsChoice, hostingCfg, setHostingCfg, onNext, onBack }) => {
   const groups = product.option_groups || [];
   const needsOs = ["vps", "cloud"].includes(product.category);
+  const isHosting = product.category === "hosting";
 
   // Ensure every required dropdown has a default value
   useEffect(() => {
@@ -229,18 +273,44 @@ const StepConfigure = ({ product, selections, setSelections, osChoice, setOsChoi
   };
   const getForGroup = (key) => selections.find((s) => s.group_key === key) || {};
 
+  // Default hosting config: tier match provision.package or first tier
+  useEffect(() => {
+    if (!isHosting) return;
+    const provision = product.provision || {};
+    const tiers = provision.packages || [];
+    const preferred = tiers.find((t) => t.name === provision.package) || tiers[0];
+    setHostingCfg((prev) => ({
+      whm_package: prev.whm_package || preferred?.name || provision.package || "",
+      domain: prev.domain || "",
+      domain_mode: prev.domain_mode || (provision.domain_policy === "customer_domain" ? "customer_domain" : "subdomain"),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.id]);
+
+  const hostingValid = () => {
+    if (!isHosting) return true;
+    const mode = hostingCfg.domain_mode || (product.provision?.domain_policy === "customer_domain" ? "customer_domain" : "subdomain");
+    if (mode !== "customer_domain") return true;
+    const d = (hostingCfg.domain || "").trim();
+    return !!d && domainRe.test(d);
+  };
+  const canContinue = hostingValid();
+
   if (groups.length === 0) {
     return (
       <div className="mt-6 space-y-4">
         {needsOs && <OsPicker value={osChoice} onChange={setOsChoice} />}
-        <Card className="p-6 text-slate-600">
-          <div className="font-bold text-[#0a2350] mb-1">{needsOs ? "Fixed specs" : "No configuration needed"}</div>
-          This product ships with fixed specs. Click Continue to review your order.
-          <SpecChips prov={product.provision} testid="configure-spec-chips" />
-        </Card>
+        {isHosting && <HostingConfigCard product={product} value={hostingCfg} onChange={setHostingCfg} />}
+        {!isHosting && (
+          <Card className="p-6 text-slate-600">
+            <div className="font-bold text-[#0a2350] mb-1">{needsOs ? "Fixed specs" : "No configuration needed"}</div>
+            This product ships with fixed specs. Click Continue to review your order.
+            <SpecChips prov={product.provision} testid="configure-spec-chips" />
+          </Card>
+        )}
         <div className="mt-6 flex justify-between">
           <button onClick={onBack} className={btnSecondary}><ArrowLeft className="h-4 w-4" /> Back</button>
-          <button onClick={onNext} className={btnPrimary} data-testid="order-step-continue">Continue <ArrowRight className="h-4 w-4" /></button>
+          <button onClick={onNext} disabled={!canContinue} className={`${btnPrimary} ${!canContinue ? "opacity-50 cursor-not-allowed" : ""}`} data-testid="order-step-continue">Continue <ArrowRight className="h-4 w-4" /></button>
         </div>
       </div>
     );
@@ -249,6 +319,7 @@ const StepConfigure = ({ product, selections, setSelections, osChoice, setOsChoi
   return (
     <div className="mt-4 space-y-4">
       {needsOs && <OsPicker value={osChoice} onChange={setOsChoice} />}
+      {isHosting && <HostingConfigCard product={product} value={hostingCfg} onChange={setHostingCfg} />}
       {groups.map((g) => (
         <Card key={g.key} className="p-5">
           <div className="flex items-center justify-between mb-3">
@@ -345,7 +416,7 @@ const StepConfigure = ({ product, selections, setSelections, osChoice, setOsChoi
 
       <div className="mt-6 flex justify-between">
         <button onClick={onBack} className={btnSecondary}><ArrowLeft className="h-4 w-4" /> Back</button>
-        <button onClick={onNext} className={btnPrimary} data-testid="order-step-continue">Continue <ArrowRight className="h-4 w-4" /></button>
+        <button onClick={onNext} disabled={!canContinue} className={`${btnPrimary} ${!canContinue ? "opacity-50 cursor-not-allowed" : ""}`} data-testid="order-step-continue">Continue <ArrowRight className="h-4 w-4" /></button>
       </div>
     </div>
   );
@@ -472,7 +543,7 @@ const LiveTotalBar = ({ product, selections, addonIds, addons }) => {
 };
 
 /* ============ Step 4 - review cart, confirm, generate invoice ============ */
-const StepReview = ({ product, selections, addonIds, notes, setNotes, osChoice, onBack, onConfirmed }) => {
+const StepReview = ({ product, selections, addonIds, notes, setNotes, osChoice, hostingCfg, onBack, onConfirmed }) => {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -490,9 +561,15 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, osChoice, 
     submittingRef.current = true;
     setBusy(true); setErr("");
     try {
+      const isHosting = product.category === "hosting";
+      const config = osChoice ? { os: osChoice } : {};
+      if (isHosting) {
+        if (hostingCfg?.whm_package) config.whm_package = hostingCfg.whm_package;
+        config.domain = (hostingCfg?.domain || "").trim();
+      }
       const { data } = await api.post("/client/orders", {
         product_id: product.id, selections, addon_ids: addonIds, notes,
-        config: osChoice ? { os: osChoice } : {},
+        config,
       });
       onConfirmed(data);
     } catch (e) {
@@ -531,6 +608,8 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, osChoice, 
           <Row label={`${product.name} - base plan (monthly)`} value={idr(preview.base_line.monthly)} />
           {preview.base_line.setup > 0 && <Row label={`${product.name} - setup fee`} value={idr(preview.base_line.setup)} muted />}
           {osChoice && <Row label="Operating System" value={osChoice} muted />}
+          {product.category === "hosting" && hostingCfg?.whm_package && <Row label="WHM package" value={hostingCfg.whm_package} muted />}
+          {product.category === "hosting" && hostingCfg?.domain && <Row label="Domain" value={hostingCfg.domain} muted />}
 
           {preview.option_lines.length > 0 && <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mt-4">Configuration</div>}
           {preview.option_lines.map((ol, i) => (
@@ -634,6 +713,7 @@ const ClientOrder = () => {
   const [addonIds, setAddonIds] = useState([]);
   const [notes, setNotes] = useState("");
   const [osChoice, setOsChoice] = useState("");
+  const [hostingCfg, setHostingCfg] = useState({});
   const [result, setResult] = useState(null);
   const [orders, setOrders] = useState([]);
 
@@ -690,6 +770,7 @@ const ClientOrder = () => {
     setAddonIds([]);
     setNotes("");
     setOsChoice("");
+    setHostingCfg({});
     setResult(null);
   };
 
@@ -720,6 +801,8 @@ const ClientOrder = () => {
             setSelections={setSelections}
             osChoice={osChoice}
             setOsChoice={setOsChoice}
+            hostingCfg={hostingCfg}
+            setHostingCfg={setHostingCfg}
             onBack={() => setStep(0)}
             onNext={() => setStep(2)}
           />
@@ -749,6 +832,7 @@ const ClientOrder = () => {
           notes={notes}
           setNotes={setNotes}
           osChoice={osChoice}
+          hostingCfg={hostingCfg}
           onBack={() => setStep(2)}
           onConfirmed={(r) => { setResult(r); setStep(4); loadOrders(); }}
         />

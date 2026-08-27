@@ -29,7 +29,7 @@ from .. import integrations_v2 as iv2
 from .domains import _apply_domain_renewal, _auto_register_domain, _apply_domain_transfer  # noqa: E402
 from .ssl import _provision_ssl_order  # noqa: E402
 from .provision import (_provision_order_from_invoice,  # noqa: E402
-                        _proxmox_settings_for_service)
+                        _proxmox_settings_for_service, _cp_settings_for_service)
 from .shared import BILLING_SETTING_DEFAULTS, _EXTRA_PAYMENT_MODULES, _get_db, _get_setting_value, _iso, _load_user, _log_transaction, _mark_overdue, _next_number, _now, _oid, _sales_scope_filter, _serialize_invoice, _set_setting_value, _sum_applied_credit, _pagination_params, _pagination_response  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
 from .users import _paginate  # noqa: E402
@@ -162,6 +162,31 @@ async def _apply_pending_upgrade(db, inv: dict) -> bool:
         except (TypeError, ValueError):
             return 0
 
+    # --- Hosting package upgrade branch ---
+    if pending.get("type") == "hosting_package":
+        target_pkg = (pending.get("package") or "").strip()
+        username = ((svc.get("config") or {}).get("username") or "").strip()
+        if not target_pkg or not username:
+            return False
+        settings = await _cp_settings_for_service(db, svc)
+        if not settings:
+            # No WHM server -> keep pending_upgrade for retry
+            return False
+        try:
+            await iv2.CpanelClient(settings).change_package(username, target_pkg)
+        except Exception:
+            # WHM call failed -> keep pending_upgrade for retry
+            return False
+        await db.services.update_one(
+            {"_id": svc["_id"]},
+            {"$set": {"config.whm_package": target_pkg,
+                      "config.package_changed_at": _now()},
+             "$unset": {"pending_upgrade": ""},
+             "$push": {"self_service_log": {"at": _now(), "action": "upgrade_applied",
+                                            "by": f"billing (invoice {inv.get('number', '')})"}}})
+        return True
+
+    # --- VPS/Cloud resource upgrade branch (default) ---
     cfg = svc.get("config") or {}
     new_cpu = _num(cfg.get("cpu")) + int(up.get("cpu") or 0)
     new_ram = _num(cfg.get("ram_gb")) + int(up.get("ram_gb") or 0)

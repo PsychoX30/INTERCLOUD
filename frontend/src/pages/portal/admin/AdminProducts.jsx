@@ -182,6 +182,8 @@ const emptyGroup = () => ({
   key: "", label: "", type: "dropdown", required: true, options: [emptyOption()],
   min_qty: 0, max_qty: 10, step_qty: 1, unit_label: "", unit_price_monthly: 0, unit_price_setup: 0,
 });
+// Baris tier hosting (paket WHM) untuk editor provisioning hosting
+const emptyHostingTier = () => ({ name: "", label: "", disk_gb: 0, bandwidth_gb: 0, price: 0 });
 
 const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
   const [f, setF] = useState({
@@ -232,6 +234,22 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
         cores: Number(f.provision?.cores) || null,
         memory_mb: Math.round((Number(f.provision?.ram_gb) || 0) * 1024) || null,
         disk_gb: Number(f.provision?.disk_gb) || null,
+      } : f.category === "hosting" ? {
+        package: String(f.provision?.package || "").trim(),
+        packages: (f.provision?.packages || []).map((tier) => ({
+          name: String(tier.name || "").trim(),
+          label: String(tier.label || "").trim(),
+          disk_gb: Number(tier.disk_gb) || 0,
+          bandwidth_gb: Number(tier.bandwidth_gb) || 0,
+          price: Number(tier.price) || 0,
+        })).filter((tier) => tier.name),
+        domain_policy: f.provision?.domain_policy === "customer_domain" ? "customer_domain" : "subdomain",
+        subdomain_suffix: String(f.provision?.subdomain_suffix || "").trim(),
+        nameservers: (Array.isArray(f.provision?.nameservers)
+          ? f.provision.nameservers
+          : String(f.provision?.nameservers || "").split(",")
+        ).map((ns) => String(ns).trim()).filter(Boolean),
+        set_registrar_ns: !!f.provision?.set_registrar_ns,
       } : {},
       sort_order: Number(f.sort_order) || 100,
     };
@@ -306,6 +324,52 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
               <label><div className={labelClass}>RAM (GB)</div><input type="number" min="0" step="0.5" value={f.provision?.ram_gb ?? ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, ram_gb: e.target.value } })} className={inputClass} placeholder="1" data-testid="base-spec-ram" /></label>
               <label><div className={labelClass}>Storage (GB)</div><input type="number" min="0" value={f.provision?.disk_gb || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, disk_gb: e.target.value } })} className={inputClass} placeholder="20" data-testid="base-spec-disk" /></label>
               <label><div className={labelClass}>Template VMID (ops.)</div><input type="number" min="0" value={f.provision?.template_vmid || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, template_vmid: e.target.value } })} className={inputClass} placeholder="auto" data-testid="base-spec-template" /></label>
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Hosting provisioning (WHM) ---------- */}
+        {!f.is_addon && f.category === "hosting" && (
+          <div className="mt-5 border-t border-slate-200 pt-5" data-testid="product-provision-settings">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350] mb-1">Provisioning Hosting (WHM)</div>
+            <p className="text-xs text-slate-500 mb-3">Paket WHM & kebijakan domain yang dipakai saat layanan hosting diaktifkan otomatis setelah invoice dibayar.</p>
+            <label><div className={labelClass}>Paket WHM default</div><input value={f.provision?.package || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, package: e.target.value } })} className={inputClass} placeholder="starter" data-testid="p-provision-whm-package" /></label>
+            <div className="mt-4" data-testid="p-provision-tiers">
+              <div className="flex items-center justify-between mb-2">
+                <div className={labelClass}>Paket/Tier Hosting</div>
+                <button type="button" onClick={() => setF({ ...f, provision: { ...f.provision, packages: [...(f.provision?.packages || []), emptyHostingTier()] } })} className="text-xs font-bold text-[#0a2350] bg-slate-100 hover:bg-[#f5b120] hover:text-[#0a2350] px-3 py-1.5 rounded-lg" data-testid="p-provision-tier-add"><Plus className="h-3 w-3 inline" /> Tambah paket</button>
+              </div>
+              <div className="grid grid-cols-[1fr_1fr_90px_110px_120px_20px] gap-2 mb-1 px-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                <div>WHM package</div><div>Label</div><div>Disk GB</div><div>Bandwidth GB</div><div>Harga IDR</div><div></div>
+              </div>
+              {(f.provision?.packages || []).map((tier, ti) => {
+                const setTier = (patch) => {
+                  const packages = [...(f.provision?.packages || [])];
+                  packages[ti] = { ...packages[ti], ...patch };
+                  setF({ ...f, provision: { ...f.provision, packages } });
+                };
+                return (
+                  <div key={ti} className="grid grid-cols-[1fr_1fr_90px_110px_120px_20px] gap-2 mb-1.5 items-center">
+                    <input placeholder="starter" value={tier.name || ""} onChange={(e) => setTier({ name: e.target.value })} className={`${inputClass} h-9`} />
+                    <input placeholder="Starter" value={tier.label || ""} onChange={(e) => setTier({ label: e.target.value })} className={`${inputClass} h-9`} />
+                    <input type="number" min="0" value={tier.disk_gb ?? 0} onChange={(e) => setTier({ disk_gb: e.target.value })} className={`${inputClass} h-9`} />
+                    <input type="number" min="0" value={tier.bandwidth_gb ?? 0} onChange={(e) => setTier({ bandwidth_gb: e.target.value })} className={`${inputClass} h-9`} />
+                    <input type="number" min="0" value={tier.price ?? 0} onChange={(e) => setTier({ price: e.target.value })} className={`${inputClass} h-9`} />
+                    <button type="button" onClick={() => setF({ ...f, provision: { ...f.provision, packages: (f.provision?.packages || []).filter((_, i) => i !== ti) } })} className="text-slate-500 hover:text-red-600"><X className="h-3.5 w-3.5" /></button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <label><div className={labelClass}>Kebijakan domain</div>
+                <select value={f.provision?.domain_policy || "subdomain"} onChange={(e) => setF({ ...f, provision: { ...f.provision, domain_policy: e.target.value } })} className={inputClass} data-testid="p-provision-domain-policy">
+                  <option value="subdomain">Subdomain</option>
+                  <option value="customer_domain">Domain pelanggan</option>
+                </select>
+              </label>
+              <label><div className={labelClass}>Suffix subdomain</div><input value={f.provision?.subdomain_suffix || ""} onChange={(e) => setF({ ...f, provision: { ...f.provision, subdomain_suffix: e.target.value } })} className={inputClass} placeholder="hosting.example.com" data-testid="p-provision-subdomain-suffix" /></label>
+              <label className="col-span-2"><div className={labelClass}>Nameservers (pisahkan dengan koma)</div><input value={Array.isArray(f.provision?.nameservers) ? f.provision.nameservers.join(", ") : (f.provision?.nameservers || "")} onChange={(e) => setF({ ...f, provision: { ...f.provision, nameservers: e.target.value } })} className={inputClass} placeholder="ns1.example.com, ns2.example.com" data-testid="p-provision-nameservers" /></label>
+              <label className="col-span-2 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={!!f.provision?.set_registrar_ns} onChange={(e) => setF({ ...f, provision: { ...f.provision, set_registrar_ns: e.target.checked } })} data-testid="p-provision-set-registrar-ns" /> Set NS di registrar</label>
             </div>
           </div>
         )}
