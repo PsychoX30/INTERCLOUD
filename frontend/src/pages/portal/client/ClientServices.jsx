@@ -107,7 +107,7 @@ const KS = {
 };
 
 const VncConsoleModal = ({ serviceId, onClose }) => {
-  const RFB = useRef(null);
+  const [RFB, setRFB] = useState(null);
   const screenRef = useRef(null);
   const rfbRef = useRef(null);
   const [state, setState] = useState("connecting");
@@ -127,7 +127,7 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
       .then(([{ data }, RFBMod]) => {
         if (cancelled || !screenRef.current) return;
         setInfo(data);
-        RFB.current = RFBMod;
+        setRFB(() => RFBMod);
         const base = (process.env.REACT_APP_BACKEND_URL || window.location.origin).replace(/^http/, "ws");
         const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
                     `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}`;
