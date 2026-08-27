@@ -225,6 +225,8 @@ def _resolve_hosting_config(prod: dict, order_cfg: dict) -> dict:
     return {
         "package": (tier_pkg or cfg.get("package") or provision.get("package") or None),
         "tier_name": chosen_tier or None,
+        "tier_disk_gb": int((tier or {}).get("disk_gb") or 0),
+        "tier_bw_gb": int((tier or {}).get("bandwidth_gb") or 0),
         "domain": (cfg.get("domain") or "").strip(),
         "domain_policy": provision.get("domain_policy") or "subdomain",
         "subdomain_suffix": provision.get("subdomain_suffix") or "",
@@ -397,20 +399,52 @@ async def _auto_provision(db, order: dict) -> dict:
             if key == "cpanel":
                 # Multi-server WHM: pick best node via registry, fallback legacy
                 pkg_name = hosting_cfg.get("package") or ""
-                s, cp_report = await _pick_cp_server(db, package_name=pkg_name)
+                s, cp_report = await _pick_cp_server(db, package_name=pkg_name,
+                                                     allow_auto_create=True)
                 if s:
-                    # Prefer the report row for the chosen node; fall back to any
+                    chosen_row = next((r for r in cp_report
+                                       if r.get("server_id") == s.get("server_id")), {})
+                    # Prefer the resolved package for the chosen node; fall back to any
                     # row that resolved a package, then to the requested name.
                     # Never silently fall through to None, which would make WHM
                     # apply its own default package.
                     resolved_pkg = (
-                        next((r.get("resolved_package") for r in cp_report
-                              if r.get("server_id") == s.get("server_id")
-                              and r.get("resolved_package")), None)
+                        chosen_row.get("resolved_package")
                         or next((r.get("resolved_package") for r in cp_report
                                  if r.get("resolved_package")), None)
                         or (pkg_name or None)
                     )
+                    # Seamless auto-provision: if the chosen node lacks this package,
+                    # create it on WHM (addpkg) using the tier spec. WHM auto-prefixes
+                    # the reseller username, so pass the logical tier name. Idempotent.
+                    if pkg_name and not chosen_row.get("resolved_package") \
+                            and chosen_row.get("can_create_pkg"):
+                        logical = str(hosting_cfg.get("tier_name") or pkg_name).strip()
+                        pkg_ok = False
+                        try:
+                            cp_tmp = iv2.CpanelClient(s)
+                            await cp_tmp.create_package(
+                                name=logical,
+                                quota_mb=max(256, int(hosting_cfg.get("tier_disk_gb") or 0) * 1024),
+                                bwlimit_mb=max(1024, int(hosting_cfg.get("tier_bw_gb") or 0) * 1024),
+                            )
+                            fresh = await cp_tmp.list_packages()
+                            resolved_pkg = _match_whm_package(pkg_name, fresh) \
+                                or _match_whm_package(logical, fresh) or resolved_pkg
+                            pkg_ok = bool(resolved_pkg) and _match_whm_package(
+                                pkg_name, fresh) is not None
+                            if pkg_ok:
+                                await _log("whm_package_autocreated",
+                                           f"WHM package '{logical}' auto-created on "
+                                           f"'{s.get('name','')}' -> resolved '{resolved_pkg}'.")
+                        except Exception as e:
+                            await _log("whm_package_autocreate_failed",
+                                       f"Auto-create package '{logical}' on "
+                                       f"'{s.get('name','')}' gagal: {str(e)[:200]}")
+                        # Never hand an unresolved package to createacct: WHM would
+                        # either fail late or silently apply its own default plan.
+                        if not pkg_ok:
+                            continue
                     chosen = (key, label, cls, pkg_kw, s, resolved_pkg)
                     break
             else:
@@ -1740,9 +1774,14 @@ async def _cp_settings_for_service(db, svc: dict) -> Optional[dict]:
     return await _cp_settings_by_id(db, sid)
 
 
-async def _pick_cp_server(db, *, package_name: str = "") -> tuple:
+async def _pick_cp_server(db, *, package_name: str = "",
+                          allow_auto_create: bool = False) -> tuple:
     """Placement: pilih WHM server aktif dengan slot terbanyak (max_accounts - current)
-    yang memiliki package_name, tie-breaker loadavg five. Return (settings, report)."""
+    yang memiliki package_name, tie-breaker loadavg five. Return (settings, report).
+
+    ``allow_auto_create`` (opt-in, provisioning path only): jika True, server tanpa
+    package tetap dianggap kandidat (package akan di-addpkg sebelum createacct).
+    Default False mempertahankan kontrak lama (server tanpa package = tidak eligible)."""
     servers = await _cp_servers(db)
     report = []
     best = None
@@ -1755,16 +1794,23 @@ async def _pick_cp_server(db, *, package_name: str = "") -> tuple:
         resolved_pkg = (_match_whm_package(package_name, cap.get("packages", []))
                         if package_name else None)
         has_pkg = (not package_name) or bool(resolved_pkg)
+        # Server tanpa package bisa jadi kandidat auto-create HANYA saat provisioning
+        # (allow_auto_create). Endpoint capacity/read-only tetap pakai kontrak lama.
+        can_create_pkg = (not has_pkg) and bool(package_name) and allow_auto_create
         entry = {"server": s.get("name", ""), "server_id": s.get("server_id", ""),
                  "ok": cap.get("ok"), "error": cap.get("error"),
                  "accounts": current, "max_accounts": max_acct, "slots": slots,
                  "has_package": has_pkg, "resolved_package": resolved_pkg,
+                 "can_create_pkg": can_create_pkg,
                  "loadavg": cap.get("loadavg", {})}
         report.append(entry)
-        if not cap.get("ok") or slots <= 0 or not has_pkg:
+        eligible = cap.get("ok") and slots > 0 and (has_pkg or can_create_pkg)
+        if not eligible:
             continue
         load_five = (cap.get("loadavg") or {}).get("five", 9999.0)
-        score = (slots, -float(load_five))
+        # has_pkg (True > False) ensures servers with the package already present
+        # are always preferred over ones that would need auto-creation.
+        score = (1 if has_pkg else 0, slots, -float(load_five))
         if best is None or score > best[0]:
             best = (score, s)
     if best:

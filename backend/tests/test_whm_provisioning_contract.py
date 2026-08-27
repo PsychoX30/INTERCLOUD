@@ -356,7 +356,7 @@ class TestAutoProvisionHosting:
                  "config": {}, "selections": [], "addon_ids": []}
         s = _settings(name="WHM 1", server_id="aabbccddeeff001122334459")
 
-        async def fake_pick(db, package_name=""):
+        async def fake_pick(db, package_name="", allow_auto_create=False):
             return s, [{"resolved_package": "uxzjdmsf_starter"}]
 
         monkeypatch.setattr(provision, "_pick_cp_server", fake_pick)
@@ -395,7 +395,7 @@ class TestAutoProvisionHosting:
                  "config": {}, "selections": [], "addon_ids": []}
         s = _settings(name="WHM 1", server_id="aabbccddeeff001122334459")
 
-        async def fake_pick(db, package_name=""):
+        async def fake_pick(db, package_name="", allow_auto_create=False):
             return s, [{"resolved_package": "uxzjdmsf_starter"}]
 
         monkeypatch.setattr(provision, "_pick_cp_server", fake_pick)

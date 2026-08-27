@@ -472,7 +472,32 @@ class CpanelClient:
 
     async def list_packages(self) -> list:
         data = await self._call("listpkgs", {})
-        return [p.get("name") for p in (data.get("data") or {}).get("pkg", [])]
+        # WHM API 1 response is top-level ``package`` on our live WHM;
+        # accept documented/older envelopes too for provider compatibility.
+        packages = (data.get("package") or (data.get("data") or {}).get("package")
+                    or (data.get("data") or {}).get("pkg") or [])
+        return [p.get("name") for p in packages if isinstance(p, dict) and p.get("name")]
+
+    async def create_package(self, name: str, quota_mb: int = 256,
+                             bwlimit_mb: int = 1024, featurelist: str = "default",
+                             maxaddon: int = 0, maxpark: int = 0, maxsub: int = 1,
+                             maxsql: int = 1, maxpop: int = 1, maxlst: int = 0) -> dict:
+        """Create a WHM package (addpkg). Idempotent: already-exists is success.
+        WHM auto-prefixes reseller username, so pass the logical name."""
+        params = {"name": name, "quota": int(quota_mb), "bwlimit": int(bwlimit_mb),
+                  "featurelist": featurelist, "maxaddon": maxaddon, "maxpark": maxpark,
+                  "maxsub": maxsub, "maxsql": maxsql, "maxpop": maxpop, "maxlst": maxlst}
+        data = await self._call("addpkg", params)
+        meta = data.get("metadata") or {}
+        result = data.get("result") or []
+        # success: result[0].status == 1
+        if result and str(result[0].get("status")) == "1":
+            return result[0]
+        # idempotency: package already exists → treat as success
+        msg = str(result[0].get("statusmsg") if result else meta.get("reason", ""))
+        if "already exists" in msg.lower():
+            return {"status": 1, "statusmsg": "already exists (idempotent)", "name": name}
+        raise RuntimeError(msg or "addpkg failed")
 
     async def create_account(self, domain: str, username: str, password: str,
                              package: str | None = None, contact_email: str = "") -> dict:
