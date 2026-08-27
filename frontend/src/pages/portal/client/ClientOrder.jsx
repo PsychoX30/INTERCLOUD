@@ -490,9 +490,24 @@ const StepAddons = ({ product, allAddons, addonIds, setAddonIds, onNext, onBack 
 };
 
 /* ============ Live running total - updates real-time while configuring ============ */
-const computeLiveTotal = (product, selections, addonIds, addons) => {
-  let monthly = Number(product.price_monthly || 0);
-  let setup = Number(product.setup_fee || 0);
+// Resolve the selected hosting tier from product.provision.packages using the
+// tier NAME chosen in hostingCfg.whm_package. For tiered hosting products the
+// billable price lives on the tier, not on product.price_monthly (which is
+// typically 0), so the tier price must drive the live estimate.
+const resolveHostingTier = (product, hostingCfg) => {
+  if (!product || product.category !== "hosting") return null;
+  const tiers = (product.provision && product.provision.packages) || [];
+  if (!tiers.length) return null;
+  const requested = (hostingCfg && hostingCfg.whm_package) || (product.provision && product.provision.package) || "";
+  return tiers.find((t) => t && String(t.name) === String(requested)) || null;
+};
+
+const computeLiveTotal = (product, selections, addonIds, addons, hostingCfg) => {
+  const tier = resolveHostingTier(product, hostingCfg);
+  // For tiered hosting the tier price is authoritative and replaces the base
+  // product price to avoid double-charging base + tier.
+  let monthly = tier ? Number(tier.price || 0) : Number(product.price_monthly || 0);
+  let setup = tier ? Number(tier.setup_fee || 0) : Number(product.setup_fee || 0);
   for (const g of product.option_groups || []) {
     const sel = selections.find((s) => s.group_key === g.key) || {};
     if (g.type === "quantity") {
@@ -519,12 +534,18 @@ const computeLiveTotal = (product, selections, addonIds, addons) => {
   return { monthly, setup };
 };
 
-const LiveTotalBar = ({ product, selections, addonIds, addons }) => {
-  const { monthly, setup } = computeLiveTotal(product, selections, addonIds, addons);
+const LiveTotalBar = ({ product, selections, addonIds, addons, hostingCfg }) => {
+  const { monthly, setup } = computeLiveTotal(product, selections, addonIds, addons, hostingCfg);
+  const tier = resolveHostingTier(product, hostingCfg);
   return (
     <div className="sticky bottom-4 z-30 mt-6" data-testid="live-total-bar">
       <div className="rounded-2xl bg-[#0a2350] text-white shadow-xl px-5 py-3.5 flex flex-wrap items-center gap-x-6 gap-y-1">
         <span className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">Estimasi real-time</span>
+        {tier && (
+          <span className="text-[11px] text-white/70">
+            Paket: <b className="text-white">{tier.label || tier.name}</b>
+          </span>
+        )}
         <span className="text-sm">
           <span className="text-white/60">Bulanan</span>{" "}
           <b className="text-lg tabular-nums" data-testid="live-total-monthly">{idr(monthly)}</b>
@@ -550,11 +571,14 @@ const StepReview = ({ product, selections, addonIds, notes, setNotes, osChoice, 
   const submittingRef = useRef(false);
 
   useEffect(() => {
+    const config = {};
+    if (product.category === "hosting" && hostingCfg?.whm_package) config.whm_package = hostingCfg.whm_package;
+    if (product.category === "hosting") config.domain = (hostingCfg?.domain || "").trim();
     api
-      .post("/orders/preview", { product_id: product.id, selections, addon_ids: addonIds })
+      .post("/orders/preview", { product_id: product.id, selections, addon_ids: addonIds, config })
       .then((r) => setPreview(r.data))
       .catch((e) => setErr(e?.response?.data?.detail || "Failed to price cart"));
-  }, [product.id, selections, addonIds]);
+  }, [product.id, product.category, selections, addonIds, hostingCfg]);
 
   const confirm = async () => {
     if (submittingRef.current) return; // anti double-click: 1 klik = 1 order = 1 invoice
@@ -806,7 +830,7 @@ const ClientOrder = () => {
             onBack={() => setStep(0)}
             onNext={() => setStep(2)}
           />
-          <LiveTotalBar product={chosen} selections={selections} addonIds={addonIds} addons={addons} />
+          <LiveTotalBar product={chosen} selections={selections} addonIds={addonIds} addons={addons} hostingCfg={hostingCfg} />
         </>
       )}
 

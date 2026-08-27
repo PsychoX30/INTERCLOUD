@@ -96,6 +96,7 @@ async def client_hosting_accounts(user=Depends(get_current_user)):
     out = []
     for d in docs:
         cfg = d.get("config") or {}
+        provisioned = cfg.get("provision_status") == "provisioned"
         out.append({
             "id": str(d["_id"]),
             "product_name": d.get("product_name", ""),
@@ -103,10 +104,14 @@ async def client_hosting_accounts(user=Depends(get_current_user)):
             "status": d.get("status", "active"),
             "next_renewal": d.get("next_renewal", ""),
             "price_monthly": d.get("price_monthly", 0),
-            "control_panel": cfg.get("control_panel", ""),
-            "domain": cfg.get("domain") or cfg.get("hostname", ""),
-            "username": cfg.get("username", ""),
-            "ip": cfg.get("ip", ""),
+            "control_panel": cfg.get("control_panel", "") if provisioned else "",
+            "domain": (cfg.get("domain") or cfg.get("hostname", "")) if provisioned else "",
+            "username": cfg.get("username", "") if provisioned else "",
+            "ip": cfg.get("ip", "") if provisioned else "",
+            "hostname": (cfg.get("hostname") or cfg.get("domain", "")) if provisioned else "",
+            "server_host": cfg.get("server_host", "") if provisioned else "",
+            "panel_url": cfg.get("panel_url", "") if provisioned else "",
+            "whm_package": cfg.get("whm_package", "") if provisioned else "",
             "provision_status": cfg.get("provision_status", "manual"),
         })
     return out

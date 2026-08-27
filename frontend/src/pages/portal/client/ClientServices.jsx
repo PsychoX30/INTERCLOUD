@@ -404,15 +404,21 @@ const HostingControls = ({ service }) => {
   const [packages, setPackages] = useState(null);
   const [showReset, setShowReset] = useState(false);
   const blocked = service.status === "suspended" || service.status === "terminated";
+  // Truthful provisioning state: the backend only exposes cPanel metadata once
+  // provision_status === "provisioned". Until then we must not pretend the
+  // account exists, otherwise the client sees "ready" but cannot log in.
+  const provisionStatus = service.config?.provision_status || "pending";
+  const provisioned = provisionStatus === "provisioned";
+  const provisionError = service.config?.provision_error || "";
   const username = service.config?.username || "-";
   const currentPackage = service.config?.whm_package || "-";
 
   useEffect(() => {
-    if (blocked) return;
+    if (blocked || !provisioned) return;
     api.get(`/client/services/${service.id}/packages`)
       .then((r) => setPackages(r.data))
       .catch(() => setPackages(false));
-  }, [service.id, blocked]);
+  }, [service.id, blocked, provisioned]);
 
   const openCpanel = async () => {
     // Open synchronously so browsers do not block the new tab after await.
@@ -469,6 +475,21 @@ const HostingControls = ({ service }) => {
         </div>
       )}
 
+      {!blocked && !provisioned && (
+        <div data-testid="hosting-provisioning-state" className="mb-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs text-sky-900">
+          <div className="font-bold flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+            {provisionError ? "Provisioning tertunda" : "Akun hosting sedang disiapkan"}
+          </div>
+          <p className="mt-1 text-[11px] text-sky-800">
+            {provisionError
+              ? "Pembuatan akun cPanel gagal otomatis dan sedang ditinjau tim kami. Kontrol cPanel akan aktif setelah akun berhasil dibuat."
+              : "Akun cPanel Anda sedang dibuat di server. Tombol login cPanel dan reset password akan muncul otomatis setelah selesai."}
+          </p>
+        </div>
+      )}
+
+      {provisioned && (
       <div className="grid sm:grid-cols-2 gap-2">
         <button
           data-testid="hosting-cpanel-sso"
@@ -487,6 +508,7 @@ const HostingControls = ({ service }) => {
           <KeyRound className="h-4 w-4" /> Reset password
         </button>
       </div>
+      )}
 
       {showReset && (
         <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
@@ -513,6 +535,7 @@ const HostingControls = ({ service }) => {
 
       {msg && <p data-testid="hosting-message" className={`mt-3 text-xs font-semibold ${msg.ok ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>}
 
+      {provisioned && (
       <div className="mt-4 border-t border-slate-100 pt-3">
         <div className="flex items-center gap-2 text-xs font-bold text-[#0a2350]"><PackageSearch className="h-4 w-4" /> Paket pada server ini</div>
         {packages === null ? (
@@ -530,6 +553,7 @@ const HostingControls = ({ service }) => {
         )}
         <p className="mt-2 text-[10px] text-slate-400">Upgrade paket harus melalui order agar tagihan dan resource tetap sinkron.</p>
       </div>
+      )}
     </Card>
   );
 };

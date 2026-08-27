@@ -44,6 +44,7 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
     selections_data = [s.model_dump() for s in (payload.selections or [])]
     cart = await _price_cart(
         db, product=prod,
+        config=payload.config,
         selections=selections_data,
         addon_ids=payload.addon_ids or [],
         tax_percent=float(await _get_setting_value(db, "default_tax_percent", 11.0)),
@@ -89,14 +90,17 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
     items = []
     # Base line - first billing period
     base_line = cart["base_line"]
+    base_description = prod["name"]
+    if base_line.get("hosting_tier_label"):
+        base_description += f" - {base_line['hosting_tier_label']}"
     if base_line["monthly"]:
         items.append({
-            "description": f"{prod['name']} - first month",
+            "description": f"{base_description} - first month",
             "qty": 1, "unit_price": base_line["monthly"], "total": base_line["monthly"],
         })
     if base_line["setup"]:
         items.append({
-            "description": f"{prod['name']} - setup fee",
+            "description": f"{base_description} - setup fee",
             "qty": 1, "unit_price": base_line["setup"], "total": base_line["setup"],
         })
     # Configurable option lines
@@ -214,10 +218,47 @@ async def client_orders(user=Depends(get_current_user)):
 # ORDER PREVIEW - build a WHMCS-style price cart WITHOUT persisting
 # ============================================================
 
-async def _price_cart(db, *, product: dict, selections: list, addon_ids: list, tax_percent: float = 11.0) -> dict:
+def _selected_hosting_tier(product: dict, config: dict) -> Optional[dict]:
+    """Resolve a catalog hosting tier selected in order.config.whm_package.
+
+    Hosting products commonly keep their billable prices in
+    ``product.provision.packages`` while the generic product price is zero.
+    Invalid/missing tier selections must not silently become custom quotes.
+    """
+    if product.get("category") != "hosting":
+        return None
+    provision = product.get("provision") if isinstance(product.get("provision"), dict) else {}
+    tiers = [t for t in (provision.get("packages") or [])
+             if isinstance(t, dict) and str(t.get("name") or "").strip()]
+    if not tiers:
+        return None
+    requested = str((config or {}).get("whm_package") or provision.get("package") or "").strip()
+    tier = next((t for t in tiers if str(t.get("name") or "").strip() == requested), None)
+    if not tier:
+        detail = "Pilih tier hosting yang valid" if not requested else "Tier hosting tidak valid"
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        monthly = float(tier.get("price") or 0)
+        setup = float(tier.get("setup_fee") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Harga tier hosting tidak valid")
+    if monthly < 0 or setup < 0:
+        raise HTTPException(status_code=400, detail="Harga tier hosting tidak valid")
+    return {**tier, "name": requested,
+            "label": str(tier.get("label") or requested).strip(),
+            "whm_package": str(tier.get("whm_package") or "").strip(),
+            "price": monthly, "setup_fee": setup}
+
+
+async def _price_cart(db, *, product: dict, config: Optional[dict] = None,
+                      selections: list, addon_ids: list,
+                      tax_percent: float = 11.0) -> dict:
     """Compute a full price breakdown from a product + option selections + add-ons."""
-    base_monthly = float(product.get("price_monthly") or 0)
-    base_setup = float(product.get("setup_fee") or 0)
+    hosting_tier = _selected_hosting_tier(product, config or {})
+    base_monthly = (hosting_tier["price"] if hosting_tier
+                    else float(product.get("price_monthly") or 0))
+    base_setup = (hosting_tier["setup_fee"] if hosting_tier
+                  else float(product.get("setup_fee") or 0))
     lines_options = []      # [{group_key, group_label, choice, monthly, setup}]
     monthly_options_sum = 0.0
     setup_options_sum = 0.0
@@ -285,6 +326,9 @@ async def _price_cart(db, *, product: dict, selections: list, addon_ids: list, t
             "monthly": base_monthly,
             "setup": base_setup,
             "billing_cycle": product.get("billing_cycle", "monthly"),
+            "hosting_tier": hosting_tier.get("name") if hosting_tier else None,
+            "hosting_tier_label": hosting_tier.get("label") if hosting_tier else None,
+            "whm_package": hosting_tier.get("whm_package") if hosting_tier else None,
         },
         "option_lines": lines_options,
         "addon_lines": addon_lines,
@@ -310,6 +354,7 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Product not found")
     cart = await _price_cart(
         db, product=prod,
+        config=payload.config,
         selections=[s.model_dump() for s in (payload.selections or [])],
         addon_ids=payload.addon_ids or [],
         tax_percent=float(await _get_setting_value(db, "default_tax_percent", 11.0)),
@@ -353,6 +398,18 @@ async def admin_update_order_status(
     happens when the linked invoice is marked paid, but admins can still nudge
     the state machine (e.g. mark rejected)."""
     db = await _get_db()
+    current = await db.orders.find_one({"_id": _oid(oid)})
+    if not current:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if payload.status == "active":
+        svc = (await db.services.find_one({"_id": current.get("service_id")})
+               if current.get("service_id") else None)
+        provision_status = ((svc or {}).get("config") or {}).get("provision_status")
+        if not svc or svc.get("status") != "active" or provision_status != "provisioned":
+            raise HTTPException(
+                status_code=409,
+                detail="Order hanya dapat aktif setelah service benar-benar selesai diprovision.",
+            )
     upd = {"status": payload.status}
     if payload.status == "assigned":
         upd["assigned_admin_id"] = ObjectId(admin["id"])

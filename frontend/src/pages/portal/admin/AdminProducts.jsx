@@ -294,8 +294,17 @@ const ProductForm = ({ p, categories, allProducts, onClose, onDone }) => {
             </select>
           </label>
 
-          <label><div className={labelClass}>Monthly (IDR)</div><input type="number" value={f.price_monthly} onChange={(e) => setF({ ...f, price_monthly: e.target.value })} className={inputClass} data-testid="p-price" /></label>
-          <label><div className={labelClass}>Setup fee (IDR)</div><input type="number" value={f.setup_fee} onChange={(e) => setF({ ...f, setup_fee: e.target.value })} className={inputClass} /></label>
+          {/* Hosting products price by tier — hide base price to avoid double-price confusion */}
+          {!f.is_addon && f.category === "hosting" ? (
+            <label className="col-span-2"><div className={labelClass}>Monthly (IDR)</div>
+              <div className="text-xs text-slate-500 italic mt-1">Produk hosting dihargai per tier di bagian "Paket/Tier Hosting". Field harga base diabaikan.</div>
+            </label>
+          ) : (
+            <>
+              <label><div className={labelClass}>Monthly (IDR)</div><input type="number" value={f.price_monthly} onChange={(e) => setF({ ...f, price_monthly: e.target.value })} className={inputClass} data-testid="p-price" /></label>
+              <label><div className={labelClass}>Setup fee (IDR)</div><input type="number" value={f.setup_fee} onChange={(e) => setF({ ...f, setup_fee: e.target.value })} className={inputClass} /></label>
+            </>
+          )}
 
           <label><div className={labelClass}>Sort order</div><input type="number" value={f.sort_order} onChange={(e) => setF({ ...f, sort_order: e.target.value })} className={inputClass} /></label>
           <label><div className={labelClass}>Status</div>

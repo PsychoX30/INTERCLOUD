@@ -214,15 +214,17 @@ def _resolve_hosting_config(prod: dict, order_cfg: dict) -> dict:
     nameservers = provision.get("nameservers") or []
     if not isinstance(nameservers, list):
         nameservers = []
-    # Tier terpilih klien (order.config.whm_package) menang jika valid terhadap
-    # daftar tier di product.provision.packages; fallback ke package/base bawaan.
+    # The user selects the catalog tier name. Its optional whm_package is the
+    # exact provider identifier; labels/names must never be guessed as WHM
+    # package names, because that can select a provider default unexpectedly.
     chosen_tier = str(cfg.get("whm_package") or "").strip()
-    tier_names = {str((t or {}).get("name") or "").strip()
-                  for t in (provision.get("packages") or [])
-                  if isinstance(t, dict)}
-    tier_pkg = chosen_tier if (chosen_tier and chosen_tier in tier_names) else None
+    tiers = [t for t in (provision.get("packages") or []) if isinstance(t, dict)]
+    tier = next((t for t in tiers
+                 if str(t.get("name") or "").strip() == chosen_tier), None)
+    tier_pkg = str((tier or {}).get("whm_package") or "").strip() or None
     return {
         "package": (tier_pkg or cfg.get("package") or provision.get("package") or None),
+        "tier_name": chosen_tier or None,
         "domain": (cfg.get("domain") or "").strip(),
         "domain_policy": provision.get("domain_policy") or "subdomain",
         "subdomain_suffix": provision.get("subdomain_suffix") or "",
@@ -390,21 +392,22 @@ async def _auto_provision(db, order: dict) -> dict:
             ("directadmin", "DirectAdmin", iv2.DirectAdminClient, "package"),
         ]
         chosen = None
+        cp_report = []
         for key, label, cls, pkg_kw in _PANELS:
             if key == "cpanel":
                 # Multi-server WHM: pick best node via registry, fallback legacy
                 pkg_name = hosting_cfg.get("package") or ""
-                s, report = await _pick_cp_server(db, package_name=pkg_name)
+                s, cp_report = await _pick_cp_server(db, package_name=pkg_name)
                 if s:
                     # Prefer the report row for the chosen node; fall back to any
                     # row that resolved a package, then to the requested name.
                     # Never silently fall through to None, which would make WHM
                     # apply its own default package.
                     resolved_pkg = (
-                        next((r.get("resolved_package") for r in report
+                        next((r.get("resolved_package") for r in cp_report
                               if r.get("server_id") == s.get("server_id")
                               and r.get("resolved_package")), None)
-                        or next((r.get("resolved_package") for r in report
+                        or next((r.get("resolved_package") for r in cp_report
                                  if r.get("resolved_package")), None)
                         or (pkg_name or None)
                     )
@@ -418,24 +421,32 @@ async def _auto_provision(db, order: dict) -> dict:
         if chosen:
             key, panel_label, cls, pkg_kw, settings, resolved_package = chosen
             panel_client = cls(settings)
-            if key == "cpanel":
-                uname = await _generate_unique_whm_username(panel_client, order["user_email"])
-            else:
-                uname = _generate_whm_username(order["user_email"])
-            domain = _resolve_hosting_domain(hosting_cfg, cfg, username=uname,
-                                             server_settings=settings)
-            pw_alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%"
-            password = "".join(secrets.choice(pw_alphabet) for _ in range(16))
             try:
-                await panel_client.create_account(
+                if key == "cpanel":
+                    uname = await _generate_unique_whm_username(panel_client, order["user_email"])
+                else:
+                    uname = _generate_whm_username(order["user_email"])
+                domain = _resolve_hosting_domain(hosting_cfg, cfg, username=uname,
+                                                 server_settings=settings)
+                pw_alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%"
+                password = "".join(secrets.choice(pw_alphabet) for _ in range(16))
+                account = await panel_client.create_account(
                     domain=domain, username=uname, password=password,
                     contact_email=order["user_email"], **{pkg_kw: resolved_package})
+                bare_host = re.sub(r"^https?://", "", (settings.get("credentials") or {}).get("host") or "").split(":")[0].split("/")[0]
+                panel_port = {"cpanel": 2083, "plesk": 8443, "directadmin": 2222}[key]
+                panel_url = f"https://{bare_host}:{panel_port}" if bare_host else ""
+                account_ip = (account.get("ip") or account.get("ip_address") or ""
+                              if isinstance(account, dict) else "")
                 cfg.update({"control_panel": panel_label, "domain": domain,
+                            "hostname": domain, "server_host": bare_host,
+                            "ip": account_ip, "panel_url": panel_url,
                             "username": uname, "provision_status": "provisioned",
                             "provisioned_at": _now(),
                             "server_id": settings.get("server_id") or "",
                             "server_name": settings.get("name") or "",
                             "whm_package": resolved_package or "",
+                            "hosting_tier": hosting_cfg.get("tier_name") or "",
                             "nameservers": hosting_cfg.get("nameservers") or [],
                             "set_registrar_ns": hosting_cfg.get("set_registrar_ns") is True})
                 await _log("panel_account_created",
@@ -443,16 +454,15 @@ async def _auto_provision(db, order: dict) -> dict:
                 # Push nameservers to RNA.id if set_registrar_ns=True and domain is managed by RNA
                 await _maybe_update_rna_ns(db, order, domain,
                                            hosting_cfg.get("nameservers") or [])
-                bare_host = re.sub(r"^https?://", "", (settings.get("credentials") or {}).get("host") or "").split(":")[0].split("/")[0]
-                panel_port = {"cpanel": 2083, "plesk": 8443, "directadmin": 2222}[key]
                 hosting_credentials = {
                     "panel": panel_label, "domain": domain, "username": uname,
                     "password": password,
-                    "panel_url": f"https://{bare_host}:{panel_port}" if bare_host else "",
+                    "panel_url": panel_url,
                 }
             except Exception as e:
-                cfg.update({"control_panel": panel_label, "domain": domain,
-                            "username": uname, "provision_status": "failed"})
+                cfg.update({"control_panel": panel_label,
+                            "provision_status": "failed",
+                            "provision_error": str(e)[:180]})
                 await _log("panel_account_failed",
                            f"{panel_label} provisioning gagal: {str(e)[:150]}. Perlu tindak lanjut manual.")
                 await _notify_admin_manual_provision(
@@ -466,11 +476,16 @@ async def _auto_provision(db, order: dict) -> dict:
                 cfg.setdefault("ip", pool["ip"])
                 await _log("ip_allocated", f"IP {pool['ip']} dialokasikan otomatis dari IP pool (DCIM).")
             cfg["provision_status"] = "pending"
+            requested_package = hosting_cfg.get("package") or ""
+            cp_configured = bool(cp_report)
+            reason = (f"Tidak ada WHM server aktif/terjangkau yang menyediakan package "
+                      f"'{requested_package}'." if cp_configured and requested_package else
+                      "Integrasi panel hosting (cPanel/Plesk/DirectAdmin) belum aktif.")
+            cfg["provision_error"] = reason
             await _log("manual_provision_required",
-                       "Integrasi panel hosting (cPanel/Plesk/DirectAdmin) belum aktif. "
-                       "Provisioning manual oleh admin diperlukan.")
+                       reason + " Provisioning belum selesai; tindak lanjut admin diperlukan.")
             await _notify_admin_manual_provision(
-                db, order, "Integrasi panel hosting belum aktif - buat akun hosting manual")
+                db, order, reason)
     elif cat in ("vps", "cloud"):
         if cfg.get("os"):
             await _log("os_selected", f"OS dipilih klien saat order: {cfg['os']}.")
@@ -537,7 +552,9 @@ async def _auto_provision(db, order: dict) -> dict:
         "status": "active" if cfg.get("provision_status") == "provisioned" else "pending",
         "start_date": now.date().isoformat(),
         "next_renewal": (now + timedelta(days=30)).date().isoformat(),
-        "price_monthly": prod.get("price_monthly", 0),
+        "price_monthly": ((order.get("cart_snapshot") or {}).get("subtotal_monthly")
+                          if (order.get("cart_snapshot") or {}).get("subtotal_monthly") is not None
+                          else prod.get("price_monthly", 0)),
         "config": cfg,
         "order_id": str(order["_id"]),
         "created_at": _now(),
@@ -546,7 +563,10 @@ async def _auto_provision(db, order: dict) -> dict:
     await db.orders.update_one(
         {"_id": order["_id"]},
         {"$set": {"service_id": sr.inserted_id, "status": "active" if svc["status"] == "active" else "provisioning"},
-         "$push": {"provision_log": {"at": _now(), "step": "service_handover", "message": "Service delivered to client dashboard."}}},
+         "$push": {"provision_log": {"at": _now(), "step": "service_handover",
+                                     "message": ("Service aktif dan tersedia di dashboard klien."
+                                                 if svc["status"] == "active" else
+                                                 "Service dibuat di dashboard dengan status pending provisioning.")}}},
     )
     if hosting_credentials:
         u = await db.users.find_one({"_id": order["user_id"]})
