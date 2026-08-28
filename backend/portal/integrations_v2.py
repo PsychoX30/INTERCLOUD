@@ -490,14 +490,26 @@ class CpanelClient:
         data = await self._call("addpkg", params)
         meta = data.get("metadata") or {}
         result = data.get("result") or []
-        # success: result[0].status == 1
-        if result and str(result[0].get("status")) == "1":
-            return result[0]
-        # idempotency: package already exists → treat as success
-        msg = str(result[0].get("statusmsg") if result else meta.get("reason", ""))
-        if "already exists" in msg.lower():
-            return {"status": 1, "statusmsg": "already exists (idempotent)", "name": name}
-        raise RuntimeError(msg or "addpkg failed")
+        # success: result[0].status == 1 (accept int or str)
+        if result:
+            raw_status = result[0].get("status")
+            if raw_status == 1 or raw_status == "1" or str(raw_status) == "1":
+                return result[0]
+            # idempotency: package already exists → treat as success
+            msg = str(result[0].get("statusmsg", ""))
+            if "already exists" in msg.lower():
+                return {"status": 1, "statusmsg": "already exists (idempotent)", "name": name}
+            # Some WHM versions return success in metadata.result
+            if str(meta.get("result")) in ("1", "1.0", 1):
+                return {"status": 1, "statusmsg": msg or "ok (metadata)", "name": name}
+            # Log full response for debugging
+            import json, logging
+            logging.getLogger(__name__).warning("addpkg response not recognized as success: %s", json.dumps(data, default=str)[:1000])
+            raise RuntimeError(msg or "addpkg failed")
+        # no result array
+        if str(meta.get("result")) in ("1", "1.0", 1):
+            return {"status": 1, "statusmsg": "ok (metadata only)", "name": name}
+        raise RuntimeError(str(meta.get("reason", "addpkg failed: no result")))
 
     async def create_account(self, domain: str, username: str, password: str,
                              package: str | None = None, contact_email: str = "") -> dict:

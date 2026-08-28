@@ -154,6 +154,48 @@ class TestCreatePackageClient:
         with pytest.raises(RuntimeError, match="quota exceeded"):
             await cp.create_package("starter")
 
+    @pytest.mark.asyncio
+    async def test_integer_status_one_is_success(self, monkeypatch):
+        """Some WHM versions return status as int 1, not str '1'."""
+        cp = self._client()
+        async def fake_call(fn, params):
+            return {"result": [{"status": 1, "statusmsg": "Created"}]}
+        monkeypatch.setattr(cp, "_call", fake_call)
+        out = await cp.create_package("starter")
+        assert out["status"] == 1
+
+    @pytest.mark.asyncio
+    async def test_no_result_array_metadata_result_1_is_success(self, monkeypatch):
+        """Live WHM bug repro: addpkg returns no 'result' list, only
+        metadata.result == 1 / metadata.reason == 'OK'. Previously this
+        raised RuntimeError('OK') -> whm_package_autocreate_failed:
+        'gagal: OK' (production incident, order INV-2026-00017)."""
+        cp = self._client()
+        async def fake_call(fn, params):
+            return {"metadata": {"result": 1, "reason": "OK", "command": "addpkg"}}
+        monkeypatch.setattr(cp, "_call", fake_call)
+        out = await cp.create_package("HOSTING2")
+        assert out["status"] == 1
+
+    @pytest.mark.asyncio
+    async def test_result_array_empty_metadata_reason_ok_is_success(self, monkeypatch):
+        """Variant: result present but empty list, metadata says OK."""
+        cp = self._client()
+        async def fake_call(fn, params):
+            return {"result": [], "metadata": {"result": 1, "reason": "OK"}}
+        monkeypatch.setattr(cp, "_call", fake_call)
+        out = await cp.create_package("HOSTING2")
+        assert out["status"] == 1
+
+    @pytest.mark.asyncio
+    async def test_metadata_result_failure_still_raises(self, monkeypatch):
+        cp = self._client()
+        async def fake_call(fn, params):
+            return {"metadata": {"result": 0, "reason": "Access denied"}}
+        monkeypatch.setattr(cp, "_call", fake_call)
+        with pytest.raises(RuntimeError, match="Access denied"):
+            await cp.create_package("HOSTING2")
+
 
 # ---------------------------------------------------------------------------
 # _auto_provision seamless path: auto-create then createacct
