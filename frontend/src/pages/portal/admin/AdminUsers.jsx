@@ -185,17 +185,93 @@ const AdminUsers = () => {
 };
 
 /* ==== Client 360 profile modal - hosting accounts + billing summary ==== */
+const ServiceSuspendButton = ({ service, onChange }) => {
+  const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState("");
+  const [open, setOpen] = useState(false);
+  const status = service.status;
+  if (status === "terminated") return null;
+
+  const run = async (action) => {
+    setBusy(true);
+    try {
+      if (action === "suspend") {
+        await api.post(`/admin/services/${service.id}/suspend`, { reason: reason.trim() || "Disuspend via user detail" });
+      } else {
+        await api.post(`/admin/services/${service.id}/unsuspend`);
+      }
+      onChange && onChange();
+      setOpen(false);
+      setReason("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (status === "suspended") {
+    return (
+      <button
+        onClick={() => run("unsuspend")}
+        disabled={busy}
+        className="ml-auto px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold disabled:opacity-50"
+      >
+        {busy ? "..." : "Aktifkan"}
+      </button>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="ml-auto px-2.5 py-1 rounded-lg bg-amber-600 text-white text-[10px] font-bold"
+      >
+        Suspend
+      </button>
+    );
+  }
+
+  return (
+    <div className="ml-auto flex items-center gap-1.5">
+      <input
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="Alasan"
+        className="w-28 rounded border border-slate-300 px-1.5 py-1 text-[10px]"
+        onKeyDown={(e) => e.key === "Enter" && run("suspend")}
+      />
+      <button
+        onClick={() => run("suspend")}
+        disabled={busy}
+        className="px-2 py-1 rounded bg-amber-600 text-white text-[10px] font-bold disabled:opacity-50"
+      >
+        {busy ? "..." : "OK"}
+      </button>
+      <button
+        onClick={() => { setOpen(false); setReason(""); }}
+        className="px-2 py-1 rounded bg-slate-200 text-slate-700 text-[10px] font-bold"
+      >
+        Batal
+      </button>
+    </div>
+  );
+};
+
 const ClientProfileModal = ({ userId, onClose }) => {
   const [d, setD] = useState(null);
   const [billingEmails, setBillingEmails] = useState([]);
   const [newBillingEmail, setNewBillingEmail] = useState("");
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
-  useEffect(() => {
+  const loadProfile = () => {
     api.get(`/admin/users/${userId}/profile`).then((r) => {
       setD(r.data);
       setBillingEmails(r.data?.user?.billing_emails || []);
     }).catch(() => setD(false));
+  };
+  useEffect(() => {
+    loadProfile();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
   const addBillingEmail = () => {
@@ -325,6 +401,7 @@ const ClientProfileModal = ({ userId, onClose }) => {
                           {h.config?.control_panel || "Panel -"} · {h.config?.domain || h.config?.hostname || "-"} · {h.config?.ip || "-"}
                         </div>
                       </div>
+                      <ServiceSuspendButton service={h} onChange={loadProfile} />
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${h.status === "active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>{h.status}</span>
                     </div>
                   ))}
@@ -342,6 +419,7 @@ const ClientProfileModal = ({ userId, onClose }) => {
                     <div key={s.id} className="py-2 flex items-center gap-3 text-sm">
                       <span className="uppercase text-[10px] font-bold text-[#f5b120] w-20 shrink-0">{s.category}</span>
                       <span className="font-semibold text-[#0a2350] truncate flex-1">{s.product_name}</span>
+                      <ServiceSuspendButton service={s} onChange={loadProfile} />
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${s.status === "active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>{s.status}</span>
                     </div>
                   ))}

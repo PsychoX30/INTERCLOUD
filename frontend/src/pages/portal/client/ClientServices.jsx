@@ -401,7 +401,6 @@ const HostingControls = ({ service }) => {
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
   const [password, setPassword] = useState("");
-  const [packages, setPackages] = useState(null);
   const [showReset, setShowReset] = useState(false);
   const blocked = service.status === "suspended" || service.status === "terminated";
   // Truthful provisioning state: the backend only exposes cPanel metadata once
@@ -412,13 +411,6 @@ const HostingControls = ({ service }) => {
   const provisionError = service.config?.provision_error || "";
   const username = service.config?.username || "-";
   const currentPackage = service.config?.whm_package || "-";
-
-  useEffect(() => {
-    if (blocked || !provisioned) return;
-    api.get(`/client/services/${service.id}/packages`)
-      .then((r) => setPackages(r.data))
-      .catch(() => setPackages(false));
-  }, [service.id, blocked, provisioned]);
 
   const openCpanel = async () => {
     // Open synchronously so browsers do not block the new tab after await.
@@ -537,20 +529,33 @@ const HostingControls = ({ service }) => {
 
       {provisioned && (
       <div className="mt-4 border-t border-slate-100 pt-3">
-        <div className="flex items-center gap-2 text-xs font-bold text-[#0a2350]"><PackageSearch className="h-4 w-4" /> Paket pada server ini</div>
-        {packages === null ? (
-          <p className="mt-1 text-[11px] text-slate-400">Memuat paket...</p>
-        ) : packages === false ? (
-          <p className="mt-1 text-[11px] text-slate-500">Daftar paket tidak tersedia.</p>
-        ) : (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {(packages.packages || []).map((pkg) => (
-              <span key={pkg} className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${pkg === packages.current_package ? "border-[#f5b120] bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
-                {pkg}{pkg === packages.current_package ? " (aktif)" : ""}
-              </span>
-            ))}
+        <div className="flex items-center gap-2 text-xs font-bold text-[#0a2350]">
+          <PackageSearch className="h-4 w-4" /> Spesifikasi &amp; Pemakaian
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+          <div className="rounded-lg bg-slate-50 border border-slate-200 px-2.5 py-2">
+            <div className="text-[10px] font-bold uppercase text-slate-500">Disk</div>
+            <div className="mt-0.5 font-semibold text-[#0a2350]">
+              {service.config?.tier_disk_gb ? `${service.config.tier_disk_gb} GB` : "—"}
+            </div>
+            {service.metrics?.disk_used_gb !== undefined && (
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                Terpakai {service.metrics.disk_used_gb} GB
+              </div>
+            )}
           </div>
-        )}
+          <div className="rounded-lg bg-slate-50 border border-slate-200 px-2.5 py-2">
+            <div className="text-[10px] font-bold uppercase text-slate-500">Bandwidth</div>
+            <div className="mt-0.5 font-semibold text-[#0a2350]">
+              {service.config?.tier_bw_gb ? `${service.config.tier_bw_gb} GB` : "—"}
+            </div>
+            {service.metrics?.bw_used_gb !== undefined && (
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                Terpakai {service.metrics.bw_used_gb} GB
+              </div>
+            )}
+          </div>
+        </div>
         <p className="mt-2 text-[10px] text-slate-400">Upgrade paket harus melalui order agar tagihan dan resource tetap sinkron.</p>
       </div>
       )}
@@ -1005,6 +1010,7 @@ const ServiceDetail = ({ service, onClose }) => {
             {isVPS && <CopyRow label="OS" value={s.config?.os} />}
             {isVPS && <CopyRow label="Proxmox Node" value={s.config?.node} />}
             {isHosting && <CopyRow label="Control Panel" value={s.config?.control_panel} />}
+            {isHosting && s.config?.panel_url && <CopyRow label="cPanel URL" value={s.config.panel_url} />}
             {s.category === "colocation" && <CopyRow label="Rack" value={s.config?.rack} />}
           </Card>
 

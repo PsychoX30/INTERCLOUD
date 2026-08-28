@@ -27,7 +27,7 @@ from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
 from .client import _VM_CATEGORIES  # noqa: E402
-from .provision import _proxmox_settings_for_service  # noqa: E402
+from .provision import _proxmox_settings_for_service, _cp_settings_for_service  # noqa: E402
 from .shared import _get_db, _load_user, _now, _oid, _sales_scope_filter, _serialize_service, _pagination_params, _pagination_response  # noqa: E402
 
 router = APIRouter()
@@ -202,7 +202,7 @@ async def _delete_service_vm(db, svc: dict) -> None:
 async def admin_service_suspend(sid: str, payload: dict, request: Request,
                                 staff=Depends(require_roles("admin", "support", "sales"))):
     """Suspend layanan secara manual (mis. toleransi keterlambatan bayar).
-    Menonaktifkan self-service klien & mematikan VM (best-effort)."""
+    VM -> power off; Hosting -> cPanel suspend_account."""
     db = await _get_db()
     svc = await db.services.find_one({"_id": _oid(sid)})
     if not svc:
@@ -215,6 +215,21 @@ async def admin_service_suspend(sid: str, payload: dict, request: Request,
         raise HTTPException(status_code=400, detail="Layanan sudah diterminasi")
     reason = (payload.get("reason") or "").strip() or "Disuspend manual oleh staff"
     vm_note = await _service_vm_power(db, svc, "stop")
+    # ---- Hosting cPanel suspend ----
+    if svc.get("category") == "hosting":
+        cfg = svc.get("config") or {}
+        username = cfg.get("username")
+        if username and cfg.get("provision_status") == "provisioned":
+            s = await _cp_settings_for_service(db, svc)
+            if not s:
+                raise HTTPException(status_code=400,
+                                    detail="WHM server untuk service hosting ini tidak ditemukan")
+            try:
+                cp = iv2.CpanelClient(s)
+                await cp.suspend_account(username, reason)
+                vm_note += "; cPanel suspended"
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"cPanel suspend gagal: {str(e)[:180]}")
     await db.services.update_one({"_id": svc["_id"]}, {"$set": {
         "status": "suspended", "suspended_at": _now(),
         "suspended_reason": reason, "suspended_manual": True,
@@ -246,6 +261,21 @@ async def admin_service_unsuspend(sid: str, request: Request,
     if svc.get("status") != "suspended":
         raise HTTPException(status_code=400, detail="Layanan tidak sedang disuspend")
     vm_note = await _service_vm_power(db, svc, "start")
+    # ---- Hosting cPanel unsuspend ----
+    if svc.get("category") == "hosting":
+        cfg = svc.get("config") or {}
+        username = cfg.get("username")
+        if username:
+            s = await _cp_settings_for_service(db, svc)
+            if not s:
+                raise HTTPException(status_code=400,
+                                    detail="WHM server untuk service hosting ini tidak ditemukan")
+            try:
+                await iv2.CpanelClient(s).unsuspend_account(username)
+                vm_note += "; cPanel unsuspended"
+            except Exception as e:
+                raise HTTPException(status_code=502,
+                                    detail=f"cPanel unsuspend gagal: {str(e)[:180]}")
     await db.services.update_one({"_id": svc["_id"]}, {
         "$set": {"status": "active", "reactivated_at": _now(),
                  "reactivated_reason": f"Diaktifkan manual oleh {staff.get('email', 'staff')}"},
@@ -375,6 +405,22 @@ async def admin_terminate_approve(sid: str, payload: dict, request: Request,
     if has_vm:
         asyncio.create_task(_delete_service_vm(db, svc))
         vm_note = f"{vm_note}; VM dihapus permanen dari server (berjalan di background)"
+    # ---- Hosting cPanel remove_account (best-effort) ----
+    if svc.get("category") == "hosting":
+        cfg = svc.get("config") or {}
+        username = cfg.get("username")
+        if username:
+            s = await _cp_settings_for_service(db, svc)
+            if not s:
+                raise HTTPException(status_code=400,
+                                    detail="WHM server untuk service hosting ini tidak ditemukan")
+            try:
+                await iv2.CpanelClient(s).remove_account(username)
+                vm_note += "; cPanel account removed"
+            except Exception as e:
+                logging.getLogger("portal.lifecycle").warning(
+                    "cPanel remove_account gagal utk service %s: %s", svc.get("_id"), e)
+                vm_note += f"; cPanel remove gagal: {str(e)[:120]}"
     await log_audit(db, actor=staff, action="service.terminate_approve", category="services",
                     target_type="service", target_id=str(svc["_id"]),
                     target_label=svc.get("name", ""), severity="warning",
