@@ -513,7 +513,31 @@ from fastapi.responses import StreamingResponse  # noqa: E402
 import io as _io  # noqa: E402
 
 
+def _ledger_items(payload: dict) -> list:
+    """Normalize optional multi-line items [{description, amount}] from a payload.
+
+    Returns [] when absent (legacy single-amount payloads stay valid).
+    """
+    raw = payload.get("items")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        desc = str(it.get("description") or "").strip()
+        try:
+            amt = float(it.get("amount") or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        if not desc and amt == 0:
+            continue
+        out.append({"description": desc, "amount": amt})
+    return out
+
+
 def _generic_ledger_serialize(d: dict) -> dict:
+    items = d.get("items")
     return {
         "id": str(d["_id"]),
         "date": d.get("date", ""),
@@ -526,6 +550,7 @@ def _generic_ledger_serialize(d: dict) -> dict:
         "invoice_number": d.get("invoice_number", ""),
         "period_yyyy_mm": d.get("period_yyyy_mm") or (d.get("date", "")[:7]),
         "created_at": _iso(d.get("created_at", "")),
+        **({"items": items} if items else {}),
     }
 
 
@@ -574,9 +599,15 @@ def _mk_ledger_router(*, collection: str, label: str, extra_fields: list):
         period = date_str[:7]
         if _month_locked(period):
             raise HTTPException(status_code=403, detail=f"Cannot add {label} for locked month {period}. Contact finance to unlock.")
-        doc = {"date": date_str, "amount": float(payload.get("amount", 0) or 0),
+        items = _ledger_items(payload)
+        amount = float(payload.get("amount", 0) or 0)
+        if items:
+            amount = sum(it["amount"] for it in items)
+        doc = {"date": date_str, "amount": amount,
                "notes": payload.get("notes", ""), "period_yyyy_mm": period,
                "created_at": _now()}
+        if items:
+            doc["items"] = items
         for k in extra_fields:
             doc[k] = payload.get(k, "")
         r = await db[collection].insert_one(doc)
@@ -641,6 +672,78 @@ router.post("/admin/sales-fees")(_sf_create)
 router.delete("/admin/sales-fees/{item_id}")(_sf_delete)
 
 
+def _fmt_amount(v):
+    return "Rp " + f"{float(v or 0):,.0f}".replace(",", ".")
+
+
+@router.get("/admin/finance/sales-context")
+async def sales_context(admin=Depends(require_roles("admin", "finance"))):
+    """Cascade-filter data for the Sales Fees tab.
+
+    Returns:
+      sales_people:        [{id, name, email}]
+      customers_by_sales:  {sales_id: [{id, name, email}]}
+      services_by_customer:{customer_id: [{id, name, category}]}
+      invoices_by_service: {service_id: [{id, number, status}]}   (via order_id)
+      invoices_by_customer:{customer_id: [{id, number, status}]}
+    """
+    db = await _get_db()
+    sales = await db.users.find({"role": "sales"}).to_list(500)
+    sales_people = [{"id": str(s["_id"]), "name": s.get("name") or s.get("email", ""),
+                     "email": s.get("email", "")} for s in sales]
+
+    customers_by_sales = {}
+    for s in sales:
+        cids = [c for c in (s.get("assigned_client_ids") or [])]
+        custs = []
+        if cids:
+            cs = await db.users.find({"_id": {"$in": cids}}).to_list(500)
+            custs = [{"id": str(c["_id"]), "name": c.get("name") or c.get("email", ""),
+                      "email": c.get("email", "")} for c in cs]
+        customers_by_sales[str(s["_id"])] = custs
+
+    all_customer_ids = []
+    for lst in customers_by_sales.values():
+        for c in lst:
+            all_customer_ids.append(ObjectId(c["id"]))
+
+    services = await db.services.find({"user_id": {"$in": all_customer_ids}}).to_list(5000) \
+        if all_customer_ids else []
+    services_by_customer = {}
+    for svc in services:
+        key = str(svc["user_id"])
+        services_by_customer.setdefault(key, []).append(
+            {"id": str(svc["_id"]), "name": svc.get("name", ""),
+             "category": svc.get("category", "")})
+
+    invoices = await db.invoices.find({"user_id": {"$in": all_customer_ids}}).to_list(5000) \
+        if all_customer_ids else []
+    invoices_by_customer = {}
+    invoices_by_service = {}
+    for inv in invoices:
+        ckey = str(inv.get("user_id"))
+        invoices_by_customer.setdefault(ckey, []).append(
+            {"id": str(inv["_id"]), "number": inv.get("number", ""),
+             "status": inv.get("status", "")})
+        # service linkage via order_id
+        oid = inv.get("order_id")
+        if oid:
+            svc = next((x for x in services if str(x.get("order_id")) == str(oid)), None)
+            if svc:
+                skey = str(svc["_id"])
+                invoices_by_service.setdefault(skey, []).append(
+                    {"id": str(inv["_id"]), "number": inv.get("number", ""),
+                     "status": inv.get("status", "")})
+
+    return {
+        "sales_people": sales_people,
+        "customers_by_sales": customers_by_sales,
+        "services_by_customer": services_by_customer,
+        "invoices_by_service": invoices_by_service,
+        "invoices_by_customer": invoices_by_customer,
+    }
+
+
 @router.get("/documents/salary-slip/{sid}")
 async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_current_admin)):
     """UAT-034: slip gaji PDF per entri salary (WeasyPrint)."""
@@ -654,6 +757,22 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
     employee = d.get("employee") or "-"
     category = d.get("category") or "Gaji pokok"
     issued = datetime.now(timezone.utc).date().isoformat()
+    items = d.get("items") or []
+    if items:
+        item_rows = "".join(
+            f'<tr><td>{it.get("description") or "-"}</td>'
+            f'<td style="text-align:right">{_fmt_amount(it.get("amount"))}</td></tr>'
+            for it in items)
+        breakdown_html = f"""
+      <h1 style="margin-top:22px">Rincian Komponen</h1>
+      <table>
+        <tr><th style="width:66%">Keterangan</th><th style="text-align:right">Nominal</th></tr>
+        {item_rows}
+        <tr><td style="font-weight:800">Total</td>
+            <td style="text-align:right" class="amt">{amount_str}</td></tr>
+      </table>"""
+    else:
+        breakdown_html = ""
     html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: A4; margin: 24mm 18mm; }}
       body {{ font-family: Helvetica, Arial, sans-serif; color: #0f172a; font-size: 13px; }}
@@ -686,6 +805,7 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
         <tr><th>Jumlah diterima (net)</th><td class="amt">{amount_str}</td></tr>
         <tr><th>Catatan</th><td>{d.get("notes") or "-"}</td></tr>
       </table>
+      {breakdown_html}
       <div class="foot">
         <div class="sig">Diserahkan oleh,<div class="line">Finance - Intercloud</div></div>
         <div class="sig">Diterima oleh,<div class="line">{employee}</div></div>
@@ -713,6 +833,22 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
     person = d.get("sales_person") or "-"
     invoice_no = d.get("invoice_number") or "-"
     issued = datetime.now(timezone.utc).date().isoformat()
+    items = d.get("items") or []
+    if items:
+        item_rows = "".join(
+            f'<tr><td>{it.get("description") or "-"}</td>'
+            f'<td style="text-align:right">{_fmt_amount(it.get("amount"))}</td></tr>'
+            for it in items)
+        breakdown_html = f"""
+      <h1 style="margin-top:22px">Rincian Fee</h1>
+      <table>
+        <tr><th style="width:66%">Keterangan</th><th style="text-align:right">Nominal</th></tr>
+        {item_rows}
+        <tr><td style="font-weight:800">Total</td>
+            <td style="text-align:right" class="amt">{amount_str}</td></tr>
+      </table>"""
+    else:
+        breakdown_html = ""
     html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: A4; margin: 24mm 18mm; }}
       body {{ font-family: Helvetica, Arial, sans-serif; color: #0f172a; font-size: 13px; }}
@@ -745,6 +881,7 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
         <tr><th>Jumlah fee (net)</th><td class="amt">{amount_str}</td></tr>
         <tr><th>Catatan</th><td>{d.get("notes") or "-"}</td></tr>
       </table>
+      {breakdown_html}
       <div class="foot">
         <div class="sig">Diserahkan oleh,<div class="line">Finance - Intercloud</div></div>
         <div class="sig">Diterima oleh,<div class="line">{person}</div></div>
