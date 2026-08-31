@@ -42,7 +42,7 @@ EXT = (os.environ.get("REACT_APP_BACKEND_URL") or _read_frontend_url() or "").rs
 assert EXT, "REACT_APP_BACKEND_URL not configured"
 ORIGIN = "http://localhost:8001"                # bypass CF for header assertions
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PWD   = "AdminIntercloud2026!"
+ADMIN_PWD   = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 
 # ----------------------------- shared fixtures -----------------------------

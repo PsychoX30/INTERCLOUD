@@ -22,7 +22,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "n/a (frontend-only run per request)", "frontend": "100% of requested flows (8/8) with 1 minor visibility caveat"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (matches /app/memory/test_credentials.md)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (matches /app/memory/test_credentials.md)",
   "seed_data_creation": "Ephemeral only, all cleaned up: (a) sent 1 outgoing email to penerima@contoh.co.id (delivered to local SMTP test server 127.0.0.1:1025, copy in IMAP Sent); (b) saved 1 draft 'TEST_i44 draft SUB unique' in Drafts (left in IMAP, harmless test artifact); (c) mark-unread + delete on Inbox mail-imap-1/2 (Trash contains the deleted msgs); (d) 1 dummy MikroTik device 'TEST_i44_dummy_mt' host 10.255.255.254 created then deleted via API; (e) 2 CRM contacts TEST_Alice/TEST_Bob imported via XLSX then deleted via API. No VPS/Proxmox/invoice/credit-note touched — guardrails respected.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

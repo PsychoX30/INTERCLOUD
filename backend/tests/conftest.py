@@ -57,7 +57,7 @@ def _ensure_demo_users_impl() -> None:
     import requests
     base = "http://127.0.0.1:8001/api/portal"
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@intercloud-digital.com")
-    admin_pw = os.environ.get("ADMIN_PASSWORD", "AdminIntercloud2026!")
+    admin_pw = os.environ.get("ADMIN_PASSWORD", os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW"))
     try:
         r = requests.post(f"{base}/auth/login",
                           json={"email": admin_email, "password": admin_pw}, timeout=15)

@@ -12,7 +12,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "n/a (frontend-only run)", "frontend": "100%"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026!  |  demo@client.com / DemoClient2026! (had to re-hash password_hash in mongo because seed value was stale)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]  |  demo@client.com / DemoClient2026! (had to re-hash password_hash in mongo because seed value was stale)",
   "seed_data_creation": "Created 2 test orders + 2 invoices for demo@client.com (Fixture Colo 1U), 1 credit note (TEST_credit_note_auto_provision), 1 provisioned service. Temporarily mutated service 6a6cc7b53abd16783d2341c2 (fixture-vps) with node1/vmid999/restart_required=true and terminated status. ALL test data cleaned up (orders/invoices/CN/service deleted, fixture-vps restored to status=active, config={}).",
   "retest_needed": false,
   "should_main_agent_self_test": false,

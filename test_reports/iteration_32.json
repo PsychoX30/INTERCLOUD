@@ -36,7 +36,7 @@
     "backend": "100% (public/status + owner/overview + status-page/config GET+PUT + admin/billing/settings 403 for owner + audit log capture all verified)",
     "frontend": "100% (all 8 review items green: AdminMail Reply fix + Public /status render + owner dashboard render + owner role sidebar + admin status-page config CRUD + audit log entry + CreditNotes hydration warning gone + Batch-7 pages still render)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! and owner@intercloud-digital.com / OwnerIntercloud2026! — both from /app/memory/test_credentials.md, both functional this run.",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] and owner@intercloud-digital.com / OwnerIntercloud2026! — both from /app/memory/test_credentials.md, both functional this run.",
   "seed_data_creation": "Set status-page incident_note to 'Testing incident banner — do not remove' via admin PUT, verified public /status shows it, then reset config back to defaults (empty note + 3 default groups). One 'group_1784919030826/New Group' row was temporarily added via UI Add Group button but was NOT saved — the final PUT restored the 3 default groups. Also generated 3 audit_logs rows with action='status_page.config_update'.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

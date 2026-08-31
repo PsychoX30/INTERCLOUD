@@ -16,7 +16,7 @@ import requests
 
 API = (os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001").rstrip("/") + "/api/portal"
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASS = "AdminIntercloud2026!"
+ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 
 def _login(email, pw):

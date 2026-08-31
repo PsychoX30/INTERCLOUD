@@ -18,7 +18,7 @@ BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL")
 API = f"{BASE_URL}/api/portal"
 
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASSWORD = "AdminIntercloud2026!"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 
 # ---------- fixtures ----------

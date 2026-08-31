@@ -36,7 +36,7 @@
     "backend": "100% (13/13 new login_analytics + 13/13 recaptcha_auth regression + 14/14 assets_straight_line regression). Only caveat: test_login_analytics.py and test_recaptcha_auth.py must be invoked in separate `pytest` calls under the current -n2 loadscope config because they share the recaptcha integration_settings doc.",
     "frontend": "not tested (backend-only request)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! + demo@client.com / ClientDemo2026! (matches /app/memory/test_credentials.md)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] + demo@client.com / ClientDemo2026! (matches /app/memory/test_credentials.md)",
   "seed_data_creation": "3 failed logins for bruteforce@example.com + 1 success for admin + 3 more failed for admin + 2 recaptcha-enabled failed attempts for attacker@example.com are appended to `login_attempts`. Rows are ephemeral (dashboard analytics data) — no cleanup performed intentionally so the admin dashboard has realistic content. integration_settings.recaptcha is DISABLED at end of the test class.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

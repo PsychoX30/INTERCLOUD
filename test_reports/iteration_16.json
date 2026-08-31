@@ -28,7 +28,7 @@
     "backend": "100% (13/13 new recaptcha + 24/24 previous straight-line+finance)",
     "frontend": "not tested (backend-only request; frontend helper /app/frontend/src/portal/recaptcha.js reviewed statically — correctly returns null when server reports enabled=false, verified indirectly via backend fail-open tests)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (matches /app/memory/test_credentials.md)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (matches /app/memory/test_credentials.md)",
   "seed_data_creation": "Ephemeral: register creates a TEST_recap_reg_<uuid>@example.com user which is deleted immediately via /admin/users/{id} after the test. No lasting DB state. The integration_settings.recaptcha document is wiped at class setup and set to enabled:false at teardown.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

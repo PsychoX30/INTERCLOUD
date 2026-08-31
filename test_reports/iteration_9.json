@@ -77,7 +77,7 @@
     "backend": "100% (18/18 sprint tests + 38/38 sprint-regression tests = 56/56 green)",
     "frontend": "100% (all sprint-9 UI features render + integrate correctly; one minor UX polish miss on client-role hitting admin URL directly)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026!  ;  demo@client.com / ClientDemo2026!",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]  ;  demo@client.com / ClientDemo2026!",
   "seed_data_creation": "Sprint tests auto-create disposable pwtest_*/admreset_*/forgot_* users (each cleaned up in fixture teardown). Midtrans integration record is left in a 'saved sandbox credentials' state after the masking test — this is expected (test verifies persistence).",
   "retest_needed": false,
   "main_agent_can_self_test": true,

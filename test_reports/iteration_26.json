@@ -25,7 +25,7 @@
     "/app/backend/tests/test_landing_cms_and_backup.py (new)"
   ],
   "success_rate": {"backend": "100% (14/14)", "frontend": "100% (all requested testids + flows)"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md, unchanged)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (from /app/memory/test_credentials.md, unchanged)",
   "seed_data_creation": "During TestLandingCMS.test_admin_post_and_persist we wrote a single settings.landing_content override; teardown_module then DELETE'd it and public GET now returns {overrides:{},faqs:[],contact:{}}. Backup round-trip did an idempotent dump→restore --drop on the live DB; admin-users count matched before/after and no other data changed.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

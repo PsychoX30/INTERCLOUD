@@ -30,7 +30,7 @@ PUBLIC_API = (os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
               + "/api/portal") if os.environ.get("REACT_APP_BACKEND_URL") else None
 
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASSWORD = "AdminIntercloud2026!"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 CLIENT_EMAIL = "demo@client.com"
 CLIENT_PASSWORD = "ClientDemo2026!"
 

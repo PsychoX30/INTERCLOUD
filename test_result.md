@@ -196,7 +196,7 @@ frontend:
           displayed. THE BUG IS FIXED - Compose now sends real emails via SMTP.
           (4) Regression check - page renders normally after all interactions.
           Minor: One 502 error loading message imap-13 detail (non-critical, doesn't affect core functionality).
-          Test credentials: admin@intercloud-digital.com / AdminIntercloud2026!
+          Test credentials: admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]
           Mailbox: damien@intercloud-digital.com on mail.intercloud-digital.com.
 
 metadata:
@@ -215,7 +215,7 @@ agent_communication:
   - agent: "main"
     message: >
       Webmail fix implemented. Please test backend only: login as
-      admin@intercloud-digital.com / AdminIntercloud2026! (see /app/memory/test_credentials.md).
+      admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (see /app/memory/test_credentials.md).
       Real mailbox creds for testing: host mail.intercloud-digital.com, user
       damien@intercloud-digital.com, pass @Mail!234 (IMAP 993 SSL, SMTP 465 SSL).
       Flows: save settings, test endpoint (real creds → both ok; masked pwd fallback;

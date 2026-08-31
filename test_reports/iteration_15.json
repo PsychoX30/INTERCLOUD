@@ -26,7 +26,7 @@
     "backend": "100% (24/24)",
     "frontend": "not tested (backend-only request)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/backend/.env, matches /app/memory/test_credentials.md)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (from /app/backend/.env, matches /app/memory/test_credentials.md)",
   "seed_data_creation": "Tests create uuid-suffixed TEST_asset_* documents and clean them up via a module-scoped teardown fixture. On the finance/detailed test we also verify the row appears, then teardown removes it.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

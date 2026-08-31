@@ -31,7 +31,7 @@
     "Data-only patch: db.users {email: 'finance@intercloud-digital.com'} set created_at=<ISO string> so /auth/me returns 200. No source code changed."
   ],
   "success_rate": {"backend": "100% (62/62)", "frontend": "100% (all 4 role UI checks passed post data patch)"},
-  "test_credentials": "admin=admin@intercloud-digital.com/AdminIntercloud2026!, finance=finance@intercloud-digital.com/StaffTest2026!, sales=sales@intercloud-digital.com/Sales2026!, support=support@intercloud-digital.com/Support2026!, ticket_only=ticket@intercloud-digital.com/Ticket2026! (conftest.py resets non-finance staff to *2026! on every pytest session).",
+  "test_credentials": "admin=admin@intercloud-digital.com/[REDACTED-ADMIN-PASSWORD], finance=finance@intercloud-digital.com/StaffTest2026!, sales=sales@intercloud-digital.com/Sales2026!, support=support@intercloud-digital.com/Support2026!, ticket_only=ticket@intercloud-digital.com/Ticket2026! (conftest.py resets non-finance staff to *2026! on every pytest session).",
   "seed_data_creation": "None beyond data patch of finance user's created_at field to allow /auth/me to succeed for UI test. No side effects on business data.",
   "retest_needed": true,
   "should_main_agent_self_test": true,

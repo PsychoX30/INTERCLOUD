@@ -52,7 +52,7 @@
     "/app/backend/tests/test_email_refresh.py (new — 4 pytest cases validating seed v2 refresh + logo URL)"
   ],
   "success_rate": { "backend": "100% (35/35 pytest cases)", "frontend": "100% (public list/detail/404 + admin editor CRUD + email regression)" },
-  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026!; Client: demo@client.com / ClientDemo2026!",
+  "test_credentials": "Admin: admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]; Client: demo@client.com / ClientDemo2026!",
   "seed_data_creation": "During UI test one admin article 'Playwright test article uniq' was created then deleted (net-zero DB drift). Backend pytest also creates + tears down several TEST_ / pytest-prefixed articles.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

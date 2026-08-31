@@ -42,7 +42,7 @@ BASE_URL = _resolve_base_url()
 API = BASE_URL + "/api/portal"
 
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASSWORD = "AdminIntercloud2026!"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 SALES_EMAIL = "sales.test@intercloud-digital.com"
 SALES_PASSWORD = "SalesTest2026!"  # reset via admin fixture below
 

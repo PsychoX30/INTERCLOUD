@@ -29,7 +29,7 @@
     "backend": "100% (6/6)",
     "frontend": "100% (9/9 review scenarios verified)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md — unchanged)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (from /app/memory/test_credentials.md — unchanged)",
   "seed_data_creation": "None. Test suite reads existing branding, sitemap, invoice list, and PDF preview — no writes.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

@@ -47,7 +47,7 @@
     "/app/backend/tests/test_mail_delivery_paths.py (new — 3 pytest cases covering mail/inbox IMAP fallback + mail/send v2 SMTP failure/queue paths)"
   ],
   "success_rate": { "backend": "100% (16/16 pytest cases across integrations + mail-delivery)", "frontend": "100% — all acceptance criteria met" },
-  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026!",
+  "test_credentials": "Admin: admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]",
   "seed_data_creation": "No permanent seed data. Test data (imap host 'imap.testcase.example.com') was left disabled — safe. Backend pytest fixtures set integrations back to enabled:false at teardown.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

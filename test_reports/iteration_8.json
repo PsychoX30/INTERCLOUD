@@ -44,7 +44,7 @@
     "/app/backend/tests/test_sprint_extras.py (NEW — 6 additional sprint coverage tests)"
   ],
   "success_rate": {"backend": "94% (66/70 total; 100% on the 18 new sprint tests)", "frontend": "100% (all 4 wizard steps + success card + menu filter + admin CRUD pages render + navigate correctly)"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! ; demo@client.com / ClientDemo2026! ; sales@intercloud-digital.com / Sales2026! (per seed.py, agrees with review-request note)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] ; demo@client.com / ClientDemo2026! ; sales@intercloud-digital.com / Sales2026! (per seed.py, agrees with review-request note)",
   "seed_data_creation": "Sprint tests auto-create/delete a 'Pytest VPS' product, a 'Pytest Backup' add-on, a 'testcat_*' category, a 'cascade_*' + 'delblock_*' category with children — all cleaned up in fixture teardown. Sales user menu_keys was toggled and reset to [] at the end of the menu-filter E2E test.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

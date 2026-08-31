@@ -13,7 +13,7 @@ import requests
 BASE = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api/portal"
 
 CREDS = {
-    "admin":       ("admin@intercloud-digital.com",   "AdminIntercloud2026!"),
+    "admin":       ("admin@intercloud-digital.com",   os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")),
     "finance":     ("finance@intercloud-digital.com", "StaffTest2026!"),
     "sales":       ("sales@intercloud-digital.com",   "Sales2026!"),
     "support":     ("support@intercloud-digital.com", "Support2026!"),

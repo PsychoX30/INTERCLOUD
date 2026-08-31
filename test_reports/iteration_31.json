@@ -71,7 +71,7 @@
     "frontend": "87.5% (7/8 review items fully green; AdminMail Reply button flow blocked by the click bug)"
   },
 
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md). Client user password reset by this test run to enable Pay-with-Duitku test: user1784914441940@example.com / ClientTest2026! (reset via PUT /api/portal/admin/users/6a63a20ab3ba6c3fbb50b131 — role=client, name='Beta Client', company='Beta Co').",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (from /app/memory/test_credentials.md). Client user password reset by this test run to enable Pay-with-Duitku test: user1784914441940@example.com / ClientTest2026! (reset via PUT /api/portal/admin/users/6a63a20ab3ba6c3fbb50b131 — role=client, name='Beta Client', company='Beta Co').",
 
   "seed_data_creation": "Created ONE test credit note during this run: 5000 IDR partial refund against invoice INV-2026-00010 (client user1784914441940@example.com) with reason 'TEST partial 5000' and auto_apply=true. Now visible as CN-2026-00008 in the Credit Notes table with status=applied. Also generated 4 new audit-log entries (billing.settings_update x2 from the PPN 11→12→11 round-trip, credit_note.create + credit_note.apply from the CN test).",
 

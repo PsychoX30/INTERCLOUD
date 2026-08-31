@@ -25,7 +25,7 @@
     "backend": "18/18 (100%) — 11/11 live-router tests + 7/7 wire-level unit tests",
     "frontend": "not tested (backend-only per request)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! — worked",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] — worked",
   "seed_data_creation": "None. All tests are read-only (ping/traceroute/bgp lookup / list ops). No router state modified.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

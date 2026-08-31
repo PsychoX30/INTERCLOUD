@@ -18,7 +18,7 @@ BASE = _read_env().rstrip("/")
 assert BASE, "REACT_APP_BACKEND_URL missing"
 API = f"{BASE}/api/portal"
 
-ADMIN = ("admin@intercloud-digital.com", "AdminIntercloud2026!")
+ADMIN = ("admin@intercloud-digital.com", os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW"))
 CLIENT = ("demo@client.com", "ClientDemo2026!")
 SALES = ("sales@intercloud-digital.com", "Sales2026!")
 SUPPORT = ("support@intercloud-digital.com", "Support2026!")

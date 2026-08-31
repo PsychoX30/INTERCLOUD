@@ -26,7 +26,7 @@
   ],
   "success_rate": {"backend": "100% (63/63)", "frontend": "100% (7/7 admin pages + login flow)"},
   "test_credentials": {
-    "admin": "admin@intercloud-digital.com / AdminIntercloud2026! (works)",
+    "admin": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (works)",
     "client": "demo@client.com / ClientDemo2026! (works)",
     "sales_actual": "sales@intercloud-digital.com / Sales2026! (works; conftest re-seed — reviewer's 'SalesTest2026!' does NOT work)"
   },

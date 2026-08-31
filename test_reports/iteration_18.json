@@ -32,7 +32,7 @@
     "/app/backend/tests/test_login_analytics.py — added autouse fixture to disable auto_block during the class run"
   ],
   "success_rate": {"backend": "100% (60/60 tests across 4 files)", "frontend": "not tested (backend-only per request)"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026!  |  demo@client.com / ClientDemo2026!",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]  |  demo@client.com / ClientDemo2026!",
   "seed_data_creation": "None. Uses existing seeded admin/client. Teardown wipes blocked_ips and 127.0.0.1 failed login_attempts + disables auto_block after the diagnostics test class ends.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

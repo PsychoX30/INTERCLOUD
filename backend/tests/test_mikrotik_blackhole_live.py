@@ -31,7 +31,7 @@ def admin_headers():
     r = requests.post(
         f"{API}/portal/auth/login",
         json={"email": "admin@intercloud-digital.com",
-              "password": "AdminIntercloud2026!"},
+              "password": os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")},
         timeout=15,
     )
     assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"

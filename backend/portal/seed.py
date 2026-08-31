@@ -51,12 +51,11 @@ async def _seed_admin(db):
     if not a:
         generated = False
         if not admin_pw:
-            if is_dev:
-                admin_pw = "AdminIntercloud2026!"
-            else:
-                import secrets as _secrets
-                admin_pw = _secrets.token_urlsafe(18)
-                generated = True
+            # No hardcoded dev default anymore: a missing ADMIN_PASSWORD always
+            # generates a random one-time password (logged once, must-change).
+            import secrets as _secrets
+            admin_pw = _secrets.token_urlsafe(18)
+            generated = True
         must_change = generated or os.environ.get(
             "ADMIN_MUST_CHANGE_PASSWORD", "").lower() in ("1", "true", "yes")
         await db.users.insert_one({
@@ -122,7 +121,7 @@ async def _write_credentials_file(db):
     if not _is_dev_env():
         return
     admin_email = os.environ.get("ADMIN_EMAIL", "support@intercloud-digital.com")
-    admin_pw    = os.environ.get("ADMIN_PASSWORD", "AdminIntercloud2026!")
+    admin_pw    = os.environ.get("ADMIN_PASSWORD", "(see seed log)")
     path = "/app/memory/test_credentials.md"
     try:
         if not os.path.isdir("/app/memory"):

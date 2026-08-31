@@ -27,7 +27,7 @@
   ],
   "updated_files": ["/app/backend/tests/test_iter37_features.py (new, 7 tests)"],
   "success_rate": {"backend": "100% (7/7)", "frontend": "100% (4/4)"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! and demo@client.com / ClientDemo2026! both verified working. reCAPTCHA remains DISABLED (as instructed).",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] and demo@client.com / ClientDemo2026! both verified working. reCAPTCHA remains DISABLED (as instructed).",
   "seed_data_creation": "Created qa-onboard@example.com client user then deleted it (via test cleanup). One Proxmox provisioning attempt made (failed at auto-discovery step as expected - no VM created). No other side effects.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

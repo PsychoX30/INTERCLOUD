@@ -44,7 +44,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100%"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! ; demo@client.com / ClientDemo2026! (from /app/memory/test_credentials.md)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] ; demo@client.com / ClientDemo2026! (from /app/memory/test_credentials.md)",
   "seed_data_creation": "none",
   "retest_needed": false,
   "main_agent_can_self_test": true,

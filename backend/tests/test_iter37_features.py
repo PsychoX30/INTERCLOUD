@@ -24,7 +24,7 @@ def _backend_url():
 
 BASE = _backend_url().rstrip("/") + "/api/portal"
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PW = "AdminIntercloud2026!"
+ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 
 @pytest.fixture(scope="module")

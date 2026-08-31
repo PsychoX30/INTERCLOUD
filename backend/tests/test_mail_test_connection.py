@@ -18,7 +18,7 @@ API = os.environ.get("REACT_APP_BACKEND_URL") or (
     ("/app/frontend/.env")
 )
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASS  = "AdminIntercloud2026!"
+ADMIN_PASS  = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 # Live mailbox provided by the user for connection testing.
 MAIL_HOST = "mail.intercloud-digital.com"

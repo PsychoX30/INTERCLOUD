@@ -60,7 +60,7 @@
     "backend": "100% (15/15)",
     "frontend": "100% (all 6 requested testids verified)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md — unchanged)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (from /app/memory/test_credentials.md — unchanged)",
   "seed_data_creation": "Test suite created one real backup archive under /var/backups/intercloud/pre-update-<UTC>.archive.gz (mongodump snapshot of live DB). The archive is retained (update.sh prunes anything >30 days old on next invocation). Test also invoked the destructive scripts/update.sh once with confirm=UPDATE; the tree was dirty so update.sh stashed local changes — the test suite auto-popped the stash so /app is functionally identical to how it was found (routes.py, AdminBackup.jsx, memory/PRD.md restored).",
   "retest_needed": false,
   "should_main_agent_self_test": true,

@@ -80,7 +80,7 @@ Environment variables:
 | `MONGO_APP_USER` | `intercloud_app` | DB app user. |
 | `MONGO_APP_PASSWORD` | *(random 32-byte)* | Auto-generated + saved. |
 | `ADMIN_EMAIL` | `support@intercloud-digital.com` | Seed admin. Written to backend/.env; seeder resets the admin's password to this on first boot. |
-| `ADMIN_PASSWORD` | `AdminIntercloud2026!` | Change after login. |
+| `ADMIN_PASSWORD` | `[REDACTED-ADMIN-PASSWORD]` | Change after login. |
 | `EMERGENT_LLM_KEY` | *(empty)* | Paste for AI features. |
 
 ## Updates — two options

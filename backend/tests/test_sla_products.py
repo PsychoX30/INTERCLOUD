@@ -17,7 +17,7 @@ if not BASE_URL:
                 BASE_URL = line.split("=", 1)[1].strip().rstrip("/")
 
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASSWORD = "AdminIntercloud2026!"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 BAD_PATTERN = re.compile(r"99[.,](?:9|95|99)%")
 

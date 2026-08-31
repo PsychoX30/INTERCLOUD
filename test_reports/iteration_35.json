@@ -42,7 +42,7 @@
     "/app/backend/tests/test_iter35_new_features.py (new)"
   ],
   "success_rate": {"backend": "100% (14/14)", "frontend": "100% (5/5)"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! and demo@client.com / ClientDemo2026! both working. reCAPTCHA disabled in DB as instructed.",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] and demo@client.com / ClientDemo2026! both working. reCAPTCHA disabled in DB as instructed.",
   "seed_data_creation": "Created ~4 TEST-prefixed leads via public form + /portal-public/leads, 1 TEST utm link (deleted), 2 dcim IP allocations on first IPv4 prefix (TEST hostnames), 1 backup file, 1 quotation converted to invoice, 1 order edited (TEST edit note), 1 internal reply on a client ticket, 1 'budget' field added to form 'kontak'. 2FA fully enabled+disabled+reset for demo@client.com so no residual 2FA state.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

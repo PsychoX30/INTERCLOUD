@@ -29,7 +29,7 @@
     "/app/backend/tests/test_iter29_bugfix_batch2.py (new, 15 tests)"
   ],
   "success_rate": {"backend": "100% (15/15)", "frontend": "100% (6/6)"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md). sales.test@intercloud-digital.com — seeded but password NOT in credentials file; test suite resets it to 'SalesTest2026!' via admin API (see fixture). Sales user has 1 assigned_client_id (contoso@example.com).",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (from /app/memory/test_credentials.md). sales.test@intercloud-digital.com — seeded but password NOT in credentials file; test suite resets it to 'SalesTest2026!' via admin API (see fixture). Sales user has 1 assigned_client_id (contoso@example.com).",
   "seed_data_creation": "Test suite creates and cleans up 1 finance user (email 'TEST_finance_badge@example.com') to verify the purple badge rendering — deleted after screenshot verification. Sales password reset to 'SalesTest2026!' but the sales user itself was pre-seeded by the installer.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

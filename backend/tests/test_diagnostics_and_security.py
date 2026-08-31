@@ -30,7 +30,7 @@ pytestmark = pytest.mark.xdist_group("recaptcha_shared")
 LOCAL_API = "http://localhost:8001/api/portal"
 
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASSWORD = "AdminIntercloud2026!"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 CLIENT_EMAIL = "demo@client.com"
 CLIENT_PASSWORD = "ClientDemo2026!"
 

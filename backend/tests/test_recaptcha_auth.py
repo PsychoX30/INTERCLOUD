@@ -14,7 +14,7 @@ API = os.environ.get("PORTAL_API_BASE") or "http://localhost:8001/api/portal"
 API = API.rstrip("/")
 
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASSWORD = "AdminIntercloud2026!"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 FAKE_SITE_KEY = "6LcFakeSiteKeyForTests1234567890ABCDEF"
 FAKE_SECRET_KEY = "6LcSecretKeyForTests1234567890ABCDEFGH"

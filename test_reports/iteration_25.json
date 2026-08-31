@@ -18,7 +18,7 @@
     "/app/frontend/src/pages/portal/admin/AdminBranding.jsx (line 3: `import api from` -> `import { api } from`)"
   ],
   "success_rate": {"backend": "n/a (not tested per request)", "frontend": "100%"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (from /app/memory/test_credentials.md)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (from /app/memory/test_credentials.md)",
   "seed_data_creation": "none",
   "retest_needed": false,
   "should_main_agent_self_test": true,

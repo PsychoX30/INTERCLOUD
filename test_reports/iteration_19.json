@@ -32,7 +32,7 @@
     "backend": "100% for the new suite (19/19 passing, stable across 3 consecutive runs). Combined with test_diagnostics_and_security.py: 39/39 stable. The wider regression (adding test_recaptcha_auth.py + test_login_analytics.py) is 78/79 to 79/79 depending on run — the pre-existing loadscope race, not this iteration's changes.",
     "frontend": "not tested (backend-only per request)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! ; demo@client.com / ClientDemo2026!",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] ; demo@client.com / ClientDemo2026!",
   "seed_data_creation": "None. Uses existing seeded admin. Class teardown wipes blocked_ips, wipes 127.0.0.1 failed login_attempts, deletes telegram integration, and resets security settings (auto_block=False + whitelist_ips=[] + notify flags True) to match the invariant left by test_diagnostics_and_security.py.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

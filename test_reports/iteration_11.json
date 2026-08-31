@@ -42,7 +42,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% (50/50 tests)", "frontend": "100% (Finance UI E2E + regression)"},
-  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026! · Client: demo@client.com / ClientDemo2026!",
+  "test_credentials": "Admin: admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] · Client: demo@client.com / ClientDemo2026!",
   "seed_data_creation": "During UI test, one Kas Kecil entry was added and then deleted in the same run (net zero DB drift).",
   "retest_needed": false,
   "main_agent_can_self_test": true,

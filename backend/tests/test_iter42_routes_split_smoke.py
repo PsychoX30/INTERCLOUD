@@ -24,7 +24,7 @@ def _read_backend_url():
 BASE = _read_backend_url()
 API = f"{BASE}/api/portal"
 
-ADMIN = ("admin@intercloud-digital.com", "AdminIntercloud2026!")
+ADMIN = ("admin@intercloud-digital.com", os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW"))
 CLIENT_CANDIDATES = [
     ("demo@client.com", "ClientDemo2026!"),
     ("demo@client.com", "DemoClient2026!"),

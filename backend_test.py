@@ -19,7 +19,7 @@ from pymongo import MongoClient
 # Configuration
 API = (os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001").rstrip("/") + "/api/portal"
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASS = "AdminIntercloud2026!"
+ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 # MongoDB connection
 _db = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))[

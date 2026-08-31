@@ -3,7 +3,7 @@
   "backend_issues": {
     "critical": [],
     "minor": [
-      {"endpoint": "auth/credentials", "issue": "Review request specified sales password 'SalesTest2026!' but the actual seeded (conftest-managed) password is 'Sales2026!'. Similarly the review referenced 'AdminIntercloud2026!' which is correct. Any external tooling relying on 'SalesTest2026!' will fail login. Either update conftest to use SalesTest2026! or update the review/prod docs to 'Sales2026!'."},
+      {"endpoint": "auth/credentials", "issue": "Review request specified sales password 'SalesTest2026!' but the actual seeded (conftest-managed) password is 'Sales2026!'. Similarly the review referenced '[REDACTED-ADMIN-PASSWORD]' which is correct. Any external tooling relying on 'SalesTest2026!' will fail login. Either update conftest to use SalesTest2026! or update the review/prod docs to 'Sales2026!'."},
       {"endpoint": "/api/portal/admin/service-requests", "issue": "Returned empty list ([]) for both admin and sales even though the demo client has 32 services. It appears service-requests is a distinct queue (approval requests) rather than the services collection — scoping is trivially satisfied. If the intent is to filter services by scope, expose /admin/services with the sales_scope filter as well (currently /admin/services is not documented as sales-scoped in this review, so no regression, just a note)."}
     ]
   },
@@ -27,7 +27,7 @@
   ],
   "success_rate": {"backend": "100% (13/13 executed, 1 non-blocking skip)", "frontend": "n/a (backend-only per request)"},
   "test_credentials": {
-    "admin": "admin@intercloud-digital.com / AdminIntercloud2026!",
+    "admin": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]",
     "client": "demo@client.com / ClientDemo2026!",
     "sales_actual": "sales@intercloud-digital.com / Sales2026!  (NOTE: review said 'SalesTest2026!' — that fails; conftest re-seeds to Sales2026!)"
   },

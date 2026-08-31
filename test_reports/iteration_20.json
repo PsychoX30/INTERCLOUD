@@ -34,7 +34,7 @@
     "backend": "100% for mikrotik suite (35/35 stable). Regression regressions unrelated to mikrotik: test_diagnostics_and_security 2 failures (missing dig/whois binaries, pre-existing env issue), test_portal 3 failures (stale URL + missing dcim module, pre-existing).",
     "frontend": "not tested (backend-only per request)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! ; demo@client.com / ClientDemo2026!",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] ; demo@client.com / ClientDemo2026!",
   "seed_data_creation": "Creates 1 shared TEST_shared_router device (module scope) + 1 TEST_router1 device for TestDevicesCrud (class scope) + 1 TEST_to_delete for TestDeleteDevice (per-test, deleted inline). All cleaned up via yield-teardown fixtures + best-effort DELETE in the module-level _ensure_mikrotik_disabled fixture. Also toggles /admin/integrations-v2/mikrotik enabled=true briefly in test_29, then disables it in the finally block AND the module teardown.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

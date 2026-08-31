@@ -22,7 +22,7 @@
     "/app/backend/tests/test_sla_products.py (new)"
   ],
   "success_rate": {"backend": "100% (3/3)", "frontend": "100% (all assertions green)"},
-  "test_credentials": "Admin admin@intercloud-digital.com / AdminIntercloud2026!  ·  Client demo@client.com / ClientDemo2026!",
+  "test_credentials": "Admin admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD]  ·  Client demo@client.com / ClientDemo2026!",
   "seed_data_creation": "None — reused existing seeded products/users.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

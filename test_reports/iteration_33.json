@@ -19,7 +19,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "n/a (skipped per request)", "frontend": "~95% (10/11 admin/public tasks verified; client-only routes not exercisable without client credentials)"},
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! (only admin available; no client seeded)",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] (only admin available; no client seeded)",
   "seed_data_creation": "None. One TEST_ticket (TCK-2026-00051) was closed by the ticket-status test but original demo-generated ticket data remained otherwise unchanged.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

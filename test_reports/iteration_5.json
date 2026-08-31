@@ -34,7 +34,7 @@
     "/app/backend/tests/conftest.py (NEW — loads /app/backend/.env for pytest env-var injection)"
   ],
   "success_rate": {"backend": "92% (45/49) — new-sprint tests 100% (20/20); 4 failures are pre-existing drift", "frontend": "100% on all requested flows (register → dashboard, admin CRM KPI+filter+badges, PDF/HTML endpoints)"},
-  "test_credentials": "Used /app/memory/test_credentials.md — admin@intercloud-digital.com / AdminIntercloud2026! + demo@client.com / ClientDemo2026!. Staff role passwords in seed.py: Sales2026!, Support2026!, Ticket2026! (review-request had 'SalesIntercloud2026!' etc — actual seed uses shorter form).",
+  "test_credentials": "Used /app/memory/test_credentials.md — admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] + demo@client.com / ClientDemo2026!. Staff role passwords in seed.py: Sales2026!, Support2026!, Ticket2026! (review-request had 'SalesIntercloud2026!' etc — actual seed uses shorter form).",
   "seed_data_creation": "Registered 2 fresh E2E test client users via public /auth/register (e2etest_1784607299@example.co, e2etest_1784607349@example.co). Both auto-created CRM rows (source=self_registration, status=prospect). Also 30+ regtest_* users from prior test_register_and_crm runs are visible in CRM.",
   "retest_needed": false,
   "should_main_agent_self_test": true,

@@ -34,7 +34,7 @@ def _read_env():
 BASE = (os.environ.get("REACT_APP_BACKEND_URL") or _read_env()).rstrip("/")
 assert BASE, "REACT_APP_BACKEND_URL required"
 API = BASE + "/api/portal"
-ADMIN = ("admin@intercloud-digital.com", "AdminIntercloud2026!")
+ADMIN = ("admin@intercloud-digital.com", os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW"))
 CLIENT = ("demo@client.com", "ClientDemo2026!")
 
 

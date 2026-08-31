@@ -21,7 +21,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "n/a (skipped)", "frontend": "100% (3/3 features verified)"},
-  "test_credentials": "Admin: admin@intercloud-digital.com / AdminIntercloud2026! ; Client: demo@client.com / ClientDemo2026!",
+  "test_credentials": "Admin: admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] ; Client: demo@client.com / ClientDemo2026!",
   "seed_data_creation": "Mutated demo data as expected: one request Rejected, one Approved (service 6a6afaeec74e8df10fdc9086 now terminated).",
   "retest_needed": false,
   "main_agent_can_self_test": true,

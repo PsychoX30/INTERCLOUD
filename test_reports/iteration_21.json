@@ -31,7 +31,7 @@
     "backend": "12/12 (100%) after sequential run — Bug 1 add-v7 syntax PASS, Bug 2 fast list + prefix_filter PASS (in/out), DELETE + verify PASS, 6/6 regression mikrotik ops PASS, diagnostics traceroute PASS (after installing traceroute binary).",
     "frontend": "not tested (backend-only per request)"
   },
-  "test_credentials": "admin@intercloud-digital.com / AdminIntercloud2026! — worked",
+  "test_credentials": "admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] — worked",
   "seed_data_creation": "None persistent. Each test run adds `198.51.100.77/32` (RFC5737 TEST-NET-2) as a blackhole with comment `TEST_blackhole_iter21` and deletes it in the DELETE test. Module-level teardown fixture guarantees cleanup even on partial failure. Verified router state clean after run (GET filter=198.51.100.0/24 returned []).",
   "retest_needed": false,
   "should_main_agent_self_test": false,

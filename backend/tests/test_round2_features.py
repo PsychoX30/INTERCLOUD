@@ -21,7 +21,7 @@ from pymongo import MongoClient
 API = (os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001").rstrip("/") + "/api/portal"
 LOCAL_API = "http://127.0.0.1:8001/api/portal"
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASS = "AdminIntercloud2026!"
+ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 
 _PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
         b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"

@@ -23,7 +23,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100% of the 4 requested flows pass; 3 LOW-priority testability/UI polish nits"},
-  "test_credentials": "Admin admin@intercloud-digital.com / AdminIntercloud2026! and Client demo@client.com / ClientDemo2026! (both from /app/memory/test_credentials.md).",
+  "test_credentials": "Admin admin@intercloud-digital.com / [REDACTED-ADMIN-PASSWORD] and Client demo@client.com / ClientDemo2026! (both from /app/memory/test_credentials.md).",
   "seed_data_creation": "Mutated demo data as expected per request: service 6a6b056a176b95885ec6ff02 (DC-to-DC 100 Mbps - Demo Client) is now in status=TERMINATED after the approve test. Also saved a CMS hero headline draft ('LiveTest Headline XYZ') via Save button. FAQ tab may show 1 empty FAQ entry created during the add test.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

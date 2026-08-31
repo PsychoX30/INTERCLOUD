@@ -33,7 +33,7 @@ if not BASE_URL:
 assert BASE_URL, "REACT_APP_BACKEND_URL must be set"
 
 ADMIN_EMAIL = "admin@intercloud-digital.com"
-ADMIN_PASSWORD = "AdminIntercloud2026!"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")
 DEVICE_ID = "6a617872f12db51fa9cc268c"
 DEVICE_SRC = "157.20.32.253"
 
