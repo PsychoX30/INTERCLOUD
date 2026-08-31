@@ -3,6 +3,7 @@ import { api, getToken } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Download, Plus, Trash2, Lock, TrendingUp, Wallet, HandCoins, Users, ShoppingCart, ReceiptText, Percent, Save, Loader2, Activity, FileText, Send, Mail } from "lucide-react";
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip as ReTooltip, CartesianGrid, ResponsiveContainer, Legend } from "recharts";
+import { EmployeesPane, SalariesPane, SalesFeesPane as PayrollSalesFeesPane } from "./AdminFinancePayroll";
 
 const idr = (v) => "Rp " + Number(v || 0).toLocaleString("id-ID", { maximumFractionDigits: 0 });
 const BASE = process.env.REACT_APP_BACKEND_URL;
@@ -14,6 +15,7 @@ const TABS = [
   { key: "expenses",  label: "Expenses",    icon: Wallet },
   { key: "kas_kecil", label: "Kas Kecil",   icon: HandCoins },
   { key: "salaries",  label: "Salaries",    icon: Users },
+  { key: "employees", label: "Karyawan",    icon: Users },
   { key: "sales_fees",label: "Sales Fees",  icon: ShoppingCart },
   { key: "assets",    label: "Assets",      icon: Lock },
   { key: "billing",   label: "Billing Defaults", icon: Percent },
@@ -95,17 +97,9 @@ const AdminFinance = () => {
       {tab === "revenue" && <RevenueList rows={d.revenue_rows} />}
       {tab === "expenses" && <LedgerPane rows={d.expenses_rows} onChange={load} kind="expenses" extras={["category","vendor","description"]} />}
       {tab === "kas_kecil" && <LedgerPane rows={d.kas_kecil_rows} onChange={load} kind="kas-kecil" extras={["category","vendor","notes"]} />}
-      {tab === "salaries" && <LedgerPane rows={d.salaries_rows} onChange={load} kind="salaries" extras={["employee","category","notes"]} useItems rowAction={(r) => (
-        <a
-          href={`${BASE}/api/portal/documents/salary-slip/${r.id}?format=pdf&token=${encodeURIComponent(getToken() || "")}`}
-          className="inline-flex items-center gap-1 text-xs font-bold text-[#0a2350] hover:text-[#f5b120]"
-          title="Unduh slip gaji PDF"
-          data-testid={`salary-slip-${r.id}`}
-        >
-          <FileText className="h-4 w-4" /> Slip
-       </a>
-      )} />}
-      {tab === "sales_fees" && <SalesFeesPane rows={d.sales_fees_rows} onChange={load} />}
+      {tab === "salaries" && <SalariesPane />}
+      {tab === "employees" && <EmployeesPane />}
+      {tab === "sales_fees" && <PayrollSalesFeesPane />}
       {tab === "assets" && <AssetsList rows={d.assets_rows} />}
       {tab === "billing" && <BillingDefaultsPane />}
       {tab === "reports" && <ReportsPane dlUrl={dlUrl} />}
@@ -371,194 +365,6 @@ const LedgerPane = ({ rows, onChange, kind, extras, rowAction, useItems = false 
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={extras.length + 3} className="p-8 text-center text-slate-400">No entries yet.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-};
-
-const SalesFeesPane = ({ rows, onChange }) => {
-  const [ctx, setCtx] = useState(null);
-  const [ctxErr, setCtxErr] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [err, setErr] = useState("");
-  const [form, setForm] = useState({ date: new Date().toISOString().slice(0, 10), notes: "" });
-  const [items, setItems] = useState([{ description: "", amount: 0 }]);
-  const [salesId, setSalesId] = useState("");
-  const [customerId, setCustomerId] = useState("");
-  const [serviceId, setServiceId] = useState("");
-  const [invoiceId, setInvoiceId] = useState("");
-
-  useEffect(() => {
-    api.get("/admin/finance/sales-context")
-      .then((r) => setCtx(r.data))
-      .catch((e) => setCtxErr(e?.response?.data?.detail || "Gagal memuat data sales"));
-  }, []);
-
-  const customers = (ctx && salesId && ctx.customers_by_sales[salesId]) || [];
-  const services = (ctx && customerId && ctx.services_by_customer[customerId]) || [];
-  const invoicesBySvc = (ctx && serviceId && ctx.invoices_by_service[serviceId]) || [];
-  const invoicesByCust = (ctx && customerId && ctx.invoices_by_customer[customerId]) || [];
-  const invoiceList = invoiceId && serviceId ? invoicesBySvc : invoicesByCust;
-
-  const pickSales = (id) => { setSalesId(id); setCustomerId(""); setServiceId(""); setInvoiceId(""); };
-  const pickCustomer = (id) => { setCustomerId(id); setServiceId(""); setInvoiceId(""); };
-  const pickService = (id) => { setServiceId(id); setInvoiceId(""); };
-
-  const addItem = () => setItems([...items, { description: "", amount: 0 }]);
-  const rmItem = (i) => setItems(items.filter((_, idx) => idx !== i));
-  const setItem = (i, key, val) => setItems(items.map((it, idx) => idx === i ? { ...it, [key]: val } : it));
-  const itemsTotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr("");
-    if (!salesId) { setErr("Pilih sales person dulu."); return; }
-    if (itemsTotal === 0) { setErr("Total fee tidak boleh 0."); return; }
-    const sales = (ctx.sales_people || []).find((s) => s.id === salesId);
-    const invoice = (invoiceList || []).find((i) => i.id === invoiceId);
-    const payload = {
-      ...form,
-      sales_person: sales ? sales.name : "",
-      invoice_number: invoice ? invoice.number : "",
-      sales_person_id: salesId,
-      customer_id: customerId || "",
-      service_id: serviceId || "",
-      invoice_id: invoiceId || "",
-      items,
-    };
-    try {
-      await api.post("/admin/sales-fees", payload);
-      setAdding(false);
-      setForm({ date: new Date().toISOString().slice(0, 10), notes: "" });
-      setItems([{ description: "", amount: 0 }]);
-      setSalesId(""); setCustomerId(""); setServiceId(""); setInvoiceId("");
-      onChange();
-    } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Failed to save");
-    }
-  };
-
-  const del = async (id) => {
-    if (!window.confirm("Delete?")) return;
-    try { await api.delete(`/admin/sales-fees/${id}`); onChange(); }
-    catch (e) { alert(e?.response?.data?.detail || "Delete failed"); }
-  };
-  const total = rows.reduce((s, r) => s + Number(r.amount || 0), 0);
-
-  if (ctxErr) return <Card className="p-6 text-sm text-red-700">{ctxErr}</Card>;
-  if (!ctx) return <Loading />;
-
-  return (
-    <div>
-      <div className="mb-3 flex justify-between items-center">
-        <div className="text-sm text-slate-500">
-          <b className="text-[#0a2350]">{rows.length}</b> entries · Total <b className="text-red-700">{idr(total)}</b>
-        </div>
-        <button onClick={() => setAdding(!adding)} className={btnPrimary} data-testid="add-sales-fees"><Plus className="h-4 w-4" /> Add entry</button>
-      </div>
-
-      {adding && (
-        <Card className="p-4 mb-3">
-          {err && <div className="text-sm bg-red-50 border border-red-200 text-red-700 rounded px-3 py-2 mb-2">{err}</div>}
-          <form onSubmit={submit} className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <label><div className={labelClass}>Date</div><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className={inputClass} data-testid="sales-fees-date" /></label>
-
-            <label>
-              <div className={labelClass}>Sales Person</div>
-              <select value={salesId} onChange={(e) => pickSales(e.target.value)} className={inputClass} data-testid="sales-fees-sales-person">
-                <option value="">— Pilih sales —</option>
-                {ctx.sales_people.map((s) => <option key={s.id} value={s.id}>{s.name}{s.email ? ` (${s.email})` : ""}</option>)}
-              </select>
-            </label>
-
-            <label>
-              <div className={labelClass}>Customer</div>
-              <select value={customerId} onChange={(e) => pickCustomer(e.target.value)} disabled={!salesId} className={inputClass} data-testid="sales-fees-customer">
-                <option value="">{salesId ? "— Semua customer sales ini —" : "Pilih sales dulu"}</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </label>
-
-            <label>
-              <div className={labelClass}>Service</div>
-              <select value={serviceId} onChange={(e) => pickService(e.target.value)} disabled={!customerId} className={inputClass} data-testid="sales-fees-service">
-                <option value="">{customerId ? "— Semua service —" : "Pilih customer dulu"}</option>
-                {services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </label>
-
-            <label>
-              <div className={labelClass}>Invoice</div>
-              <select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)} disabled={!customerId} className={inputClass} data-testid="sales-fees-invoice">
-                <option value="">{serviceId ? "— Pilih invoice —" : "Semua invoice customer"}</option>
-                {(serviceId ? invoicesBySvc : invoicesByCust).map((i) => (
-                  <option key={i.id} value={i.id}>{i.number} · {i.status}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="md:col-span-2"><div className={labelClass}>Notes</div><input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className={inputClass} data-testid="sales-fees-notes" /></label>
-
-            <div className="col-span-full border-t border-slate-100 pt-3 mt-1">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-xs font-bold text-[#0a2350]">Rincian fee (bisa beberapa baris)</div>
-                <button type="button" onClick={addItem} className="text-xs font-bold text-[#0a2350] hover:text-[#f5b120]" data-testid="sales-fees-add-item"><Plus className="h-3.5 w-3.5 inline" /> Tambah baris</button>
-              </div>
-              {items.map((it, i) => (
-                <div key={i} className="grid grid-cols-[1fr_140px_32px] gap-2 mb-2 items-end">
-                  <label><div className={labelClass}>Keterangan</div><input value={it.description} onChange={(e) => setItem(i, "description", e.target.value)} className={inputClass} placeholder="e.g. Fee closing / komisi bulan ini" data-testid={`sales-fees-item-${i}-desc`} /></label>
-                  <label><div className={labelClass}>Nominal</div><input type="number" value={it.amount} onChange={(e) => setItem(i, "amount", Number(e.target.value))} className={inputClass} data-testid={`sales-fees-item-${i}-amount`} /></label>
-                  <button type="button" onClick={() => rmItem(i)} disabled={items.length === 1} className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 disabled:opacity-30" title="Hapus"><Trash2 className="h-4 w-4" /></button>
-                </div>
-              ))}
-              <div className="text-right text-sm mt-1">Total: <b className="text-[#0a2350]" data-testid="sales-fees-items-total">{idr(itemsTotal)}</b></div>
-            </div>
-
-            <div className="col-span-full flex justify-end gap-2 mt-2">
-              <button type="button" onClick={() => setAdding(false)} className={btnSecondary}>Cancel</button>
-              <button type="submit" className={btnPrimary} data-testid="sales-fees-submit">Save</button>
-            </div>
-          </form>
-        </Card>
-      )}
-
-      <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
-        <table className="w-full min-w-[720px] text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
-            <tr>
-              <th className="px-4 py-3 text-left">Date</th>
-              <th className="px-4 py-3 text-left">Sales person</th>
-              <th className="px-4 py-3 text-left">Invoice #</th>
-              <th className="px-4 py-3 text-center">Items</th>
-              <th className="px-4 py-3 text-right">Amount</th><th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-t border-slate-100">
-                <td className="px-4 py-3 text-slate-600">{r.date}</td>
-                <td className="px-4 py-3">{r.sales_person || "-"}</td>
-                <td className="px-4 py-3">{r.invoice_number || "-"}</td>
-                <td className="px-4 py-3 text-center text-slate-500">{r.items ? r.items.length : 1}</td>
-                <td className="px-4 py-3 text-right font-bold text-red-700">{idr(r.amount)}</td>
-                <td className="px-4 py-3 text-right">
-                  <span className="inline-flex items-center gap-3">
-                    <a
-                      href={`${BASE}/api/portal/documents/sales-fee-slip/${r.id}?format=pdf&token=${encodeURIComponent(getToken() || "")}`}
-                      className="inline-flex items-center gap-1 text-xs font-bold text-[#0a2350] hover:text-[#f5b120]"
-                      title="Unduh slip fee sales PDF"
-                      data-testid={`sales-fee-slip-${r.id}`}
-                    >
-                      <FileText className="h-4 w-4" /> Slip
-                    </a>
-                    <button onClick={() => del(r.id)} className="text-slate-600 hover:text-red-600" title="Delete"><Trash2 className="h-4 w-4" /></button>
-                  </span>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-slate-400">No entries yet.</td></tr>}
           </tbody>
         </table>
       </div>

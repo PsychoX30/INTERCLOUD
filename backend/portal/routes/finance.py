@@ -38,6 +38,106 @@ from portal.branding import get_branding as _get_branding_dict  # noqa: E402
 
 router = APIRouter()
 
+# ---------- Employees Master Data ----------
+@router.get("/admin/employees/divisions")
+async def list_employee_divisions(admin=Depends(require_roles("admin", "finance"))):
+    db = await _get_db()
+    divs = await db.employees.distinct("division", {"active": True})
+    return sorted([d for d in divs if d])
+
+
+@router.get("/admin/employees")
+async def list_employees(
+    active: bool = True,
+    division: str | None = None,
+    admin=Depends(require_roles("admin", "finance")),
+):
+    db = await _get_db()
+    query = {}
+    if active is not None:
+        query["active"] = active
+    if division:
+        query["division"] = division
+    docs = await db.employees.find(query).sort("name", 1).to_list(1000)
+    return [_serialize_employee(d) for d in docs]
+
+
+@router.post("/admin/employees")
+async def create_employee(payload: dict, admin=Depends(require_roles("admin", "finance"))):
+    db = await _get_db()
+    required = ["name", "division", "position"]
+    for f in required:
+        if not payload.get(f):
+            raise HTTPException(status_code=422, detail=f"Field '{f}' is required")
+    doc = {
+        "name": payload["name"],
+        "division": payload["division"],
+        "position": payload["position"],
+        "email": payload.get("email", ""),
+        "phone": payload.get("phone", ""),
+        "base_salary": float(payload.get("base_salary", 0) or 0),
+        "user_id": _oid(payload["user_id"]) if payload.get("user_id") else None,
+        "active": bool(payload.get("active", True)),
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    r = await db.employees.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _serialize_employee(doc)
+
+
+@router.get("/admin/employees/{eid}")
+async def get_employee(eid: str, admin=Depends(require_roles("admin", "finance"))):
+    db = await _get_db()
+    d = await db.employees.find_one({"_id": _oid(eid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return _serialize_employee(d)
+
+
+@router.put("/admin/employees/{eid}")
+async def update_employee(eid: str, payload: dict, admin=Depends(require_roles("admin", "finance"))):
+    db = await _get_db()
+    allowed = {"name", "division", "position", "email", "phone", "base_salary", "user_id", "active"}
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if "user_id" in update and update["user_id"]:
+        update["user_id"] = _oid(update["user_id"])
+    if "base_salary" in update:
+        update["base_salary"] = float(update["base_salary"] or 0)
+    if "active" in update:
+        update["active"] = bool(update["active"])
+    update["updated_at"] = _now()
+    if not update:
+        raise HTTPException(status_code=422, detail="No valid fields to update")
+    r = await db.employees.update_one({"_id": _oid(eid)}, {"$set": update})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    d = await db.employees.find_one({"_id": _oid(eid)})
+    return _serialize_employee(d)
+
+
+@router.delete("/admin/employees/{eid}")
+async def delete_employee(eid: str, admin=Depends(require_roles("admin", "finance"))):
+    db = await _get_db()
+    r = await db.employees.delete_one({"_id": _oid(eid)})
+    return {"deleted": r.deleted_count}
+
+
+def _serialize_employee(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "division": d.get("division", ""),
+        "position": d.get("position", ""),
+        "email": d.get("email", ""),
+        "phone": d.get("phone", ""),
+        "base_salary": float(d.get("base_salary", 0) or 0),
+        "user_id": str(d["user_id"]) if d.get("user_id") else None,
+        "active": d.get("active", True),
+        "created_at": _iso(d.get("created_at")),
+        "updated_at": _iso(d.get("updated_at")),
+    }
+
 
 # Finance
 @router.get("/admin/finance/summary")
@@ -532,13 +632,19 @@ def _ledger_items(payload: dict) -> list:
             amt = 0.0
         if not desc and amt == 0:
             continue
-        out.append({"description": desc, "amount": amt})
+        row = {"description": desc, "amount": amt}
+        # Preserve multi-invoice / cascade fields when supplied (sales fees).
+        for k in ("invoice_id", "invoice_number", "customer_id", "service_id"):
+            v = it.get(k)
+            if v:
+                row[k] = str(v)
+        out.append(row)
     return out
 
 
 def _generic_ledger_serialize(d: dict) -> dict:
     items = d.get("items")
-    return {
+    out = {
         "id": str(d["_id"]),
         "date": d.get("date", ""),
         "amount": float(d.get("amount") or 0),
@@ -552,6 +658,16 @@ def _generic_ledger_serialize(d: dict) -> dict:
         "created_at": _iso(d.get("created_at", "")),
         **({"items": items} if items else {}),
     }
+    # Payroll snapshot / linkage fields (present only on newer documents).
+    if d.get("employee_id"):
+        out["employee_id"] = str(d["employee_id"])
+    if d.get("division"):
+        out["division"] = d.get("division", "")
+    if d.get("position"):
+        out["position"] = d.get("position", "")
+    if d.get("sales_person_id"):
+        out["sales_person_id"] = str(d["sales_person_id"])
+    return out
 
 
 def _month_locked(period_yyyy_mm: str) -> bool:
@@ -643,9 +759,123 @@ router.delete("/admin/kas-kecil/{item_id}")(_kk_delete)
 
 
 # --- salaries ---
-_sal_list, _sal_create, _sal_delete = _mk_ledger_router(
-    collection="salaries", label="salary", extra_fields=["employee", "category"],
+_SAL_SORT_FIELDS = {"date", "employee", "division", "amount", "created_at"}
+_SAL_Q_FIELDS = ("employee", "division", "position", "category", "notes")
+
+
+def _ledger_list_query(
+    *,
+    collection: str,
+    sort_fields: set,
+    q_fields: tuple,
+    extra_filters: dict,
+    default_sort: str = "date",
+    default_order: str = "desc",
+):
+    """Shared async list handler with server-side pagination/filter/sort."""
+
+    async def _list(
+        paginate: bool = False,
+        limit: int = 25,
+        skip: int = 0,
+        sort: str = "",
+        order: str = "",
+        q: str = "",
+        period: str = "",
+        admin=Depends(get_current_admin),
+        **extra,
+    ):
+        db = await _get_db()
+        sort_key = sort if sort in sort_fields else default_sort
+        direction = -1 if (order or default_order) == "desc" else 1
+        skip, lim = _pagination_params(skip=skip, limit=limit)
+
+        query: dict = {}
+        for k, v in extra_filters.items():
+            val = extra.get(k)
+            if val:
+                query[v] = val
+        if period:
+            query["period_yyyy_mm"] = period
+        if q:
+            rx = {"$regex": re.escape(q), "$options": "i"}
+            query["$or"] = [{f: rx} for f in q_fields]
+
+        cursor = db[collection].find(query).sort(sort_key, direction).skip(skip)
+        if lim is not None:
+            cursor = cursor.limit(lim)
+        docs = await cursor.to_list(5000)
+        items = [_generic_ledger_serialize(d) for d in docs]
+
+        if paginate:
+            total = await db[collection].count_documents(query)
+            return _pagination_response(items, total, skip, lim, paginate=True)
+        return items
+
+    return _list
+
+
+_sal_list = _ledger_list_query(
+    collection="salaries",
+    sort_fields=_SAL_SORT_FIELDS,
+    q_fields=_SAL_Q_FIELDS,
+    extra_filters={"division": "division", "employee_id": "employee_id"},
 )
+
+
+async def _sal_create(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    date_str = payload.get("date") or datetime.now(timezone.utc).date().isoformat()
+    period = date_str[:7]
+    if _month_locked(period):
+        raise HTTPException(status_code=403, detail=f"Cannot add salary for locked month {period}. Contact finance to unlock.")
+
+    items = _ledger_items(payload)
+    amount = float(payload.get("amount", 0) or 0)
+    if items:
+        amount = sum(it["amount"] for it in items)
+
+    doc = {"date": date_str, "amount": amount,
+           "notes": payload.get("notes", ""), "period_yyyy_mm": period,
+           "created_at": _now()}
+    if items:
+        doc["items"] = items
+
+    # New payroll flow: resolve employee_id -> snapshot name/division/position.
+    employee_id = payload.get("employee_id")
+    if employee_id:
+        try:
+            emp_oid = ObjectId(str(employee_id))
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid employee_id: {employee_id}")
+        emp = await db.employees.find_one({"_id": emp_oid})
+        if not emp:
+            raise HTTPException(status_code=400, detail=f"Employee not found: {employee_id}")
+        doc["employee_id"] = emp_oid
+        doc["employee"] = emp.get("name", "")
+        doc["division"] = emp.get("division", "")
+        doc["position"] = emp.get("position", "")
+    else:
+        # Legacy: free-text employee name still accepted.
+        doc["employee"] = payload.get("employee", "")
+
+    for k in ("category",):
+        doc[k] = payload.get(k, "")
+
+    r = await db.salaries.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _generic_ledger_serialize(doc)
+
+
+async def _sal_delete(item_id: str, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    d = await db.salaries.find_one({"_id": _oid(item_id)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    if _month_locked(d.get("period_yyyy_mm") or d.get("date", "")[:7]):
+        raise HTTPException(status_code=403, detail="Cannot delete salary from a locked month")
+    r = await db.salaries.delete_one({"_id": _oid(item_id)})
+    return {"deleted": r.deleted_count}
 
 
 router.get("/admin/salaries")(_sal_list)
@@ -658,9 +888,54 @@ router.delete("/admin/salaries/{item_id}")(_sal_delete)
 
 
 # --- sales fees ---
-_sf_list, _sf_create, _sf_delete = _mk_ledger_router(
-    collection="sales_fees", label="sales fee", extra_fields=["sales_person", "invoice_number"],
+_SF_SORT_FIELDS = {"date", "sales_person", "amount", "created_at"}
+_SF_Q_FIELDS = ("sales_person", "invoice_number", "notes")
+
+_sf_list = _ledger_list_query(
+    collection="sales_fees",
+    sort_fields=_SF_SORT_FIELDS,
+    q_fields=_SF_Q_FIELDS,
+    extra_filters={"sales_person_id": "sales_person_id"},
 )
+
+
+async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    date_str = payload.get("date") or datetime.now(timezone.utc).date().isoformat()
+    period = date_str[:7]
+    if _month_locked(period):
+        raise HTTPException(status_code=403, detail=f"Cannot add sales fee for locked month {period}. Contact finance to unlock.")
+
+    items = _ledger_items(payload)
+    amount = float(payload.get("amount", 0) or 0)
+    if items:
+        amount = sum(it["amount"] for it in items)
+
+    doc = {"date": date_str, "amount": amount,
+           "notes": payload.get("notes", ""), "period_yyyy_mm": period,
+           "created_at": _now()}
+    if items:
+        doc["items"] = items
+
+    for k in ("sales_person", "invoice_number"):
+        doc[k] = payload.get(k, "")
+    if payload.get("sales_person_id"):
+        doc["sales_person_id"] = str(payload["sales_person_id"])
+
+    r = await db.sales_fees.insert_one(doc)
+    doc["_id"] = r.inserted_id
+    return _generic_ledger_serialize(doc)
+
+
+async def _sf_delete(item_id: str, admin=Depends(get_current_admin)):
+    db = await _get_db()
+    d = await db.sales_fees.find_one({"_id": _oid(item_id)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    if _month_locked(d.get("period_yyyy_mm") or d.get("date", "")[:7]):
+        raise HTTPException(status_code=403, detail="Cannot delete sales fee from a locked month")
+    r = await db.sales_fees.delete_one({"_id": _oid(item_id)})
+    return {"deleted": r.deleted_count}
 
 
 router.get("/admin/sales-fees")(_sf_list)
@@ -757,6 +1032,8 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
     employee = d.get("employee") or "-"
     category = d.get("category") or "Gaji pokok"
     issued = datetime.now(timezone.utc).date().isoformat()
+    division = d.get("division") or "-"
+    position = d.get("position") or "-"
     items = d.get("items") or []
     if items:
         item_rows = "".join(
@@ -799,6 +1076,8 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
       <div class="meta">Diterbitkan {issued} · No. ref {str(d["_id"])[-8:].upper()}</div>
       <table>
         <tr><th>Nama karyawan</th><td style="font-weight:700">{employee}</td></tr>
+        <tr><th>Divisi</th><td>{division}</td></tr>
+        <tr><th>Jabatan</th><td>{position}</td></tr>
         <tr><th>Periode</th><td>{period}</td></tr>
         <tr><th>Kategori</th><td>{category}</td></tr>
         <tr><th>Tanggal pembayaran</th><td>{(d.get("date") or "")[:10]}</td></tr>
@@ -836,15 +1115,26 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
     items = d.get("items") or []
     if items:
         item_rows = "".join(
-            f'<tr><td>{it.get("description") or "-"}</td>'
-            f'<td style="text-align:right">{_fmt_amount(it.get("amount"))}</td></tr>'
+            f'<tr>'
+            f'<td>{it.get("description") or "-"}</td>'
+            f'<td>{it.get("invoice_number") or "-"}</td>'
+            f'<td>{it.get("customer_id") or "-"}</td>'
+            f'<td>{it.get("service_id") or "-"}</td>'
+            f'<td style="text-align:right">{_fmt_amount(it.get("amount"))}</td>'
+            f'</tr>'
             for it in items)
         breakdown_html = f"""
       <h1 style="margin-top:22px">Rincian Fee</h1>
       <table>
-        <tr><th style="width:66%">Keterangan</th><th style="text-align:right">Nominal</th></tr>
+        <tr>
+          <th style="width:40%">Keterangan</th>
+          <th>Invoice #</th>
+          <th>Customer</th>
+          <th>Service</th>
+          <th style="text-align:right">Nominal</th>
+        </tr>
         {item_rows}
-        <tr><td style="font-weight:800">Total</td>
+        <tr><td style="font-weight:800" colspan="4">Total</td>
             <td style="text-align:right" class="amt">{amount_str}</td></tr>
       </table>"""
     else:
