@@ -348,6 +348,41 @@ class ProxmoxClient:
         """Returns {ticket, port, cert} for VNC proxy."""
         return await self._post(f"/nodes/{node}/qemu/{vmid}/vncproxy", {"websocket": 1})
 
+    async def serial_ticket(self, node: str, vmid: int) -> dict:
+        """Returns {ticket, port, cert} for serial termproxy.
+
+        Proxmox exposes serial consoles via the termproxy endpoint with
+        console=serial. The returned ticket is used with /vncwebsocket just
+        like a VNC ticket, but the stream is a serial terminal instead of a
+        graphical framebuffer.
+        """
+        data = await self._post(f"/nodes/{node}/qemu/{vmid}/termproxy", {"console": "serial"})
+        # termproxy returns port and ticket; keep shape compatible with vnc_ticket
+        return {
+            "ticket": data.get("ticket"),
+            "port": data.get("port"),
+            "cert": data.get("cert"),
+        }
+
+    async def vm_config(self, node: str, vmid: int) -> dict:
+        """Current VM config dict (qm config)."""
+        return await self._get(f"/nodes/{node}/qemu/{vmid}/config") or {}
+
+    async def has_serial_console(self, node: str, vmid: int) -> bool:
+        """True when the VM is headless/serial-only.
+
+        Our provisioning template uses vga=serial0 + serial0=socket, so the VM
+        has no graphical framebuffer and must be reached over the serial
+        termproxy. Detect this so the portal opens the correct console type.
+        """
+        try:
+            cfg = await self.vm_config(node, vmid)
+        except Exception:
+            return False
+        vga = str(cfg.get("vga") or "")
+        has_serial_dev = any(str(k).startswith("serial") for k in cfg.keys())
+        return vga.startswith("serial") or (has_serial_dev and not vga)
+
     async def snippets_storage(self, node: str) -> Optional[str]:
         """Nama storage di node yang mendukung konten `snippets` (untuk cicustom
         cloud-init). Bila belum ada, coba aktifkan konten snippets pada storage

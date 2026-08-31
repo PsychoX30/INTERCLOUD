@@ -269,8 +269,8 @@ async def client_vm_metrics(sid: str, timeframe: str = "hour", user=Depends(get_
 
 
 @router.get("/client/services/{sid}/vm/console")
-async def client_vm_console_info(sid: str, user=Depends(get_current_user)):
-    """Tiket noVNC console untuk VM milik klien sendiri (via WS proxy portal)."""
+async def client_vm_console_info(sid: str, console_type: str = "vnc", user=Depends(get_current_user)):
+    """Tiket noVNC/serial console untuk VM milik klien sendiri (via WS proxy portal)."""
     db = await _get_db()
     svc = await db.services.find_one({"_id": _oid(sid), "user_id": ObjectId(user["id"])})
     if not svc:
@@ -285,14 +285,24 @@ async def client_vm_console_info(sid: str, user=Depends(get_current_user)):
     s = await _proxmox_settings_for_service(db, svc)
     if not (s and cfg.get("node") and cfg.get("vmid")):
         raise HTTPException(status_code=400, detail="VM belum terhubung ke layanan ini")
+    ctype = (console_type or "auto").lower()
+    if ctype not in ("vnc", "serial", "auto"):
+        raise HTTPException(status_code=400, detail="console_type harus 'vnc', 'serial', atau 'auto'")
     try:
-        t = await iv2.ProxmoxClient(s).vnc_ticket(cfg["node"], int(cfg["vmid"]))
+        px = iv2.ProxmoxClient(s)
+        if ctype == "auto":
+            ctype = "serial" if await px.has_serial_console(cfg["node"], int(cfg["vmid"])) else "vnc"
+        if ctype == "serial":
+            t = await px.serial_ticket(cfg["node"], int(cfg["vmid"]))
+        else:
+            t = await px.vnc_ticket(cfg["node"], int(cfg["vmid"]))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Gagal membuat tiket console: {str(e)[:150]}")
     await db.services.update_one({"_id": svc["_id"]}, {"$push": {"self_service_log": {
-        "at": _now(), "action": "console_opened", "by": user.get("email", "")}}})
+        "at": _now(), "action": f"console_opened_{ctype}", "by": user.get("email", "")}}})
     return {"ok": True, "node": cfg["node"], "vmid": int(cfg["vmid"]),
             "port": t.get("port"), "ticket": t.get("ticket"),
+            "console_type": ctype,
             "ws_path": f"/api/portal/client/services/{sid}/vm/console-ws"}
 
 

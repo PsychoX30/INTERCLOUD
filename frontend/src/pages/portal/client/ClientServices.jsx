@@ -81,7 +81,7 @@ const VMControls = ({ serviceId }) => {
         disabled={disabled || !running}
         onClick={() => setConsoleOpen(true)}
       >
-        <Monitor className="h-4 w-4" /> Console (noVNC)
+        <Monitor className="h-4 w-4" /> Console (VNC / Serial)
       </button>
       {msg && (
         <p data-testid="vm-action-msg" className={`mt-3 text-xs font-semibold ${msg.ok ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>
@@ -117,11 +117,14 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
   const [pasteText, setPasteText] = useState("");
   const [pasting, setPasting] = useState(false);
   const [powerMsg, setPowerMsg] = useState("");
+  const [ctype, setCtype] = useState("auto"); // "auto" | "vnc" | "serial"
 
   useEffect(() => {
     let cancelled = false;
+    setState("connecting");
+    setErr("")
     Promise.all([
-      api.get(`/client/services/${serviceId}/vm/console`),
+      api.get(`/client/services/${serviceId}/vm/console`, { params: { console_type: ctype } }),
       import("@novnc/novnc").then((m) => m.default || m.RFB || m),
     ])
       .then(([{ data }, RFBMod]) => {
@@ -152,8 +155,9 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
     return () => {
       cancelled = true;
       try { rfbRef.current && rfbRef.current.disconnect(); } catch { /* noop */ }
+      rfbRef.current = null;
     };
-  }, [serviceId]);
+  }, [serviceId, ctype]);
 
   const sendKey = (keysym) => {
     const rfb = rfbRef.current;
@@ -232,6 +236,21 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
           <div className="flex items-center gap-2 text-sm font-bold">
             <Monitor className="h-4 w-4 text-[#f5b120]" />
             VM Console {info ? `- VMID ${info.vmid} @ ${info.node}` : ""}
+            <select
+              value={ctype}
+              onChange={(e) => setCtype(e.target.value)}
+              data-testid="vnc-console-type"
+              className="ml-2 text-[10px] uppercase tracking-widest bg-white/10 border border-white/20 rounded px-1.5 py-0.5 text-white font-bold"
+            >
+              <option value="auto">Auto</option>
+              <option value="vnc">VNC</option>
+              <option value="serial">Serial</option>
+            </select>
+            {info?.console_type && (
+              <span className="ml-1 text-[10px] uppercase tracking-widest px-2 py-0.5 rounded-full bg-[#f5b120]/20 text-[#f5b120]">
+                {info.console_type}
+              </span>
+            )}
             <span className={`ml-2 text-[10px] uppercase tracking-widest px-2 py-0.5 rounded-full ${
               state === "connected" ? "bg-emerald-500/20 text-emerald-300"
               : state === "connecting" ? "bg-amber-500/20 text-amber-300"
