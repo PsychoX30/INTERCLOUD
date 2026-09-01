@@ -170,6 +170,29 @@ const EmployeeModal = ({ initial, divisions, onClose, onSaved }) => {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Link user ID → autocomplete dari /admin/users
+  const [users, setUsers] = useState([]);
+  const [userLoading, setUserLoading] = useState(false);
+  const [userQuery, setUserQuery] = useState("");
+  const [userOpen, setUserOpen] = useState(false);
+
+  useEffect(() => {
+    setUserLoading(true);
+    api.get("/admin/users")
+      .then((r) => setUsers(Array.isArray(r.data) ? r.data : (r.data.items || [])))
+      .catch(() => setUsers([]))
+      .finally(() => setUserLoading(false));
+  }, []);
+
+  const selectedUser = users.find((u) => u.id === form.user_id) || null;
+  const filteredUsers = userQuery.trim()
+    ? users.filter((u) =>
+        (u.name || "").toLowerCase().includes(userQuery.toLowerCase()) ||
+        (u.email || "").toLowerCase().includes(userQuery.toLowerCase()))
+    : users;
+  const pickUser = (u) => { setForm({ ...form, user_id: u.id }); setUserQuery(""); setUserOpen(false); };
+  const clearUser = () => { setForm({ ...form, user_id: "" }); setUserQuery(""); };
+
   const submit = async (e) => {
     e.preventDefault();
     setErr(""); setBusy(true);
@@ -205,8 +228,42 @@ const EmployeeModal = ({ initial, divisions, onClose, onSaved }) => {
             <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={inputClass} data-testid="employee-phone" /></label>
           <label><div className={labelClass}>Gaji pokok (IDR)</div>
             <input type="number" min="0" value={form.base_salary} onChange={(e) => setForm({ ...form, base_salary: e.target.value })} className={inputClass} data-testid="employee-base-salary" /></label>
-          <label><div className={labelClass}>Link user ID (opsional)</div>
-            <input value={form.user_id} onChange={(e) => setForm({ ...form, user_id: e.target.value })} className={inputClass} placeholder="ObjectId user portal" data-testid="employee-user-id" /></label>
+          <label className="col-span-2"><div className={labelClass}>Link user ID (opsional)</div>
+            <div className="relative">
+              {selectedUser ? (
+                <div className={`${inputClass} flex items-center justify-between gap-2 cursor-default`}>
+                  <span className="truncate">{selectedUser.name || "—"} · {selectedUser.email}</span>
+                  <button type="button" onClick={clearUser} className="text-slate-400 hover:text-red-600 font-bold" title="Hapus link" data-testid="employee-user-id-clear">✕</button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    value={userQuery}
+                    onChange={(e) => { setUserQuery(e.target.value); setUserOpen(true); }}
+                    onFocus={() => setUserOpen(true)}
+                    onBlur={() => setTimeout(() => setUserOpen(false), 150)}
+                    placeholder={userLoading ? "Memuat user…" : "Ketik nama / email user portal…"}
+                    className={inputClass}
+                    data-testid="employee-user-id"
+                  />
+                  {userOpen && (
+                    <ul className="absolute z-20 mt-1 w-full max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg" data-testid="employee-user-id-list">
+                      {filteredUsers.length === 0 ? (
+                        <li className="px-3 py-2 text-sm text-slate-400">Tidak ada user cocok.</li>
+                      ) : (
+                        filteredUsers.map((u) => (
+                          <li key={u.id} className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer" onMouseDown={(e) => e.preventDefault()} onClick={() => pickUser(u)}>
+                            <div className="font-semibold text-[#0a2350]">{u.name || "Tanpa nama"}</div>
+                            <div className="text-xs text-slate-500">{u.email} · {u.role}</div>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
+          </label>
           <label className="col-span-2 flex items-center gap-2 text-sm text-slate-600">
             <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} data-testid="employee-active" />
             Aktif (tampil di dropdown transaksi baru)
