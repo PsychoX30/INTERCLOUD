@@ -52,25 +52,30 @@ class BusinessDocumentContractTest(unittest.TestCase):
                       "docs_file route path must be /documents/file/{did}")
 
     def test_document_ui_uses_authenticated_blob_download(self):
-        """Opening a protected file must use the Axios auth interceptor, not a raw URL."""
+        """Opening/downloading a protected file must use the Axios auth interceptor, not a raw URL."""
         frontend = ROOT.parent / "frontend" / "src" / "pages" / "portal" / "admin" / "AdminBusiness.jsx"
         source = frontend.read_text()
         # api has baseURL /api/portal, so use a relative API path assembled
         # from trusted API fields rather than stored absolute/prefixed URLs.
-        self.assertIn('`/documents/file/${d.id}`', source)
-        self.assertIn('api.get(path, { responseType: "blob" })', source)
+        # The viewer modal fetches preview JSON and downloads via the dedicated
+        # authenticated blob endpoints (preview + download) instead of the raw
+        # legacy file URL.
+        self.assertIn("`/admin/documents/${doc.id}/preview`", source)
+        self.assertIn("`/admin/documents/${doc.id}/download`", source)
+        self.assertIn('api.get(`/admin/documents/${doc.id}/download`, { responseType: "blob" })', source)
         self.assertIn("URL.createObjectURL", source)
-        self.assertIn('d.has_file && d.id ? (', source)
         # Arbitrary external document URLs must never receive the portal bearer
         # token through Axios; those remain ordinary browser navigation.
         self.assertIn('href={d.url} target="_blank"', source)
+        # Preview/download buttons only for file-backed documents
+        self.assertIn("d.has_file && d.id ? (", source)
 
-    def test_documents_nav_excludes_sales(self):
-        """Sales is denied document operations until client-level ownership exists."""
+    def test_documents_nav_includes_sales(self):
+        """Sales can see the Documents nav because per-document sharing is now supported."""
         layout = ROOT.parent / "frontend" / "src" / "pages" / "portal" / "PortalLayout.jsx"
         source = layout.read_text()
         line = next(line for line in source.splitlines() if 'key: "documents"' in line)
-        self.assertNotIn('"sales"', line)
+        self.assertIn('"sales"', line)
 
 
 if __name__ == "__main__":

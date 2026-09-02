@@ -7,6 +7,9 @@ import asyncio
 import logging
 import secrets
 import re
+import base64
+import html as _html
+import io
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
@@ -1519,11 +1522,19 @@ DOCS_DIR = _DocPath(__file__).resolve().parent.parent.parent / "uploads" / "docu
 
 
 _DOC_ALLOWED_TYPES = {
-    "application/pdf", "image/png", "image/jpeg", "image/webp",
+    "application/pdf",
+    "image/png", "image/jpeg", "image/webp", "image/gif",
+    "audio/mpeg", "audio/ogg", "audio/wav", "audio/mp4",
+    "video/mp4", "video/webm", "video/ogg", "video/quicktime",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.oasis.opendocument.text",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.oasis.opendocument.presentation",
     "application/zip", "application/x-zip-compressed", "text/plain", "text/csv",
 }
 
@@ -1532,6 +1543,7 @@ _DOC_MAX_BYTES = 15 * 1024 * 1024  # 15 MB
 
 
 def _serialize_doc(d):
+    sw = d.get("share_with") or {}
     return {
         "id": str(d["_id"]),
         "title": d.get("title", ""),
@@ -1547,16 +1559,27 @@ def _serialize_doc(d):
         "owner_id": str(d["owner_id"]) if d.get("owner_id") else None,
         "owner_name": d.get("owner_name", ""),
         "created_at": _iso(d.get("created_at", "")),
+        "folder_id": str(d["folder_id"]) if d.get("folder_id") else None,
+        "folder_path": d.get("folder_path", ""),
+        "content_type": d.get("content_type", ""),
+        "uploaded_by": d.get("uploaded_by", ""),
+        "share_with": {
+            "users": [str(u) for u in (sw.get("users") or [])],
+            "divisions": list(sw.get("divisions") or []),
+            "roles": list(sw.get("roles") or []),
+        },
+        "can_manage": False,  # filled by caller when staff known
     }
 
 
 def _require_internal_document_access(staff: dict) -> None:
-    """Document read access is now open to all staff roles.
+    """Compatibility hook; document authorization is evaluated per document.
 
-    Delete/write operations are protected separately by the endpoint: owners
-    can mutate their own documents; admin can mutate any document.
+    Role-wide denial would prevent a Sales/Creative user from opening a document
+    explicitly shared to that user, division, or role. Endpoint-level checks use
+    ``_doc_can_read`` and ``_doc_can_manage`` instead.
     """
-    pass
+    return None
 
 
 def _assert_doc_owner_or_admin(staff: dict, doc: dict) -> None:
@@ -1576,32 +1599,96 @@ def _assert_doc_owner_or_admin(staff: dict, doc: dict) -> None:
         raise HTTPException(status_code=403, detail="Not the document owner")
 
 
+def _doc_can_read(staff: dict, doc: dict) -> bool:
+    """Unified read-visibility rule (replaces inline checks everywhere).
+
+    Admin sees everything. Non-admin sees a document when ANY of these hold:
+      - the caller is the owner
+      - the caller is explicitly in share_with.users
+      - the caller's division is in share_with.divisions
+      - the caller's role is in share_with.roles
+      - legacy shared flag is true
+      - legacy common doc (no owner) AND the caller is an internal role
+        (admin/finance/support/ticket_only)
+    Sales/creative are denied from unscoped legacy common docs.
+    """
+    if staff.get("role") == "admin":
+        return True
+    owner_id = doc.get("owner_id")
+    caller_id = staff.get("id")
+    if owner_id and caller_id and str(owner_id) == str(caller_id):
+        return True
+    sw = doc.get("share_with") or {}
+    staff_id = str(staff.get("id") or "")
+    if staff_id and staff_id in [str(u) for u in (sw.get("users") or [])]:
+        return True
+    division = (staff.get("division") or "").strip().lower()
+    if division and division in [str(d).strip().lower() for d in (sw.get("divisions") or [])]:
+        return True
+    role = (staff.get("role") or "").strip().lower()
+    if role and role in [str(r).strip().lower() for r in (sw.get("roles") or [])]:
+        return True
+    if doc.get("shared"):
+        return True
+    # legacy common doc (no owner): internal staff only
+    if owner_id is None or not str(owner_id):
+        return role in {"finance", "support", "ticket_only"}
+    return False
+
+
+def _doc_can_manage(staff: dict, doc: dict) -> bool:
+    """Write/delete/move guard — owner or admin only."""
+    if staff.get("role") == "admin":
+        return True
+    owner_id = doc.get("owner_id")
+    if owner_id is None or not str(owner_id):
+        return False  # shared/common doc: admin only
+    return str(owner_id) == str(staff.get("id"))
+
+
 @router.get("/admin/documents")
 async def docs_list(staff=Depends(get_current_staff),
                     skip: int = 0, limit: int = 50, sort: str = "created_at",
                     order: str = "desc", q: Optional[str] = None,
+                    folder_id: Optional[str] = None,
                     paginate: Optional[bool] = None):
     """Server-side pagination + q-search for documents. Default stays bare array.
 
-    Visibility: shared/common documents plus the caller's own private documents.
+    Visibility: shared/common documents, the caller's own private documents, plus
+    documents explicitly shared with the caller's user id / division / role.
     Legacy documents (no owner_id/shared field) stay visible to every staff role
     so nothing that used to be listed disappears after this change.
     """
     _require_internal_document_access(staff)
     db = await _get_db()
     query: dict = {}
+    conds: list = []
     if staff.get("role") != "admin":
-        query["$and"] = [{"$or": [
+        role = (staff.get("role") or "").strip().lower()
+        conds.append({"$or": [
             {"shared": True},
-            {"owner_id": None},
-            {"owner_id": {"$exists": False}},
             {"owner_id": staff.get("id")},
-        ]}]
+            {"share_with.users": staff.get("id")},
+            {"share_with.divisions": (staff.get("division") or "").strip().lower()},
+            {"share_with.roles": role},
+            # Legacy common docs (no owner) visible only to internal staff,
+            # mirroring _doc_can_read. Sales/creative are excluded here.
+            *([{"owner_id": None}, {"owner_id": {"$exists": False}}]
+              if role in {"finance", "support", "ticket_only"} else []),
+        ]})
+    if folder_id is not None:
+        # "" or "root" means unfiled documents; otherwise a specific folder.
+        if folder_id in ("", "root", "null"):
+            conds.append({"$or": [{"folder_id": None}, {"folder_id": {"$exists": False}}]})
+        else:
+            conds.append({"folder_id": folder_id})
     if q:
-        query["$or"] = [
-            {field: {"$regex": q.strip(), "$options": "i"}}
+        conds.append({"$or": [
+            {field: {"$regex": re.escape(q.strip()), "$options": "i"}}
             for field in ("title", "category", "customer_name", "notes", "filename")
-        ]
+        ]})
+    if conds:
+        query["$and"] = conds
     sort_field = sort if sort in {
         "title", "category", "customer_name", "filename", "size_bytes", "created_at"
     } else "created_at"
@@ -1615,7 +1702,11 @@ async def docs_list(staff=Depends(get_current_staff),
         docs = await cursor.to_list(None)
     else:
         docs = await cursor.to_list(1000)
-    items = [_serialize_doc(d) for d in docs]
+    items = []
+    for d in docs:
+        s = _serialize_doc(d)
+        s["can_manage"] = _doc_can_manage(staff, d)
+        items.append(s)
     return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
 
 
@@ -1625,6 +1716,12 @@ async def docs_create(payload: dict, staff=Depends(get_current_staff)):
     db = await _get_db()
     folder = (payload.get("folder") or "").strip()
     shared = bool(payload.get("shared", False))
+    folder_id = payload.get("folder_id")
+    folder_path = (payload.get("folder_path") or "").strip()
+    share_with = payload.get("share_with") or {}
+    sw_users = [str(u) for u in (share_with.get("users") or []) if u]
+    sw_divisions = [str(d).strip().lower() for d in (share_with.get("divisions") or []) if d]
+    sw_roles = [str(r).strip().lower() for r in (share_with.get("roles") or []) if r]
     # If folder is "shared" or shared=True, it's a common document; otherwise
     # it's private to the creator.
     if shared or folder == "shared":
@@ -1635,6 +1732,16 @@ async def docs_create(payload: dict, staff=Depends(get_current_staff)):
         owner_id = staff.get("id")
         if not folder:
             folder = f"private/{staff.get('id', 'unknown')}"
+    # folder_id wins over legacy string when provided (and resolvable)
+    if folder_id:
+        fid_oid = _oid(str(folder_id))
+        if fid_oid is None:
+            raise HTTPException(status_code=400, detail="Invalid folder_id")
+        f = await db.document_folders.find_one({"_id": fid_oid})
+        if not f:
+            raise HTTPException(status_code=400, detail="Folder not found")
+        folder_id = str(f["_id"])
+        folder_path = f.get("path") or folder_path or f.get("name", "")
     doc = {
         "title": payload.get("title", ""),
         "category": payload.get("category", "contract"),
@@ -1645,11 +1752,16 @@ async def docs_create(payload: dict, staff=Depends(get_current_staff)):
         "shared": shared,
         "owner_id": owner_id,
         "owner_name": staff.get("name") or staff.get("email", ""),
+        "folder_id": folder_id,
+        "folder_path": folder_path,
+        "share_with": {"users": sw_users, "divisions": sw_divisions, "roles": sw_roles},
         "created_at": _now(),
     }
     r = await db.documents.insert_one(doc)
     doc["_id"] = r.inserted_id
-    return _serialize_doc(doc)
+    s = _serialize_doc(doc)
+    s["can_manage"] = _doc_can_manage(staff, doc)
+    return s
 
 
 @router.delete("/admin/documents/{did}")
@@ -1659,7 +1771,8 @@ async def docs_delete(did: str, staff=Depends(get_current_staff)):
     d = await db.documents.find_one({"_id": _oid(did)})
     if not d:
         raise HTTPException(status_code=404, detail="Document not found")
-    _assert_doc_owner_or_admin(staff, d)
+    if not _doc_can_manage(staff, d):
+        raise HTTPException(status_code=403, detail="Only admin or owner can delete this document")
     if d.get("stored_name"):
         try:
             (DOCS_DIR / d["stored_name"]).unlink(missing_ok=True)
@@ -1677,11 +1790,8 @@ async def docs_file(did: str, staff=Depends(get_current_staff)):
     d = await db.documents.find_one({"_id": _oid(did)})
     if not d or not d.get("stored_name"):
         raise HTTPException(status_code=404, detail="Document not found")
-    # Private documents (owner_id set, not shared) are only visible to the
-    # owner or admin. Shared and legacy documents stay visible to all staff.
-    if d.get("owner_id") and not d.get("shared"):
-        if staff.get("role") != "admin" and str(d.get("owner_id")) != str(staff.get("id")):
-            raise HTTPException(status_code=403, detail="Dokumen ini privat")
+    if not _doc_can_read(staff, d):
+        raise HTTPException(status_code=403, detail="Dokumen ini privat")
     fp = DOCS_DIR / d["stored_name"]
     if not fp.exists():
         raise HTTPException(status_code=404, detail="File missing on disk")
@@ -1690,9 +1800,494 @@ async def docs_file(did: str, staff=Depends(get_current_staff)):
 
 
 # ============================================================
-# Backup / Restore
+# Document folders — tree, create, rename, delete, auto-migrate
 # ============================================================
-# ---------- UTM link persistence ----------
+def _serialize_folder(f: dict) -> dict:
+    return {
+        "id": str(f["_id"]),
+        "name": f.get("name", ""),
+        "parent_id": str(f["parent_id"]) if f.get("parent_id") else None,
+        "owner_id": str(f["owner_id"]) if f.get("owner_id") else None,
+        "owner_name": f.get("owner_name", ""),
+        "division": f.get("division", ""),
+        "path": f.get("path", ""),
+        "is_shared_root": bool(f.get("is_shared_root", False)),
+        "is_private_root": bool(f.get("is_private_root", False)),
+        "created_at": _iso(f.get("created_at", "")),
+    }
+
+
+def _folder_visible_to(staff: dict, folder: dict) -> bool:
+    """Folder visibility mirrors doc visibility: admin all; shared/division
+    folders all staff; private folders owner (or users granted via share)."""
+    if staff.get("role") == "admin":
+        return True
+    if folder.get("is_shared_root") or not folder.get("owner_id"):
+        return True
+    if str(folder.get("owner_id")) == str(staff.get("id")):
+        return True
+    division = (staff.get("division") or "").strip().lower()
+    if folder.get("division") and division == str(folder.get("division")).strip().lower():
+        return True
+    return False
+
+
+@router.get("/admin/document-folders")
+async def folders_list(staff=Depends(get_current_staff)):
+    """Folder tree for the caller (admin sees all incl. private roots)."""
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    folders = await db.document_folders.find({}).sort("path", 1).to_list(2000)
+    visible = [f for f in folders if _folder_visible_to(staff, f)]
+    by_parent: dict = {}
+    for f in visible:
+        by_parent.setdefault(str(f.get("parent_id")) if f.get("parent_id") else None, []).append(f)
+
+    def build(parent_key):
+        return [_serialize_folder(f) | {"children": build(str(f["_id"]))} for f in by_parent.get(parent_key, [])]
+
+    return build(None)
+
+
+@router.post("/admin/document-folders")
+async def folders_create(payload: dict, staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nama folder wajib diisi")
+    if "/" in name:
+        raise HTTPException(status_code=400, detail="Nama folder tidak boleh mengandung '/'")
+    parent_id = payload.get("parent_id")
+    parent = None
+    if parent_id:
+        p_oid = _oid(str(parent_id))
+        if p_oid is None:
+            raise HTTPException(status_code=400, detail="Invalid parent_id")
+        parent = await db.document_folders.find_one({"_id": p_oid})
+        if not parent:
+            raise HTTPException(status_code=400, detail="Parent folder not found")
+        if not _folder_visible_to(staff, parent):
+            raise HTTPException(status_code=403, detail="Parent folder not accessible")
+    division = (payload.get("division") or "").strip().lower()
+    owner_id = None
+    if parent is None and division:
+        # division root folder — visible to the whole division
+        owner_id = None
+    elif parent is not None and parent.get("owner_id"):
+        owner_id = parent.get("owner_id")
+        division = division or parent.get("division", "")
+    elif staff.get("role") != "admin":
+        # non-admin without a parent: personal folder
+        owner_id = staff.get("id")
+    # admins may create top-level folders owned by themselves unless a
+    # division or shared root is chosen
+    path = f"{parent.get('path', '').rstrip('/')}/{name}" if parent else name
+    folder = {
+        "name": name,
+        "parent_id": parent["_id"] if parent else None,
+        "owner_id": owner_id,
+        "owner_name": staff.get("name") or staff.get("email", ""),
+        "division": division,
+        "path": path,
+        "created_at": _now(),
+    }
+    r = await db.document_folders.insert_one(folder)
+    folder["_id"] = r.inserted_id
+    return _serialize_folder(folder)
+
+
+@router.patch("/admin/document-folders/{fid}")
+async def folders_rename(fid: str, payload: dict, staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    f = await db.document_folders.find_one({"_id": _oid(fid)})
+    if not f:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    is_owner = f.get("owner_id") and str(f.get("owner_id")) == str(staff.get("id"))
+    if staff.get("role") != "admin" and not is_owner:
+        raise HTTPException(status_code=403, detail="Only admin or owner can rename this folder")
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nama folder wajib diisi")
+    if "/" in name:
+        raise HTTPException(status_code=400, detail="Nama folder tidak boleh mengandung '/'")
+    old_path = f.get("path", "")
+    parent_path = old_path.rsplit("/", 1)[0] if "/" in old_path else ""
+    new_path = f"{parent_path}/{name}" if parent_path else name
+    await db.document_folders.update_one({"_id": f["_id"]}, {"$set": {"name": name, "path": new_path}})
+    # cascade path rename to descendants and documents
+    async for child in db.document_folders.find({"path": {"$regex": f"^{re.escape(old_path)}/"}}):
+        new_child_path = new_path + child["path"][len(old_path):]
+        await db.document_folders.update_one({"_id": child["_id"]}, {"$set": {"path": new_child_path}})
+    await db.documents.update_many(
+        {"folder_path": {"$regex": f"^{re.escape(old_path)}(/|$)"}},
+        {"$set": {"folder_path": {
+            "$concat": [new_path, {"$substr": ["$folder_path", len(old_path), -1]}]
+        }}},
+    )
+    f["name"] = name
+    f["path"] = new_path
+    return _serialize_folder(f)
+
+
+@router.delete("/admin/document-folders/{fid}")
+async def folders_delete(fid: str, staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    f = await db.document_folders.find_one({"_id": _oid(fid)})
+    if not f:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    is_owner = f.get("owner_id") and str(f.get("owner_id")) == str(staff.get("id"))
+    if staff.get("role") != "admin" and not is_owner:
+        raise HTTPException(status_code=403, detail="Only admin or owner can delete this folder")
+    if f.get("is_shared_root") or f.get("is_private_root"):
+        raise HTTPException(status_code=400, detail="Root folder tidak dapat dihapus")
+    docs_in_folder = await db.documents.count_documents({"folder_id": str(f["_id"])})
+    subfolders = await db.document_folders.count_documents({"path": {"$regex": f"^{re.escape(f.get('path', ''))}/"}})
+    if docs_in_folder > 0 or subfolders > 0:
+        raise HTTPException(status_code=400, detail="Folder tidak kosong")
+    await db.document_folders.delete_one({"_id": f["_id"]})
+    return {"deleted": 1}
+
+
+@router.post("/admin/documents/migrate-folders")
+async def docs_migrate_folders(staff=Depends(get_current_admin)):
+    """Auto-migrate legacy documents to folder roots. Creates:
+    - a shared root folder (is_shared_root)
+    - a private root folder per owner (is_private_root)
+    and writes folder_id + folder_path on every document that lacks them.
+    Idempotent: safe to run multiple times.
+    """
+    db = await _get_db()
+    shared_root = await db.document_folders.find_one({"is_shared_root": True})
+    if not shared_root:
+        r = await db.document_folders.insert_one({
+            "name": "Shared", "parent_id": None, "owner_id": None,
+            "owner_name": "system", "division": "",
+            "path": "Shared", "is_shared_root": True, "created_at": _now(),
+        })
+        shared_root = await db.document_folders.find_one({"_id": r.inserted_id})
+    shared_root_id = str(shared_root["_id"])
+
+    # group legacy docs by owner
+    owners: dict = {}
+    async for d in db.documents.find({"folder_id": {"$in": [None, ""]}}):
+        owners.setdefault(str(d.get("owner_id") or "shared"), []).append(d)
+
+    migrated = 0
+    for owner_key, docs in owners.items():
+        if owner_key == "shared":
+            fid, fpath = shared_root_id, "Shared"
+        else:
+            pf = await db.document_folders.find_one({"is_private_root": True, "owner_id": owner_key})
+            if not pf:
+                uname = (docs[0].get("owner_name") or owner_key)
+                r = await db.document_folders.insert_one({
+                    "name": f"Private ({uname})", "parent_id": None, "owner_id": owner_key,
+                    "owner_name": uname, "division": "",
+                    "path": f"Private ({uname})", "is_private_root": True, "created_at": _now(),
+                })
+                fid = str(r.inserted_id)
+            else:
+                fid = str(pf["_id"])
+            fpath = pf["path"] if pf else f"Private ({docs[0].get('owner_name') or owner_key})"
+        for d in docs:
+            await db.documents.update_one(
+                {"_id": d["_id"]},
+                {"$set": {"folder_id": fid, "folder_path": fpath}},
+            )
+            migrated += 1
+    return {"migrated": migrated, "owners": len(owners), "shared_root_id": shared_root_id}
+
+
+# ============================================================
+# Document edit / move / share
+# ============================================================
+@router.patch("/admin/documents/{did}")
+async def docs_update(did: str, payload: dict, staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not _doc_can_manage(staff, d):
+        raise HTTPException(status_code=403, detail="Only admin or owner can edit this document")
+    upd: dict = {}
+    for field in ("title", "category", "customer_name", "url", "notes"):
+        if field in payload:
+            upd[field] = payload.get(field) or ""
+    if "share_with" in payload:
+        sw = payload.get("share_with") or {}
+        upd["share_with"] = {
+            "users": [str(u) for u in (sw.get("users") or []) if u],
+            "divisions": [str(x).strip().lower() for x in (sw.get("divisions") or []) if x],
+            "roles": [str(x).strip().lower() for x in (sw.get("roles") or []) if x],
+        }
+    if "folder_id" in payload:
+        fid = payload.get("folder_id")
+        if fid in (None, "", "root"):
+            upd["folder_id"] = None
+            upd["folder_path"] = ""
+        else:
+            f_oid = _oid(str(fid))
+            if f_oid is None:
+                raise HTTPException(status_code=400, detail="Invalid folder_id")
+            f = await db.document_folders.find_one({"_id": f_oid})
+            if not f:
+                raise HTTPException(status_code=400, detail="Folder not found")
+            upd["folder_id"] = str(f["_id"])
+            upd["folder_path"] = f.get("path", "")
+    if not upd:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    await db.documents.update_one({"_id": d["_id"]}, {"$set": upd})
+    d.update(upd)
+    s = _serialize_doc(d)
+    s["can_manage"] = _doc_can_manage(staff, d)
+    return s
+
+
+@router.post("/admin/documents/{did}/move")
+async def docs_move(did: str, payload: dict, staff=Depends(get_current_staff)):
+    """Move document to a folder (folder_id null/"" = unfiled)."""
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not _doc_can_manage(staff, d):
+        raise HTTPException(status_code=403, detail="Only admin or owner can move this document")
+    fid = payload.get("folder_id")
+    if fid in (None, ""):
+        await db.documents.update_one({"_id": d["_id"]}, {"$set": {"folder_id": None, "folder_path": ""}})
+        d["folder_id"], d["folder_path"] = None, ""
+    else:
+        f_oid = _oid(str(fid))
+        if f_oid is None:
+            raise HTTPException(status_code=400, detail="Invalid folder_id")
+        f = await db.document_folders.find_one({"_id": f_oid})
+        if not f:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        await db.documents.update_one({"_id": d["_id"]}, {"$set": {"folder_id": str(f["_id"]), "folder_path": f.get("path", "")}})
+        d["folder_id"], d["folder_path"] = str(f["_id"]), f.get("path", "")
+    s = _serialize_doc(d)
+    s["can_manage"] = _doc_can_manage(staff, d)
+    return s
+
+
+# ============================================================
+# Document download + preview
+# ============================================================
+@router.get("/admin/documents/{did}/download")
+async def docs_download(did: str, staff=Depends(get_current_staff)):
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if not d or not d.get("stored_name"):
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not _doc_can_read(staff, d):
+        raise HTTPException(status_code=403, detail="Dokumen ini privat")
+    fp = DOCS_DIR / d["stored_name"]
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
+                        filename=d.get("filename") or d["stored_name"],
+                        headers={"Content-Disposition": f'attachment; filename="{quote(d.get("filename") or d["stored_name"])}"'})
+
+
+_DOC_PREVIEW_KIND_BY_TYPE = {
+    "application/pdf": "pdf",
+    "image/png": "image", "image/jpeg": "image", "image/webp": "image", "image/gif": "image",
+    "audio/mpeg": "audio", "audio/ogg": "audio", "audio/wav": "audio", "audio/mp4": "audio",
+    "video/mp4": "video", "video/webm": "video", "video/ogg": "video", "video/quicktime": "video",
+    "text/plain": "text", "text/csv": "text",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.oasis.opendocument.text": "odt",
+    "application/vnd.oasis.opendocument.spreadsheet": "ods",
+    "application/vnd.oasis.opendocument.presentation": "odp",
+}
+
+
+def _doc_preview_kind(ctype: str, filename: str = "") -> str:
+    kind = _DOC_PREVIEW_KIND_BY_TYPE.get((ctype or "").split(";")[0].strip())
+    if kind:
+        return kind
+    ext = (filename.rsplit(".", 1)[-1] or "").lower() if "." in (filename or "") else ""
+    return {
+        "pdf": "pdf", "png": "image", "jpg": "image", "jpeg": "image", "webp": "image", "gif": "image",
+        "mp3": "audio", "ogg": "audio", "wav": "audio", "m4a": "audio",
+        "mp4": "video", "webm": "video", "mov": "video",
+        "txt": "text", "csv": "text",
+        "docx": "docx", "xlsx": "xlsx", "pptx": "pptx", "odt": "odt", "ods": "ods", "odp": "odp",
+    }.get(ext, "none")
+
+
+def _esc(x) -> str:
+    return _html.escape(str(x if x is not None else ""))
+
+
+def _preview_docx_html(raw: bytes) -> str:
+    import docx as _docx_lib
+    buf = io.BytesIO(raw)
+    doc = _docx_lib.Document(buf)
+    parts = []
+    for p in doc.paragraphs:
+        text = p.text
+        style = (p.style.name or "").lower()
+        cls = "docx-h" if "heading" in style else ("docx-bold" if "title" in style else "")
+        if text.strip():
+            parts.append(f'<p class="{cls}">{_esc(text)}</p>')
+    for tbl in doc.tables:
+        rows_html = []
+        for row in tbl.rows:
+            cells = "".join(f"<td>{_esc(c.text)}</td>" for c in row.cells)
+            rows_html.append(f"<tr>{cells}</tr>")
+        parts.append(f'<table class="docx-table">{"".join(rows_html)}</table>')
+    return "\n".join(parts) or "<p><i>(dokumen kosong)</i></p>"
+
+
+def _preview_xlsx_html(raw: bytes) -> str:
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+    parts = []
+    for ws in wb.worksheets:
+        parts.append(f'<h3>{_esc(ws.title)}</h3>')
+        parts.append('<table class="sheet-table">')
+        for row in ws.iter_rows(max_row=100, max_col=30, values_only=True):
+            if all(v is None for v in row):
+                continue
+            cells = "".join(
+                f"<td>{_esc(v)}</td>" if not isinstance(v, (int, float)) else f"<td class='num'>{v}</td>"
+                for v in row
+            )
+            parts.append(f"<tr>{cells}</tr>")
+        parts.append("</table>")
+    wb.close()
+    return "\n".join(parts) or "<p><i>(sheet kosong)</i></p>"
+
+
+def _preview_pptx_html(raw: bytes) -> str:
+    from pptx import Presentation
+    prs = Presentation(io.BytesIO(raw))
+    parts = []
+    for i, slide in enumerate(prs.slides, 1):
+        parts.append(f'<div class="slide"><div class="slide-no">Slide {i}</div>')
+        texts = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    t = "".join(run.text for run in para.runs)
+                    if t.strip():
+                        texts.append(_esc(t))
+        parts.extend(f"<p>{t}</p>" for t in texts)
+        parts.append("</div>")
+    return "\n".join(parts) or "<p><i>(tidak ada slide)</i></p>"
+
+
+def _preview_odf_html(raw: bytes, kind: str) -> str:
+    from odf.opendocument import load as _odf_load
+    from odf.text import P as _ODF_P, H as _ODF_H
+    from odf.table import Table as _ODF_Table, TableRow as _ODF_Tr, TableCell as _ODF_Td
+    o = _odf_load(io.BytesIO(raw))
+    parts = []
+    _ = kind  # odt/ods/odp all parsed the same way here (text + tables)
+    for el in o.getElementsByType(_ODF_P):
+        parts.append(f"<p>{_esc(str(el))}</p>")
+    for h in o.getElementsByType(_ODF_H):
+        parts.append(f'<p class="docx-h">{_esc(str(h))}</p>')
+    for tbl in o.getElementsByType(_ODF_Table):
+        parts.append('<table class="docx-table">')
+        for tr in tbl.getElementsByType(_ODF_Tr):
+            cells = "".join(f"<td>{_esc(str(c))}</td>" for c in tr.getElementsByType(_ODF_Td))
+            parts.append(f"<tr>{cells}</tr>")
+        parts.append("</table>")
+    return "\n".join(parts) or "<p><i>(dokumen kosong)</i></p>"
+
+
+def _preview_text_html(raw: bytes) -> str:
+    try:
+        txt = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        txt = raw.decode("latin-1", errors="replace")
+    return f"<pre>{_esc(txt[:200000])}</pre>"
+
+
+_PREVIEW_PAGE_CSS = """
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; color: #1e293b; padding: 24px; }
+.docx-h { font-weight: 800; font-size: 1.15em; color: #0a2350; margin: 14px 0 4px; }
+.docx-bold { font-weight: 700; }
+.docx-table, .sheet-table { border-collapse: collapse; margin: 10px 0 18px; }
+.docx-table td, .docx-table th, .sheet-table td, .sheet-table th {
+  border: 1px solid #cbd5e1; padding: 4px 8px; font-size: 13px; }
+.sheet-table { display: block; overflow-x: auto; }
+.sheet-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.slide { border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; margin: 12px 0; }
+.slide-no { font-size: 11px; font-weight: 800; letter-spacing: .08em; color: #f5b120; text-transform: uppercase; }
+pre { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; white-space: pre-wrap; }
+</style>
+"""
+
+
+@router.get("/admin/documents/{did}/preview")
+async def docs_preview(did: str, staff=Depends(get_current_staff)):
+    """Inline preview metadata + HTML for the document. Binary types return
+    kind + url so the frontend can embed <img>/<video>/<audio>/<iframe>."""
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not _doc_can_read(staff, d):
+        raise HTTPException(status_code=403, detail="Dokumen ini privat")
+    ctype = (d.get("content_type") or "").split(";")[0].strip()
+    filename = d.get("filename") or ""
+    kind = _doc_preview_kind(ctype, filename)
+    out = {
+        "id": str(d["_id"]),
+        "title": d.get("title", ""),
+        "filename": filename,
+        "content_type": ctype,
+        "size_bytes": d.get("size_bytes", 0),
+        "kind": kind,
+        "file_url": f"/api/portal/documents/file/{d['_id']}",
+        "download_url": f"/api/portal/admin/documents/{d['_id']}/download",
+        "share_with": d.get("share_with") or {"users": [], "divisions": [], "roles": []},
+        "folder_path": d.get("folder_path", ""),
+        "owner_name": d.get("owner_name", ""),
+    }
+    if kind in ("image", "audio", "video", "pdf"):
+        return out  # frontend embeds the file_url directly
+    if kind == "none":
+        return out
+    if not d.get("stored_name"):
+        out["kind"] = "none"
+        return out
+    fp = DOCS_DIR / d["stored_name"]
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    raw = fp.read_bytes()
+    try:
+        if kind == "docx":
+            out["html"] = _preview_docx_html(raw)
+        elif kind == "xlsx":
+            out["html"] = _preview_xlsx_html(raw)
+        elif kind == "pptx":
+            out["html"] = _preview_pptx_html(raw)
+        elif kind in ("odt", "ods", "odp"):
+            out["html"] = _preview_odf_html(raw, kind)
+        elif kind == "text":
+            out["html"] = _preview_text_html(raw)
+        else:
+            out["kind"] = "none"
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"Gagal membuat preview: {e}")
+    return out
+
+
+
 
 @router.get("/admin/utm-links")
 async def utm_links_list(staff=Depends(get_current_staff)):
@@ -1870,6 +2465,7 @@ async def media_upload(file: UploadFile = File(...),
 async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
                       category: str = Form("contract"), customer_name: str = Form(""),
                       notes: str = Form(""), shared: str = Form(""),
+                      folder_id: str = Form(""), share_with: str = Form(""),
                       staff=Depends(get_current_staff)):
     """UAT-003: upload dokumen lokal (drag & drop) selain link URL."""
     _require_internal_document_access(staff)
@@ -1884,7 +2480,7 @@ async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
     ctype = file.content_type or "application/octet-stream"
     if ctype not in _DOC_ALLOWED_TYPES:
         raise HTTPException(status_code=400,
-                            detail=f"Tipe file {ctype} tidak didukung. Gunakan PDF, Word, Excel, gambar, ZIP, atau teks.")
+                            detail=f"Tipe file {ctype} tidak didukung. Gunakan PDF, Word, Excel, PowerPoint, OpenDocument, gambar, audio, video, ZIP, atau teks.")
     raw = await file.read()
     if len(raw) > _DOC_MAX_BYTES:
         raise HTTPException(status_code=400, detail="Ukuran file melebihi 15 MB")
@@ -1893,6 +2489,25 @@ async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
     ext = _DocPath(file.filename or "dokumen.bin").suffix.lower() or ".bin"
     stored_name = f"{did}{ext}"
     (DOCS_DIR / stored_name).write_bytes(raw)
+    resolved_folder_id, resolved_folder_path = None, ""
+    if (folder_id or "").strip():
+        f_oid = _oid(folder_id.strip())
+        if f_oid is None:
+            raise HTTPException(status_code=400, detail="Invalid folder_id")
+        f = await db.document_folders.find_one({"_id": f_oid})
+        if not f:
+            raise HTTPException(status_code=400, detail="Folder not found")
+        resolved_folder_id, resolved_folder_path = str(f["_id"]), f.get("path", "")
+    sw_users, sw_divisions, sw_roles = [], [], []
+    if (share_with or "").strip():
+        try:
+            import json as _json
+            sw = _json.loads(share_with)
+            sw_users = [str(u) for u in (sw.get("users") or []) if u]
+            sw_divisions = [str(d).strip().lower() for d in (sw.get("divisions") or []) if d]
+            sw_roles = [str(r).strip().lower() for r in (sw.get("roles") or []) if r]
+        except Exception:
+            pass
     doc = {
         "_id": did,
         "title": (title or "").strip() or (file.filename or "Dokumen"),
@@ -1910,9 +2525,14 @@ async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
         "shared": is_shared,
         "owner_id": owner_id,
         "owner_name": staff.get("name") or staff.get("email", ""),
+        "folder_id": resolved_folder_id,
+        "folder_path": resolved_folder_path,
+        "share_with": {"users": sw_users, "divisions": sw_divisions, "roles": sw_roles},
     }
     await db.documents.insert_one(doc)
-    return _serialize_doc(doc)
+    s = _serialize_doc(doc)
+    s["can_manage"] = _doc_can_manage(staff, doc)
+    return s
 
 
 @router.put("/admin/media/{mid}")

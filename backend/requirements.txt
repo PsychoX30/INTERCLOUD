@@ -75,6 +75,7 @@ mypy_extensions==1.1.0
 nh3==0.3.6
 numpy==2.4.6
 oauthlib==3.3.1
+odfpy==1.4.1
 openai==1.99.9
 openpyxl==3.1.5
 packaging==26.2
@@ -108,10 +109,13 @@ pyphen==0.17.2
 pytest==9.1.1
 pytest-xdist==3.8.0
 python-dateutil==2.9.0.post0
+python-docx==1.2.0
 python-dotenv==1.2.2
 python-jose==3.5.0
 python-multipart==0.0.32
+python-pptx==1.0.2
 pytokens==0.4.1
+pypdf==6.16.2
 pytz==2026.2
 PyYAML==6.0.3
 qrcode==8.2
