@@ -228,7 +228,7 @@ const EmployeeModal = ({ initial, divisions, onClose, onSaved }) => {
             <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={inputClass} data-testid="employee-phone" /></label>
           <label><div className={labelClass}>Gaji pokok (IDR)</div>
             <input type="number" min="0" value={form.base_salary} onChange={(e) => setForm({ ...form, base_salary: e.target.value })} className={inputClass} data-testid="employee-base-salary" /></label>
-          <label className="col-span-2"><div className={labelClass}>Link user ID (opsional)</div>
+          <div className="col-span-2"><div className={labelClass}>Link user ID (opsional)</div>
             <div className="relative">
               {selectedUser ? (
                 <div className={`${inputClass} flex items-center justify-between gap-2 cursor-default`}>
@@ -252,7 +252,7 @@ const EmployeeModal = ({ initial, divisions, onClose, onSaved }) => {
                         <li className="px-3 py-2 text-sm text-slate-400">Tidak ada user cocok.</li>
                       ) : (
                         filteredUsers.map((u) => (
-                          <li key={u.id} className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer" onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); pickUser(u); }}>
+                          <li key={u.id} className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setForm(f => ({ ...f, user_id: u.id })); setUserQuery(""); setUserOpen(false); }}>
                             <div className="font-semibold text-[#0a2350]">{u.name || "Tanpa nama"}</div>
                             <div className="text-xs text-slate-500">{u.email} · {u.role}</div>
                           </li>
@@ -263,7 +263,7 @@ const EmployeeModal = ({ initial, divisions, onClose, onSaved }) => {
                 </>
               )}
             </div>
-          </label>
+          </div>
           <label className="col-span-2 flex items-center gap-2 text-sm text-slate-600">
             <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} data-testid="employee-active" />
             Aktif (tampil di dropdown transaksi baru)
