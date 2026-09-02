@@ -252,7 +252,7 @@ const EmployeeModal = ({ initial, divisions, onClose, onSaved }) => {
                         <li className="px-3 py-2 text-sm text-slate-400">Tidak ada user cocok.</li>
                       ) : (
                         filteredUsers.map((u) => (
-                          <li key={u.id} className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer" onMouseDown={(e) => e.preventDefault()} onClick={() => pickUser(u)}>
+                          <li key={u.id} className="px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer" onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); pickUser(u); }}>
                             <div className="font-semibold text-[#0a2350]">{u.name || "Tanpa nama"}</div>
                             <div className="text-xs text-slate-500">{u.email} · {u.role}</div>
                           </li>
