@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { api, shortDate, fullDateTime } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
-import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame, MessageCircle, Phone, Mail, Upload, Download } from "lucide-react";
+import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame, MessageCircle, Phone, Mail, Upload, Download, Folder, FolderOpen, ChevronRight, Share2, Eye, X } from "lucide-react";
 import { useAuth } from "../../../portal/AuthContext";
 import TablePager from "./TablePager";
 
@@ -1201,6 +1201,34 @@ const FollowupDetail = ({ fu, onClose, onDone, currentUser }) => {
 /* =========================================================================
    Documents
    ========================================================================= */
+const ROLES = [
+  { key: "admin", label: "Admin" },
+  { key: "finance", label: "Finance" },
+  { key: "support", label: "Support" },
+  { key: "ticket_only", label: "Ticket Only" },
+  { key: "sales", label: "Sales" },
+  { key: "creative", label: "Creative" },
+];
+
+const fileIcon = (contentType, filename) => {
+  const ct = (contentType || "").toLowerCase();
+  const ext = (filename || "").split(".").pop().toLowerCase();
+  if (ct.startsWith("image/")) return "image";
+  if (ct.startsWith("audio/")) return "audio";
+  if (ct.startsWith("video/")) return "video";
+  if (ct.includes("pdf") || ext === "pdf") return "pdf";
+  if (ct.includes("word") || ct.includes("document") || ext === "docx" || ext === "doc") return "word";
+  if (ct.includes("excel") || ct.includes("sheet") || ext === "xlsx" || ext === "xls") return "excel";
+  if (ct.includes("presentation") || ct.includes("powerpoint") || ext === "pptx" || ext === "ppt") return "ppt";
+  return "file";
+};
+
+const FileTypeBadge = ({ ct, filename }) => (
+  <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded">
+    {fileIcon(ct, filename)}
+  </span>
+);
+
 export const AdminDocuments = () => {
   const { user } = useAuth() || {};
   const [rows, setRows] = useState(null);
@@ -1208,133 +1236,304 @@ export const AdminDocuments = () => {
   const [page, setPage] = useState(0);
   const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
-  const [scope, setScope] = useState("all"); // all | shared | private
+  const [folderId, setFolderId] = useState("root"); // root | "" | <id>
+  const [folders, setFolders] = useState([]);
+  const [expanded, setExpanded] = useState(new Set());
+  const [shareDoc, setShareDoc] = useState(null);
+  const [previewDoc, setPreviewDoc] = useState(null);
+  const [folderMenu, setFolderMenu] = useState(null); // {x,y,folder}
+  const [renameFolder, setRenameFolder] = useState(null);
+  const [newFolderParent, setNewFolderParent] = useState(null);
 
-  const params = useMemo(() => ({
-    paginate: true,
-    skip: page * limit,
-    limit,
-  }), [page, limit]);
+  const params = useMemo(() => {
+    const next = { paginate: true, skip: page * limit, limit };
+    // API contract: omit folder_id for all documents; root/null/empty means unfiled.
+    if (folderId !== "root") next.folder_id = folderId;
+    return next;
+  }, [page, limit, folderId]);
 
-  const load = useCallback(() => {
+  const loadDocs = useCallback(() => {
     api.get("/admin/documents", { params }).then((r) => {
       setRows(r.data?.items || []);
       setTotal(r.data?.total || 0);
     });
   }, [params]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadFolders = useCallback(() => {
+    api.get("/admin/document-folders").then((r) => setFolders(r.data || []));
+  }, []);
 
-  if (!rows) return <Loading />;
-  const canDelete = (d) => user?.role === "admin" || (d.owner_id && d.owner_id === user?.id);
-  const visible = rows.filter((d) => {
-    if (scope === "shared") return d.shared;
-    if (scope === "private") return !d.shared;
-    return true;
-  });
+  useEffect(() => { loadDocs(); }, [loadDocs]);
+  useEffect(() => { loadFolders(); }, [loadFolders]);
+
+  const toggleExpand = (id) => {
+    setExpanded((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+
+  const createFolder = async (parentId, name) => {
+    if (!name.trim()) return;
+    try {
+      await api.post("/admin/document-folders", { name: name.trim(), parent_id: parentId });
+      loadFolders();
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal membuat folder");
+    }
+  };
+
+  const renameFolderCall = async (id, name) => {
+    if (!name.trim()) return;
+    try {
+      await api.patch(`/admin/document-folders/${id}`, { name: name.trim() });
+      loadFolders();
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal mengganti nama folder");
+    }
+  };
+
+  const deleteFolder = async (id) => {
+    if (!window.confirm("Hapus folder? Dokumen di dalamnya akan menjadi tidak berfolder.")) return;
+    try {
+      await api.delete(`/admin/document-folders/${id}`);
+      loadFolders();
+      if (folderId === id) setFolderId("root");
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal menghapus folder");
+    }
+  };
+
+  const moveDoc = async (docId, fid) => {
+    try {
+      await api.post(`/admin/documents/${docId}/move`, { folder_id: fid });
+      loadDocs();
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal memindahkan dokumen");
+    }
+  };
+
   const del = async (id) => {
     if (!window.confirm("Delete?")) return;
     try {
       await api.delete(`/admin/documents/${id}`);
-      load();
+      loadDocs();
     } catch (e) {
       alert(e?.response?.data?.detail || "Gagal menghapus dokumen");
     }
   };
-  const openDocument = async (path) => {
-    // Only an API-relative protected-file path receives the portal Bearer
-    // token. External document URLs remain ordinary browser navigation.
-    if (!path.startsWith("/documents/file/")) return;
-    try {
-      const r = await api.get(path, { responseType: "blob" });
-      const blobUrl = URL.createObjectURL(new Blob([r.data]));
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.target = "_blank";
-      a.rel = "noreferrer";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-    } catch (e) {
-      alert(e?.response?.data?.detail || "Gagal membuka dokumen");
-    }
+
+  const canDelete = (d) => user?.role === "admin" || (d.owner_id && d.owner_id === user?.id);
+  const canManage = (d) => d.can_manage;
+
+  const renderFolderNode = (f, depth = 0) => {
+    const isOpen = expanded.has(f.id);
+    const hasChildren = (f.children || []).length > 0;
+    const isActive = folderId === f.id;
+    const pad = depth * 14;
+    return (
+      <div key={f.id}>
+        <div
+          className={`group flex items-center gap-1 pr-2 py-1.5 rounded cursor-pointer text-sm ${isActive ? "bg-[#0a2350]/10 text-[#0a2350] font-bold" : "text-slate-700 hover:bg-slate-100"}`}
+          style={{ paddingLeft: `${pad + 8}px` }}
+          onClick={() => setFolderId(f.id)}
+          onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, folder: f }); }}
+        >
+          {hasChildren ? (
+            <button
+              className="p-0.5 rounded hover:bg-slate-200"
+              onClick={(e) => { e.stopPropagation(); toggleExpand(f.id); }}
+            >
+              <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+            </button>
+          ) : <span className="w-5" />}
+          {isActive ? <FolderOpen className="h-4 w-4 text-[#f5b120]" /> : <Folder className="h-4 w-4 text-slate-400" />}
+          <span className="truncate flex-1" title={f.path}>{f.name}</span>
+          {user?.role === "admin" && (
+            <button
+              className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-200 rounded"
+              onClick={(e) => { e.stopPropagation(); setNewFolderParent(f.id); }}
+              title="New subfolder"
+            >
+              <Plus className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        {isOpen && (f.children || []).map((c) => renderFolderNode(c, depth + 1))}
+      </div>
+    );
   };
+
+  if (!rows) return <Loading />;
+
   return (
     <div>
       <PageHeader
         title="Documents"
-        subtitle="Folder bersama terlihat oleh semua staf; folder pribadi hanya milik Anda."
-        actions={<button className={btnPrimary} onClick={() => setModal(true)}><Plus className="h-4 w-4" /> New Document</button>}
+        subtitle="Kelola dokumen per folder dan bagikan ke user, divisi, atau role tertentu."
+        actions={
+          <button className={btnPrimary} onClick={() => setModal(true)}>
+            <Plus className="h-4 w-4" /> New Document
+          </button>
+        }
       />
-      <div className="flex gap-2 mb-4">
-        {[["all", "Semua"], ["shared", "Bersama"], ["private", "Pribadi"]].map(([key, label]) => (
-          <button key={key} onClick={() => setScope(key)}
-                  className={`px-3 h-8 rounded-full text-xs font-bold border transition-colors ${scope === key ? "bg-[#0a2350] text-white border-[#0a2350]" : "bg-white text-slate-600 border-slate-200 hover:border-[#f5b120]"}`}
-                  data-testid={`docs-scope-${key}`}>{label}</button>
-        ))}
-      </div>
-      {visible.length === 0 && <EmptyState title="No documents yet" body="Track your contracts, MSAs, and diagrams here." />}
-      {visible.length > 0 && (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {visible.map((d) => (
-            <Card key={d.id} className="p-5">
-              <div className="flex items-start justify-between">
-                <div className="h-10 w-10 rounded-lg bg-[#0a2350] flex items-center justify-center"><FileText className="h-5 w-5 text-[#f5b120]" /></div>
-                <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">{d.category}</div>
-              </div>
-              <div className="mt-4 text-base font-extrabold text-[#0a2350] leading-tight">{d.title}</div>
-              <div className="text-xs text-slate-500 mt-1">{d.customer_name || "-"} · {fullDateTime(d.created_at)}</div>
-              <div className="mt-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider">
-                <span className={`px-2 py-0.5 rounded ${d.shared ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`} data-testid={`doc-scope-${d.id}`}>
-                  {d.shared ? "Bersama" : "Pribadi"}
-                </span>
-                {d.folder && <span className="text-slate-400 normal-case font-semibold truncate" title={d.folder}>{d.folder}</span>}
-              </div>
-              {d.notes && <p className="mt-2 text-sm text-slate-600 line-clamp-2">{d.notes}</p>}
-              <div className="mt-4 flex gap-2">
-                {d.has_file && d.id ? (
-                  <button
-                    className={btnSecondary}
-                    onClick={() => openDocument(`/documents/file/${d.id}`)}
-                  >
-                    Open
-                  </button>
-                ) : d.url ? (
-                  <a href={d.url} target="_blank" rel="noreferrer" className={btnSecondary}>
-                    Open
-                  </a>
-                ) : null}
-                {canDelete(d) && (
-                  <button className="text-slate-500 hover:text-red-600 text-sm" onClick={() => del(d.id)} data-testid={`doc-delete-${d.id}`}>Delete</button>
-                )}
-              </div>
-            </Card>
-          ))}
+      <div className="flex gap-6 items-start">
+        {/* Sidebar folders */}
+        <aside className="w-64 shrink-0 bg-white rounded-2xl border border-slate-200 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">Folders</h4>
+            {user?.role === "admin" && (
+              <button className="text-[#0a2350] hover:text-[#f5b120] p-1" onClick={() => setNewFolderParent("root")} title="New top folder">
+                <Plus className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <div
+            className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm ${folderId === "root" ? "bg-[#0a2350]/10 text-[#0a2350] font-bold" : "text-slate-700 hover:bg-slate-100"}`}
+            onClick={() => setFolderId("root")}
+          >
+            <FolderOpen className="h-4 w-4 text-[#f5b120]" /> <span>All documents</span>
+          </div>
+          <div
+            className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm ${folderId === "" ? "bg-[#0a2350]/10 text-[#0a2350] font-bold" : "text-slate-700 hover:bg-slate-100"}`}
+            onClick={() => setFolderId("")}
+          >
+            <Folder className="h-4 w-4 text-slate-400" /> <span>Unfiled</span>
+          </div>
+          <div className="mt-1">{folders.map((f) => renderFolderNode(f))}</div>
+        </aside>
+
+        {/* Main grid */}
+        <div className="flex-1 min-w-0">
+          {rows.length === 0 && <EmptyState title="No documents yet" body="Track your contracts, MSAs, and diagrams here." />}
+          {rows.length > 0 && (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {rows.map((d) => (
+                <Card key={d.id} className="p-5">
+                  <div className="flex items-start justify-between">
+                    <div className="h-10 w-10 rounded-lg bg-[#0a2350] flex items-center justify-center"><FileText className="h-5 w-5 text-[#f5b120]" /></div>
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#f5b120]">{d.category}</div>
+                  </div>
+                  <div className="mt-4 text-base font-extrabold text-[#0a2350] leading-tight">{d.title}</div>
+                  <div className="text-xs text-slate-500 mt-1">{d.customer_name || "-"} · {fullDateTime(d.created_at)}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-wider">
+                    <FileTypeBadge ct={d.content_type} filename={d.filename} />
+                    {d.folder_path && <span className="text-slate-400 normal-case font-semibold truncate" title={d.folder_path}>{d.folder_path}</span>}
+                  </div>
+                  {d.owner_name && <div className="mt-1 text-xs text-slate-500">Owner: {d.owner_name}</div>}
+                  {d.notes && <p className="mt-2 text-sm text-slate-600 line-clamp-2">{d.notes}</p>}
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {d.has_file && d.id ? (
+                      <button className={btnSecondary} onClick={() => setPreviewDoc(d)}>
+                        <Eye className="h-3.5 w-3.5 mr-1" /> Preview
+                      </button>
+                    ) : d.url ? (
+                      <a href={d.url} target="_blank" rel="noreferrer" className={btnSecondary}>
+                        <ExternalLink className="h-3.5 w-3.5 mr-1" /> Open
+                      </a>
+                    ) : null}
+                    {canManage(d) && (
+                      <button className={btnSecondary} onClick={() => setShareDoc(d)}>
+                        <Share2 className="h-3.5 w-3.5 mr-1" /> Share
+                      </button>
+                    )}
+                    {canDelete(d) && (
+                      <button className="text-slate-500 hover:text-red-600 text-sm" onClick={() => del(d.id)} data-testid={`doc-delete-${d.id}`}>Delete</button>
+                    )}
+                    {d.has_file && (
+                      <select
+                        className="text-xs border border-slate-200 rounded px-2 py-1 ml-auto"
+                        value={d.folder_id || ""}
+                        onChange={(e) => moveDoc(d.id, e.target.value)}
+                        title="Move to folder"
+                      >
+                        <option value="">Unfiled</option>
+                        {folders.flatMap((tree) => {
+                          const out = [];
+                          const walk = (f, depth) => {
+                            out.push({ id: f.id, label: "\u00A0".repeat(depth * 2) + f.name });
+                            (f.children || []).forEach((c) => walk(c, depth + 1));
+                          };
+                          walk(tree, 0);
+                          return out;
+                        }).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                      </select>
+                    )}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+          {total > 0 && (
+            <TablePager
+              page={page}
+              total={total}
+              limit={limit}
+              onPage={setPage}
+              onLimit={(l) => { setLimit(l); setPage(0); }}
+              testid="admin-documents-pager"
+            />
+          )}
         </div>
-      )}
-      {total > 0 && (
-        <TablePager
-          page={page}
-          total={total}
-          limit={limit}
-          onPage={setPage}
-          onLimit={(l) => { setLimit(l); setPage(0); }}
-          testid="admin-documents-pager"
+      </div>
+
+      {modal && <DocForm onClose={() => setModal(false)} onDone={() => { setModal(false); loadDocs(); }} folders={folders} />}
+      {shareDoc && <ShareModal doc={shareDoc} onClose={() => setShareDoc(null)} onSaved={() => { setShareDoc(null); loadDocs(); }} />}
+      {previewDoc && <PreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
+      {newFolderParent !== null && (
+        <FolderNameModal
+          title={newFolderParent === "root" ? "New top-level folder" : "New subfolder"}
+          onClose={() => setNewFolderParent(null)}
+          onSave={(name) => {
+            createFolder(newFolderParent === "root" ? null : newFolderParent, name);
+            setNewFolderParent(null);
+          }}
         />
       )}
-      {modal && <DocForm onClose={() => setModal(false)} onDone={() => { setModal(false); load(); }} />}
+      {renameFolder && (
+        <FolderNameModal
+          title="Rename folder"
+          initial={renameFolder.name}
+          onClose={() => setRenameFolder(null)}
+          onSave={(name) => {
+            renameFolderCall(renameFolder.id, name);
+            setRenameFolder(null);
+          }}
+        />
+      )}
+      {folderMenu && (
+        <FolderContextMenu
+          x={folderMenu.x}
+          y={folderMenu.y}
+          folder={folderMenu.folder}
+          onClose={() => setFolderMenu(null)}
+          onRename={() => { setFolderMenu(null); setRenameFolder(folderMenu.folder); }}
+          onDelete={() => { setFolderMenu(null); deleteFolder(folderMenu.folder.id); }}
+          canEdit={user?.role === "admin" || folderMenu.folder?.owner_id === user?.id}
+        />
+      )}
     </div>
   );
 };
 
-const DocForm = ({ onClose, onDone }) => {
-  const [f, setF] = useState({ title: "", category: "contract", customer_name: "", url: "", notes: "" });
+const DocForm = ({ onClose, onDone, folders }) => {
+  const [f, setF] = useState({ title: "", category: "contract", customer_name: "", url: "", notes: "", folder_id: "" });
   const [file, setFile] = useState(null);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const fileRef = React.useRef(null);
+
+  const folderOptions = (folders || []).flatMap((tree) => {
+    const out = [];
+    const walk = (fd, depth) => {
+      out.push({ id: fd.id, label: "\u00A0".repeat(depth * 2) + fd.name });
+      (fd.children || []).forEach((c) => walk(c, depth + 1));
+    };
+    walk(tree, 0);
+    return out;
+  });
 
   const pick = (fl) => {
     if (!fl) return;
@@ -1354,6 +1553,9 @@ const DocForm = ({ onClose, onDone }) => {
         fd.append("category", f.category);
         fd.append("customer_name", f.customer_name);
         fd.append("notes", f.notes);
+        if (f.folder_id) fd.append("folder_id", f.folder_id);
+        // New documents begin private; sharing is configured explicitly via Share.
+        fd.append("share_with", JSON.stringify({ users: [], divisions: [], roles: [] }));
         await api.post("/admin/documents/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
       } else {
         await api.post("/admin/documents", f);
@@ -1403,11 +1605,249 @@ const DocForm = ({ onClose, onDone }) => {
           <label className="col-span-2"><div className={labelClass}>URL / link (opsional bila tanpa file)</div><input value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} className={inputClass} placeholder="Google Drive / Dropbox / GitHub link" /></label>
         )}
         <label className="col-span-2"><div className={labelClass}>Notes</div><textarea rows={3} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} className={`${inputClass} h-auto py-2`} /></label>
+        <label className="col-span-2"><div className={labelClass}>Folder</div><select value={f.folder_id} onChange={(e) => setF({ ...f, folder_id: e.target.value })} className={inputClass}><option value="">Unfiled</option>{folderOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></label>
         <div className="col-span-2 flex justify-end gap-2 mt-2">
           <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
           <button type="submit" className={btnPrimary} disabled={busy} data-testid="doc-save">{busy ? "Uploading..." : "Save"}</button>
         </div>
       </form>
     </Modal>
+  );
+};
+
+/* =========================================================================
+   Documents — folder helpers, share modal, preview modal
+   ========================================================================= */
+const FolderNameModal = ({ title, initial = "", onClose, onSave }) => {
+  const [name, setName] = useState(initial);
+  return (
+    <Modal onClose={onClose} title={title}>
+      <form onSubmit={(e) => { e.preventDefault(); onSave(name); }} className="flex flex-col gap-3">
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} className={inputClass}
+               placeholder="Nama folder" data-testid="folder-name-input" />
+        <div className="flex justify-end gap-2">
+          <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
+          <button type="submit" className={btnPrimary} disabled={!name.trim()} data-testid="folder-name-save">Save</button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+const FolderContextMenu = ({ x, y, onClose, onRename, onDelete, canEdit }) => (
+  <div className="fixed inset-0 z-50" onClick={onClose}
+       onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
+    <div className="absolute w-44 bg-white border border-slate-200 rounded-xl shadow-xl p-1 text-sm"
+         style={{ top: y, left: x }} onClick={(e) => e.stopPropagation()}>
+      {canEdit ? (
+        <>
+          <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-100"
+                  onClick={onRename} data-testid="folder-menu-rename">Rename</button>
+          <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-red-50 text-red-600"
+                  onClick={onDelete} data-testid="folder-menu-delete">Delete</button>
+        </>
+      ) : (
+        <div className="px-3 py-2 text-slate-400 text-xs">Tidak ada akses ubah</div>
+      )}
+    </div>
+  </div>
+);
+
+const ShareModal = ({ doc, onClose, onSaved }) => {
+  const [users, setUsers] = useState([]);
+  const [selUsers, setSelUsers] = useState([]);
+  const [selDivisions, setSelDivisions] = useState([]);
+  const [selRoles, setSelRoles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    setSelUsers((doc.share_with?.users || []).map(String));
+    setSelDivisions(doc.share_with?.divisions || []);
+    setSelRoles(doc.share_with?.roles || []);
+    api.get("/admin/users").then((r) => {
+      const items = r.data?.items || (Array.isArray(r.data) ? r.data : []);
+      setUsers(items.map((u) => ({
+        id: String(u.id), name: u.name || u.email || "(tanpa nama)",
+        email: u.email || "", division: (u.division || "").trim(),
+      })));
+    }).catch(() => setUsers([]));
+  }, [doc]);
+
+  const toggle = (setter) => (val) =>
+    setter((p) => (p.includes(val) ? p.filter((x) => x !== val) : [...p, val]));
+
+  const divisions = Array.from(new Set(users.map((u) => u.division).filter(Boolean)));
+
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      await api.patch(`/admin/documents/${doc.id}`, {
+        share_with: { users: selUsers, divisions: selDivisions, roles: selRoles },
+      });
+      onSaved();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Gagal menyimpan sharing");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal onClose={onClose} title={`Share: ${doc.title}`}>
+      <div className="flex flex-col gap-4">
+        {err && <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2" data-testid="share-error">{err}</div>}
+        <div>
+          <div className={labelClass}>User</div>
+          <div className="max-h-44 overflow-y-auto border border-slate-200 rounded-xl p-2" data-testid="share-users">
+            {users.length === 0 && <div className="text-xs text-slate-400">Tidak ada user / gagal memuat.</div>}
+            {users.map((u) => (
+              <label key={u.id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 cursor-pointer text-sm">
+                <input type="checkbox" checked={selUsers.includes(u.id)} onChange={() => toggle(setSelUsers)(u.id)} />
+                <span className="flex-1 truncate">{u.name}{u.email ? ` · ${u.email}` : ""}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        {divisions.length > 0 && (
+          <div>
+            <div className={labelClass}>Divisi</div>
+            <div className="flex flex-wrap gap-2" data-testid="share-divisions">
+              {divisions.map((d) => (
+                <button key={d} type="button" onClick={() => toggle(setSelDivisions)(d)}
+                        className={`px-3 py-1 rounded-full text-xs font-bold border ${selDivisions.includes(d) ? "bg-[#0a2350] text-white border-[#0a2350]" : "bg-white text-slate-600 border-slate-200"}`}>
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div>
+          <div className={labelClass}>Role</div>
+          <div className="flex flex-wrap gap-2" data-testid="share-roles">
+            {ROLES.map((r) => (
+              <button key={r.key} type="button" onClick={() => toggle(setSelRoles)(r.key)}
+                      className={`px-3 py-1 rounded-full text-xs font-bold border ${selRoles.includes(r.key) ? "bg-[#0a2350] text-white border-[#0a2350]" : "bg-white text-slate-600 border-slate-200"}`}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
+          <button type="button" className={btnPrimary} disabled={busy} onClick={save} data-testid="share-save">
+            {busy ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+const PreviewModal = ({ doc, onClose }) => {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  const [blobUrl, setBlobUrl] = useState(null);
+
+  // Fetch preview metadata and any binary blob through the authenticated
+  // Axios instance so the portal Bearer token is attached. Plain <img src>
+  // or <iframe src> cannot send our Authorization header.
+  useEffect(() => {
+    let cancelled = false;
+    let objUrl = null;
+    setBlobUrl(null); setErr(""); setData(null);
+    api.get(`/admin/documents/${doc.id}/preview`)
+      .then(async (r) => {
+        if (cancelled) return;
+        const info = r.data;
+        setData(info);
+        const binaryKinds = ["image", "audio", "video", "pdf"];
+        if (info.file_url && binaryKinds.includes(info.kind)) {
+          const path = info.file_url.replace(/^\/api\/portal/, "");
+          const br = await api.get(path, { responseType: "blob" });
+          objUrl = URL.createObjectURL(new Blob([br.data], { type: info.content_type || "application/octet-stream" }));
+          setBlobUrl(objUrl);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setErr(e?.response?.data?.detail || "Gagal memuat preview");
+      });
+    return () => {
+      cancelled = true;
+      if (objUrl) URL.revokeObjectURL(objUrl);
+    };
+  }, [doc.id]);
+
+  const download = async () => {
+    try {
+      const r = await api.get(`/admin/documents/${doc.id}/download`, { responseType: "blob" });
+      const objUrl = URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement("a");
+      a.href = objUrl;
+      a.download = data?.filename || doc.filename || "dokumen";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Gagal mengunduh dokumen");
+    }
+  };
+
+  const kind = data?.kind || "none";
+  const htmlKinds = ["docx", "xlsx", "pptx", "odt", "ods", "odp", "text"];
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()}
+           className="w-full max-w-5xl bg-white rounded-3xl p-6 max-h-[92vh] flex flex-col"
+           data-testid="doc-preview-modal">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="min-w-0">
+            <h3 className="text-xl font-extrabold text-[#0a2350] truncate">{data?.title || doc.title}</h3>
+            <div className="text-xs text-slate-500 truncate">
+              {data?.filename || doc.filename}
+              {data?.folder_path ? ` · ${data.folder_path}` : ""}
+              {data?.owner_name ? ` · Owner: ${data.owner_name}` : ""}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button className={btnSecondary} onClick={download} data-testid="doc-download">
+              <Download className="h-4 w-4 mr-1" /> Download
+            </button>
+            <button className="p-2 rounded-full hover:bg-slate-100 text-slate-500" onClick={onClose} aria-label="Close">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+        {err && <div className="text-sm text-red-600" data-testid="doc-preview-error">{err}</div>}
+        {!data && !err && <Loading />}
+        {data && kind === "image" && blobUrl && (
+          <img src={blobUrl} alt={data.title} className="max-h-[70vh] w-full object-contain bg-slate-50 rounded-xl" />
+        )}
+        {data && kind === "audio" && blobUrl && <audio controls src={blobUrl} className="w-full mt-4" />}
+        {data && kind === "video" && blobUrl && (
+          <video controls src={blobUrl} className="max-h-[70vh] w-full bg-black rounded-xl" />
+        )}
+        {data && kind === "pdf" && blobUrl && (
+          <iframe title={data.title} src={blobUrl} className="w-full h-[70vh] rounded-xl border border-slate-200" />
+        )}
+        {data && ["image", "audio", "video", "pdf"].includes(kind) && !blobUrl && (
+          <div className="py-12 text-center text-slate-400 text-sm">Memuat berkas…</div>
+        )}
+        {data && htmlKinds.includes(kind) && (
+          <div className="overflow-auto max-h-[70vh] border border-slate-200 rounded-xl p-4 doc-preview-html"
+               data-testid="doc-preview-html"
+               dangerouslySetInnerHTML={{ __html: data.html || "<p><i>Preview kosong</i></p>" }} />
+        )}
+        {data && kind === "none" && (
+          <div className="py-16 text-center text-slate-500">
+            <FileText className="h-10 w-10 mx-auto mb-2 text-slate-300" />
+            <div className="text-sm">Preview tidak tersedia untuk tipe file ini.</div>
+            <button className={`${btnPrimary} mt-4`} onClick={download}>
+              <Download className="h-4 w-4 mr-1" /> Download file
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
