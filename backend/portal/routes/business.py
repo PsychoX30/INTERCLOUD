@@ -2129,7 +2129,10 @@ def _esc(x) -> str:
 
 
 def _preview_docx_html(raw: bytes) -> str:
-    import docx as _docx_lib
+    try:
+        import docx as _docx_lib
+    except ImportError:
+        return '<p><i>(Modul python-docx belum ter-install di server)</i></p>'
     buf = io.BytesIO(raw)
     doc = _docx_lib.Document(buf)
     parts = []
@@ -2148,28 +2151,130 @@ def _preview_docx_html(raw: bytes) -> str:
     return "\n".join(parts) or "<p><i>(dokumen kosong)</i></p>"
 
 
+def _xlsx_cell_style(cell) -> str:
+    """Inline CSS for a cell: alignment, border, background fill."""
+    css = []
+    al = cell.alignment
+    if al and al.horizontal:
+        css.append(f"text-align:{al.horizontal}")
+    if al and al.wrap_text:
+        css.append("white-space:normal")
+    # border detection (openpyxl Side with style != None)
+    b = cell.border
+    if b:
+        for side_name, side in (("top", b.top), ("bottom", b.bottom), ("left", b.left), ("right", b.right)):
+            if side and side.style:
+                w = {"thin": 1, "medium": 2, "thick": 3, "double": 3}.get(side.style, 1)
+                css.append(f"border-{side_name}:{w}px solid #94a3b8")
+    # fill
+    f = cell.fill
+    if f and f.patternType and f.patternType != "none":
+        fg = f.fgColor.rgb if f.fgColor and f.fgColor.type == "rgb" else None
+        if fg and isinstance(fg, str) and len(fg) == 8:
+            css.append(f"background:#{fg[2:]}")
+    # font
+    fn = cell.font
+    if fn:
+        if fn.bold:
+            css.append("font-weight:700")
+        if fn.italic:
+            css.append("font-style:italic")
+        if fn.color and fn.color.type == "rgb" and fn.color.rgb and len(fn.color.rgb) == 8:
+            css.append(f"color:#{fn.color.rgb[2:]}")
+    return ";".join(css)
+
+
+def _xlsx_format_value(v, cell) -> str:
+    """Format a cell value using number_format for dates/percent/currency."""
+    from datetime import datetime as _dt, date as _date
+    if v is None:
+        return ""
+    if isinstance(v, (_dt, _date)):
+        return v.strftime("%d/%m/%Y") if isinstance(v, _dt) else v.strftime("%d/%m/%Y")
+    if isinstance(v, (int, float)):
+        nf = (cell.number_format or "").lower() if cell else ""
+        if "%" in nf:
+            return f"{v*100:g}%"
+        if "rp" in nf or "#,##0" in nf or "id" in nf:
+            return f"{v:,.0f}".replace(",", ".")
+        if isinstance(v, float) and v != int(v):
+            return f"{v:g}"
+        return str(v)
+    return _esc(v)
+
+
 def _preview_xlsx_html(raw: bytes) -> str:
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+    try:
+        import openpyxl
+    except ImportError:
+        return '<p><i>(Modul openpyxl belum ter-install di server)</i></p>'
+    wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
     parts = []
+    MAX_ROWS, MAX_COLS = 200, 30
     for ws in wb.worksheets:
         parts.append(f'<h3>{_esc(ws.title)}</h3>')
         parts.append('<table class="sheet-table">')
-        for row in ws.iter_rows(max_row=100, max_col=30, values_only=True):
-            if all(v is None for v in row):
+        # Determine actual used range
+        max_row = min(ws.max_row, MAX_ROWS)
+        max_col = min(ws.max_column, MAX_COLS)
+        # merged cells: build map of (row,col) -> master cell
+        merged = {}
+        for rng in ws.merged_cells.ranges:
+            r1, c1, r2, c2 = rng.min_row, rng.min_col, rng.max_row, rng.max_col
+            # Clip to our view limits
+            r1c = max(1, min(r1, max_row))
+            c1c = max(1, min(c1, max_col))
+            r2c = max(1, min(r2, max_row))
+            c2c = max(1, min(c2, max_col))
+            for r in range(r1c, r2c + 1):
+                for c in range(c1c, c2c + 1):
+                    if (r, c) != (r1c, c1c):
+                        merged[(r, c)] = (r1c, c1c)
+                    merged[(r1c, c1c)] = (r1c, c1c, rng)
+        for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
+            if all(cell.value is None for cell in row):
                 continue
-            cells = "".join(
-                f"<td>{_esc(v)}</td>" if not isinstance(v, (int, float)) else f"<td class='num'>{v}</td>"
-                for v in row
-            )
-            parts.append(f"<tr>{cells}</tr>")
-        parts.append("</table>")
+            cells_html = []
+            for cell in row:
+                key = (cell.row, cell.column)
+                if key in merged:
+                    entry = merged[key]
+                    if len(entry) == 2:  # slave cell in a merged range
+                        continue
+                    rng = entry[2]
+                    master = ws.cell(row=rng.min_row, column=rng.min_col)
+                    colspan = rng.max_col - rng.min_col + 1
+                    rowspan = rng.max_row - rng.min_row + 1
+                    style = _xlsx_cell_style(master)
+                    val = _xlsx_format_value(master.value, master)
+                    attrs = []
+                    if colspan > 1:
+                        attrs.append(f'colspan="{colspan}"')
+                    if rowspan > 1:
+                        attrs.append(f'rowspan="{rowspan}"')
+                    if style:
+                        attrs.append(f'style="{style}"')
+                    cells_html.append(f'<td {" ".join(attrs)}>{val}</td>')
+                else:
+                    style = _xlsx_cell_style(cell)
+                    val = _xlsx_format_value(cell.value, cell)
+                    if style:
+                        cells_html.append(f'<td style="{style}">{val}</td>')
+                    elif isinstance(cell.value, (int, float)) and cell.value is not None:
+                        cells_html.append(f'<td class="num">{val}</td>')
+                    else:
+                        cells_html.append(f'<td>{val}</td>')
+            parts.append(f'<tr>{"".join(cells_html)}</tr>')
+        parts.append('</table>')
     wb.close()
     return "\n".join(parts) or "<p><i>(sheet kosong)</i></p>"
 
 
 def _preview_pptx_html(raw: bytes) -> str:
-    from pptx import Presentation
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return '<p><i>(Modul python-pptx belum ter-install di server)</i></p>'
     prs = Presentation(io.BytesIO(raw))
     parts = []
     for i, slide in enumerate(prs.slides, 1):
@@ -2187,20 +2292,40 @@ def _preview_pptx_html(raw: bytes) -> str:
 
 
 def _preview_odf_html(raw: bytes, kind: str) -> str:
-    from odf.opendocument import load as _odf_load
-    from odf.text import P as _ODF_P, H as _ODF_H
-    from odf.table import Table as _ODF_Table, TableRow as _ODF_Tr, TableCell as _ODF_Td
+    try:
+        from odf.opendocument import load as _odf_load
+        from odf.text import P as _ODF_P, H as _ODF_H
+        from odf.table import Table as _ODF_Table, TableRow as _ODF_Tr, TableCell as _ODF_Td
+    except ImportError:
+        return '<p><i>(Modul odfpy belum ter‑install di server)</i></p>'
+
+    def _odf_text(el):
+        """Recursive text extraction from ODF element."""
+        texts = []
+        for child in el.childNodes:
+            if child.nodeType == child.TEXT_NODE:
+                texts.append(str(child))
+            elif child.nodeType == child.ELEMENT_NODE:
+                texts.append(_odf_text(child))
+        return "".join(texts)
+
     o = _odf_load(io.BytesIO(raw))
     parts = []
-    _ = kind  # odt/ods/odp all parsed the same way here (text + tables)
     for el in o.getElementsByType(_ODF_P):
-        parts.append(f"<p>{_esc(str(el))}</p>")
+        t = _odf_text(el).strip()
+        if t:
+            parts.append(f"<p>{_esc(t)}</p>")
     for h in o.getElementsByType(_ODF_H):
-        parts.append(f'<p class="docx-h">{_esc(str(h))}</p>')
+        t = _odf_text(h).strip()
+        if t:
+            parts.append(f'<p class="docx-h">{_esc(t)}</p>')
     for tbl in o.getElementsByType(_ODF_Table):
         parts.append('<table class="docx-table">')
         for tr in tbl.getElementsByType(_ODF_Tr):
-            cells = "".join(f"<td>{_esc(str(c))}</td>" for c in tr.getElementsByType(_ODF_Td))
+            cells = "".join(
+                f"<td>{_esc(_odf_text(c).strip())}</td>"
+                for c in tr.getElementsByType(_ODF_Td)
+            )
             parts.append(f"<tr>{cells}</tr>")
         parts.append("</table>")
     return "\n".join(parts) or "<p><i>(dokumen kosong)</i></p>"
