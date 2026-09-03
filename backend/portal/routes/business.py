@@ -2221,16 +2221,19 @@ def _preview_xlsx_html(raw: bytes) -> str:
         merged = {}
         for rng in ws.merged_cells.ranges:
             r1, c1, r2, c2 = rng.min_row, rng.min_col, rng.max_row, rng.max_col
-            # Clip to our view limits
-            r1c = max(1, min(r1, max_row))
-            c1c = max(1, min(c1, max_col))
-            r2c = max(1, min(r2, max_row))
-            c2c = max(1, min(c2, max_col))
-            for r in range(r1c, r2c + 1):
-                for c in range(c1c, c2c + 1):
-                    if (r, c) != (r1c, c1c):
-                        merged[(r, c)] = (r1c, c1c)
-                    merged[(r1c, c1c)] = (r1c, c1c, rng)
+            # Skip ranges entirely outside the view — do NOT clamp their
+            # origin into view (would shadow valid cells at the boundary).
+            if r1 > max_row or c1 > max_col:
+                continue
+            # Clip only the far edge (span) to view limits
+            r2c = min(r2, max_row)
+            c2c = min(c2, max_col)
+            for r in range(r1, r2c + 1):
+                for c in range(c1, c2c + 1):
+                    if (r, c) != (r1, c1):
+                        merged[(r, c)] = (r1, c1)
+            # store clipped spans for rendering (master entry has len 4)
+            merged[(r1, c1)] = (r1, c1, c2c - c1 + 1, r2c - r1 + 1)
         for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
             if all(cell.value is None for cell in row):
                 continue
@@ -2241,10 +2244,9 @@ def _preview_xlsx_html(raw: bytes) -> str:
                     entry = merged[key]
                     if len(entry) == 2:  # slave cell in a merged range
                         continue
-                    rng = entry[2]
-                    master = ws.cell(row=rng.min_row, column=rng.min_col)
-                    colspan = rng.max_col - rng.min_col + 1
-                    rowspan = rng.max_row - rng.min_row + 1
+                    # entry is (r1, c1, colspan, rowspan) — clipped to view
+                    _, _, colspan, rowspan = entry
+                    master = ws.cell(row=entry[0], column=entry[1])
                     style = _xlsx_cell_style(master)
                     val = _xlsx_format_value(master.value, master)
                     attrs = []
