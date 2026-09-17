@@ -1823,7 +1823,13 @@ const PreviewModal = ({ doc, onClose }) => {
         const info = r.data;
         setData(info);
         const binaryKinds = ["image", "audio", "video", "pdf"];
-        if (info.file_url && binaryKinds.includes(info.kind)) {
+        if (info.preview_pdf_url && info.render_mode === "libreoffice") {
+          // LibreOffice-rendered Office/ODF → fetch the converted PDF blob.
+          const path = info.preview_pdf_url.replace(/^\/api\/portal/, "");
+          const br = await api.get(path, { responseType: "blob" });
+          if (cancelled) return;
+          setPdfBlob(new Blob([br.data], { type: "application/pdf" }));
+        } else if (info.file_url && binaryKinds.includes(info.kind)) {
           const path = info.file_url.replace(/^\/api\/portal/, "");
           const br = await api.get(path, { responseType: "blob" });
           objUrl = URL.createObjectURL(new Blob([br.data], { type: info.content_type || "application/octet-stream" }));
@@ -1860,6 +1866,9 @@ const PreviewModal = ({ doc, onClose }) => {
 
   const kind = data?.kind || "none";
   const htmlKinds = ["docx", "xlsx", "pptx", "odt", "ods", "odp", "text"];
+  // If LibreOffice converted the Office file to a preview PDF, render it
+  // just like a normal PDF — this gives Google Drive/Nextcloud-level fidelity.
+  const renderPdf = data?.preview_pdf_url && data?.render_mode === "libreoffice";
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -1893,14 +1902,14 @@ const PreviewModal = ({ doc, onClose }) => {
         {data && kind === "video" && blobUrl && (
           <video controls src={blobUrl} className="max-h-[70vh] w-full bg-black rounded-xl" />
         )}
-        {data && kind === "pdf" && pdfBlob && <PdfCanvas blob={pdfBlob} />}
-        {data && kind === "pdf" && !pdfBlob && (
+        {data && (kind === "pdf" || renderPdf) && pdfBlob && <PdfCanvas blob={pdfBlob} />}
+        {data && (kind === "pdf" || renderPdf) && !pdfBlob && (
           <div className="py-12 text-center text-slate-400 text-sm">Memuat berkas…</div>
         )}
         {data && ["image", "audio", "video"].includes(kind) && !blobUrl && (
           <div className="py-12 text-center text-slate-400 text-sm">Memuat berkas…</div>
         )}
-        {data && htmlKinds.includes(kind) && (
+        {data && htmlKinds.includes(kind) && !renderPdf && (
           <div className="overflow-auto max-h-[70vh] border border-slate-200 rounded-xl p-4 doc-preview-html"
                data-testid="doc-preview-html"
                dangerouslySetInnerHTML={{ __html: data.html || "<p><i>Preview kosong</i></p>" }} />

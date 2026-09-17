@@ -1519,6 +1519,86 @@ from pathlib import Path as _DocPath  # noqa: E402
 
 
 DOCS_DIR = _DocPath(__file__).resolve().parent.parent.parent / "uploads" / "documents"
+PREVIEW_DIR = DOCS_DIR / "_preview"
+
+
+def _ensure_preview_dir() -> None:
+    try:
+        PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+
+# ---------- LibreOffice Office->PDF conversion ----------
+def _find_soffice() -> str:
+    for cand in ("/usr/bin/soffice", "/usr/lib/libreoffice/program/soffice.bin",
+                 "/usr/bin/libreoffice", "/opt/libreoffice/program/soffice"):
+        if _DocPath(cand).exists():
+            return cand
+    import shutil as _sh
+    return _sh.which("soffice") or _sh.which("libreoffice") or ""
+
+
+_OFFICE_EXT = {
+    "docx": ".docx", "xlsx": ".xlsx", "pptx": ".pptx",
+    "odt": ".odt", "ods": ".ods", "odp": ".odp",
+    "doc": ".doc", "xls": ".xls", "ppt": ".ppt", "rtf": ".rtf",
+}
+
+
+def _convert_office_to_pdf(src: "_DocPath", kind: str, timeout_s: int = 120) -> "bytes | None":
+    """Render an Office/ODF file to PDF with LibreOffice headless.
+
+    Returns the produced PDF bytes (read before the temp dir is cleaned up)
+    or None when LibreOffice is unavailable or the conversion fails.
+    Callers must degrade to the HTML renderer.
+    """
+    soffice = _find_soffice()
+    if not soffice:
+        return None
+    ext = _OFFICE_EXT.get(kind)
+    if not ext:
+        return None
+    import subprocess as _sp
+    import tempfile as _tf
+    try:
+        with _tf.TemporaryDirectory(prefix="docprev_") as tmp:
+            work = _DocPath(tmp)
+            src_copy = work / ("input" + ext)
+            src_copy.write_bytes(src.read_bytes())
+            env = {"HOME": str(work), "PATH": "/usr/bin:/bin:/usr/local/bin",
+                   "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}
+            _sp.run(
+                [soffice, "--headless", "--norestore", "--invisible",
+                 "--nodefault", "--nolockcheck", "--convert-to", "pdf",
+                 "--outdir", str(work), str(src_copy)],
+                check=False, capture_output=True, timeout=timeout_s, env=env,
+            )
+            produced = work / ("input.pdf")
+            if produced.exists() and produced.stat().st_size > 0:
+                return produced.read_bytes()  # read BEFORE temp dir cleanup
+    except Exception:
+        return None
+    return None
+
+
+def _cached_preview_pdf(doc_id: str, src: "_DocPath", src_mtime: float, kind: str) -> "_DocPath | None":
+    """Return a cached converted PDF for this document, converting on miss."""
+    _ensure_preview_dir()
+    out = PREVIEW_DIR / f"{doc_id}.pdf"
+    try:
+        if out.exists() and out.stat().st_mtime >= src_mtime and out.stat().st_size > 0:
+            return out
+    except Exception:
+        pass
+    pdf_bytes = _convert_office_to_pdf(src, kind)
+    if pdf_bytes is None:
+        return None
+    try:
+        out.write_bytes(pdf_bytes)
+    except Exception:
+        return None
+    return out
 
 
 _DOC_ALLOWED_TYPES = {
@@ -2095,6 +2175,35 @@ async def docs_download(did: str, staff=Depends(get_current_staff)):
                         headers={"Content-Disposition": f'attachment; filename="{quote(d.get("filename") or d["stored_name"])}"'})
 
 
+@router.get("/admin/documents/{did}/preview.pdf")
+async def docs_preview_pdf(did: str, staff=Depends(get_current_staff)):
+    """Serve the LibreOffice-rendered PDF of an Office/ODF document (inline).
+    Same ACL as download; 404 when conversion is unavailable."""
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    d = await db.documents.find_one({"_id": _oid(did)})
+    if not d or not d.get("stored_name"):
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not _doc_can_read(staff, d):
+        raise HTTPException(status_code=403, detail="Dokumen ini privat")
+    fp = DOCS_DIR / d["stored_name"]
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    kind = _doc_preview_kind((d.get("content_type") or "").split(";")[0].strip(), d.get("filename") or "")
+    if kind not in _OFFICE_EXT:
+        raise HTTPException(status_code=400, detail="Bukan dokumen Office")
+    loop = asyncio.get_event_loop()
+    pdf_path = await loop.run_in_executor(
+        None, _cached_preview_pdf, str(d["_id"]), fp, fp.stat().st_mtime, kind
+    )
+    if pdf_path is None:
+        raise HTTPException(status_code=404, detail="Preview PDF tidak tersedia (LibreOffice belum terpasang atau konversi gagal)")
+    base = (d.get("filename") or d["stored_name"]).rsplit(".", 1)[0]
+    return FileResponse(pdf_path, media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="{quote(base)}.pdf"',
+                                 "Cache-Control": "private, max-age=300"})
+
+
 _DOC_PREVIEW_KIND_BY_TYPE = {
     "application/pdf": "pdf",
     "image/png": "image", "image/jpeg": "image", "image/webp": "image", "image/gif": "image",
@@ -2395,6 +2504,25 @@ async def docs_preview(did: str, staff=Depends(get_current_staff)):
     fp = DOCS_DIR / d["stored_name"]
     if not fp.exists():
         raise HTTPException(status_code=404, detail="File missing on disk")
+
+    # --- Office/ODF: render to PDF with LibreOffice for true fidelity ---
+    # Google Drive / Nextcloud use the same approach: convert the Office file
+    # to PDF server-side, then display it. If LibreOffice is unavailable the
+    # HTML extractors below remain as a graceful fallback.
+    if kind in _OFFICE_EXT:
+        try:
+            loop = asyncio.get_event_loop()
+            pdf_path = await loop.run_in_executor(
+                None, _cached_preview_pdf, str(d["_id"]), fp, fp.stat().st_mtime, kind
+            )
+        except Exception:
+            pdf_path = None
+        if pdf_path is not None:
+            out["preview_pdf_url"] = f"/api/portal/admin/documents/{d['_id']}/preview.pdf"
+            out["render_mode"] = "libreoffice"
+            return out
+        out["render_mode"] = "html"
+
     raw = fp.read_bytes()
     try:
         if kind == "docx":
