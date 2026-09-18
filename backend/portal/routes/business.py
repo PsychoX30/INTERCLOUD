@@ -1679,51 +1679,112 @@ def _assert_doc_owner_or_admin(staff: dict, doc: dict) -> None:
         raise HTTPException(status_code=403, detail="Not the document owner")
 
 
-def _doc_can_read(staff: dict, doc: dict) -> bool:
-    """Unified read-visibility rule (replaces inline checks everywhere).
-
-    Admin sees everything. Non-admin sees a document when ANY of these hold:
-      - the caller is the owner
-      - the caller is explicitly in share_with.users
-      - the caller's division is in share_with.divisions
-      - the caller's role is in share_with.roles
-      - legacy shared flag is true
-      - legacy common doc (no owner) AND the caller is an internal role
-        (admin/finance/support/ticket_only)
-    Sales/creative are denied from unscoped legacy common docs.
-    """
-    if staff.get("role") == "admin":
-        return True
-    owner_id = doc.get("owner_id")
-    caller_id = staff.get("id")
-    if owner_id and caller_id and str(owner_id) == str(caller_id):
-        return True
-    sw = doc.get("share_with") or {}
-    staff_id = str(staff.get("id") or "")
-    if staff_id and staff_id in [str(u) for u in (sw.get("users") or [])]:
-        return True
-    division = (staff.get("division") or "").strip().lower()
-    if division and division in [str(d).strip().lower() for d in (sw.get("divisions") or [])]:
-        return True
-    role = (staff.get("role") or "").strip().lower()
-    if role and role in [str(r).strip().lower() for r in (sw.get("roles") or [])]:
-        return True
-    if doc.get("shared"):
-        return True
-    # legacy common doc (no owner): internal staff only
-    if owner_id is None or not str(owner_id):
-        return role in {"finance", "support", "ticket_only"}
+def _doc_can_read_legacy(staff: dict, doc: dict) -> bool:
+    """DEPRECATED — superseded by _effective_perms/_doc_can_read below.
+    Kept only for reference; not called."""
     return False
 
 
-def _doc_can_manage(staff: dict, doc: dict) -> bool:
-    """Write/delete/move guard — owner or admin only."""
-    if staff.get("role") == "admin":
-        return True
+
+# ============================================================
+# Permission resolver (new — ACL + inheritance)
+# ============================================================
+OVERRIDE_ROLES = {"admin", "owner", "support"}
+PERM_LEVELS = ("read", "download", "delete", "manage")
+
+
+def _staff_oid(staff: dict) -> str:
+    return str(staff.get("id") or staff.get("_id") or "")
+
+
+def _effective_perms(staff: dict, doc: dict, folder_chain: list[dict] | None = None) -> set[str]:
+    """Return effective permission set for a staff member against a document.
+
+    Resolution order:
+    1. admin/owner/support override  → all perms (support no delete unless configured)
+    2. document owner  → all perms
+    3. document ACL entries matching staff.id / division / role
+    4. folder ACL inheritance (if doc.inherit_folder_acl != False)
+    5. legacy share_with / shared flag  → {read, download}
+    6. legacy common doc (no owner) + internal role  → {read, download}
+    """
+    role = (staff.get("role") or "").strip().lower()
+    staff_id = _staff_oid(staff)
+
+    # 1. override roles
+    if role in OVERRIDE_ROLES:
+        if role == "support":
+            return {"read", "download", "manage"}
+        return set(PERM_LEVELS)
+
+    # 2. owner
     owner_id = doc.get("owner_id")
-    if owner_id is None or not str(owner_id):
-        return False  # shared/common doc: admin only
-    return str(owner_id) == str(staff.get("id"))
+    if owner_id and str(owner_id) == staff_id:
+        return set(PERM_LEVELS)
+
+    perms: set[str] = set()
+
+    # 3. document ACL
+    acl = doc.get("acl") or []
+    for entry in acl:
+        if entry.get("principal_type") == "user" and str(entry.get("principal_id")) == staff_id:
+            perms.update(entry.get("perms") or [])
+        if entry.get("principal_type") == "division" and (staff.get("division") or "").strip().lower() == str(entry.get("principal_id") or "").strip().lower():
+            perms.update(entry.get("perms") or [])
+        if entry.get("principal_type") == "role" and role == str(entry.get("principal_id") or "").strip().lower():
+            perms.update(entry.get("perms") or [])
+
+    # 4. folder inheritance
+    if doc.get("inherit_folder_acl", True) and folder_chain:
+        for folder in folder_chain:
+            facl = folder.get("acl") or []
+            for entry in facl:
+                if entry.get("principal_type") == "user" and str(entry.get("principal_id")) == staff_id:
+                    perms.update(entry.get("perms") or [])
+                if entry.get("principal_type") == "division" and (staff.get("division") or "").strip().lower() == str(entry.get("principal_id") or "").strip().lower():
+                    perms.update(entry.get("perms") or [])
+                if entry.get("principal_type") == "role" and role == str(entry.get("principal_id") or "").strip().lower():
+                    perms.update(entry.get("perms") or [])
+            if not folder.get("inherit_parent_acl", True):
+                break
+
+    # 5. legacy share_with / shared
+    if not perms:
+        sw = doc.get("share_with") or {}
+        if staff_id and staff_id in [str(u) for u in (sw.get("users") or [])]:
+            perms |= {"read", "download"}
+        division = (staff.get("division") or "").strip().lower()
+        if division and division in [str(d).strip().lower() for d in (sw.get("divisions") or [])]:
+            perms |= {"read", "download"}
+        if role and role in [str(r).strip().lower() for r in (sw.get("roles") or [])]:
+            perms |= {"read", "download"}
+        if doc.get("shared"):
+            perms |= {"read", "download"}
+
+    # 6. legacy common doc
+    if not perms and (owner_id is None or not str(owner_id)):
+        if role in {"finance", "support", "ticket_only"}:
+            perms |= {"read", "download"}
+
+    return perms
+
+
+def _doc_can_read(staff: dict, doc: dict) -> bool:
+    """Thin wrapper: read access if 'read' in effective perms."""
+    return "read" in _effective_perms(staff, doc)
+
+
+def _doc_can_manage(staff: dict, doc: dict) -> bool:
+    """Thin wrapper: manage access if 'manage' in effective perms."""
+    return "manage" in _effective_perms(staff, doc)
+
+
+def _doc_can_download(staff: dict, doc: dict) -> bool:
+    return "download" in _effective_perms(staff, doc)
+
+
+def _doc_can_delete(staff: dict, doc: dict) -> bool:
+    return "delete" in _effective_perms(staff, doc)
 
 
 @router.get("/admin/documents")

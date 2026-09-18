@@ -2,7 +2,8 @@
 from fastapi import APIRouter
 
 from . import (auth, client, orders, tickets, admin_core, users, catalog,
-               billing, finance, lifecycle, integrations, business, dcim,
+               billing, finance, lifecycle, integrations, business, business_overhaul,
+               staff_directory, dcim,
                provision, cms, documents, domains, ssl, noc, security, email_admin,
                transactions, sla, monitoring, graphs, network_map)
 from .shared import _ip_in_whitelist  # noqa: F401 (test compat)
@@ -20,6 +21,8 @@ router.include_router(finance.router)
 router.include_router(lifecycle.router)
 router.include_router(integrations.router)
 router.include_router(business.router)
+router.include_router(business_overhaul.router)
+router.include_router(staff_directory.router)
 router.include_router(dcim.router)
 router.include_router(provision.router)
 router.include_router(cms.router)
