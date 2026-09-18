@@ -1217,9 +1217,9 @@ const fileIcon = (contentType, filename) => {
   if (ct.startsWith("audio/")) return "audio";
   if (ct.startsWith("video/")) return "video";
   if (ct.includes("pdf") || ext === "pdf") return "pdf";
-  if (ct.includes("word") || ct.includes("document") || ext === "docx" || ext === "doc") return "word";
   if (ct.includes("excel") || ct.includes("sheet") || ext === "xlsx" || ext === "xls") return "excel";
   if (ct.includes("presentation") || ct.includes("powerpoint") || ext === "pptx" || ext === "ppt") return "ppt";
+  if (ct.includes("word") || ct.includes("document") || ext === "docx" || ext === "doc") return "word";
   return "file";
 };
 
