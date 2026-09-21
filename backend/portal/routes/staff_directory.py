@@ -62,3 +62,38 @@ async def staff_directory(
         
     total = await db.users.count_documents(query)
     return _pagination_response(items, total, skip_n, limit_n, True)
+
+
+@router.get("/staff-directory/users")
+async def staff_directory_users(
+    staff=Depends(get_current_staff),
+    q: Optional[str] = None,
+    role: Optional[str] = None,
+    division: Optional[str] = None,
+):
+    """Flat array for picker dropdown (excludes clients)."""
+    db = await _get_db()
+    query: dict = {"role": {"$in": list(STAFF_ROLES - {"client"})}}
+
+    if role:
+        r = role.strip().lower()
+        if r == "client":
+            raise HTTPException(status_code=400, detail="Clients are not selectable")
+        query["role"] = r
+
+    if division:
+        query["division"] = division.strip().lower()
+
+    if q:
+        regex = {"$regex": q.strip(), "$options": "i"}
+        query["$and"] = [{"$or": [{"name": regex}, {"email": regex}]}]
+
+    cursor = db.users.find(query).sort("name", 1).limit(200)
+    items = []
+    async for u in cursor:
+        items.append({
+            "id": str(u["_id"]),
+            "name": u.get("name", ""),
+            "email": u.get("email", ""),
+        })
+    return {"items": items}
