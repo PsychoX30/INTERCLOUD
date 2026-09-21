@@ -1253,14 +1253,18 @@ export const AdminDocuments = () => {
   const [docQ, setDocQ] = useState("");
   const [docSort, setDocSort] = useState("created_at");
   const [docOrder, setDocOrder] = useState("desc");
+  const [docCategory, setDocCategory] = useState("");
+  const [docFiletype, setDocFiletype] = useState("");
+  const [facets, setFacets] = useState({ categories: [], filetypes: [] });
 
   const params = useMemo(() => {
     const next = { paginate: true, skip: page * limit, limit, sort: docSort, order: docOrder };
-    // API contract: omit folder_id for all documents; root/null/empty means unfiled.
     if (folderId !== "root") next.folder_id = folderId;
     if (docQ.trim()) next.q = docQ.trim();
+    if (docCategory.trim()) next.category = docCategory.trim();
+    if (docFiletype.trim()) next.filetype = docFiletype.trim().toLowerCase();
     return next;
-  }, [page, limit, folderId, docQ, docSort, docOrder]);
+  }, [page, limit, folderId, docQ, docSort, docOrder, docCategory, docFiletype]);
 
   const loadDocs = useCallback(() => {
     api.get("/admin/documents", { params }).then((r) => {
@@ -1277,6 +1281,13 @@ export const AdminDocuments = () => {
 
   useEffect(() => { loadDocs(); }, [loadDocs]);
   useEffect(() => { loadFolders(); }, [loadFolders]);
+
+  useEffect(() => {
+    api.get("/admin/documents/facets").then((r) => {
+      const d = r.data || {};
+      setFacets({ categories: d.categories || [], filetypes: d.filetypes || [] });
+    }).catch(() => {});
+  }, []);
 
   const toggleExpand = (id) => {
     setExpanded((prev) => {
@@ -1432,17 +1443,59 @@ export const AdminDocuments = () => {
         {/* Main grid */}
         <div className="flex-1 min-w-0">
           {rows.length === 0 && <EmptyState title="No documents yet" body="Track your contracts, MSAs, and diagrams here." />}
-          <div className="flex gap-2 flex-wrap mb-3">
-            <input placeholder="Cari dokumen…" value={docQ} onChange={(e) => { setDocQ(e.target.value); setPage(0); }} className={`${inputClass} max-w-xs`} data-testid="doc-search" />
-            <select value={docSort} onChange={(e) => { setDocSort(e.target.value); setPage(0); }} className={`${inputClass} w-40`} data-testid="doc-sort">
-              <option value="created_at">Terbaru</option>
-              <option value="title">Judul</option>
-              <option value="category">Kategori</option>
+          <div className="flex gap-2 flex-wrap items-center mb-3">
+            <input
+              placeholder="Cari dokumen…"
+              value={docQ}
+              onChange={(e) => { setDocQ(e.target.value); setPage(0); }}
+              className={`${inputClass} max-w-xs flex-1 min-w-[160px]`}
+              data-testid="doc-search"
+            />
+            <select
+              value={docFiletype}
+              onChange={(e) => { setDocFiletype(e.target.value); setPage(0); }}
+              className={`${inputClass} w-32`}
+              data-testid="doc-filetype"
+            >
+              <option value="">Semua jenis</option>
+              {facets.filetypes.map((ft) => (
+                <option key={ft} value={ft}>{ft}</option>
+              ))}
             </select>
-            <select value={docOrder} onChange={(e) => { setDocOrder(e.target.value); setPage(0); }} className={`${inputClass} w-28`} data-testid="doc-order">
-              <option value="desc">↓</option>
-              <option value="asc">↑</option>
+            <select
+              value={docCategory}
+              onChange={(e) => { setDocCategory(e.target.value); setPage(0); }}
+              className={`${inputClass} w-36`}
+              data-testid="doc-category"
+            >
+              <option value="">Semua kategori</option>
+              {facets.categories.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
             </select>
+            <select
+              value={`${docSort}:${docOrder}`}
+              onChange={(e) => {
+                const [s, o] = e.target.value.split(":");
+                setDocSort(s); setDocOrder(o); setPage(0);
+              }}
+              className={`${inputClass} w-36`}
+              data-testid="doc-sort"
+            >
+              <option value="created_at:desc">Terbaru</option>
+              <option value="created_at:asc">Terlama</option>
+              <option value="title:asc">Judul A–Z</option>
+              <option value="title:desc">Judul Z–A</option>
+            </select>
+            {(docCategory || docFiletype || docQ.trim()) && (
+              <button
+                onClick={() => { setDocCategory(""); setDocFiletype(""); setDocQ(""); setPage(0); }}
+                className="text-xs text-slate-500 hover:text-red-600 underline"
+                data-testid="doc-filter-clear"
+              >
+                Reset
+              </button>
+            )}
           </div>
           {rows.length > 0 && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">

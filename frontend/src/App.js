@@ -94,6 +94,9 @@ const AdminContent       = lazy(() => import("./pages/portal/admin/AdminBusiness
 const AdminFollowups     = lazy(() => import("./pages/portal/admin/AdminBusiness").then(m => ({ default: m.AdminFollowups })));
 const AdminDocuments     = lazy(() => import("./pages/portal/admin/AdminBusiness").then(m => ({ default: m.AdminDocuments })));
 
+// Public shared folder (no auth required)
+const SharedFolderPage   = lazy(() => import("./pages/SharedFolderPage"));
+
 // ---- Route-loading fallback --------------------------------------
 const RouteFallback = () => (
   <div className="min-h-screen flex items-center justify-center bg-white" data-testid="route-fallback">
@@ -123,6 +126,9 @@ function App() {
                 <Route path="/status" element={<PublicStatusPage />} />
                 <Route path="/form/:slug" element={<PublicForm />} />
                 <Route path="/pay/:token" element={<PublicPayInvoice />} />
+
+                {/* Public shared folder (no auth) */}
+                <Route path="/documents/shared/:token" element={<SharedFolderPage />} />
 
                 {/* Portal */}
                 <Route path="/portal/login" element={<PortalLogin />} />

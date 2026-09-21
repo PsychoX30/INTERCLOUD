@@ -35,6 +35,11 @@ api.interceptors.response.use(
       }
     }
     if (err?.response?.status === 401) {
+      // Public endpoints (shared folder access, password required) return 401
+      // intentionally — don't redirect those to the portal login.
+      if (err?.config?.headers?.["X-Skip-401-Redirect"] === "true") {
+        return Promise.reject(err);
+      }
       localStorage.removeItem(TOKEN_KEY);
       if (!window.location.pathname.startsWith("/portal/login")) {
         window.location.href = "/portal/login?expired=1";

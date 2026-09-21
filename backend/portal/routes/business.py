@@ -1806,6 +1806,8 @@ async def docs_list(staff=Depends(get_current_staff),
                     skip: int = 0, limit: int = 50, sort: str = "created_at",
                     order: str = "desc", q: Optional[str] = None,
                     folder_id: Optional[str] = None,
+                    category: Optional[str] = None,
+                    filetype: Optional[str] = None,
                     paginate: Optional[bool] = None):
     """Server-side pagination + q-search for documents. Default stays bare array.
 
@@ -1842,6 +1844,50 @@ async def docs_list(staff=Depends(get_current_staff),
             {field: {"$regex": re.escape(q.strip()), "$options": "i"}}
             for field in ("title", "category", "customer_name", "notes", "filename")
         ]})
+    if category:
+        # Exact category filter (case-insensitive, trimmed).
+        conds.append({"category": {"$regex": f"^{re.escape(category.strip())}$", "$options": "i"}})
+    if filetype:
+        # Filetype filter matches against content_type / filename extension.
+        # Values: pdf, docx, xlsx, pptx, zip, image, audio, video, other
+        _ft = (filetype or "").strip().lower()
+        if _ft == "pdf":
+            conds.append({"$or": [
+                {"content_type": {"$regex": "pdf", "$options": "i"}},
+                {"filename": {"$regex": r"\.pdf$", "$options": "i"}},
+            ]})
+        elif _ft in ("docx", "doc"):
+            conds.append({"$or": [
+                {"content_type": {"$regex": "wordprocessingml|msword", "$options": "i"}},
+                {"filename": {"$regex": r"\.docx?$", "$options": "i"}},
+            ]})
+        elif _ft in ("xlsx", "xls", "csv"):
+            conds.append({"$or": [
+                {"content_type": {"$regex": "spreadsheetml|ms-excel|csv", "$options": "i"}},
+                {"filename": {"$regex": r"\.(xlsx?|csv)$", "$options": "i"}},
+            ]})
+        elif _ft in ("pptx", "ppt"):
+            conds.append({"$or": [
+                {"content_type": {"$regex": "presentationml|ms-powerpoint", "$options": "i"}},
+                {"filename": {"$regex": r"\.pptx?$", "$options": "i"}},
+            ]})
+        elif _ft == "zip":
+            conds.append({"$or": [
+                {"content_type": {"$regex": "zip|compressed", "$options": "i"}},
+                {"filename": {"$regex": r"\.zip$", "$options": "i"}},
+            ]})
+        elif _ft == "image":
+            conds.append({"content_type": {"$regex": "^image/", "$options": "i"}})
+        elif _ft == "audio":
+            conds.append({"content_type": {"$regex": "^audio/", "$options": "i"}})
+        elif _ft == "video":
+            conds.append({"content_type": {"$regex": "^video/", "$options": "i"}})
+        elif _ft == "other":
+            conds.append({"$or": [
+                {"content_type": {"$exists": False}},
+                {"content_type": None},
+                {"content_type": {"$not": {"$regex": "pdf|msword|wordprocessingml|ms-excel|spreadsheetml|csv|ms-powerpoint|presentationml|^image/|^audio/|^video/|zip|compressed", "$options": "i"}}},
+            ]})
     if conds:
         query["$and"] = conds
     sort_field = sort if sort in {
@@ -1863,6 +1909,62 @@ async def docs_list(staff=Depends(get_current_staff),
         s["can_manage"] = _doc_can_manage(staff, d)
         items.append(s)
     return _pagination_response(items, total, skip_n, limit_n, True) if bool(paginate) else items
+
+
+@router.get("/admin/documents/facets")
+async def docs_facets(staff=Depends(get_current_staff)):
+    """Return distinct categories and filetypes for filter dropdowns."""
+    _require_internal_document_access(staff)
+    db = await _get_db()
+    # Only consider documents visible to this staff (reuse same visibility logic)
+    query = {}
+    if staff.get("role") != "admin":
+        role = (staff.get("role") or "").strip().lower()
+        query["$or"] = [
+            {"shared": True},
+            {"owner_id": staff.get("id")},
+            {"share_with.users": staff.get("id")},
+            {"share_with.divisions": (staff.get("division") or "").strip().lower()},
+            {"share_with.roles": role},
+        ]
+        if role in {"finance", "support", "ticket_only"}:
+            query["$or"].append({"owner_id": None})
+            query["$or"].append({"owner_id": {"$exists": False}})
+
+    # Distinct categories (non-empty, trimmed)
+    cat_cursor = db.documents.find(query, {"category": 1}).to_list(10000)
+    categories = sorted({
+        (c.get("category") or "").strip()
+        for c in cat_cursor
+        if c.get("category") and c["category"].strip()
+    })
+
+    # Distinct filetypes (derive from content_type / filename)
+    type_cursor = db.documents.find(query, {"content_type": 1, "filename": 1}).to_list(10000)
+    filetypes = set()
+    for c in type_cursor:
+        ct = (c.get("content_type") or "").lower()
+        fn = (c.get("filename") or "").lower()
+        if "pdf" in ct or fn.endswith(".pdf"):
+            filetypes.add("PDF")
+        elif "wordprocessingml" in ct or "msword" in ct or fn.endswith(".docx") or fn.endswith(".doc"):
+            filetypes.add("DOCX")
+        elif "spreadsheetml" in ct or "ms-excel" in ct or "csv" in ct or fn.endswith(".xlsx") or fn.endswith(".xls") or fn.endswith(".csv"):
+            filetypes.add("XLSX")
+        elif "presentationml" in ct or "ms-powerpoint" in ct or fn.endswith(".pptx") or fn.endswith(".ppt"):
+            filetypes.add("PPTX")
+        elif "zip" in ct or "compressed" in ct or fn.endswith(".zip"):
+            filetypes.add("ZIP")
+        elif ct.startswith("image/"):
+            filetypes.add("IMAGE")
+        elif ct.startswith("audio/"):
+            filetypes.add("AUDIO")
+        elif ct.startswith("video/"):
+            filetypes.add("VIDEO")
+        elif ct:
+            filetypes.add("LAINNYA")
+
+    return {"categories": categories, "filetypes": sorted(filetypes)}
 
 
 @router.post("/admin/documents")

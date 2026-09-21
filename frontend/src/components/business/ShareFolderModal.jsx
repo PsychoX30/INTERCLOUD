@@ -160,12 +160,21 @@ const ShareFolderModal = ({ folder, onClose, onSaved }) => {
 
           {newToken && (
             <div className="mt-3 rounded-lg bg-emerald-50 border border-emerald-200 p-3" data-testid="folder-link-token">
-              <div className="text-xs font-bold text-emerald-700 mb-1">Token (tampil sekali — simpan sekarang):</div>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 text-xs break-all bg-white rounded px-2 py-1 border border-emerald-200">{newToken}</code>
-                <button className="text-emerald-700 hover:text-emerald-900" onClick={copyToken} title="Copy">
-                  {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                </button>
+              <div className="text-xs font-bold text-emerald-700 mb-1">Link sharing (tampil sekali — simpan sekarang):</div>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-xs break-all bg-white rounded px-2 py-1 border border-emerald-200">
+                    https://intercloud-digital.com/documents/shared/{newToken}
+                  </code>
+                  <button className="text-emerald-700 hover:text-emerald-900" onClick={() => {
+                    navigator.clipboard?.writeText(`https://intercloud-digital.com/documents/shared/${newToken}`).then(() => {
+                      setCopied(true); setTimeout(() => setCopied(false), 1500);
+                    });
+                  }} title="Copy full link">
+                    {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                  </button>
+                </div>
+                <div className="text-[10px] text-emerald-600">Token: <code className="bg-white px-1 rounded">{newToken}</code></div>
               </div>
             </div>
           )}
