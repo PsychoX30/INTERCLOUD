@@ -1787,6 +1787,19 @@ def _doc_can_delete(staff: dict, doc: dict) -> bool:
     return "delete" in _effective_perms(staff, doc)
 
 
+def _validate_acl_no_clients(acl: list, client_ids: set) -> None:
+    """Reject any ACL entry granting a client account (server-side leak guard).
+
+    Local copy — business_overhaul.py imports from this module, so importing
+    back would be circular.
+    """
+    for entry in acl or []:
+        if entry.get("principal_type") == "user" and str(entry.get("principal_id")) in client_ids:
+            raise HTTPException(status_code=400, detail="Cannot grant document access to a client account")
+        if entry.get("principal_type") == "role" and str(entry.get("principal_id") or "").strip().lower() == "client":
+            raise HTTPException(status_code=400, detail="Cannot grant document access to the client role")
+
+
 @router.get("/admin/documents")
 async def docs_list(staff=Depends(get_current_staff),
                     skip: int = 0, limit: int = 50, sort: str = "created_at",
@@ -2165,6 +2178,17 @@ async def docs_update(did: str, payload: dict, staff=Depends(get_current_staff))
             "divisions": [str(x).strip().lower() for x in (sw.get("divisions") or []) if x],
             "roles": [str(x).strip().lower() for x in (sw.get("roles") or []) if x],
         }
+    if "acl" in payload:
+        acl = payload.get("acl") or []
+        # validate client exclusion
+        client_ids = set()
+        user_ids = [str(e.get("principal_id")) for e in acl if e.get("principal_type") == "user"]
+        if user_ids:
+            oids = [_oid(u) for u in user_ids if _oid(u)]
+            async for u in db.users.find({"_id": {"$in": oids}, "role": "client"}):
+                client_ids.add(str(u["_id"]))
+        _validate_acl_no_clients(acl, client_ids)
+        upd["acl"] = acl
     if "folder_id" in payload:
         fid = payload.get("folder_id")
         if fid in (None, "", "root"):

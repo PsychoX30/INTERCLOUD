@@ -6,6 +6,7 @@ import { Plus, Edit, Trash2, CheckCircle2, Circle, FileText, ExternalLink, Flame
 import { useAuth } from "../../../portal/AuthContext";
 import TablePager from "./TablePager";
 import ShareModalComp from "../../../components/business/ShareModal";
+import ShareFolderModalComp from "../../../components/business/ShareFolderModal";
 import PreviewModalComp from "../../../components/business/PreviewModal";
 
 /* ============ Small generic modal ============ */
@@ -1219,9 +1220,11 @@ const fileIcon = (contentType, filename) => {
   if (ct.startsWith("audio/")) return "audio";
   if (ct.startsWith("video/")) return "video";
   if (ct.includes("pdf") || ext === "pdf") return "pdf";
-  if (ct.includes("excel") || ct.includes("sheet") || ext === "xlsx" || ext === "xls") return "excel";
+  // OOXML MIME types all contain the word "document" — check specific types first.
+  if (ct.includes("excel") || ct.includes("sheet") || ext === "xlsx" || ext === "xls" || ext === "csv") return "excel";
   if (ct.includes("presentation") || ct.includes("powerpoint") || ext === "pptx" || ext === "ppt") return "ppt";
-  if (ct.includes("word") || ct.includes("document") || ext === "docx" || ext === "doc") return "word";
+  if (ct.includes("word") || ct.includes("wordprocessingml") || ext === "docx" || ext === "doc") return "word";
+  if (ct.includes("zip") || ext === "zip") return "zip";
   return "file";
 };
 
@@ -1242,17 +1245,22 @@ export const AdminDocuments = () => {
   const [folders, setFolders] = useState([]);
   const [expanded, setExpanded] = useState(new Set());
   const [shareDoc, setShareDoc] = useState(null);
+  const [shareFolder, setShareFolder] = useState(null);
   const [previewDoc, setPreviewDoc] = useState(null);
   const [folderMenu, setFolderMenu] = useState(null); // {x,y,folder}
   const [renameFolder, setRenameFolder] = useState(null);
   const [newFolderParent, setNewFolderParent] = useState(null);
+  const [docQ, setDocQ] = useState("");
+  const [docSort, setDocSort] = useState("created_at");
+  const [docOrder, setDocOrder] = useState("desc");
 
   const params = useMemo(() => {
-    const next = { paginate: true, skip: page * limit, limit };
+    const next = { paginate: true, skip: page * limit, limit, sort: docSort, order: docOrder };
     // API contract: omit folder_id for all documents; root/null/empty means unfiled.
     if (folderId !== "root") next.folder_id = folderId;
+    if (docQ.trim()) next.q = docQ.trim();
     return next;
-  }, [page, limit, folderId]);
+  }, [page, limit, folderId, docQ, docSort, docOrder]);
 
   const loadDocs = useCallback(() => {
     api.get("/admin/documents", { params }).then((r) => {
@@ -1262,7 +1270,9 @@ export const AdminDocuments = () => {
   }, [params]);
 
   const loadFolders = useCallback(() => {
-    api.get("/admin/document-folders").then((r) => setFolders(r.data || []));
+    // v2 tree carries perms/kind (personal root auto-provisioned server-side).
+    api.get("/admin/document-folders-v2").then((r) => setFolders(r.data || []))
+      .catch(() => api.get("/admin/document-folders").then((r) => setFolders(r.data || [])));
   }, []);
 
   useEffect(() => { loadDocs(); }, [loadDocs]);
@@ -1279,7 +1289,7 @@ export const AdminDocuments = () => {
   const createFolder = async (parentId, name) => {
     if (!name.trim()) return;
     try {
-      await api.post("/admin/document-folders", { name: name.trim(), parent_id: parentId });
+      await api.post("/admin/document-folders-v2", { name: name.trim(), parent_id: parentId });
       loadFolders();
     } catch (e) {
       alert(e?.response?.data?.detail || "Gagal membuat folder");
@@ -1328,19 +1338,22 @@ export const AdminDocuments = () => {
 
   const canDelete = (d) => user?.role === "admin" || (d.owner_id && d.owner_id === user?.id);
   const canManage = (d) => d.can_manage;
+  const canCreateSubfolder = (f) =>
+    user?.role === "admin" || (f.perms || []).includes("manage") || f.owner_id === user?.id;
 
   const renderFolderNode = (f, depth = 0) => {
     const isOpen = expanded.has(f.id);
     const hasChildren = (f.children || []).length > 0;
     const isActive = folderId === f.id;
     const pad = depth * 14;
+    const isPersonal = f.kind === "personal";
     return (
       <div key={f.id}>
         <div
           className={`group flex items-center gap-1 pr-2 py-1.5 rounded cursor-pointer text-sm ${isActive ? "bg-[#0a2350]/10 text-[#0a2350] font-bold" : "text-slate-700 hover:bg-slate-100"}`}
           style={{ paddingLeft: `${pad + 8}px` }}
           onClick={() => setFolderId(f.id)}
-          onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, folder: f }); }}
+          onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientX, folder: f }); }}
         >
           {hasChildren ? (
             <button
@@ -1350,15 +1363,25 @@ export const AdminDocuments = () => {
               <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-90" : ""}`} />
             </button>
           ) : <span className="w-5" />}
-          {isActive ? <FolderOpen className="h-4 w-4 text-[#f5b120]" /> : <Folder className="h-4 w-4 text-slate-400" />}
+          {isActive ? <FolderOpen className="h-4 w-4 text-[#f5b120]" /> : <Folder className={`h-4 w-4 ${isPersonal ? "text-sky-500" : "text-slate-400"}`} />}
           <span className="truncate flex-1" title={f.path}>{f.name}</span>
-          {user?.role === "admin" && (
+          {isPersonal && <span className="text-[9px] font-bold uppercase text-sky-500 tracking-wider">personal</span>}
+          {canCreateSubfolder(f) && (
             <button
               className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-200 rounded"
               onClick={(e) => { e.stopPropagation(); setNewFolderParent(f.id); }}
               title="New subfolder"
             >
               <Plus className="h-3 w-3" />
+            </button>
+          )}
+          {(f.perms || []).includes("manage") && (
+            <button
+              className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-200 rounded"
+              onClick={(e) => { e.stopPropagation(); setShareFolder(f); }}
+              title="Share folder / hak akses"
+            >
+              <Share2 className="h-3 w-3" />
             </button>
           )}
         </div>
@@ -1409,6 +1432,18 @@ export const AdminDocuments = () => {
         {/* Main grid */}
         <div className="flex-1 min-w-0">
           {rows.length === 0 && <EmptyState title="No documents yet" body="Track your contracts, MSAs, and diagrams here." />}
+          <div className="flex gap-2 flex-wrap mb-3">
+            <input placeholder="Cari dokumen…" value={docQ} onChange={(e) => { setDocQ(e.target.value); setPage(0); }} className={`${inputClass} max-w-xs`} data-testid="doc-search" />
+            <select value={docSort} onChange={(e) => { setDocSort(e.target.value); setPage(0); }} className={`${inputClass} w-40`} data-testid="doc-sort">
+              <option value="created_at">Terbaru</option>
+              <option value="title">Judul</option>
+              <option value="category">Kategori</option>
+            </select>
+            <select value={docOrder} onChange={(e) => { setDocOrder(e.target.value); setPage(0); }} className={`${inputClass} w-28`} data-testid="doc-order">
+              <option value="desc">↓</option>
+              <option value="asc">↑</option>
+            </select>
+          </div>
           {rows.length > 0 && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {rows.map((d) => (
@@ -1482,6 +1517,7 @@ export const AdminDocuments = () => {
 
       {modal && <DocForm onClose={() => setModal(false)} onDone={() => { setModal(false); loadDocs(); }} folders={folders} />}
       {shareDoc && <ShareModalComp doc={shareDoc} onClose={() => setShareDoc(null)} onSaved={() => { setShareDoc(null); loadDocs(); }} />}
+      {shareFolder && <ShareFolderModalComp folder={shareFolder} onClose={() => setShareFolder(null)} onSaved={() => { setShareFolder(null); loadFolders(); }} />}
       {previewDoc && <PreviewModalComp doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
       {newFolderParent !== null && (
         <FolderNameModal
