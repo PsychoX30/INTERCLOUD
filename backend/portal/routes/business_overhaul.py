@@ -11,6 +11,7 @@ Mounted under the same portal router. Reuses helpers from business.py so the
 permission model stays single-sourced.
 """
 import hashlib
+import jwt
 import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Optional
