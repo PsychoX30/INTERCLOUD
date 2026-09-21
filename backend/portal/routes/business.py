@@ -1648,6 +1648,7 @@ def _serialize_doc(d):
             "divisions": list(sw.get("divisions") or []),
             "roles": list(sw.get("roles") or []),
         },
+        "acl": d.get("acl") or [],
         "can_manage": False,  # filled by caller when staff known
     }
 
