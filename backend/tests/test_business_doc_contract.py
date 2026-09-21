@@ -53,8 +53,9 @@ class BusinessDocumentContractTest(unittest.TestCase):
 
     def test_document_ui_uses_authenticated_blob_download(self):
         """Opening/downloading a protected file must use the Axios auth interceptor, not a raw URL."""
-        frontend = ROOT.parent / "frontend" / "src" / "pages" / "portal" / "admin" / "AdminBusiness.jsx"
-        source = frontend.read_text()
+        # After refactor, PreviewModal is in its own component file.
+        preview_modal = ROOT.parent / "frontend" / "src" / "components" / "business" / "PreviewModal.jsx"
+        source = preview_modal.read_text()
         # api has baseURL /api/portal, so use a relative API path assembled
         # from trusted API fields rather than stored absolute/prefixed URLs.
         # The viewer modal fetches preview JSON and downloads via the dedicated
@@ -64,11 +65,14 @@ class BusinessDocumentContractTest(unittest.TestCase):
         self.assertIn("`/admin/documents/${doc.id}/download`", source)
         self.assertIn('api.get(`/admin/documents/${doc.id}/download`, { responseType: "blob" })', source)
         self.assertIn("URL.createObjectURL", source)
+        # Preview/download buttons in AdminBusiness.jsx remain as-is
+        admin_biz = ROOT.parent / "frontend" / "src" / "pages" / "portal" / "admin" / "AdminBusiness.jsx"
+        admin_source = admin_biz.read_text()
         # Arbitrary external document URLs must never receive the portal bearer
         # token through Axios; those remain ordinary browser navigation.
-        self.assertIn('href={d.url} target="_blank"', source)
+        self.assertIn('href={d.url} target="_blank"', admin_source)
         # Preview/download buttons only for file-backed documents
-        self.assertIn("d.has_file && d.id ? (", source)
+        self.assertIn("d.has_file && d.id ? (", admin_source)
 
     def test_documents_nav_includes_sales(self):
         """Sales can see the Documents nav because per-document sharing is now supported."""
