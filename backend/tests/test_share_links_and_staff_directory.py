@@ -315,3 +315,91 @@ def test_public_endpoints_have_rate_limit_decorators():
         fn = getattr(bo, name)
         src = inspect.getsource(fn)
         assert "@limiter.limit" in src
+
+
+# --------------------------------------------------------------------------
+# shared_file_download endpoint (NEW - Dudung FAIL item #1/#2 guard)
+# --------------------------------------------------------------------------
+class TestSharedFileDownload:
+    def _setup(self, password_hash=None, perms=None):
+        """Create mock folder, link, and document."""
+        folder = _folder(_id=ObjectId())
+        link, _ = self._make_link("tok", "Secret123", perms=perms, folder_id=folder["_id"])
+        doc = {
+            "_id": ObjectId(), "title": "Test.pdf", "folder_id": str(folder["_id"]),
+            "share_with": {"users": []}, "owner_id": "owner",
+            "stored_name": "test.pdf", "filename": "Test.pdf",
+            "content_type": "application/pdf", "size_bytes": 100
+        }
+        db = _Db(folders=[folder], links=[link], docs=[doc])
+        return db, folder, link, doc
+
+    def _make_link(self, token="tok", password="Secret123", perms=None, folder_id=None):
+        th = hashlib.sha256(token.encode()).hexdigest()
+        return {"_id": ObjectId(), "folder_id": str(folder_id) if folder_id else "fid",
+                "token_hash": th,
+                "password_hash": hash_password(password), "perms": perms or ["read"],
+                "expires_at": None, "revoked": False}, th
+
+    @pytest.mark.asyncio
+    async def test_download_without_unlock_returns_401_for_password_link(self):
+        """Password-protected link requires unlock JWT -> 401."""
+        db, folder, link, doc = self._setup(password_hash=hash_password("Secret123"), perms=["read", "download"])
+        with patch.object(bo, "_get_db", new=AsyncMock(return_value=db)):
+            with pytest.raises(HTTPException) as e:
+                await bo.shared_file_download(_Req(), "tok", str(doc["_id"]))
+        assert e.value.status_code == 401
+        assert "Password required" in str(e.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_download_with_invalid_unlock_jwt_returns_401(self):
+        """Garbage unlock JWT -> 401."""
+        db, folder, link, doc = self._setup(perms=["read", "download"])
+        with patch.object(bo, "_get_db", new=AsyncMock(return_value=db)):
+            with pytest.raises(HTTPException) as e:
+                await bo.shared_file_download(_Req(headers={"Authorization": "Bearer garbage"}), "tok", str(doc["_id"]))
+        assert e.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_download_with_valid_unlock_jwt_returns_fileresponse(self):
+        """Valid unlock JWT + download perm -> FileResponse."""
+        db, folder, link, doc = self._setup(perms=["read", "download"])
+        jwt = create_share_token(hashlib.sha256(b"tok").hexdigest())
+        with patch.object(bo, "_get_db", new=AsyncMock(return_value=db)), \
+             patch("pathlib.Path.exists", return_value=True):
+            resp = await bo.shared_file_download(_Req(headers={"Authorization": "Bearer " + jwt}), "tok", str(doc["_id"]))
+        assert resp is not None
+        from starlette.responses import FileResponse
+        assert isinstance(resp, FileResponse)
+
+    @pytest.mark.asyncio
+    async def test_download_without_download_perm_returns_403(self):
+        """Link without 'download' permission -> 403 even with valid JWT."""
+        db, folder, link, doc = self._setup(perms=["read"])  # no download
+        jwt = create_share_token(hashlib.sha256(b"tok").hexdigest())
+        with patch.object(bo, "_get_db", new=AsyncMock(return_value=db)):
+            with pytest.raises(HTTPException) as e:
+                await bo.shared_file_download(_Req(headers={"Authorization": "Bearer " + jwt}), "tok", str(doc["_id"]))
+        assert e.value.status_code == 403
+        assert "does not allow download" in str(e.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_download_without_password_link_works_without_jwt(self):
+        """Link without password should work without JWT."""
+        # No password_hash means no unlock required
+        folder = _folder(_id=ObjectId())
+        th = hashlib.sha256(b"tok").hexdigest()
+        link = {"_id": ObjectId(), "folder_id": str(folder["_id"]),
+                "token_hash": th, "password_hash": None,  # NO PASSWORD
+                "perms": ["read", "download"], "expires_at": None, "revoked": False}
+        doc = {"_id": ObjectId(), "title": "Open.pdf", "folder_id": str(folder["_id"]),
+               "share_with": {"users": []}, "owner_id": "owner",
+               "stored_name": "open.pdf", "filename": "Open.pdf",
+               "content_type": "application/pdf", "size_bytes": 50}
+        db = _Db(folders=[folder], links=[link], docs=[doc])
+        with patch.object(bo, "_get_db", new=AsyncMock(return_value=db)), \
+             patch("pathlib.Path.exists", return_value=True):
+            resp = await bo.shared_file_download(_Req(), "tok", str(doc["_id"]))
+        assert resp is not None
+        from starlette.responses import FileResponse
+        assert isinstance(resp, FileResponse)
