@@ -55,16 +55,29 @@ const SharedFolderPage = ({ match }) => {
     fetchFolder();
   }, [token, unlockToken]);
 
-  const downloadFile = (did, filename) => {
-    const headers = unlockToken ? { Authorization: `Bearer ${unlockToken}` } : {};
-    const url = `${api.defaults.baseURL}/documents/shared/${token}/file/${did}`;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.target = "_blank";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const downloadFile = async (did, filename, mode = "download") => {
+    try {
+      const r = await api.get(`/documents/shared/${token}/file/${did}`, {
+        responseType: "blob",
+        headers: unlockToken
+          ? { Authorization: `Bearer ${unlockToken}`, "X-Skip-401-Redirect": "true" }
+          : { "X-Skip-401-Redirect": "true" },
+      });
+      const blobUrl = URL.createObjectURL(new Blob([r.data], { type: r.headers["content-type"] || "application/octet-stream" }));
+      if (mode === "open") {
+        window.open(blobUrl, "_blank");
+      } else {
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename || "file";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    } catch (e) {
+      setError(e.response?.data?.detail || "Gagal mengambil file");
+    }
   };
 
   if (loading) {
@@ -206,15 +219,13 @@ const SharedFolderPage = ({ match }) => {
                           Download
                         </button>
                       )}
-                      <a
-                        href={`${api.defaults.baseURL}/documents/shared/${token}/file/${d.id}`}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        onClick={() => downloadFile(d.id, d.filename || d.stored_name || "file", "open")}
                         className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50"
                       >
                         <ExternalLink className="h-3.5 w-3.5" />
                         Buka
-                      </a>
+                      </button>
                     </div>
                   </article>
                 ))}
