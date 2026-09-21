@@ -28,28 +28,28 @@ async def staff_directory(
     """Return internal staff excluding clients. Supports search, filter, sort, pagination."""
     db = await _get_db()
     query: dict = {"role": {"$in": list(STAFF_ROLES - {"client"})}}
-    
+
     if role:
         r = role.strip().lower()
         if r == "client":
             raise HTTPException(status_code=400, detail="Clients are not selectable")
         query["role"] = r
-        
+
     if division:
         query["division"] = division.strip().lower()
-        
+
     if q:
         regex = {"$regex": q.strip(), "$options": "i"}
         query["$and"] = [{"$or": [{"name": regex}, {"email": regex}]}]
-        
+
     sort_field = sort if sort in {"name", "email", "role", "division", "created_at"} else "name"
     direction = 1 if order.lower() == "asc" else -1
-    
+
     skip_n, limit_n = _pagination_params(skip, limit)
     cursor = db.users.find(query).sort(sort_field, direction).skip(skip_n)
     if limit_n is not None:
         cursor = cursor.limit(limit_n)
-        
+
     items = []
     async for u in cursor:
         items.append({
@@ -59,12 +59,12 @@ async def staff_directory(
             "role": u.get("role", ""),
             "division": u.get("division", ""),
         })
-        
+
     total = await db.users.count_documents(query)
     return _pagination_response(items, total, skip_n, limit_n, True)
 
 
-@router.get("/staff-directory/users")
+@router.get("/admin/staff-directory/users")
 async def staff_directory_users(
     staff=Depends(get_current_staff),
     q: Optional[str] = None,

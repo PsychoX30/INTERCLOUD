@@ -26,7 +26,7 @@ const ShareModal = ({ doc, onClose, onSaved }) => {
     setSelDivisions(doc.share_with?.divisions || []);
     setSelRoles(doc.share_with?.roles || []);
     // Staff-only directory (excludes client accounts). Falls back to legacy.
-    api.get("/staff-directory/users").then((r) => {
+    api.get("/admin/staff-directory/users").then((r) => {
       const items = r.data?.items || (Array.isArray(r.data) ? r.data : []);
       setUsers(items.map((u) => ({
         id: String(u.id), name: u.name || u.email || "(tanpa nama)",

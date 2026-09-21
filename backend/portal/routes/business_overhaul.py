@@ -20,7 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from ..auth import (
-    get_current_staff, hash_password, verify_password, create_access_token, STAFF_ROLES,
+    get_current_staff, hash_password, verify_password, STAFF_ROLES,
+    create_share_token, decode_share_token,
 )
 from ..security import limiter
 from .shared import _get_db, _now, _oid, _pagination_params, _pagination_response
@@ -88,56 +89,6 @@ def _validate_acl_no_clients(acl: list, staff_ids_client: set[str]) -> None:
             raise HTTPException(status_code=400, detail="Cannot grant document access to a client account")
         if entry.get("principal_type") == "role" and str(entry.get("principal_id") or "").strip().lower() == "client":
             raise HTTPException(status_code=400, detail="Cannot grant document access to the client role")
-
-
-# ============================================================
-# Staff directory (excludes clients, searchable, paginated)
-# ============================================================
-@router.get("/admin/staff-directory")
-async def staff_directory(
-    staff=Depends(get_current_staff),
-    q: Optional[str] = None,
-    role: Optional[str] = None,
-    division: Optional[str] = None,
-    sort: str = "name",
-    order: str = "asc",
-    skip: int = 0,
-    limit: int = 50,
-):
-    """Staff members excluding clients. Supports search, filter, sort, pagination.
-
-    Does NOT reuse /admin/users because that endpoint is sales-scoped (a sales
-    user would get only their assigned clients → empty picker).
-    """
-    db = await _get_db()
-    query: dict = {"role": {"$in": list(STAFF_ROLES - {"client"})}}
-    if role:
-        r = role.strip().lower()
-        if r == "client":
-            raise HTTPException(status_code=400, detail="Clients are not selectable")
-        query["role"] = r
-    if division:
-        query["division"] = division.strip().lower()
-    if q:
-        regex = {"$regex": q.strip(), "$options": "i"}
-        query["$and"] = [{"$or": [{"name": regex}, {"email": regex}]}]
-    sort_field = sort if sort in {"name", "email", "role", "division", "created_at"} else "name"
-    direction = 1 if order.lower() == "asc" else -1
-    skip_n, limit_n = _pagination_params(skip, limit)
-    cursor = db.users.find(query).sort(sort_field, direction).skip(skip_n)
-    if limit_n is not None:
-        cursor = cursor.limit(limit_n)
-    items = []
-    async for u in cursor:
-        items.append({
-            "id": str(u["_id"]),
-            "name": u.get("name", ""),
-            "email": u.get("email", ""),
-            "role": u.get("role", ""),
-            "division": u.get("division", ""),
-        })
-    total = await db.users.count_documents(query)
-    return _pagination_response(items, total, skip_n, limit_n, True)
 
 
 # ============================================================
@@ -376,6 +327,25 @@ async def _resolve_active_link(db, token: str) -> dict:
     return link
 
 
+async def _validate_unlock_jwt(request: Request, path_token: str) -> bool:
+    """True iff request carries a valid unlock-JWT for *path_token*.
+
+    The unlock endpoint hands out a short-lived JWT that embeds the share
+    token's SHA-256 hash. Public share endpoints check this before raising
+    the "Password required — call /unlock first" 401, so a password-protected
+    link becomes usable after the caller has unlocked it once.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return False
+    try:
+        data = decode_share_token(auth[7:])
+    except jwt.PyJWTError:
+        return False
+    expected = hashlib.sha256(path_token.encode()).hexdigest()
+    return data.get("share_token_hash") == expected
+
+
 @router.post("/documents/shared/{token}/unlock")
 @limiter.limit("10/minute")
 async def unlock_share_link(request: Request, token: str, payload: dict):
@@ -384,7 +354,8 @@ async def unlock_share_link(request: Request, token: str, payload: dict):
     if link.get("password_hash"):
         if not verify_password(payload.get("password", ""), link["password_hash"]):
             raise HTTPException(status_code=401, detail="Incorrect password")
-    jwt_token = create_access_token("share", "share@intercloud", "share")
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    jwt_token = create_share_token(token_hash)
     return {"token": jwt_token, "perms": link.get("perms", ["read"])}
 
 
@@ -393,8 +364,9 @@ async def unlock_share_link(request: Request, token: str, payload: dict):
 async def shared_folder_list(request: Request, token: str):
     db = await _get_db()
     link = await _resolve_active_link(db, token)
-    if link.get("password_hash"):
-        raise HTTPException(status_code=401, detail="Password required — call /unlock first")
+    if not await _validate_unlock_jwt(request, token):
+        if link.get("password_hash"):
+            raise HTTPException(status_code=401, detail="Password required — call /unlock first")
     if "read" not in link.get("perms", []):
         raise HTTPException(status_code=403, detail="Link does not allow reading")
     folder = await db.document_folders.find_one({"_id": _oid(link["folder_id"])})
@@ -417,8 +389,9 @@ async def shared_folder_list(request: Request, token: str):
 async def shared_file_download(request: Request, token: str, did: str):
     db = await _get_db()
     link = await _resolve_active_link(db, token)
-    if link.get("password_hash"):
-        raise HTTPException(status_code=401, detail="Password required — call /unlock first")
+    if not await _validate_unlock_jwt(request, token):
+        if link.get("password_hash"):
+            raise HTTPException(status_code=401, detail="Password required — call /unlock first")
     if "download" not in link.get("perms", []):
         raise HTTPException(status_code=403, detail="Link does not allow download")
     doc = await db.documents.find_one({"_id": _oid(did), "folder_id": link["folder_id"]})

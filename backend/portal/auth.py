@@ -63,6 +63,34 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
 
 
+SHARE_TOKEN_TTL_MINUTES = 30
+
+
+def create_share_token(token_hash: str) -> str:
+    """Short-lived JWT proving a password-protected share link was unlocked.
+
+    NOT a user access token: subject is not a user id and role is absent, so
+    get_current_user/get_current_staff will always reject it. Only the public
+    share endpoints (which validate share_token_hash against the path token)
+    accept it.
+    """
+    payload = {
+        "sub": "share-link",
+        "scope": "share-link",
+        "share_token_hash": token_hash,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=SHARE_TOKEN_TTL_MINUTES),
+        "type": "share",
+    }
+    return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_share_token(token: str) -> dict:
+    data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
+    if data.get("type") != "share" or data.get("scope") != "share-link":
+        raise jwt.InvalidTokenError("not a share-link token")
+    return data
+
+
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
