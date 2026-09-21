@@ -1932,17 +1932,17 @@ async def docs_facets(staff=Depends(get_current_staff)):
             query["$or"].append({"owner_id": {"$exists": False}})
 
     # Distinct categories (non-empty, trimmed)
-    cat_cursor = db.documents.find(query, {"category": 1}).to_list(10000)
+    cat_docs = await db.documents.find(query, {"category": 1}).to_list(10000)
     categories = sorted({
         (c.get("category") or "").strip()
-        for c in cat_cursor
+        for c in cat_docs
         if c.get("category") and c["category"].strip()
     })
 
     # Distinct filetypes (derive from content_type / filename)
-    type_cursor = db.documents.find(query, {"content_type": 1, "filename": 1}).to_list(10000)
+    type_docs = await db.documents.find(query, {"content_type": 1, "filename": 1}).to_list(10000)
     filetypes = set()
-    for c in type_cursor:
+    for c in type_docs:
         ct = (c.get("content_type") or "").lower()
         fn = (c.get("filename") or "").lower()
         if "pdf" in ct or fn.endswith(".pdf"):
