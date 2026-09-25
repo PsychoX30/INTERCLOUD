@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search, ChevronDown, ChevronRight, Copy, Check, ChevronUp } from "lucide-react";
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { ResponsiveContainer, LineChart, AreaChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Legend } from "recharts";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
@@ -99,19 +99,34 @@ const yTickFormatter = (unit) => (v) => {
 const tooltipFormatter = (unit) => (value) => [fmtValue(value, unit), ""];
 
 // Compute aggregate stats from a merged IN/OUT traffic series.
-// Returns peak and average rates in bps; volume (bytes) is omitted because
-// summing bps values without per-sample Δt is meaningless.
-const trafficStats = (merged) => {
+// Returns peak, average, 95th percentile rates in bps, plus total transfer volume.
+const trafficStats = (merged, intervalSec = 60) => {
   const nums = (arr) => arr.filter(v => v != null && !Number.isNaN(v)).map(Number);
   const inVals = nums(merged.map(d => d.in));
   const outVals = nums(merged.map(d => d.out));
   const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
   const max = (arr) => (arr.length ? Math.max(...arr) : null);
+  const percentile95 = (arr) => {
+    if (!arr.length) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const idx = Math.ceil(sorted.length * 0.95) - 1;
+    return sorted[Math.max(0, idx)];
+  };
+  // Total transfer: sum(rate_bps * interval_seconds) / 8 = bytes, then convert to GB
+  const totalIn = inVals.length ? (inVals.reduce((a, b) => a + b, 0) * intervalSec) / 8 / 1e9 : null;
+  const totalOut = outVals.length ? (outVals.reduce((a, b) => a + b, 0) * intervalSec) / 8 / 1e9 : null;
+
   return {
     maxIn: max(inVals),
     maxOut: max(outVals),
     avgIn: avg(inVals),
     avgOut: avg(outVals),
+    percentile95In: percentile95(inVals),
+    percentile95Out: percentile95(outVals),
+    totalInGB: totalIn,
+    totalOutGB: totalOut,
+    currentIn: inVals.length ? inVals[inVals.length - 1] : null,
+    currentOut: outVals.length ? outVals[outVals.length - 1] : null,
   };
 };
 
@@ -739,7 +754,13 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
   }, [samples, pairSamples, primaryIsIn]);
 
   const unit = graph?.unit || (isTraffic ? "bps" : "");
-  const stats = useMemo(() => isTraffic && pair ? trafficStats(merged) : null, [isTraffic, pair, merged]);
+  const intervalSec = graph?.interval_seconds || 60;
+  // Interface speed (bps) from the graph config, when the operator supplied it.
+  // MRTG/LibreNMS show this as "Port Speed" so utilisation can be read off directly.
+  const portSpeedBps = isTraffic
+    ? (graph?.port_speed_bps || graph?.if_speed_bps || graph?.speed_bps || null)
+    : null;
+  const stats = useMemo(() => isTraffic && pair ? trafficStats(merged, intervalSec) : null, [isTraffic, pair, merged, intervalSec]);
 
   // Y-axis auto-scales to the peak value within the selected range (0 → peak),
   // matching Cacti/LibreNMS/PRTG behaviour. A little headroom keeps the peak
@@ -762,17 +783,29 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
         showOut ? row.out : null,
       ]);
       const yDomain = yDomainForValues(visibleVals);
+      const p95In = stats?.percentile95In;
+      const p95Out = stats?.percentile95Out;
       return merged.length ? (
-        <div className="h-64">
+        <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={merged}>
-              <CartesianGrid strokeDasharray="3 3" />
+            <AreaChart data={merged}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
               <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} width={70} tick={{ fontSize: 10 }} />
               <Tooltip formatter={tooltipFormatter("bps")} labelFormatter={xTickFormatter} />
-              <Line hide={!showIn} type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} dot={false} connectNulls={false} />
-              <Line hide={!showOut} type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} dot={false} connectNulls={false} />
-            </LineChart>
+              {showIn && p95In != null && (
+                <ReferenceLine y={p95In} stroke="#16a34a" strokeDasharray="4 4" strokeWidth={1} label={{ value: `95th IN ${fmtBps(p95In)}`, position: "insideTopRight", fontSize: 10, fill: "#16a34a" }} />
+              )}
+              {showOut && p95Out != null && (
+                <ReferenceLine y={p95Out} stroke="#f5b120" strokeDasharray="4 4" strokeWidth={1} label={{ value: `95th OUT ${fmtBps(p95Out)}`, position: "insideBottomRight", fontSize: 10, fill: "#b45309" }} />
+              )}
+              {showIn && (
+                <Area type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} fill="rgba(22,163,74,0.18)" fillOpacity={1} dot={false} connectNulls={false} isAnimationActive={false} />
+              )}
+              {showOut && (
+                <Area type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} fill="rgba(245,177,32,0.18)" fillOpacity={1} dot={false} connectNulls={false} isAnimationActive={false} />
+              )}
+            </AreaChart>
           </ResponsiveContainer>
         </div>
       ) : <EmptyState title="No data" body="No samples in range." />;
@@ -827,17 +860,45 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       )}
       {renderChart()}
       {isTraffic && pair && stats && (
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard label="Max IN" value={fmtValue(stats.maxIn, "bps")} color="text-green-600" />
-          <StatCard label="Max OUT" value={fmtValue(stats.maxOut, "bps")} color="text-amber-500" />
-          <StatCard label="Avg IN" value={fmtValue(stats.avgIn, "bps")} color="text-green-600" />
-          <StatCard label="Avg OUT" value={fmtValue(stats.avgOut, "bps")} color="text-amber-500" />
+        <div className="mt-3 overflow-x-auto" data-testid="mrtg-stats-table">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="text-slate-500">
+                <th className="text-left font-semibold py-1.5 pr-4">&nbsp;</th>
+                <th className="text-right font-semibold py-1.5 px-3">
+                  <span className="inline-flex items-center gap-1 justify-end"><span className="h-2 w-2 rounded-full bg-green-600" /> IN</span>
+                </th>
+                <th className="text-right font-semibold py-1.5 px-3">
+                  <span className="inline-flex items-center gap-1 justify-end"><span className="h-2 w-2 rounded-full bg-[#f5b120]" /> OUT</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {[
+                ["Now", fmtBps(stats.currentIn), fmtBps(stats.currentOut)],
+                ["Average", fmtBps(stats.avgIn), fmtBps(stats.avgOut)],
+                ["Maximum", fmtBps(stats.maxIn), fmtBps(stats.maxOut)],
+                ["95th Percentile", fmtBps(stats.percentile95In), fmtBps(stats.percentile95Out)],
+                ["Total Transfer", stats.totalInGB != null ? `${stats.totalInGB.toFixed(2)} GB` : "-", stats.totalOutGB != null ? `${stats.totalOutGB.toFixed(2)} GB` : "-"],
+              ].map(([label, inVal, outVal]) => (
+                <tr key={label}>
+                  <td className="py-1.5 pr-4 text-slate-500">{label}</td>
+                  <td className="py-1.5 px-3 text-right font-mono font-semibold text-green-700">{inVal}</td>
+                  <td className="py-1.5 px-3 text-right font-mono font-semibold text-amber-600">{outVal}</td>
+                </tr>
+              ))}
+              {portSpeedBps ? (
+                <tr>
+                  <td className="py-1.5 pr-4 text-slate-500">Port Speed</td>
+                  <td className="py-1.5 px-3 text-right font-mono font-semibold text-slate-700" colSpan={2}>{fmtBps(portSpeedBps)}</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </div>
       )}
       {isTraffic && pair && (
         <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
-          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-green-600" /> IN</span>
-          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#f5b120]" /> OUT</span>
           <span className="ml-auto">Combined from {graphData.graph_id} & {pair.id}</span>
         </div>
       )}
