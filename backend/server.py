@@ -225,6 +225,8 @@ async def startup_seed():
         await db.monitoring_graphs.create_index([("type", 1)])
         await db.monitoring_graph_samples_raw.create_index([("graph_id", 1), ("at", -1)])
         await db.monitoring_graph_samples_raw.create_index("at", expireAfterSeconds=7 * 86400)
+        await db.monitoring_graph_samples_halfhour.create_index([("graph_id", 1), ("slot", -1)], unique=True)
+        await db.monitoring_graph_samples_halfhour.create_index("slot", expireAfterSeconds=200 * 86400)
         await db.monitoring_graph_samples_hourly.create_index([("graph_id", 1), ("hour", -1)], unique=True)
         await db.monitoring_graph_samples_hourly.create_index("hour", expireAfterSeconds=90 * 86400)
         await db.monitoring_graph_samples_daily.create_index([("graph_id", 1), ("date", -1)], unique=True)

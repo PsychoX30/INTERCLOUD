@@ -22,8 +22,18 @@ class _Cursor:
     def sort(self, *_a, **_kw):
         return self
 
-    async def to_list(self, _limit):
+    async def to_list(self, length=None):
         return self.rows
+
+    def __aiter__(self):
+        self._it = iter(self.rows)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
 
 
 class _Graphs:
@@ -33,7 +43,10 @@ class _Graphs:
         self.updated = []
         self.deleted = []
 
-    def find(self, _query=None, **_kw):
+    def find(self, query=None, projection=None, **_kw):
+        """Accept the projection arg routes pass positionally
+        (db.coll.find(filter, projection)). The fake ignores the filter — tests
+        that need filtering override find() explicitly."""
         return _Cursor(self.rows)
 
     async def insert_one(self, doc):
@@ -72,26 +85,67 @@ class _Graphs:
         return type("R", (), {"deleted_count": int(match)})()
 
 
-class _Samples:
+class _SampleMixin:
+    """Shared fake surface for the rollup collections.
+
+    Models the motor collection API used by monitoring_health and the
+    downsample sweeps: attribute access is fine for most calls, but
+    db[name] indexing must also resolve (health iterates a table of names).
+    """
     def __init__(self):
+        self.docs = []
+        self.indexes = []
+
+    async def estimated_document_count(self):
+        return len(self.docs)
+
+    def list_indexes(self):
+        """Sync, mirroring motor: routes call `await coll.list_indexes().to_list()`."""
+        return _Cursor(self.indexes)
+
+    async def find_one(self, _query=None, _projection=None, **_kwargs):
+        return self.docs[-1] if self.docs else None
+
+
+class _Samples(_SampleMixin):
+    def __init__(self):
+        super().__init__()
         self.inserted = []
 
 
-class _DummyColl:
-    """Minimal collection that handles find() for downsampling queries."""
-    def __init__(self):
-        self.docs = []
-
-    def find(self, _query=None, **_kw):
+class _DummyColl(_SampleMixin):
+    """Minimal collection that also handles find() for downsampling queries."""
+    def find(self, _query=None, _projection=None, **_kw):
         return _Cursor(self.docs)
 
 
+class _Leases:
+    def __init__(self, rows=None):
+        self.rows = rows or []
+
+    def find(self, _query=None, _projection=None, **_kw):
+        return _Cursor(self.rows)
+
+
 class _Db:
+    _COLLECTIONS = ("monitoring_graphs", "monitoring_graph_samples_raw",
+                    "monitoring_graph_samples_hourly", "monitoring_graph_samples_daily",
+                    "monitoring_graph_samples_halfhour", "scheduler_leases")
+
     def __init__(self):
         self.monitoring_graphs = _Graphs()
         self.monitoring_graph_samples_raw = _Samples()
         self.monitoring_graph_samples_hourly = _DummyColl()
         self.monitoring_graph_samples_daily = _DummyColl()
+        self.monitoring_graph_samples_halfhour = _DummyColl()
+        self.scheduler_leases = _Leases()
+
+    def __getitem__(self, name):
+        """Motor exposes collections via db[name]; mirror it so route code that
+        iterates a collection table stays testable."""
+        if name in self._COLLECTIONS:
+            return getattr(self, name)
+        raise KeyError(name)
 
 
 @pytest.fixture
@@ -463,3 +517,67 @@ def test_search_clients_uses_narrow_role_guard():
     assert "get_current_staff" not in source, (
         "search_clients still uses get_current_staff — creative role can list clients"
     )
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint
+# ---------------------------------------------------------------------------
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+
+def _ttl_index_row(time_field="at", expire_after_seconds=None):
+    return {"name": f"{time_field}_1", "key": {time_field: 1},
+            "expireAfterSeconds": expire_after_seconds}
+
+
+@pytest.mark.anyio
+async def test_health_healthy_when_ttl_and_graphs_fresh(db):
+    from portal.routes.graphs import _SAMPLE_COLLECTIONS
+    assert _SAMPLE_COLLECTIONS, "health endpoint sources from a non-empty table"
+
+    now = _dt.now(_tz.utc)
+    for name, field in _SAMPLE_COLLECTIONS:
+        coll = db[name]
+        coll.docs = [{field: now}]
+        coll.find_one = AsyncMock(return_value={field: now})
+        coll.indexes = [_ttl_index_row(field, expire_after_seconds=7 * 86400)]
+    db.monitoring_graphs.rows = [{
+        "_id": ObjectId(), "name": "VLAN x",
+        "interval_seconds": 20, "last_poll_at": now,
+        "last_poll_state": "ok", "last_poll_error": "",
+    }]
+    db.scheduler_leases = _Leases([
+        {"_id": "job:graph_sweep", "owner": "me", "expires_at": now + _td(minutes=5)},
+    ])
+
+    out = await routes.monitoring_health({"role": "admin", "id": "a"})
+
+    assert out["problems"] == [], out["problems"]
+    assert out["healthy"] is True
+    assert out["graphs"]["total"] == 1
+    assert out["graphs"]["unhealthy"] == 0
+    assert out["graphs"]["items"][0]["healthy"] is True
+    assert all(c["ttl_ok"] for c in out["collections"])
+    assert out["leases"]["active"] == 1
+
+
+@pytest.mark.anyio
+async def test_health_flags_missing_ttl_and_stale_graph(db):
+    now = _dt.now(_tz.utc)
+    # raw has docs but no TTL index anywhere -> silent unbounded growth
+    db.monitoring_graph_samples_raw.docs = [{"at": now}]
+    db.monitoring_graph_samples_raw.find_one = AsyncMock(return_value={"at": now})
+    db.monitoring_graphs.rows = [{
+        "_id": ObjectId(), "name": "Dead",
+        "interval_seconds": 20,
+        "last_poll_at": now - _td(hours=2),
+        "last_poll_state": "error", "last_poll_error": "snmp timeout",
+    }]
+
+    out = await routes.monitoring_health({"role": "support", "id": "b"})
+
+    joined = " | ".join(out["problems"])
+    assert "no TTL index" in joined, joined
+    assert "stalled or in error" in joined, joined
+    assert out["healthy"] is False
+    assert out["graphs"]["unhealthy"] == 1

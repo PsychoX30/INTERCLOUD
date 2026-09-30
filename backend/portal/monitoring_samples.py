@@ -39,19 +39,43 @@ def _resolve_tier(span: timedelta) -> str:
 
     Mirrors RRDTool's RRA selection: choose the finest archive whose
     step produces a reasonable number of points for the requested range.
+
+    Boundaries (point counts for the preset that lands there):
+      ``<= 6h``  -> raw       (20s,  1H  = 180 pts)
+      ``<= 2d``  -> hourly    (1h,   1D  =  24 pts)
+      ``<= 60d`` -> halfhour  (30m,  1W  = 336 pts, 1M = 1440 pts)
+      else       -> daily     (1d,   1Y  = 365 pts)
+
+    The 30-minute tier exists because a 1M preset used to fall straight to
+    daily and rendered 30 points, hiding every intra-day spike.
     """
     if span <= timedelta(hours=6):
         return "raw"
-    elif span <= timedelta(days=7):
+    elif span <= timedelta(days=2):
         return "hourly"
+    elif span <= timedelta(days=60):
+        return "halfhour"
     else:
         return "daily"
+
+
+# Finer tiers that can serve a requested tier when the requested one has no
+# data yet (e.g. the halfhour rollup is new, so a 30d window only has hourly
+# history). Ordered by preference: nearest-in-resolution first.
+_TIER_FALLBACK = {
+    "hourly": ("halfhour", "daily"),
+    "halfhour": ("hourly", "daily"),
+    "daily": ("halfhour", "hourly"),
+}
 
 
 def _bucket_start(dt: datetime, tier: str) -> datetime:
     """Truncate *dt* to the start of its bucket for the given tier."""
     if tier == "raw":
         return dt
+    elif tier == "halfhour":
+        # 30-minute slots: :00 and :30
+        return dt.replace(minute=30 if dt.minute >= 30 else 0, second=0, microsecond=0)
     elif tier == "hourly":
         return dt.replace(minute=0, second=0, microsecond=0)
     else:  # daily
@@ -156,6 +180,21 @@ async def get_graph_data(
             for doc in await cursor.to_list(length=None)
         ]
 
+    async def _fetch_halfhour(lte: datetime | None = None) -> list[dict]:
+        query: dict = {"graph_id": graph_id, "slot": {"$gte": from_dt}}
+        if lte is not None:
+            query["slot"]["$lte"] = lte
+        else:
+            query["slot"]["$lte"] = to_dt
+        cursor = db.monitoring_graph_samples_halfhour.find(
+            query,
+            {"_id": 0, "slot": 1, "avg": 1, "min": 1, "max": 1},
+        ).sort("slot", ASCENDING)
+        return [
+            {"at": doc["slot"], "value": doc["avg"], "min": doc["min"], "max": doc["max"]}
+            for doc in await cursor.to_list(length=None)
+        ]
+
     async def _fetch_daily(lte: datetime | None = None) -> list[dict]:
         query: dict = {"graph_id": graph_id, "date": {"$gte": from_dt}}
         if lte is not None:
@@ -178,21 +217,52 @@ async def get_graph_data(
     # replaces the same bucket from a coarser tier, preventing duplicate points
     # while filling recent buckets that the scheduled rollup has not produced.
     by_bucket: dict[datetime, dict] = {}
+    resolved_tier = resolution
 
     if resolution == "daily":
         for point in await _fetch_daily():
             by_bucket[_bucket_start(point["at"], "daily")] = point
-        for point in _consolidate(await _fetch_hourly(), "daily"):
-            by_bucket[point["at"]] = point
+        # Fill days the daily rollup has not produced yet from the next-finer
+        # tier that has data (halfhour when available, else hourly).
+        filled = False
+        for finer in _TIER_FALLBACK["daily"]:
+            if finer == "halfhour":
+                points = _consolidate(await _fetch_halfhour(), "daily")
+            else:
+                points = _consolidate(await _fetch_hourly(), "daily")
+            if points:
+                for point in points:
+                    by_bucket[point["at"]] = point
+                filled = True
+                break
+        if not filled:
+            resolved_tier = "daily (raw only)"
+
+    if resolution == "halfhour":
+        for point in await _fetch_halfhour():
+            by_bucket[_bucket_start(point["at"], "halfhour")] = point
+        # No halfhour rollup yet (new tier) -> derive 30-min buckets from
+        # hourly rollups so a 1W/1M window still renders at 30-min resolution.
+        if not by_bucket:
+            for point in _consolidate(await _fetch_hourly(), "halfhour"):
+                by_bucket[point["at"]] = point
+            if by_bucket:
+                resolved_tier = "halfhour (from hourly)"
 
     if resolution == "hourly":
         for point in await _fetch_hourly():
             by_bucket[_bucket_start(point["at"], "hourly")] = point
+        # Sparse hourly history -> bucket halfhour rollups up to the hour.
+        if not by_bucket:
+            for point in _consolidate(await _fetch_halfhour(), "hourly"):
+                by_bucket[point["at"]] = point
+            if by_bucket:
+                resolved_tier = "hourly (from 30m)"
 
     for point in _consolidate(await _fetch_raw(), resolution):
         by_bucket[point["at"]] = point
 
-    return [by_bucket[key] for key in sorted(by_bucket)], resolution
+    return [by_bucket[key] for key in sorted(by_bucket)], resolved_tier
 
 
 async def ensure_indexes(db):
@@ -212,6 +282,14 @@ async def ensure_indexes(db):
     )
     await db.monitoring_graph_samples_hourly.create_index(
         "hour", expireAfterSeconds=90 * 86400
+    )
+
+    # Half-hour rollups: TTL 200 days, unique per graph_id + slot
+    await db.monitoring_graph_samples_halfhour.create_index(
+        [("graph_id", ASCENDING), ("slot", DESCENDING)], unique=True
+    )
+    await db.monitoring_graph_samples_halfhour.create_index(
+        "slot", expireAfterSeconds=200 * 86400
     )
 
     # Daily rollups: TTL 2 years, unique per graph_id + date
@@ -281,6 +359,67 @@ async def downsample_raw_to_hourly(db, before: datetime | None = None) -> dict:
         "raw_processed": raw_processed,
         "hourly_inserted": hourly_inserted,
         "hourly_upserted": hourly_upserted,
+    }
+
+
+async def downsample_raw_to_halfhour(db, before: datetime | None = None) -> dict:
+    """Aggregate raw samples into 30-minute rollups.
+
+    Groups raw samples by (graph_id, 30m slot), computes avg/max/min per slot.
+    Returns counts: {raw_processed, halfhour_inserted, halfhour_upserted}.
+    """
+    if before is None:
+        before = datetime.now(timezone.utc) - timedelta(minutes=30)
+
+    raw_coll = db.monitoring_graph_samples_raw
+    halfhour_coll = db.monitoring_graph_samples_halfhour
+
+    cursor = raw_coll.find({"at": {"$lt": before}}).sort("at", ASCENDING)
+
+    groups: dict[str, list[float]] = defaultdict(list)
+    for doc in await cursor.to_list(length=None):
+        graph_id = doc["graph_id"]
+        slot = _bucket_start(doc["at"], "halfhour")
+        key = f"{graph_id}_{slot.isoformat()}"
+        value = doc.get("value")
+        if isinstance(value, (int, float)):
+            groups[key].append(float(value))
+
+    raw_processed = 0
+    halfhour_inserted = 0
+    halfhour_upserted = 0
+
+    for key, values in groups.items():
+        graph_id, slot_str = key.split("_", 1)
+        slot = datetime.fromisoformat(slot_str)
+        if not values:
+            continue
+
+        avg = sum(values) / len(values)
+        doc = {
+            "graph_id": graph_id,
+            "slot": slot,
+            "avg": avg,
+            "max": max(values),
+            "min": min(values),
+            "count": len(values),
+        }
+
+        result = await halfhour_coll.update_one(
+            {"graph_id": graph_id, "slot": slot},
+            {"$set": doc},
+            upsert=True,
+        )
+        raw_processed += len(values)
+        if result.upserted_id:
+            halfhour_inserted += 1
+        else:
+            halfhour_upserted += 1
+
+    return {
+        "raw_processed": raw_processed,
+        "halfhour_inserted": halfhour_inserted,
+        "halfhour_upserted": halfhour_upserted,
     }
 
 

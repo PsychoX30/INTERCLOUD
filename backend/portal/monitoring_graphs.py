@@ -947,7 +947,11 @@ async def run_downsample_sweep(db, *, owner: str) -> dict:
     Called by scheduler hourly. Uses atomic lease.
     """
     from portal.emails import acquire_scheduler_lease, _release_scheduler_lease
-    from portal.monitoring_samples import downsample_raw_to_hourly, downsample_hourly_to_daily
+    from portal.monitoring_samples import (
+        downsample_raw_to_halfhour,
+        downsample_raw_to_hourly,
+        downsample_hourly_to_daily,
+    )
 
     lease_id = "job:graph_downsample"
     acquired, current_owner = await acquire_scheduler_lease(
@@ -957,9 +961,18 @@ async def run_downsample_sweep(db, *, owner: str) -> dict:
         return {"skipped": True, "owner": current_owner}
 
     try:
-        hourly_result = await downsample_raw_to_hourly(db)
-        daily_result = await downsample_hourly_to_daily(db)
-        return {"hourly": hourly_result, "daily": daily_result}
+        # Order matters only for the daily rollup (it reads hourly), so each
+        # step is isolated: one failing must not stop the others.
+        results = {}
+        for name, fn in (("halfhour", downsample_raw_to_halfhour),
+                         ("hourly", downsample_raw_to_hourly),
+                         ("daily", downsample_hourly_to_daily)):
+            try:
+                results[name] = await fn(db)
+            except Exception as exc:
+                logger.exception("[graphs] downsample %s failed", name)
+                results[name] = {"error": f"{type(exc).__name__}: {exc}"}
+        return results
     finally:
         try:
             await _release_scheduler_lease(db, lease_id=lease_id, owner=owner)

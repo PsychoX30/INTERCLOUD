@@ -35,10 +35,11 @@ class Collection:
 
 
 class Db:
-    def __init__(self, raw=(), hourly=(), daily=()):
+    def __init__(self, raw=(), hourly=(), daily=(), halfhour=()):
         self.monitoring_graph_samples_raw = Collection(raw, "at")
         self.monitoring_graph_samples_hourly = Collection(hourly, "hour")
         self.monitoring_graph_samples_daily = Collection(daily, "date")
+        self.monitoring_graph_samples_halfhour = Collection(halfhour, "slot")
 
 
 @pytest.mark.anyio
@@ -88,7 +89,7 @@ async def test_daily_range_falls_back_to_hourly_then_raw_per_day():
     ]
 
     data, resolution = await get_graph_data(
-        Db(raw=raw, hourly=hourly), "g", start, start + timedelta(days=8)
+        Db(raw=raw, hourly=hourly), "g", start, start + timedelta(days=70)
     )
 
     assert resolution == "daily"
@@ -114,7 +115,7 @@ async def test_daily_consolidation_preserves_hourly_extremes_not_average_of_aver
     ]
 
     data, resolution = await get_graph_data(
-        Db(hourly=hourly), "g", start, start + timedelta(days=8)
+        Db(hourly=hourly), "g", start, start + timedelta(days=70)
     )
 
     assert resolution == "daily"
@@ -139,7 +140,7 @@ async def test_daily_consolidation_merges_daily_rollup_with_live_hourly_keeps_pe
     ]
 
     data, resolution = await get_graph_data(
-        Db(hourly=hourly, daily=daily), "g", start, start + timedelta(days=8)
+        Db(hourly=hourly, daily=daily), "g", start, start + timedelta(days=70)
     )
 
     assert resolution == "daily"
@@ -169,3 +170,92 @@ def test_consolidate_uses_upstream_extremes_instead_of_recomputing_from_average(
     assert out[0]["value"] == 20.0
     assert out[0]["max"] == 500.0
     assert out[0]["min"] == 9.0
+
+
+# ---------------------------------------------------------------------------
+# 30-minute tier (matches LibreNMS RRA AVERAGE:0.5:6:1440 -> 30min x 30d)
+# ---------------------------------------------------------------------------
+def test_bucket_start_places_halfhour_slots():
+    """30-minute slots are :00 and :30, never arbitrary minutes."""
+    from portal.monitoring_samples import _bucket_start
+
+    base = datetime(2026, 1, 1, 10, 14, 33, tzinfo=UTC)
+    assert _bucket_start(base, "halfhour") == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    later = datetime(2026, 1, 1, 10, 45, 1, tzinfo=UTC)
+    assert _bucket_start(later, "halfhour") == datetime(2026, 1, 1, 10, 30, tzinfo=UTC)
+
+
+def test_resolve_tier_maps_presets_to_expected_buckets():
+    """The preset -> tier mapping the plan promises (1W/1M now 30-minute)."""
+    from portal.monitoring_samples import _resolve_tier
+
+    assert _resolve_tier(timedelta(hours=1)) == "raw"
+    assert _resolve_tier(timedelta(hours=24)) == "hourly"
+    assert _resolve_tier(timedelta(days=7)) == "halfhour"
+    assert _resolve_tier(timedelta(days=30)) == "halfhour"
+    assert _resolve_tier(timedelta(days=365)) == "daily"
+
+
+@pytest.mark.anyio
+async def test_month_range_uses_halfhour_rollup_when_present():
+    """A 1M window reads the 30-minute archive directly (1440 pts, not 30)."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(minutes=30), "avg": 10.0, "min": 8.0, "max": 12.0},
+        {"graph_id": "g", "slot": start + timedelta(hours=1), "avg": 30.0, "min": 28.0, "max": 32.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(halfhour=halfhour), "g", start, start + timedelta(days=30)
+    )
+
+    assert resolution == "halfhour"
+    assert [(row["at"], row["value"], row["min"], row["max"]) for row in data] == [
+        (start + timedelta(minutes=30), 10.0, 8.0, 12.0),
+        (start + timedelta(hours=1), 30.0, 28.0, 32.0),
+    ]
+
+
+@pytest.mark.anyio
+async def test_month_range_derives_halfhour_from_hourly_before_rollup_exists():
+    """The 30-minute tier is new, so an existing 30d window only has hourly
+    history. It must still render at 30-minute resolution instead of silently
+    dropping to 30 daily points (the regression this tier fixes)."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    hourly = [
+        {"graph_id": "g", "hour": start, "avg": 10.0, "min": 8.0, "max": 12.0},
+        {"graph_id": "g", "hour": start + timedelta(hours=1), "avg": 30.0, "min": 28.0, "max": 32.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(hourly=hourly), "g", start, start + timedelta(days=30)
+    )
+
+    assert resolution == "halfhour (from hourly)"
+    # Each hourly rollup becomes a 30-minute bucket at :00 carrying its min/max.
+    assert [(row["at"], row["value"], row["max"]) for row in data] == [
+        (start, 10.0, 12.0),
+        (start + timedelta(hours=1), 30.0, 32.0),
+    ]
+
+
+@pytest.mark.anyio
+async def test_daily_fallback_prefers_halfhour_over_hourly():
+    """For days the daily rollup has not produced yet, prefer the finer
+    30-minute archive over hourly so the gap keeps its real extremes."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(days=1, hours=1), "avg": 10.0, "min": 2.0, "max": 800.0},
+        {"graph_id": "g", "slot": start + timedelta(days=1, hours=1, minutes=30), "avg": 30.0, "min": 28.0, "max": 32.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(halfhour=halfhour), "g", start, start + timedelta(days=70)
+    )
+
+    assert resolution == "daily"
+    by_day = {row["at"]: row for row in data}
+    row = by_day[start + timedelta(days=1)]
+    assert row["max"] == 800.0, "30-minute peak must survive into the daily bucket"
+    assert row["min"] == 2.0
+    assert row["value"] == 20.0

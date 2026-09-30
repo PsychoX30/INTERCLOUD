@@ -548,3 +548,134 @@ async def trigger_downsample(admin=Depends(get_current_admin)):
     owner = f"{socket.gethostname()}:{admin.get('id') or admin.get('_id')}:{uuid.uuid4().hex}"
     result = await run_downsample_sweep(db, owner=owner)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Collection / retention health (silent-failure detector)
+# ---------------------------------------------------------------------------
+_SAMPLE_COLLECTIONS = (
+    ("monitoring_graph_samples_raw", "at"),
+    ("monitoring_graph_samples_halfhour", "slot"),
+    ("monitoring_graph_samples_hourly", "hour"),
+    ("monitoring_graph_samples_daily", "date"),
+)
+
+
+@router.get("/admin/monitoring/health")
+async def monitoring_health(staff=Depends(require_roles("admin", "support"))):
+    """Report retention/rollup health so silent failures become visible.
+
+    The failure modes this exists to catch are the ones that never raise:
+    a TTL index that was never created (collection grows forever), a rollup
+    job that silently stopped (recent buckets empty while raw keeps filling),
+    and lease rows that accumulate because nobody released them.
+    """
+    db = await _get_db()
+    now = datetime.now(timezone.utc)
+
+    # --- collections: indexed? TTL present? bounded? -----------------------
+    collections = []
+    for name, time_field in _SAMPLE_COLLECTIONS:
+        coll = db[name]
+        info: dict = {"name": name, "time_field": time_field}
+        try:
+            info["docs"] = await coll.estimated_document_count()
+        except Exception as exc:
+            info["docs"] = None
+            info["error"] = f"{type(exc).__name__}: {exc}"
+        ttl_seconds = None
+        try:
+            indexes = await coll.list_indexes().to_list(length=None)
+        except Exception:
+            indexes = []
+        for idx in indexes:
+            if idx.get("key", {}).get(time_field) == 1 and "expireAfterSeconds" in idx:
+                ttl_seconds = idx["expireAfterSeconds"]
+                break
+        info["ttl_seconds"] = ttl_seconds
+        info["ttl_ok"] = ttl_seconds is not None
+        try:
+            newest = await coll.find_one({}, {time_field: 1}, sort=[(time_field, -1)])
+            info["newest"] = newest.get(time_field).isoformat() if newest and newest.get(time_field) else None
+        except Exception:
+            info["newest"] = None
+        collections.append(info)
+
+    # --- per-graph freshness vs its own poll interval ----------------------
+    graph_rows = []
+    unhealthy = 0
+    try:
+        graphs = await db.monitoring_graphs.find(
+            {"enabled": True}, {"name": 1, "display_name": 1, "interface_name": 1,
+                                "interval_seconds": 1, "last_poll_at": 1,
+                                "last_poll_state": 1, "last_poll_error": 1}
+        ).to_list(1000)
+    except Exception:
+        graphs = []
+
+    for g in graphs:
+        interval = int(g.get("interval_seconds") or 300)
+        last = g.get("last_poll_at")
+        age_seconds = None
+        if isinstance(last, datetime):
+            age_seconds = (now - last).total_seconds()
+        # 3 missed intervals = genuinely stalled, not just a slow sweep.
+        stale = age_seconds is None or age_seconds > max(interval * 3, 120)
+        state = g.get("last_poll_state")
+        ok = (not stale) and state != "error"
+        if not ok:
+            unhealthy += 1
+        graph_rows.append({
+            "id": str(g["_id"]),
+            "name": g.get("display_name") or g.get("name") or g.get("interface_name") or "",
+            "interval_seconds": interval,
+            "last_poll_age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
+            "last_poll_state": state,
+            "last_poll_error": (g.get("last_poll_error") or "")[:200],
+            "healthy": ok,
+        })
+
+    # --- scheduler leases: how many are held vs abandoned ------------------
+    leases = {"total": 0, "active": 0, "released": 0, "expired_released": 0,
+              "per_graph": 0, "released_per_graph": 0, "error": None}
+    try:
+        async for lease in db.scheduler_leases.find(
+                {}, {"_id": 1, "owner": 1, "expires_at": 1}):
+            leases["total"] += 1
+            owner = lease.get("owner")
+            expires = lease.get("expires_at")
+            if owner is None:
+                leases["released"] += 1
+                if isinstance(expires, datetime) and expires < now:
+                    leases["expired_released"] += 1
+            elif isinstance(expires, datetime) and expires < now:
+                leases["expired_released"] += 1
+            else:
+                leases["active"] += 1
+            if str(lease.get("_id", "")).startswith("job:graph:"):
+                leases["per_graph"] += 1
+                if owner is None:
+                    leases["released_per_graph"] += 1
+    except Exception as exc:
+        leases["error"] = f"{type(exc).__name__}: {exc}"
+
+    # --- verdict ----------------------------------------------------------
+    problems = []
+    for c in collections:
+        if c.get("docs") and not c.get("ttl_ok"):
+            problems.append(f"{c['name']} has {c['docs']} docs but no TTL index "
+                            f"on {c['time_field']} — collection will grow forever")
+    if unhealthy:
+        problems.append(f"{unhealthy} enabled graph(s) stalled or in error state")
+    if leases["released_per_graph"] > 50:
+        problems.append(f"{leases['released_per_graph']} released per-graph leases "
+                        f"awaiting reaper — reaper may not be running")
+
+    return {
+        "at": now.isoformat(),
+        "healthy": not problems,
+        "problems": problems,
+        "graphs": {"total": len(graph_rows), "unhealthy": unhealthy, "items": graph_rows},
+        "collections": collections,
+        "leases": leases,
+    }
