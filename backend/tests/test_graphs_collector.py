@@ -191,6 +191,43 @@ async def test_poll_snmp_nonzero_returncode(monkeypatch):
     assert out["value"] is None
 
 
+@pytest.mark.anyio
+async def test_poll_snmp_no_such_object_on_stdout_is_stale_error(monkeypatch):
+    """net-snmp exits 0 and prints the diagnostic to STDOUT for a missing OID.
+
+    Regression guard: the real shape must surface as ``error`` (and be
+    recognised as a stale-OID error) so probe_graph's auto-heal path fires.
+    Previously the text landed in ``value`` and the healer was dead code.
+    """
+    class _Proc:
+        returncode = 0
+        async def communicate(self):
+            return (b"1.3.6.1.2.1.31.1.1.1.6.9999 = No Such Object available "
+                    b"on this agent at that OID"), b""
+    async def _fake_exec(*_a, **_kw):
+        return _Proc()
+    monkeypatch.setattr(mg.asyncio, "create_subprocess_exec", _fake_exec)
+    out = await mg.poll_snmp("8.8.8.8", "1.3.6.1.2.1.31.1.1.1.6.9999", "public")
+    assert out["value"] is None
+    assert out["error"] is not None
+    assert mg._is_stale_oid_error(out["error"])
+
+
+@pytest.mark.anyio
+async def test_poll_snmp_no_such_instance_on_stdout_is_stale_error(monkeypatch):
+    """Same for the 'No Such Instance' wording net-snmp emits for bad indices."""
+    class _Proc:
+        returncode = 0
+        async def communicate(self):
+            return b"1.3.6.1.2.1.31.1.1.1.6.9999 = No Such Instance currently exists at this OID", b""
+    async def _fake_exec(*_a, **_kw):
+        return _Proc()
+    monkeypatch.setattr(mg.asyncio, "create_subprocess_exec", _fake_exec)
+    out = await mg.poll_snmp("8.8.8.8", "1.3.6.1.2.1.31.1.1.1.6.9999", "public")
+    assert out["value"] is None
+    assert mg._is_stale_oid_error(out["error"])
+
+
 # ---------------------------------------------------------------------------
 # discover_snmp_sensors memory row discovery
 # ---------------------------------------------------------------------------

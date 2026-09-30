@@ -159,6 +159,12 @@ async def poll_snmp(target: str, oid: str, community: str = "public",
         err = stderr.decode("utf-8", "replace").strip()
         if proc.returncode != 0:
             return {"value": None, "raw": raw, "error": err or "snmpget failed"}
+        # net-snmp reports a missing OID/instance on STDOUT *with exit code 0*,
+        # e.g. "1.3.6.1.2.1.31.1.1.1.6.9999 = No Such Object available on this
+        # agent at that OID".  Treat that as an error, not a value — otherwise
+        # the stale-OID auto-heal path in probe_graph never fires.
+        if _is_stale_oid_error(raw) or _is_stale_oid_error(err):
+            return {"value": None, "raw": raw, "error": raw or err}
         # Parse "OID = TYPE: VALUE" format
         value = None
         if "=" in raw:
