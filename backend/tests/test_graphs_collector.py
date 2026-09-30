@@ -2,6 +2,7 @@
 
 Uses fake DB and monkeypatched run_ping/poll_snmp to avoid real network calls.
 """
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -536,6 +537,93 @@ async def test_run_graph_sweep_polls_concurrently(monkeypatch):
     monkeypatch.setattr(mg, "_load_last_counter", AsyncMock(return_value=None))
     await mg.run_graph_sweep(db, owner="host:1")
     assert max_in_flight > 1, "sweep is still serial"
+
+
+# ---------------------------------------------------------------------------
+# run_graph_sweep due-check tolerance
+# ---------------------------------------------------------------------------
+class _LastAtSamplesCol:
+    """Reports a fixed 'last sample' time so we can probe the due-check."""
+
+    def __init__(self, last_at):
+        self.last_at = last_at
+        self.inserted = []
+
+    async def find_one(self, *_a, **_kw):
+        if self.last_at is None:
+            return None
+        return {"graph_id": "x", "at": self.last_at, "value": 1.0}
+
+    async def insert_one(self, doc):
+        self.inserted.append(doc)
+
+
+class _LastAtDb:
+    def __init__(self, docs, last_at):
+        self.monitoring_graphs = _SweepGraphsCol(docs)
+        self.monitoring_graph_samples_raw = _LastAtSamplesCol(last_at)
+        self.scheduler_leases = _LeaseCol()
+
+
+@pytest.mark.anyio
+async def test_sweep_polls_graph_whose_interval_just_elapsed(monkeypatch):
+    """A graph 0.09s short of its interval must still be polled.
+
+    Real-world bug: the sweep polls at :00.09 and ticks again at :20.006. The
+    strict `last_at + interval > now` test saw a 0.09s shortfall, skipped the
+    graph, and the graph was sampled every 40s instead of every 20s.
+    """
+    now = datetime.now(timezone.utc)
+    docs = [{
+        "_id": ObjectId(), "type": "snmp_traffic_in", "target": "8.8.8.8",
+        "snmp_oid": "1.3.6.1.2.1.31.1.1.1.6.1", "snmp_community": "public",
+        "snmp_port": 161, "snmp_version": "2c", "enabled": True,
+        "interval_seconds": 20,
+    }]
+    # Sampled 19.91s ago — 0.09s short of the 20s interval.
+    db = _LastAtDb(docs, now - timedelta(seconds=19.91))
+    seen = []
+
+    async def fake_poll_snmp(target, oid, *a, **kw):
+        seen.append(oid)
+        return {"value": 1000.0, "raw": "x", "error": None}
+
+    monkeypatch.setattr(mg, "poll_snmp", fake_poll_snmp)
+    monkeypatch.setattr(mg, "_load_last_counter", AsyncMock(return_value=None))
+    summary = await mg.run_graph_sweep(db, owner="host:1", now=now)
+
+    assert summary["skipped_not_due"] == 0
+    assert len(seen) == 1
+
+
+@pytest.mark.anyio
+async def test_sweep_still_skips_graph_polled_moments_ago(monkeypatch):
+    """The tolerance must not turn the sweep into a tight re-poll loop."""
+    now = datetime.now(timezone.utc)
+    docs = [{
+        "_id": ObjectId(), "type": "snmp_traffic_in", "target": "8.8.8.8",
+        "snmp_oid": "1.3.6.1.2.1.31.1.1.1.6.1", "snmp_community": "public",
+        "snmp_port": 161, "snmp_version": "2c", "enabled": True,
+        "interval_seconds": 20,
+    }]
+    db = _LastAtDb(docs, now - timedelta(seconds=5))
+    seen = []
+
+    async def fake_poll_snmp(target, oid, *a, **kw):
+        seen.append(oid)
+        return {"value": 1000.0, "raw": "x", "error": None}
+
+    monkeypatch.setattr(mg, "poll_snmp", fake_poll_snmp)
+    monkeypatch.setattr(mg, "_load_last_counter", AsyncMock(return_value=None))
+    summary = await mg.run_graph_sweep(db, owner="host:1", now=now)
+
+    assert summary["skipped_not_due"] == 1
+    assert seen == []
+
+
+def test_due_tolerance_is_small():
+    """Tolerance absorbs jitter, not a whole extra poll cycle."""
+    assert 0 < mg._DUE_TOLERANCE_SECONDS < mg._MIN_INTERVAL / 2
 
 
 # ---------------------------------------------------------------------------

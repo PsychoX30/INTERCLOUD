@@ -29,6 +29,13 @@ _MAX_INTERVAL = 3600
 # effective cadence (every second sweep skipped as "still running").
 _SWEEP_CONCURRENCY = 8
 
+# Slack applied to the "is this graph due?" check. A graph polled at :00.09
+# is 0.09s short of its 20s interval when the :20 tick fires, so a strict
+# `last_at + interval > now` test skipped it and the graph was polled every
+# 40s instead of every 20s. The tolerance absorbs scheduler jitter without
+# letting a graph be polled meaningfully faster than its configured interval.
+_DUE_TOLERANCE_SECONDS = 2.0
+
 # Graph types that represent a counter (monotonic increasing octet counter)
 # and therefore need rate (delta / elapsed) conversion to produce a bps value.
 COUNTER_GRAPH_TYPES = {"snmp_traffic_in", "snmp_traffic_out"}
@@ -882,7 +889,7 @@ async def run_graph_sweep(db, *, owner: str,
                 if isinstance(last_at, datetime):
                     if last_at.tzinfo is None:
                         last_at = last_at.replace(tzinfo=timezone.utc)
-                    if last_at + timedelta(seconds=interval) > now:
+                    if last_at + timedelta(seconds=interval - _DUE_TOLERANCE_SECONDS) > now:
                         summary["skipped_not_due"] += 1
                         continue
             due.append(graph)
