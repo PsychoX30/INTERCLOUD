@@ -245,12 +245,18 @@ async def get_graph_data(
     if resolution == "hourly":
         for point in await _fetch_hourly():
             by_bucket[_bucket_start(point["at"], "hourly")] = point
-        # Sparse hourly history -> bucket halfhour rollups up to the hour.
-        # A 30-minute view of the same hour is finer, so it wins for that
-        # bucket.
+        # The halfhour rollup only *fills gaps* here, it never replaces a stored
+        # hourly rollup.  The hourly rollup is the designated accumulator for
+        # the hour, so it holds the true intra-hour peak; two 30-minute slots
+        # that partially cover an hour can only lower that peak.  (An
+        # unconditional overlay here silently replaced the hour's 900 bps peak
+        # with the 12 bps seen so far — the same overwrite class fixed on the
+        # daily path.)
         had_native = bool(by_bucket)
         for point in _consolidate(await _fetch_halfhour(), "hourly"):
-            by_bucket[point["at"]] = point
+            key = _bucket_start(point["at"], "hourly")
+            if key not in by_bucket:
+                by_bucket[key] = point
         if not had_native and by_bucket:
             resolved_tier = "hourly (from 30m)"
 

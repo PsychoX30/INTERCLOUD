@@ -373,3 +373,66 @@ async def test_finer_archive_wins_over_coarser_for_the_same_bucket():
     assert by_day[start]["max"] == 900.0, (
         "a finer archive must not be overwritten by the coarser daily rollup"
     )
+
+
+@pytest.mark.anyio
+async def test_halfhour_does_not_overwrite_stored_hourly_rollup_extremes():
+    """A 30-minute view must fill *gaps*, not replace the hourly accumulator.
+
+    Regression (introduced by the partial-archive fix, caught on self-review):
+    the halfhour overlay on the hourly path wrote unconditionally, so two
+    30-minute slots partially covering hour 01:00 replaced that hour's stored
+    rollup.  The hourly rollup is the designated accumulator for the hour and
+    keeps the true intra-hour peak; a partial 30-minute view can only *lower*
+    it.  Here the hourly rollup peaked at 900 while the two halfhour slots
+    covering it saw at most 12 — the chart silently reported 12.
+    """
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(hours=1), "avg": 10.0,
+         "min": 2.0, "max": 900.0},
+    ]
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(hours=1), "avg": 10.0,
+         "min": 8.0, "max": 12.0},
+        {"graph_id": "g", "slot": start + timedelta(hours=1, minutes=30), "avg": 11.0,
+         "min": 9.0, "max": 11.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2)
+    )
+
+    assert resolution == "hourly"
+    row = next(r for r in data if r["at"] == start + timedelta(hours=1))
+    assert row["max"] == 900.0, (
+        "stored hourly rollup peak was overwritten by a partial 30-minute view"
+    )
+    assert row["min"] == 2.0
+    assert row["value"] == 10.0
+
+
+@pytest.mark.anyio
+async def test_halfhour_still_fills_hours_the_hourly_rollup_missing():
+    """...but the same overlay must still fill hours hourly has no data for."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(hours=1), "avg": 10.0,
+         "min": 8.0, "max": 12.0},
+    ]
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(hours=20), "avg": 60.0,
+         "min": 58.0, "max": 62.0},
+        {"graph_id": "g", "slot": start + timedelta(hours=20, minutes=30), "avg": 70.0,
+         "min": 68.0, "max": 72.0},
+    ]
+
+    data, _ = await get_graph_data(
+        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2)
+    )
+
+    by_at = {row["at"]: row for row in data}
+    assert by_at[start + timedelta(hours=1)]["max"] == 12.0, "stored hourly rollup kept"
+    assert start + timedelta(hours=20) in by_at, "gap hour was not filled"
+    assert by_at[start + timedelta(hours=20)]["max"] == 72.0
+    assert by_at[start + timedelta(hours=20)]["min"] == 58.0
