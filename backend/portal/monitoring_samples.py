@@ -279,12 +279,19 @@ async def ensure_indexes(db):
         "hour", expireAfterSeconds=90 * 86400
     )
 
-    # Half-hour rollups: TTL 200 days, unique per graph_id + slot
+    # Half-hour rollups: TTL 90 days, unique per graph_id + slot
+    #
+    # 90d, deliberately equal to the hourly TTL and NOT the 200d originally
+    # sketched in the plan.  _resolve_tier only routes windows of <=60d to the
+    # halfhour archive, so retention past ~60d is storage no read path can ever
+    # reach.  90d keeps a 30d safety margin over the widest window that uses it.
+    # NOTE the halfhour *width* is what makes 1W/1M usable (336/1440 points);
+    # the TTL only needs to outlive the read window, not outlive hourly.
     await db.monitoring_graph_samples_halfhour.create_index(
         [("graph_id", ASCENDING), ("slot", DESCENDING)], unique=True
     )
     await db.monitoring_graph_samples_halfhour.create_index(
-        "slot", expireAfterSeconds=200 * 86400
+        "slot", expireAfterSeconds=90 * 86400
     )
 
     # Daily rollups: TTL 2 years, unique per graph_id + date
