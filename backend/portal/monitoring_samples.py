@@ -64,11 +64,20 @@ def _consolidate(samples: list[dict], tier: str) -> list[dict]:
     Groups by bucket start, computes avg/min/max per bucket — same math
     as the background rollup, but done at read time so charts always
     have data even before the scheduled downsample runs.
+
+    Input samples may already carry server-computed ``min``/``max`` (hourly and
+    daily rollups do). Those are combined as min-of-mins / max-of-maxes, NOT
+    recomputed from the ``value`` field: for rollups ``value`` is already an
+    average, so recomputing would report the average of averages as the peak
+    and silently hide every intra-hour spike in a day/week/month view.
     """
     if tier == "raw":
         return samples
 
     buckets: dict[datetime, list[float]] = defaultdict(list)
+    # Per-bucket extremes carried over from upstream rollups, when present.
+    bucket_mins: dict[datetime, list[float]] = defaultdict(list)
+    bucket_maxs: dict[datetime, list[float]] = defaultdict(list)
     for s in samples:
         at = s["at"]
         if isinstance(at, str):
@@ -76,17 +85,24 @@ def _consolidate(samples: list[dict], tier: str) -> list[dict]:
         v = s.get("value")
         if isinstance(v, (int, float)):
             buckets[_bucket_start(at, tier)].append(float(v))
+        lo, hi = s.get("min"), s.get("max")
+        if isinstance(lo, (int, float)):
+            bucket_mins[_bucket_start(at, tier)].append(float(lo))
+        if isinstance(hi, (int, float)):
+            bucket_maxs[_bucket_start(at, tier)].append(float(hi))
 
     result = []
     for bucket_start in sorted(buckets):
         vals = buckets[bucket_start]
         if not vals:
             continue
+        mins = bucket_mins.get(bucket_start) or vals
+        maxs = bucket_maxs.get(bucket_start) or vals
         result.append({
             "at": bucket_start,
             "value": sum(vals) / len(vals),
-            "min": min(vals),
-            "max": max(vals),
+            "min": min(mins),
+            "max": max(maxs),
         })
     return result
 

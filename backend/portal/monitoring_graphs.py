@@ -992,6 +992,9 @@ def serialize_graph(doc: dict) -> dict:
         # ifIndex and the stored OID goes stale.
         "interface_name": doc.get("interface_name") or "",
         "interface_index": doc.get("interface_index") or "",
+        # Oper status from discovery ("up"/"down"/"unknown"); empty for graphs
+        # created before this field existed, which the UI renders as unknown.
+        "interface_status": doc.get("interface_status") or "",
         "visible_roles": doc.get("visible_roles") or ["admin", "support"],
         # Last poll outcome, so the UI can flag a graph that silently stopped
         # producing samples (stale OID, unreachable host) instead of rendering

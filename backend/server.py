@@ -186,6 +186,11 @@ async def startup_seed():
         await db.blackhole_log.create_index([("at", -1)])
         await db.blackhole_log.create_index("prefix")
         await db.notif_channels.create_index("enabled")
+        # DDoS samples: detection query is key + at-range.  The TTL requires
+        # ``at`` to be a BSON Date (never an ISO string) and expires traffic
+        # after 7d so the collection stays bounded (it had grown to 3.5M docs).
+        await db.ddos_samples.create_index([("key", 1), ("at", -1)])
+        await db.ddos_samples.create_index("at", expireAfterSeconds=7 * 86400)
         # Email queue / templates
         await db.email_queue.create_index([("status", 1), ("scheduled_at", 1)])
         # Audit logs: list newest-first + filter by actor
@@ -207,8 +212,13 @@ async def startup_seed():
         await db.monitoring_checks.create_index([("created_at", 1)])
         await db.monitoring_checks.create_index([("enabled", 1), ("created_at", 1)])
         await db.monitoring_probes.create_index([("check_id", 1), ("at", -1)])
+        # Probe samples were unbounded (104k docs and climbing since Aug 13).
+        # ``at`` is a BSON Date here, so the TTL actually applies; keep 90d to
+        # match the hourly graph rollup retention.
+        await db.monitoring_probes.create_index("at", expireAfterSeconds=90 * 86400)
         await db.monitoring_check_state.create_index("check_id", unique=True)
         await db.monitoring_events.create_index([("check_id", 1), ("at", -1)])
+        await db.monitoring_events.create_index("at", expireAfterSeconds=90 * 86400)
         # Monitoring graphs + samples (MRTG-style SNMP/ping graphs)
         await db.monitoring_graphs.create_index([("enabled", 1), ("interval_seconds", 1)])
         await db.monitoring_graphs.create_index([("client_id", 1)])

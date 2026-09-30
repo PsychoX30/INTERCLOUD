@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from portal.monitoring_samples import get_graph_data
+from portal.monitoring_samples import _consolidate, get_graph_data
 
 UTC = timezone.utc
 
@@ -96,3 +96,76 @@ async def test_daily_range_falls_back_to_hourly_then_raw_per_day():
         (start, 20.0),
         (start + timedelta(days=1), 60.0),
     ]
+
+
+@pytest.mark.anyio
+async def test_daily_consolidation_preserves_hourly_extremes_not_average_of_averages():
+    """Peak must survive hourly -> daily consolidation.
+
+    Regression: the read path recomputed min/max from the hourly ``avg`` values,
+    so a 1D/1W/1M view reported the average of averages as the peak and erased
+    every intra-hour spike (the "data tidak reliable" symptom).  Hour=1 peaks at
+    900 while its average is only 10; the daily rollup must keep 900.
+    """
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(hours=1), "avg": 10.0, "min": 2.0, "max": 900.0},
+        {"graph_id": "g", "hour": start + timedelta(hours=2), "avg": 30.0, "min": 28.0, "max": 32.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(hourly=hourly), "g", start, start + timedelta(days=8)
+    )
+
+    assert resolution == "daily"
+    assert len(data) == 1
+    row = data[0]
+    assert row["value"] == 20.0          # average still average-of-averages
+    assert row["max"] == 900.0, "daily peak must come from hourly max, not hourly avg"
+    assert row["min"] == 2.0, "daily trough must come from hourly min"
+
+
+@pytest.mark.anyio
+async def test_daily_consolidation_merges_daily_rollup_with_live_hourly_keeps_peak():
+    """Daily view merges stored daily rollups with freshly-consolidated hourly
+    data. The fresh part must contribute its true peak, not its average."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    daily = [
+        {"graph_id": "g", "date": start, "avg": 5.0, "min": 1.0, "max": 7.0},
+    ]
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(days=1, hours=1), "avg": 10.0, "min": 2.0, "max": 800.0},
+        {"graph_id": "g", "hour": start + timedelta(days=1, hours=2), "avg": 30.0, "min": 28.0, "max": 32.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(hourly=hourly, daily=daily), "g", start, start + timedelta(days=8)
+    )
+
+    assert resolution == "daily"
+    by_day = {row["at"]: row for row in data}
+    assert by_day[start]["max"] == 7.0, "stored daily rollup extremes must be kept"
+    assert by_day[start + timedelta(days=1)]["max"] == 800.0, (
+        "hourly-sourced day must report the real intra-day peak"
+    )
+
+
+def test_consolidate_uses_upstream_extremes_instead_of_recomputing_from_average():
+    """Unit-level guarantee for the read-path consolidation math.
+
+    Input rows already carry server-computed min/max (hourly/daily rollups).
+    Consolidating them further must aggregate min-of-mins / max-of-maxes; using
+    the `value` (already an average) would hide the spike.
+    """
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    finer = [
+        {"at": start + timedelta(minutes=5), "value": 10.0, "min": 9.0, "max": 11.0},
+        {"at": start + timedelta(minutes=35), "value": 30.0, "min": 25.0, "max": 500.0},
+    ]
+
+    out = _consolidate(finer, "hourly")
+
+    assert len(out) == 1
+    assert out[0]["value"] == 20.0
+    assert out[0]["max"] == 500.0
+    assert out[0]["min"] == 9.0

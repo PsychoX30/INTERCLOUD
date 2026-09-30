@@ -159,6 +159,10 @@ async def create_graphs_bulk(payload: dict, admin=Depends(get_current_admin)):
             doc["interface_name"] = str(sensor.get("interface_name") or "")[:120]
         if sensor.get("interface_index") is not None:
             doc["interface_index"] = str(sensor.get("interface_index") or "")[:16]
+        # Oper status drives the port chip in the UI. Missing means the caller
+        # (older UI build) did not send it; keep it empty rather than guessing.
+        if sensor.get("interface_status") is not None:
+            doc["interface_status"] = str(sensor.get("interface_status") or "")[:16]
         result = await db.monitoring_graphs.insert_one(doc)
         doc["_id"] = result.inserted_id
         created.append(serialize_graph(doc))

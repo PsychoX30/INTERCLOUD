@@ -1601,12 +1601,16 @@ async def run_ddos_detection_sweep(db) -> dict:
                                + int(flow.get("tx_packets", 0) or 0))
 
         for (direction, target), agg in aggregates.items():
-            sample = {"at": now_iso, "key": f"{direction}:{target}",
+            # ``at`` MUST be a BSON Date.  A TTL index silently ignores ISO
+            # strings, so storing a string made the collection unbounded (3.5M
+            # docs) and every window query a full COLLSCAN costing ~2s of
+            # mongod CPU, every 10s, forever.
+            sample = {"at": now, "key": f"{direction}:{target}",
                       "direction": direction, "target": target,
                       "bps": agg["bps"], "pps": agg["pps"]}
             await db.ddos_samples.insert_one(sample)
             try:
-                cutoff = (now - timedelta(seconds=int(rule.get("window_s") or 300))).isoformat()
+                cutoff = now - timedelta(seconds=int(rule.get("window_s") or 300))
                 history = await db.ddos_samples.find({
                     "key": sample["key"], "at": {"$gte": cutoff}}).to_list(100)
             except Exception:
@@ -2205,6 +2209,46 @@ async def _release_scheduler_lease(db, *, lease_id: str, owner: str) -> None:
     )
 
 
+async def reap_stale_scheduler_leases(db, *, grace_seconds: int = 3600) -> dict:
+    """Delete scheduler_leases rows that can never be needed again.
+
+    Before this existed, releasing a lease only set ``owner=None`` and left the
+    document behind forever, so ``scheduler_leases`` grew without bound.  Worse,
+    per-graph leases (``job:graph:<id>``, written by the ping/graph sweeps) kept
+    a permanent row for every graph that was later deleted, which made the
+    collection look riddled with "stale leases" and hid real problems.
+
+    Two safe classes are removed:
+      * expired rows already released by their owner (``owner=None``) and older
+        than ``grace_seconds`` — nobody can still be renewing them;
+      * ``job:graph:<id>`` / ``job:ping:<id>`` rows whose target document no
+        longer exists (orphans from deleted checks/graphs).
+
+    Live leases (future expiry, non-null owner) are never touched.
+    """
+    now = datetime.now(timezone.utc)
+    result = {"expired_released": 0, "orphan_graphs": 0}
+
+    result["expired_released"] = (await db.scheduler_leases.delete_many(
+        {"owner": None,
+         "expires_at": {"$lt": now - timedelta(seconds=grace_seconds)}}
+    )).deleted_count
+
+    existing = {str(d["_id"]) for d in await db.monitoring_graphs.find(
+        {}, {"_id": 1}).to_list(length=None)}
+    orphan_ids = []
+    async for lease in db.scheduler_leases.find(
+            {"_id": {"$regex": "^job:graph:"}, "owner": None},
+            {"_id": 1}):
+        if str(lease["_id"]).split("job:graph:", 1)[1] not in existing:
+            orphan_ids.append(lease["_id"])
+    if orphan_ids:
+        result["orphan_graphs"] = (await db.scheduler_leases.delete_many(
+            {"_id": {"$in": orphan_ids}})).deleted_count
+
+    return result
+
+
 async def run_scheduled_with_lease(db, *, lease_id: str, owner: str,
                                    ttl_seconds: int, label: str, job,
                                    renewal_interval_seconds: Optional[float] = None):
@@ -2487,6 +2531,20 @@ def start_scheduler(db):
         _leased("noc_retention", lambda: run_noc_probe_retention(db)),
         CronTrigger(hour=3, minute=40),
         id="job:noc_retention",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Scheduler lease reaper - daily at 03:50.  Released leases (owner=None)
+    # accumulate forever otherwise; see reap_stale_scheduler_leases.
+    async def _lease_reaper():
+        from .emails import reap_stale_scheduler_leases
+        return await reap_stale_scheduler_leases(db)
+
+    sched.add_job(
+        _leased("lease_reaper", _lease_reaper),
+        CronTrigger(hour=3, minute=50),
+        id="job:lease_reaper",
         max_instances=1,
         coalesce=True,
     )

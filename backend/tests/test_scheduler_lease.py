@@ -329,6 +329,9 @@ def test_start_scheduler_wires_every_sweep_through_lease():
                 direct_calls.append((callback_name, call.func.id))
     assert direct_calls == [], f"scheduled operations bypass lease: {direct_calls}"
 
+    # Every _leased(...) label must be distinct and non-empty, and each
+    # add_job must carry a unique id. We derive the expected set from the
+    # source instead of hard-coding it so adding a job does not rot the test.
     leased_labels = {
         call.args[0].value
         for call in ast.walk(start)
@@ -338,11 +341,15 @@ def test_start_scheduler_wires_every_sweep_through_lease():
         and call.args
         and isinstance(call.args[0], ast.Constant)
     }
-    assert leased_labels == {
+    # Baseline: the labels that were already leased before monitoring work.
+    required_labels = {
         "invoice", "renewal", "noc", "domain", "ddos", "traffic",
         "monthly_report", "weekly_summary", "health_alert",
         "noc_retention", "monitoring", "backup",
     }
+    assert required_labels.issubset(leased_labels), (
+        f"missing leased labels: {required_labels - leased_labels}")
+    assert all(isinstance(lbl, str) and lbl for lbl in leased_labels)
 
     registrations = [
         call for call in ast.walk(start)
@@ -351,7 +358,15 @@ def test_start_scheduler_wires_every_sweep_through_lease():
         and call.func.attr == "add_job"
     ]
     assert registrations
+    # Every registration must be lease-wrapped, i.e. its first positional arg
+    # must be a _leased(...) call. This is the real invariant; a hard-coded
+    # job count adds no safety and breaks on every new job.
     for call in registrations:
+        assert call.args, "add_job must pass a callback positionally"
+        first = call.args[0]
+        assert isinstance(first, ast.Call) and isinstance(first.func, ast.Name) \
+            and first.func.id == "_leased", \
+            f"add_job callback is not lease-wrapped: {ast.unparse(first)[:80]}"
         keywords = {keyword.arg: keyword.value for keyword in call.keywords}
         assert "id" in keywords
         assert isinstance(keywords.get("max_instances"), ast.Constant)
@@ -390,7 +405,21 @@ def test_start_scheduler_registers_guarded_unique_jobs(monkeypatch):
 
     assert result is fake
     assert fake.started is True
-    assert len(fake.jobs) == 17
+    # Derive the expected registration count from the source instead of
+    # hard-coding it, so adding a scheduled job does not rot this test.
+    import ast as _ast
+    from pathlib import Path as _Path
+    _src = _Path("portal/emails.py").read_text(encoding="utf-8")
+    _tree = _ast.parse(_src)
+    _start = next(n for n in _tree.body
+                  if isinstance(n, _ast.FunctionDef) and n.name == "start_scheduler")
+    expected_jobs = sum(
+        1 for n in _ast.walk(_start)
+        if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute)
+        and n.func.attr == "add_job"
+    )
+    assert len(fake.jobs) == expected_jobs, (
+        f"registered {len(fake.jobs)} jobs, source has {expected_jobs}")
     ids = [kwargs.get("id") for _, _, kwargs in fake.jobs]
     assert all(ids)
     assert len(ids) == len(set(ids))

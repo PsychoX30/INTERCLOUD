@@ -130,10 +130,21 @@ const tooltipFormatter = (unit) => (value) => [fmtValue(value, unit), ""];
 
 // Compute aggregate stats from a merged IN/OUT traffic series.
 // Returns peak, average, 95th percentile rates in bps, plus total transfer volume.
+// When rollup rows carry server-computed `inMin/inMax/outMin/outMax` (available
+// for ranges beyond the raw tier, where the server already consolidated several
+// raw samples per bucket) the peak and the percentile use those extremes.
+// Otherwise a 1D/1W/1M view would silently understate peaks: every bucket is an
+// average, so intra-bucket spikes are erased and the 95th percentile tracks the
+// average of averages instead of real traffic. Falls back to bucket values when
+// the extremes are absent (raw-resolution responses).
 const trafficStats = (merged, intervalSec = 60) => {
   const nums = (arr) => arr.filter(v => v != null && !Number.isNaN(v)).map(Number);
   const inVals = nums(merged.map(d => d.in));
   const outVals = nums(merged.map(d => d.out));
+  // Extremes for the percentile/peak computation, keeping unknown entries
+  // filtered out. Empty array means "no extremes available" → fall back.
+  const inExtremes = nums(merged.map(d => d.inMax));
+  const outExtremes = nums(merged.map(d => d.outMax));
   const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
   const max = (arr) => (arr.length ? Math.max(...arr) : null);
   const percentile95 = (arr) => {
@@ -146,17 +157,30 @@ const trafficStats = (merged, intervalSec = 60) => {
   const totalIn = inVals.length ? (inVals.reduce((a, b) => a + b, 0) * intervalSec) / 8 / 1e9 : null;
   const totalOut = outVals.length ? (outVals.reduce((a, b) => a + b, 0) * intervalSec) / 8 / 1e9 : null;
 
+  // Peak = the largest value seen anywhere, preferring per-bucket extremes.
+  // Written out explicitly so a genuine peak of 0 bps still reports 0 instead
+  // of falling through a `||` chain.
+  const peakOf = (vals, extremes) => {
+    const candidates = [...vals, ...extremes];
+    return candidates.length ? Math.max(...candidates) : null;
+  };
+
   return {
-    maxIn: max(inVals),
-    maxOut: max(outVals),
+    maxIn: peakOf(inVals, inExtremes),
+    maxOut: peakOf(outVals, outExtremes),
     avgIn: avg(inVals),
     avgOut: avg(outVals),
-    percentile95In: percentile95(inVals),
-    percentile95Out: percentile95(outVals),
+    // Percentile over intra-bucket extremes when the server provided them.
+    percentile95In: percentile95(inExtremes.length ? inExtremes : inVals),
+    percentile95Out: percentile95(outExtremes.length ? outExtremes : outVals),
     totalInGB: totalIn,
     totalOutGB: totalOut,
     currentIn: inVals.length ? inVals[inVals.length - 1] : null,
     currentOut: outVals.length ? outVals[outVals.length - 1] : null,
+    // True when peaks/percentile came from per-bucket extremes rather than the
+    // plotted averages, so the UI can say so instead of implying the line peak
+    // is the real peak.
+    peaksFromRollup: inExtremes.length > 0 || outExtremes.length > 0,
   };
 };
 
@@ -396,22 +420,24 @@ const GraphsTab = ({ isAdmin }) => {
   const [error, setError] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  // Preset mode: null = custom/absolute range; a number = sliding window of
+  // that many hours, recomputed on every fetch so "1D" keeps showing the last
+  // 24h instead of freezing at the moment the preset was clicked.
+  const [rangeHours, setRangeHours] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  // Range presets: set from/to for quick time range selection.
-  // Also immediately reload the open graph so the chart reflects the new range
-  // (previously the preset only set state; the chart never re-queried).
+  // Range presets: set a sliding window and immediately reload the open graph
+  // so the chart reflects the new range (previously the preset only set state;
+  // the chart never re-queried, and `to` froze at click time).
   const setRange = (hours) => {
-    const t = new Date();
-    const f = new Date(t.getTime() - hours * 3600 * 1000).toISOString();
-    const toIso = t.toISOString();
-    setFrom(f);
-    setTo(toIso);
+    setRangeHours(hours);
+    setFrom(new Date(Date.now() - hours * 3600 * 1000).toISOString());
+    setTo("");
     if (expandedId) {
-      loadData(expandedId, { from: f, to: toIso });
+      loadData(expandedId);
       const g = (graphs || []).find(x => x.id === expandedId);
       const pair = g ? findTrafficPair(graphs || [], g) : null;
-      if (pair) loadPairData(pair.id, { from: f, to: toIso });
+      if (pair) loadPairData(pair.id);
     }
   };
   const RANGES = [
@@ -428,6 +454,8 @@ const GraphsTab = ({ isAdmin }) => {
     const f = new Date(customFrom).toISOString();
     const t = new Date(customTo).toISOString();
     if (f >= t) { setError("From harus lebih awal daripada To"); return; }
+    // Custom range exits preset mode: the window is now absolute.
+    setRangeHours(null);
     setFrom(f); setTo(t);
     if (expandedId) {
       loadData(expandedId, { from: f, to: t });
@@ -449,26 +477,29 @@ const GraphsTab = ({ isAdmin }) => {
 
   const loadData = useCallback(async (id, opts = {}) => {
     if (!id) return;
-    const f = opts.from || from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const t = opts.to || to || new Date().toISOString();
+    // In preset (sliding) mode `to` is "" so this recomputes on every fetch and
+    // the chart keeps advancing; the old code stored a fixed `to` at click time
+    // and refreshed it forever, so new samples never appeared.
+    const effTo = opts.to || to || new Date().toISOString();
+    const effFrom = opts.from || from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     try {
       setError("");
-      const r = await api.get(`/admin/monitoring/graphs/${id}/data`, { params: { from: f, to: t, resolution: "auto" } });
+      const r = await api.get(`/admin/monitoring/graphs/${id}/data`, { params: { from: effFrom, to: effTo, resolution: "auto" } });
       setExpandedId(id);
       setGraphData(r.data);
       return r.data;
     } catch (e) { setError(e?.response?.data?.detail || "Failed to load graph data"); return null; }
-  }, [from, to]);
+  }, [from, to, rangeHours]);
 
   const loadPairData = useCallback(async (pairId, opts = {}) => {
     if (!pairId) return;
-    const f = opts.from || from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const t = opts.to || to || new Date().toISOString();
+    const effTo = opts.to || to || new Date().toISOString();
+    const effFrom = opts.from || from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     try {
-      const pr = await api.get(`/admin/monitoring/graphs/${pairId}/data`, { params: { from: f, to: t, resolution: "auto" } });
+      const pr = await api.get(`/admin/monitoring/graphs/${pairId}/data`, { params: { from: effFrom, to: effTo, resolution: "auto" } });
       setPairData(pr.data);
     } catch (e) { setPairData(null); }
-  }, [from, to]);
+  }, [from, to, rangeHours]);
 
   const refreshData = useCallback(async () => {
     if (!expandedId) return;
@@ -490,12 +521,21 @@ const GraphsTab = ({ isAdmin }) => {
     loadPairData(pair.id);
   }, [expandedId, graphs, loadPairData]);
 
-  // Auto-refresh the open graph panel periodically so traffic feels realtime.
+  // Auto-refresh the open graph panel so traffic feels realtime.  Follow the
+  // graph's own poll interval instead of a hardcoded 30s, otherwise a 20s
+  // graph is permanently ~1 poll behind.  Clamped to [15s, 60s]: never hammer
+  // a fast graph, never let a slow graph look frozen.
+  const refreshIntervalMs = useMemo(() => {
+    const g = (graphs || []).find((x) => String(x.id) === String(expandedId));
+    const seconds = Number(g?.interval_seconds) || 30;
+    return Math.min(60000, Math.max(15000, seconds * 1000));
+  }, [graphs, expandedId]);
+
   useEffect(() => {
     if (!autoRefresh || !expandedId) return undefined;
-    const timer = setInterval(() => { refreshData(); }, 30000);
+    const timer = setInterval(() => { refreshData(); }, refreshIntervalMs);
     return () => clearInterval(timer);
-  }, [autoRefresh, expandedId, refreshData]);
+  }, [autoRefresh, expandedId, refreshData, refreshIntervalMs]);
 
   const save = async (e) => {
     e.preventDefault();
@@ -769,7 +809,22 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
   // `graphData` is whichever direction the user opened; `pairData` is its sibling.
   const primaryIsIn = graph?.type === "snmp_traffic_in";
   const merged = useMemo(() => {
-    if (!pairSamples.length) return samples;
+    // Copy the value AND the rollup extremes for one direction onto a row.
+    // `min`/`max` are absent at raw resolution (each sample IS one poll), so
+    // they fall back to the value itself — which keeps the stats math below
+    // correct for both tiers instead of silently dropping the spikes that the
+    // server already computed for hourly/daily buckets.
+    const attach = (row, dir, s) => {
+      row[dir] = s.value;
+      row[`${dir}Min`] = s.min ?? s.value;
+      row[`${dir}Max`] = s.max ?? s.value;
+      return row;
+    };
+    const primaryDir = primaryIsIn ? "in" : "out";
+    const siblingDir = primaryIsIn ? "out" : "in";
+    if (!pairSamples.length) {
+      return samples.map(s => attach({ ts: s.ts }, primaryDir, s));
+    }
     // IN and OUT are polled as two separate SNMP GETs, so their sample
     // timestamps differ by a few hundred milliseconds within the same polling
     // interval. Keying the merge on the exact millisecond `ts` NEVER joins the
@@ -781,14 +836,14 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
     samples.forEach(s => {
       const key = secKey(s.ts);
       if (key == null) return;
-      byBucket.set(key, { ts: s.ts, in: primaryIsIn ? s.value : undefined, out: primaryIsIn ? undefined : s.value });
+      byBucket.set(key, attach({ ts: s.ts }, primaryDir, s));
     });
     pairSamples.forEach(s => {
       const key = secKey(s.ts);
       if (key == null) return;
       const entry = byBucket.get(key);
-      if (entry) { if (primaryIsIn) entry.out = s.value; else entry.in = s.value; }
-      else byBucket.set(key, { ts: s.ts, in: primaryIsIn ? undefined : s.value, out: primaryIsIn ? s.value : undefined });
+      if (entry) attach(entry, siblingDir, s);
+      else byBucket.set(key, attach({ ts: s.ts }, siblingDir, s));
     });
     return Array.from(byBucket.values()).sort((a, b) => a.ts - b.ts);
   }, [samples, pairSamples, primaryIsIn]);
@@ -844,6 +899,16 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
               )}
               {showOut && (
                 <Area type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} fill="rgba(245,177,32,0.18)" fillOpacity={1} dot={false} connectNulls={false} isAnimationActive={false} />
+              )}
+              {/* Envelope: per-bucket maximum from the server rollup, drawn as a
+                  thin dashed line above the average area. At raw resolution the
+                  envelope equals the line itself (min/max are the sample), so
+                  this doubles every point — harmless, but skip it there. */}
+              {showIn && merged.some(d => d.inMax != null && d.inMax !== d.in) && (
+                <Line type="monotone" dataKey="inMax" name="IN max" stroke="#16a34a" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls={false} isAnimationActive={false} />
+              )}
+              {showOut && merged.some(d => d.outMax != null && d.outMax !== d.out) && (
+                <Line type="monotone" dataKey="outMax" name="OUT max" stroke="#f5b120" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls={false} isAnimationActive={false} />
               )}
             </AreaChart>
           </ResponsiveContainer>
@@ -940,6 +1005,12 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
               ) : null}
             </tbody>
           </table>
+          {stats.peaksFromRollup && (
+            <p className="mt-1 text-[10px] text-slate-400">
+              Maximum &amp; 95th dihitung dari puncak per-bucket rollup server (bukan rata-rata);
+              garis putus-putus = envelope MAX bucket.
+            </p>
+          )}
         </div>
       )}
       {isTraffic && pair && (
@@ -1247,6 +1318,13 @@ const GraphForm = ({ value, onChange, onSubmit, onClose, onAfterSave }) => {
       display_name: sensor.label || sensor.oid,
       type: kindToType(sensor.kind),
       unit: sensor.unit || "",
+      // Interface identity MUST travel with the graph. Without it the sweep
+      // cannot re-map the OID after a MikroTik reboot renumbers ifIndex, so
+      // the graph dies permanently with "No Such Object" instead of healing.
+      interface_name: sensor.interface_name || "",
+      interface_index: sensor.interface_index !== undefined && sensor.interface_index !== null
+        ? String(sensor.interface_index) : "",
+      interface_status: sensor.interface_status || "",
     }));
     setBulkBusy(true); setScanError("");
     try {
