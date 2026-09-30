@@ -85,6 +85,36 @@ const CopyId = ({ id }) => {
 
 const trafficBaseName = (g) => (g.display_name || g.name || "").replace(/\s*(in|out)\s*$/i, "").trim().toLowerCase();
 
+// Clean up legacy graph names like '"VLAN 108 - RIVAN" ("")' ->
+// 'VLAN 108 - RIVAN'. Old docs stored the SNMP interface name verbatim
+// (including quotes) together with an empty alias, which rendered as '("")'.
+const cleanGraphName = (raw) => {
+  const s = String(raw || "").trim();
+  if (!s) return s;
+  const first = s.match(/"([^"]*)"/);
+  if (first && first[1].trim()) return first[1].trim();
+  return s.replace(/\s*\(\s*""\s*\)\s*$/i, "").replace(/\s*\(\)\s*$/i, "").trim();
+};
+
+// Health badge for a graph row: shows the last poll outcome so a graph that
+// silently stopped sampling (stale OID, unreachable host) is visible.
+const graphHealth = (g) => {
+  const state = (g?.last_poll_state || "").toLowerCase();
+  if (state === "error") {
+    return { label: "Error", cls: "bg-red-100 text-red-700", title: g?.last_poll_error || "last poll failed" };
+  }
+  if (state === "ok") {
+    return { label: "OK", cls: "bg-green-100 text-green-700", title: "last poll succeeded" };
+  }
+  return { label: "—", cls: "bg-slate-100 text-slate-400", title: "no poll recorded yet" };
+};
+
+// Worst-of-the-two-directions health for a merged IN/OUT pair row.
+const pairHealth = (row) => {
+  const dirs = [row.inGraph, row.outGraph].filter(Boolean).map(graphHealth);
+  return dirs.find(h => h.label === "Error") || dirs[0] || graphHealth(null);
+};
+
 // Recharts Y-axis tick formatter: compact form without unit suffix repetition.
 const yTickFormatter = (unit) => (v) => {
   if (v == null || Number.isNaN(v)) return "";
@@ -625,14 +655,16 @@ const GraphsTab = ({ isAdmin }) => {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[11px] uppercase tracking-widest text-slate-500">
-                <tr><th className="px-4 py-3 text-left">Name</th><th className="px-4 py-3 text-left">Graph ID</th><th className="px-4 py-3 text-left">Target</th><th className="px-4 py-3 text-left">Type</th><th className="px-4 py-3 text-left">Interval</th><th className="px-4 py-3 text-left">Client</th><th className="px-4 py-3 text-left">Visible to</th><th className="px-4 py-3 text-right">Actions</th></tr>
+                <tr><th className="px-4 py-3 text-left">Name</th><th className="px-4 py-3 text-left">Health</th><th className="px-4 py-3 text-left">Graph ID</th><th className="px-4 py-3 text-left">Target</th><th className="px-4 py-3 text-left">Type</th><th className="px-4 py-3 text-left">Interval</th><th className="px-4 py-3 text-left">Client</th><th className="px-4 py-3 text-left">Visible to</th><th className="px-4 py-3 text-right">Actions</th></tr>
               </thead>
               <tbody>
                 {graphRows.map(row => {
                   const isPair = row.kind === "pair";
                   const g = isPair ? (row.inGraph || row.outGraph) : row.graph;
-                  const rowName = isPair ? row.name : (g.display_name || g.name);
+                  const rowName = isPair ? row.name : cleanGraphName(g.display_name || g.name);
                   const rowType = isPair ? "snmp_traffic" : g.type;
+                  // For a pair, surface the worse of the two directions.
+                  const rowHealth = isPair ? pairHealth(row) : graphHealth(g);
                   const memberIds = isPair
                     ? [row.inGraph?.id, row.outGraph?.id].filter(Boolean)
                     : [g.id];
@@ -643,6 +675,13 @@ const GraphsTab = ({ isAdmin }) => {
                         <td className="px-4 py-3 font-semibold text-[#0a2350]">
                           {rowName}
                           {isPair && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">IN+OUT</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-bold ${rowHealth.cls}`}
+                            title={rowHealth.title}
+                            data-testid="graph-health"
+                          >{rowHealth.label}</span>
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-slate-500"><CopyButton text={row.id} label="copy" /> <span className="ml-1">{row.id.slice(0, 10)}…</span></td>
                         <td className="px-4 py-3 font-mono text-xs">{isPair ? row.target : g.target}</td>
@@ -711,7 +750,8 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
 
   const samples = (graphData.data || []).map(s => ({ ...s, at: s.at, ts: s.at ? new Date(s.at).getTime() : null }));
   const pairSamples = (pairData?.data || []).map(s => ({ ...s, at: s.at, ts: s.at ? new Date(s.at).getTime() : null }));
-  const title = graph?.display_name || graph?.name || `Graph ${graphData.graph_id}`;
+  const title = cleanGraphName(graph?.display_name || graph?.name) || `Graph ${graphData.graph_id}`;
+  const graphErr = graph?.last_poll_state === "error" ? (graph?.last_poll_error || "last poll failed") : "";
 
   // The X-axis spans the full user-selected range (from/to), not just the
   // points present, so a 1W view with only 3 days of data still shows the
@@ -858,6 +898,11 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
           ))}
         </div>
       )}
+      {graphErr && (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" data-testid="graph-poll-error">
+          <b>Collection failing:</b> {graphErr} — the interface OID may have changed on the device (SNMP ifIndex renumbering). Re-run discovery to fix.
+        </div>
+      )}
       {renderChart()}
       {isTraffic && pair && stats && (
         <div className="mt-3 overflow-x-auto" data-testid="mrtg-stats-table">
@@ -930,7 +975,7 @@ const groupGraphRows = (graphs) => {
           id: primary.id,
           inGraph: inGraph || null,
           outGraph: outGraph || null,
-          name: (primary.display_name || primary.name || "").replace(/\s*(In|Out|IN|OUT)\b/i, "").trim() || primary.name,
+          name: cleanGraphName((primary.display_name || primary.name || "").replace(/\s*(In|Out|IN|OUT)\b/i, "").trim()) || primary.name,
           target: primary.target,
           interval_seconds: primary.interval_seconds,
           client_id: primary.client_id,

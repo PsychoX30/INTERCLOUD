@@ -151,6 +151,14 @@ async def create_graphs_bulk(payload: dict, admin=Depends(get_current_admin)):
             "unit": unit,
             "display_name": display_name,
         }
+        # Persist the interface identity so the sweep can re-map the OID if the
+        # device renumbers its ifIndex (a MikroTik router reboot/upgrade can
+        # move "VLAN 108 - RIVAN" from .9 to .65, which silently kills the
+        # graph because the stored OID then returns "No Such Object").
+        if sensor.get("interface_name") is not None:
+            doc["interface_name"] = str(sensor.get("interface_name") or "")[:120]
+        if sensor.get("interface_index") is not None:
+            doc["interface_index"] = str(sensor.get("interface_index") or "")[:16]
         result = await db.monitoring_graphs.insert_one(doc)
         doc["_id"] = result.inserted_id
         created.append(serialize_graph(doc))
@@ -309,6 +317,13 @@ async def update_graph(graph_id: str, payload: dict, admin=Depends(get_current_a
         updates["type"] = payload["type"]
     if "snmp_oid" in payload:
         updates["snmp_oid"] = _clean_or_400(_clean_oid, payload["snmp_oid"]) if payload["snmp_oid"] else None
+        # A manual OID change invalidates the recorded interface identity, which
+        # the auto-heal uses to re-map a drifted ifIndex. Keeping a stale name
+        # would let the healer move the graph back to an interface the admin
+        # deliberately moved it away from.
+        if "interface_name" not in payload:
+            updates["interface_name"] = ""
+            updates["interface_index"] = ""
     if "snmp_community" in payload:
         updates["snmp_community"] = _clean_community(payload["snmp_community"])
     if "snmp_port" in payload:
@@ -325,6 +340,10 @@ async def update_graph(graph_id: str, payload: dict, admin=Depends(get_current_a
         updates["unit"] = payload["unit"]
     if "display_name" in payload:
         updates["display_name"] = payload["display_name"]
+    if "interface_name" in payload:
+        updates["interface_name"] = str(payload["interface_name"] or "")[:120]
+    if "interface_index" in payload:
+        updates["interface_index"] = str(payload["interface_index"] or "")[:16]
     if "visible_roles" in payload:
         updates["visible_roles"] = _clean_visible_roles(payload["visible_roles"])
 

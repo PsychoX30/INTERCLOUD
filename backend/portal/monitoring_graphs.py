@@ -24,6 +24,11 @@ logger = logging.getLogger("portal.monitoring_graphs")
 _MIN_INTERVAL = 20
 _MAX_INTERVAL = 3600
 
+# Max graphs polled concurrently in one sweep. The sweep ticks every 20s;
+# polling serially made a 6-graph sweep exceed the tick and halved the
+# effective cadence (every second sweep skipped as "still running").
+_SWEEP_CONCURRENCY = 8
+
 # Graph types that represent a counter (monotonic increasing octet counter)
 # and therefore need rate (delta / elapsed) conversion to produce a bps value.
 COUNTER_GRAPH_TYPES = {"snmp_traffic_in", "snmp_traffic_out"}
@@ -595,6 +600,148 @@ def _compute_rate(current: float, prev: Optional[dict], now: datetime,
 # ---------------------------------------------------------------------------
 # Graph sweep (mirrors run_monitoring_probe_sweep)
 # ---------------------------------------------------------------------------
+async def _record_graph_status(db, *, graph: dict, state: str,
+                                error: str = "") -> None:
+    """Persist the outcome of the last poll on the graph document.
+
+    Without this, a graph whose OID went stale (e.g. the device renumbered its
+    interfaces) looks identical to a healthy idle one: both simply stop
+    producing samples. Recording the state lets the UI flag a dead graph
+    instead of silently rendering an empty chart.
+    """
+    try:
+        await db.monitoring_graphs.update_one(
+            {"_id": graph["_id"]},
+            {"$set": {
+                "last_poll_at": datetime.now(timezone.utc),
+                "last_poll_state": state,
+                "last_poll_error": (error or "")[:200],
+            }},
+        )
+    except Exception:  # noqa: BLE001 - status is advisory, never break polling
+        logger.debug("[graphs] status update failed for %s", graph.get("_id"), exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Stale-OID auto-heal
+#
+# MikroTik (and most agents) assign ifIndex dynamically. A reboot, firmware
+# upgrade, or interface reorder can move "sfp-sfpplus1" from ifIndex 7 to 42.
+# The stored OID then answers "No Such Object" and the graph silently flatlines
+# forever, because nothing re-derives the OID. Re-mapping by interface NAME
+# recovers the graph without admin intervention.
+# ---------------------------------------------------------------------------
+_STALE_OID_MARKERS = ("no such object", "no such instance", "nosuchobject")
+
+# target -> last remap attempt. A discovery run costs 8 snmpwalks, so throttle
+# hard: a flapping device must not turn the 20s sweep into an snmpwalk storm.
+_REMAP_COOLDOWN_SECONDS = 600
+_last_remap_attempt: dict[str, datetime] = {}
+
+
+def _is_stale_oid_error(error: str) -> bool:
+    low = (error or "").lower()
+    return any(m in low for m in _STALE_OID_MARKERS)
+
+
+def _graph_interface_name(graph: dict) -> str:
+    """Best-effort interface name for a graph (stored field, else graph name)."""
+    stored = str(graph.get("interface_name") or "").strip().strip('"').strip()
+    if stored:
+        return stored
+    for field in ("display_name", "name"):
+        raw = str(graph.get(field) or "")
+        m = re.search(r'"([^"]+)"', raw)
+        if m:
+            return m.group(1).strip()
+        if raw.strip():
+            return re.sub(r"\s*\(.*", "", raw).strip()
+    return ""
+
+
+async def heal_stale_oid(db, *, graph: dict) -> Optional[str]:
+    """Re-derive a graph's OID from its live interface name.
+
+    Returns the new OID when the interface was found under a different ifIndex
+    and the graph document was updated, else ``None``. Never raises: healing is
+    opportunistic and must not break the sweep.
+    """
+    graph_id = str(graph.get("_id") or "")
+    g_type = str(graph.get("type") or "")
+    if g_type not in COUNTER_GRAPH_TYPES:
+        return None  # only interface counters drift by ifIndex
+
+    target = str(graph.get("target") or "").strip()
+    if not target:
+        return None
+
+    # Interface name is unknown for graphs created before we started storing it;
+    # seed it once from the graph title so future heals work.
+    iface = _graph_interface_name(graph)
+    if not iface:
+        return None
+
+    direction = "in" if g_type.endswith("_in") else "out"
+
+    now = datetime.now(timezone.utc)
+    last = _last_remap_attempt.get(target)
+    if last and (now - last).total_seconds() < _REMAP_COOLDOWN_SECONDS:
+        return None
+    _last_remap_attempt[target] = now
+
+    try:
+        found = await discover_snmp_sensors(
+            target,
+            str(graph.get("snmp_community") or "public"),
+            port=int(graph.get("snmp_port") or 161),
+            version=str(graph.get("snmp_version") or "2c"),
+            user=str(graph.get("snmp_user") or ""),
+            auth_protocol=str(graph.get("snmp_auth_protocol") or ""),
+            auth_key=str(graph.get("snmp_auth_key") or ""),
+            priv_protocol=str(graph.get("snmp_priv_protocol") or ""),
+            priv_key=str(graph.get("snmp_priv_key") or ""),
+        )
+    except Exception:
+        logger.exception("[graphs] heal discovery failed for %s", graph_id)
+        return None
+
+    if not found.get("ok"):
+        logger.warning("[graphs] heal discovery not ok for %s: %s",
+                       graph_id, found.get("error"))
+        return None
+
+    want = iface.strip().lower()
+    for sensor in found.get("sensors") or []:
+        if sensor.get("category") != "interface":
+            continue
+        if sensor.get("direction") != direction:
+            continue
+        cand = str(sensor.get("interface_name") or "").strip().strip('"').strip()
+        if cand.lower() != want:
+            continue
+        new_oid = str(sensor.get("oid") or "").strip()
+        if not new_oid or new_oid == str(graph.get("snmp_oid") or ""):
+            continue
+        try:
+            await db.monitoring_graphs.update_one(
+                {"_id": graph["_id"]},
+                {"$set": {
+                    "snmp_oid": new_oid,
+                    "interface_name": cand,
+                    "interface_index": str(sensor.get("interface_index") or ""),
+                    "updated_at": now,
+                }},
+            )
+        except Exception:
+            logger.exception("[graphs] heal update failed for %s", graph_id)
+            return None
+        logger.warning("[graphs] auto-healed stale OID for %s (%s): %s -> %s",
+                       graph_id, cand, graph.get("snmp_oid"), new_oid)
+        graph["snmp_oid"] = new_oid  # let the caller retry immediately
+        return new_oid
+    return None
+
+
 async def probe_graph(db, *, graph: dict, owner: str,
                       timeout: float = 3.0) -> dict:
     """Poll a single graph and store the sample.
@@ -617,6 +764,7 @@ async def probe_graph(db, *, graph: dict, owner: str,
         now = datetime.now(timezone.utc)
         sample = {"graph_id": graph_id, "at": now, "value": value, "raw": ""}
         await db.monitoring_graph_samples_raw.insert_one(sample)
+        await _record_graph_status(db, graph=graph, state="ok")
         return {"probed": True, "value": value}
 
     # SNMP-based graph
@@ -635,14 +783,38 @@ async def probe_graph(db, *, graph: dict, owner: str,
         priv_key=str(graph.get("snmp_priv_key") or ""),
     )
     if snmp_result.get("error"):
-        logger.warning("[graphs] SNMP poll failed for %s: %s", graph_id, snmp_result["error"])
-        return {"skipped": True, "error": snmp_result["error"]}
+        err = str(snmp_result["error"])
+        # A "No Such Object" answer means the OID itself is gone — usually the
+        # device renumbered its ifIndex. Try to re-derive the OID by interface
+        # name and retry once before giving up.
+        if _is_stale_oid_error(err):
+            healed = await heal_stale_oid(db, graph=graph)
+            if healed:
+                snmp_result = await poll_snmp(
+                    target, healed, community,
+                    timeout=timeout, port=port,
+                    version=version,
+                    user=str(graph.get("snmp_user") or ""),
+                    auth_protocol=str(graph.get("snmp_auth_protocol") or ""),
+                    auth_key=str(graph.get("snmp_auth_key") or ""),
+                    priv_protocol=str(graph.get("snmp_priv_protocol") or ""),
+                    priv_key=str(graph.get("snmp_priv_key") or ""),
+                )
+                err = str(snmp_result.get("error") or "")
+                oid = healed
+        if err:
+            logger.warning("[graphs] SNMP poll failed for %s: %s", graph_id, err)
+            await _record_graph_status(db, graph=graph, state="error", error=err)
+            return {"skipped": True, "error": err}
     value = snmp_result.get("value")
     if value is None:
+        await _record_graph_status(db, graph=graph, state="error", error="no value")
         return {"skipped": True, "error": "no value"}
     try:
         value = float(value)
     except (ValueError, TypeError):
+        await _record_graph_status(db, graph=graph, state="error",
+                                   error=f"non-numeric value: {value}")
         return {"skipped": True, "error": f"non-numeric value: {value}"}
 
     now = datetime.now(timezone.utc)
@@ -657,6 +829,7 @@ async def probe_graph(db, *, graph: dict, owner: str,
             # Store the counter baseline only so the next poll has a reference.
             await db.monitoring_graph_samples_raw.insert_one(
                 {"graph_id": graph_id, "at": now, "value": None, "raw": "baseline", "raw_counter": value})
+            await _record_graph_status(db, graph=graph, state="ok")
             return {"probed": True, "value": value, "baseline": True}
         value = rate
 
@@ -669,6 +842,7 @@ async def probe_graph(db, *, graph: dict, owner: str,
     if g_type in COUNTER_GRAPH_TYPES:
         sample["raw_counter"] = snmp_result["value"]
     await db.monitoring_graph_samples_raw.insert_one(sample)
+    await _record_graph_status(db, graph=graph, state="ok")
     return {"probed": True, "value": value}
 
 
@@ -679,6 +853,11 @@ async def run_graph_sweep(db, *, owner: str,
 
     Mirrors run_monitoring_probe_sweep: lease per-graph, failure isolation,
     interval-based scheduling.
+
+    Due graphs are polled concurrently under a bounded semaphore. Polling them
+    serially made a sweep of N hosts exceed the 20s tick, so every second tick
+    was skipped as "still running" and graphs effectively sampled at half their
+    configured interval.
     """
     from portal.emails import acquire_scheduler_lease, _release_scheduler_lease
 
@@ -689,6 +868,7 @@ async def run_graph_sweep(db, *, owner: str,
     graphs = await db.monitoring_graphs.find({"enabled": True}).to_list(500)
     summary = {"checked": len(graphs), "probed": 0, "skipped_not_due": 0, "errors": 0}
 
+    due: list[dict] = []
     for graph in graphs:
         graph_id = str(graph.get("_id") or "")
         try:
@@ -705,31 +885,42 @@ async def run_graph_sweep(db, *, owner: str,
                     if last_at + timedelta(seconds=interval) > now:
                         summary["skipped_not_due"] += 1
                         continue
-
-            # Per-graph lease
-            lease_id = f"job:graph:{graph_id}"
-            acquired, current_owner = await acquire_scheduler_lease(
-                db, lease_id=lease_id, owner=owner, ttl_seconds=300
-            )
-            if not acquired:
-                summary["skipped_not_due"] += 1
-                continue
-
-            try:
-                result = await probe_graph(db, graph=graph, owner=owner, timeout=timeout)
-                if result.get("probed"):
-                    summary["probed"] += 1
-                elif result.get("skipped"):
-                    summary["errors"] += 1
-            finally:
-                try:
-                    await _release_scheduler_lease(db, lease_id=lease_id, owner=owner)
-                except Exception:
-                    logger.exception("[graphs] release failed for %s", graph_id)
-
+            due.append(graph)
         except Exception:
             summary["errors"] += 1
-            logger.exception("[graphs] sweep failed for %s", graph_id)
+            logger.exception("[graphs] due-check failed for %s", graph_id)
+
+    sem = asyncio.Semaphore(_SWEEP_CONCURRENCY)
+
+    async def _one(graph: dict) -> str:
+        graph_id = str(graph.get("_id") or "")
+        lease_id = f"job:graph:{graph_id}"
+        async with sem:
+            try:
+                acquired, _current_owner = await acquire_scheduler_lease(
+                    db, lease_id=lease_id, owner=owner, ttl_seconds=300
+                )
+                if not acquired:
+                    return "skip"
+                try:
+                    result = await probe_graph(db, graph=graph, owner=owner, timeout=timeout)
+                    if result.get("probed"):
+                        return "probed"
+                    return "error"
+                finally:
+                    try:
+                        await _release_scheduler_lease(db, lease_id=lease_id, owner=owner)
+                    except Exception:
+                        logger.exception("[graphs] release failed for %s", graph_id)
+            except Exception:
+                logger.exception("[graphs] sweep failed for %s", graph_id)
+                return "error"
+
+    if due:
+        results = await asyncio.gather(*[_one(g) for g in due])
+        summary["probed"] += results.count("probed")
+        summary["errors"] += results.count("error")
+        summary["skipped_not_due"] += results.count("skip")
 
     return summary
 
@@ -784,7 +975,17 @@ def serialize_graph(doc: dict) -> dict:
         "client_id": str(doc["client_id"]) if doc.get("client_id") else None,
         "unit": doc.get("unit") or "",
         "display_name": doc.get("display_name") or "",
+        # Interface identity: enables auto-heal when the device renumbers its
+        # ifIndex and the stored OID goes stale.
+        "interface_name": doc.get("interface_name") or "",
+        "interface_index": doc.get("interface_index") or "",
         "visible_roles": doc.get("visible_roles") or ["admin", "support"],
+        # Last poll outcome, so the UI can flag a graph that silently stopped
+        # producing samples (stale OID, unreachable host) instead of rendering
+        # an empty chart with no explanation.
+        "last_poll_at": doc.get("last_poll_at"),
+        "last_poll_state": doc.get("last_poll_state") or "",
+        "last_poll_error": doc.get("last_poll_error") or "",
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
     }

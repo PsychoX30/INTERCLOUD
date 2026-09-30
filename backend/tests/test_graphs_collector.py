@@ -264,9 +264,18 @@ class _Samples:
         self.inserted.append(doc)
 
 
+class _Graphs:
+    """Minimal stand-in for the monitoring_graphs collection."""
+    def __init__(self):
+        self.updates = []
+    async def update_one(self, flt, update):
+        self.updates.append((flt, update))
+
+
 class _Db:
     def __init__(self):
         self.monitoring_graph_samples_raw = _Samples()
+        self.monitoring_graphs = _Graphs()
 
 
 @pytest.mark.anyio
@@ -342,3 +351,359 @@ def test_serialize_graph_does_not_leak_auth_keys():
     out = mg.serialize_graph(doc)
     assert "snmp_auth_key" not in out
     assert "snmp_priv_key" not in out
+
+
+def test_serialize_graph_exposes_poll_status():
+    """A graph that stopped sampling must be distinguishable from an idle one."""
+    doc = {"_id": ObjectId(), "name": "G", "target": "8.8.8.8",
+           "last_poll_state": "error", "last_poll_error": "No Such Object"}
+    out = mg.serialize_graph(doc)
+    assert out["last_poll_state"] == "error"
+    assert out["last_poll_error"] == "No Such Object"
+
+
+def test_serialize_graph_poll_status_defaults_empty():
+    doc = {"_id": ObjectId(), "name": "G", "target": "8.8.8.8"}
+    out = mg.serialize_graph(doc)
+    assert out["last_poll_state"] == ""
+    assert out["last_poll_error"] == ""
+
+
+# ---------------------------------------------------------------------------
+# _record_graph_status
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_probe_graph_records_ok_status(monkeypatch):
+    db = _Db()
+    graph = {
+        "_id": ObjectId(), "type": "snmp_traffic", "target": "8.8.8.8",
+        "snmp_oid": "1.3.6.1", "snmp_community": "public", "snmp_port": 161,
+        "snmp_version": "2c",
+    }
+    monkeypatch.setattr(mg, "poll_snmp", AsyncMock(
+        return_value={"value": 42.5, "raw": "x", "error": None}))
+    await mg.probe_graph(db, graph=graph, owner="host:1")
+    assert len(db.monitoring_graphs.updates) == 1
+    _flt, update = db.monitoring_graphs.updates[0]
+    assert update["$set"]["last_poll_state"] == "ok"
+    assert update["$set"]["last_poll_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_probe_graph_records_error_status(monkeypatch):
+    """The stale-OID failure mode that silently killed 4 production graphs."""
+    db = _Db()
+    graph = {
+        "_id": ObjectId(), "type": "snmp_traffic", "target": "8.8.8.8",
+        "snmp_oid": "1.3.6.1", "snmp_community": "public", "snmp_port": 161,
+        "snmp_version": "2c",
+    }
+    monkeypatch.setattr(mg, "poll_snmp", AsyncMock(
+        return_value={"value": None, "raw": "",
+                      "error": "No Such Object available on this agent at this OID"}))
+    out = await mg.probe_graph(db, graph=graph, owner="host:1")
+    assert out["skipped"] is True
+    _flt, update = db.monitoring_graphs.updates[0]
+    assert update["$set"]["last_poll_state"] == "error"
+    assert "No Such Object" in update["$set"]["last_poll_error"]
+
+
+@pytest.mark.anyio
+async def test_record_graph_status_never_raises():
+    """Status bookkeeping is advisory: a DB hiccup must not break collection."""
+    class _Boom:
+        async def update_one(self, *_a, **_kw):
+            raise RuntimeError("mongo down")
+    db = _Db()
+    db.monitoring_graphs = _Boom()
+    await mg._record_graph_status(db, graph={"_id": ObjectId()}, state="ok")
+
+
+def test_sweep_concurrency_is_bounded():
+    """Sweep must poll concurrently but stay bounded to avoid SNMP floods."""
+    assert 1 < mg._SWEEP_CONCURRENCY <= 32
+
+
+# ---------------------------------------------------------------------------
+# run_graph_sweep concurrency
+# ---------------------------------------------------------------------------
+class _SweepCursor:
+    def __init__(self, docs):
+        self._docs = docs
+    async def to_list(self, _limit):
+        return list(self._docs)
+
+
+class _SweepGraphsCol:
+    def __init__(self, docs):
+        self._docs = docs
+    def find(self, *_a, **_kw):
+        return _SweepCursor(self._docs)
+    async def update_one(self, *_a, **_kw):
+        return None
+
+
+class _SweepSamplesCol:
+    def __init__(self):
+        self.inserted = []
+    async def insert_one(self, doc):
+        self.inserted.append(doc)
+    async def find_one(self, *_a, **_kw):
+        return None  # nothing sampled yet -> everything is due
+
+
+class _SweepDb:
+    def __init__(self, docs):
+        self.monitoring_graphs = _SweepGraphsCol(docs)
+        self.monitoring_graph_samples_raw = _SweepSamplesCol()
+        self.scheduler_leases = _LeaseCol()
+
+
+class _LeaseCol:
+    """Lease collection that always grants the lease (single-process test)."""
+    def __init__(self):
+        self.docs = {}
+    async def find_one(self, *_a, **_kw):
+        return None
+    async def insert_one(self, doc):
+        self.docs[doc.get("lease_id")] = doc
+    async def delete_one(self, flt, *_a, **_kw):
+        self.docs.pop(flt.get("lease_id"), None)
+        return type("R", (), {"deleted_count": 1})()
+    async def update_one(self, *_a, **_kw):
+        return None
+    async def find_one_and_update(self, query, update, *_a, **_kw):
+        """Grant the lease unconditionally (single-process test)."""
+        doc = dict(update["$set"])
+        doc["_id"] = query.get("_id")
+        doc["owner"] = update["$set"]["owner"]
+        self.docs[doc["_id"]] = doc
+        return doc
+
+
+@pytest.mark.anyio
+async def test_run_graph_sweep_probes_all_due_graphs(monkeypatch):
+    """All due graphs are polled in one sweep (previously serial + half-rate)."""
+    docs = [
+        {"_id": ObjectId(), "type": "snmp_traffic", "target": "8.8.8.8",
+         "snmp_oid": f"1.3.6.1.2.1.31.1.1.1.6.{i}", "snmp_community": "public",
+         "snmp_port": 161, "snmp_version": "2c", "enabled": True,
+         "interval_seconds": 20}
+        for i in range(6)
+    ]
+    db = _SweepDb(docs)
+    seen = []
+
+    async def fake_poll_snmp(target, oid, *a, **kw):
+        seen.append(oid)
+        return {"value": 1000.0, "raw": "x", "error": None}
+
+    monkeypatch.setattr(mg, "poll_snmp", fake_poll_snmp)
+    monkeypatch.setattr(mg, "_load_last_counter", AsyncMock(return_value=None))
+    summary = await mg.run_graph_sweep(db, owner="host:1")
+    assert summary["checked"] == 6
+    assert len(seen) == 6
+    assert summary["errors"] == 0
+
+
+@pytest.mark.anyio
+async def test_run_graph_sweep_polls_concurrently(monkeypatch):
+    """Proof of concurrency: overlapping polls means the sweep fits its tick.
+
+    A serial sweep of N graphs took longer than the 20s tick, so every second
+    tick was skipped and the effective cadence halved.
+    """
+    docs = [
+        {"_id": ObjectId(), "type": "snmp_traffic", "target": "8.8.8.8",
+         "snmp_oid": f"1.3.6.1.2.1.31.1.1.1.6.{i}", "snmp_community": "public",
+         "snmp_port": 161, "snmp_version": "2c", "enabled": True,
+         "interval_seconds": 20}
+        for i in range(6)
+    ]
+    db = _SweepDb(docs)
+    in_flight = 0
+    max_in_flight = 0
+
+    async def fake_poll_snmp(target, oid, *a, **kw):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)  # yield so siblings can overlap
+        in_flight -= 1
+        return {"value": 1000.0, "raw": "x", "error": None}
+
+    monkeypatch.setattr(mg, "poll_snmp", fake_poll_snmp)
+    monkeypatch.setattr(mg, "_load_last_counter", AsyncMock(return_value=None))
+    await mg.run_graph_sweep(db, owner="host:1")
+    assert max_in_flight > 1, "sweep is still serial"
+
+
+# ---------------------------------------------------------------------------
+# Stale-OID auto-heal (the production failure: ifIndex renumbering)
+# ---------------------------------------------------------------------------
+def test_is_stale_oid_error_matches_net_snmp_wording():
+    assert mg._is_stale_oid_error(
+        "No Such Object available on this agent at this OID")
+    assert mg._is_stale_oid_error("Timeout: No Such Instance currently exists")
+    assert not mg._is_stale_oid_error("Timeout: No Response from 8.8.8.8")
+
+
+def test_graph_interface_name_prefers_stored_field():
+    assert mg._graph_interface_name({"interface_name": '"sfp-sfpplus1"'}) == "sfp-sfpplus1"
+
+
+def test_graph_interface_name_falls_back_to_title():
+    """Legacy graphs predate the stored field; their title carries the name."""
+    g = {"name": '"VLAN 108 - RIVAN" (""'}
+    assert mg._graph_interface_name(g) == "VLAN 108 - RIVAN"
+
+
+@pytest.mark.anyio
+async def test_heal_stale_oid_remaps_by_interface_name(monkeypatch):
+    """Regression: ifIndex 7 -> 42 must be recovered automatically."""
+    db = _Db()
+    graph = {
+        "_id": ObjectId(), "type": "snmp_traffic_in", "target": "157.20.32.253",
+        "snmp_oid": "1.3.6.1.2.1.31.1.1.1.6.7",
+        "snmp_community": "INTERCLOUD", "interface_name": "sfp-sfpplus1",
+    }
+    mg._last_remap_attempt.clear()
+
+    async def fake_discover(target, community="public", **kw):
+        return {"ok": True, "target": target, "error": None, "sensors": [
+            {"category": "interface", "direction": "in",
+             "interface_name": '"sfp-sfpplus1"', "interface_index": "42",
+             "oid": "1.3.6.1.2.1.31.1.1.1.6.42"},
+            {"category": "interface", "direction": "out",
+             "interface_name": '"sfp-sfpplus1"', "interface_index": "42",
+             "oid": "1.3.6.1.2.1.31.1.1.1.10.42"},
+        ]}
+
+    monkeypatch.setattr(mg, "discover_snmp_sensors", fake_discover)
+    new_oid = await mg.heal_stale_oid(db, graph=graph)
+    assert new_oid == "1.3.6.1.2.1.31.1.1.1.6.42"
+    _flt, update = db.monitoring_graphs.updates[0]
+    assert update["$set"]["snmp_oid"] == "1.3.6.1.2.1.31.1.1.1.6.42"
+    assert update["$set"]["interface_index"] == "42"
+
+
+@pytest.mark.anyio
+async def test_heal_stale_oid_respects_direction(monkeypatch):
+    """An IN graph must not be healed onto the OUT counter OID."""
+    db = _Db()
+    graph = {
+        "_id": ObjectId(), "type": "snmp_traffic_in", "target": "10.0.0.1",
+        "snmp_oid": "1.3.6.1.2.1.31.1.1.1.6.7", "interface_name": "eth1",
+    }
+    mg._last_remap_attempt.clear()
+
+    async def fake_discover(target, community="public", **kw):
+        return {"ok": True, "sensors": [
+            {"category": "interface", "direction": "out",
+             "interface_name": '"eth1"', "interface_index": "9",
+             "oid": "1.3.6.1.2.1.31.1.1.1.10.9"},
+        ]}
+
+    monkeypatch.setattr(mg, "discover_snmp_sensors", fake_discover)
+    assert await mg.heal_stale_oid(db, graph=graph) is None
+    assert db.monitoring_graphs.updates == []
+
+
+@pytest.mark.anyio
+async def test_heal_stale_oid_ignores_non_counter_graphs(monkeypatch):
+    """Ping/CPU graphs have no ifIndex to drift, so healing must not run."""
+    db = _Db()
+    graph = {"_id": ObjectId(), "type": "snmp_cpu", "target": "10.0.0.1",
+             "snmp_oid": "1.3.6.1.2.1.25.3.3.1.2"}
+    called = []
+
+    async def fake_discover(*a, **kw):
+        called.append(1)
+        return {"ok": True, "sensors": []}
+
+    monkeypatch.setattr(mg, "discover_snmp_sensors", fake_discover)
+    assert await mg.heal_stale_oid(db, graph=graph) is None
+    assert called == []
+
+
+@pytest.mark.anyio
+async def test_heal_stale_oid_throttles_per_target(monkeypatch):
+    """A flapping device must not trigger an snmpwalk storm every sweep."""
+    db = _Db()
+    graph = {"_id": ObjectId(), "type": "snmp_traffic_in", "target": "10.0.0.9",
+             "snmp_oid": "1.3.6.1.2.1.31.1.1.1.6.7", "interface_name": "eth1"}
+    mg._last_remap_attempt.clear()
+    calls = []
+
+    async def fake_discover(*a, **kw):
+        calls.append(1)
+        return {"ok": True, "sensors": []}
+
+    monkeypatch.setattr(mg, "discover_snmp_sensors", fake_discover)
+    await mg.heal_stale_oid(db, graph=graph)
+    await mg.heal_stale_oid(db, graph=graph)
+    assert len(calls) == 1, "second attempt inside cooldown must be skipped"
+
+
+@pytest.mark.anyio
+async def test_probe_graph_heals_then_retries(monkeypatch):
+    """End-to-end: stale OID -> heal -> successful sample in one poll."""
+    db = _Db()
+    graph = {
+        "_id": ObjectId(), "type": "snmp_traffic_in", "target": "157.20.32.253",
+        "snmp_oid": "1.3.6.1.2.1.31.1.1.1.6.7", "snmp_community": "INTERCLOUD",
+        "snmp_port": 161, "snmp_version": "2c",
+        "interface_name": "sfp-sfpplus1", "interval_seconds": 20,
+    }
+    mg._last_remap_attempt.clear()
+    seen_oids = []
+
+    async def fake_poll_snmp(target, oid, *a, **kw):
+        seen_oids.append(oid)
+        if oid.endswith(".7"):
+            return {"value": None, "raw": "",
+                    "error": "No Such Object available on this agent at this OID"}
+        return {"value": 123456.0, "raw": "x", "error": None}
+
+    async def fake_discover(*a, **kw):
+        return {"ok": True, "sensors": [
+            {"category": "interface", "direction": "in",
+             "interface_name": '"sfp-sfpplus1"', "interface_index": "42",
+             "oid": "1.3.6.1.2.1.31.1.1.1.6.42"},
+        ]}
+
+    monkeypatch.setattr(mg, "poll_snmp", fake_poll_snmp)
+    monkeypatch.setattr(mg, "discover_snmp_sensors", fake_discover)
+    monkeypatch.setattr(mg, "_load_last_counter", AsyncMock(
+        return_value=({"raw_counter": 100000.0, "at": None})))
+
+    out = await mg.probe_graph(db, graph=graph, owner="host:1")
+    assert seen_oids == ["1.3.6.1.2.1.31.1.1.1.6.7", "1.3.6.1.2.1.31.1.1.1.6.42"]
+    assert out.get("probed") is True
+    assert graph["snmp_oid"] == "1.3.6.1.2.1.31.1.1.1.6.42"
+
+
+@pytest.mark.anyio
+async def test_probe_graph_still_errors_when_heal_finds_nothing(monkeypatch):
+    """If the interface is gone entirely, report the error instead of looping."""
+    db = _Db()
+    graph = {
+        "_id": ObjectId(), "type": "snmp_traffic_in", "target": "157.20.32.253",
+        "snmp_oid": "1.3.6.1.2.1.31.1.1.1.6.7", "snmp_community": "INTERCLOUD",
+        "snmp_port": 161, "snmp_version": "2c", "interface_name": "ghost0",
+    }
+    mg._last_remap_attempt.clear()
+
+    async def fake_poll_snmp(*a, **kw):
+        return {"value": None, "raw": "",
+                "error": "No Such Object available on this agent at this OID"}
+
+    async def fake_discover(*a, **kw):
+        return {"ok": True, "sensors": []}
+
+    monkeypatch.setattr(mg, "poll_snmp", fake_poll_snmp)
+    monkeypatch.setattr(mg, "discover_snmp_sensors", fake_discover)
+    out = await mg.probe_graph(db, graph=graph, owner="host:1")
+    assert out["skipped"] is True
+    _flt, update = db.monitoring_graphs.updates[0]
+    assert update["$set"]["last_poll_state"] == "error"
