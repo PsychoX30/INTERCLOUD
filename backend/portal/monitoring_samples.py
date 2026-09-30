@@ -59,16 +59,6 @@ def _resolve_tier(span: timedelta) -> str:
         return "daily"
 
 
-# Finer tiers that can serve a requested tier when the requested one has no
-# data yet (e.g. the halfhour rollup is new, so a 30d window only has hourly
-# history). Ordered by preference: nearest-in-resolution first.
-_TIER_FALLBACK = {
-    "hourly": ("halfhour", "daily"),
-    "halfhour": ("hourly", "daily"),
-    "daily": ("halfhour", "hourly"),
-}
-
-
 def _bucket_start(dt: datetime, tier: str) -> datetime:
     """Truncate *dt* to the start of its bucket for the given tier."""
     if tier == "raw":
@@ -213,51 +203,56 @@ async def get_graph_data(
     if resolution == "raw":
         return await _fetch_raw(), resolution
 
-    # Overlay archives by target bucket, from coarsest to finest. A finer tier
-    # replaces the same bucket from a coarser tier, preventing duplicate points
-    # while filling recent buckets that the scheduled rollup has not produced.
+    # Overlay archives by target bucket, from coarsest to finest.  A finer
+    # archive always wins over a coarser one for the same bucket, and an
+    # archive that only has *partial* coverage must never suppress a coarser
+    # archive for the buckets it is missing.  (Pre-fix behaviour gated the
+    # fallback on `if not by_bucket`, so the first days the new halfhour
+    # rollup produced hid weeks of older hourly history — silent data loss
+    # with no error anywhere.)
     by_bucket: dict[datetime, dict] = {}
     resolved_tier = resolution
 
     if resolution == "daily":
         for point in await _fetch_daily():
             by_bucket[_bucket_start(point["at"], "daily")] = point
-        # Fill days the daily rollup has not produced yet from the next-finer
-        # tier that has data (halfhour when available, else hourly).
-        filled = False
-        for finer in _TIER_FALLBACK["daily"]:
-            if finer == "halfhour":
-                points = _consolidate(await _fetch_halfhour(), "daily")
-            else:
-                points = _consolidate(await _fetch_hourly(), "daily")
-            if points:
-                for point in points:
-                    by_bucket[point["at"]] = point
-                filled = True
-                break
-        if not filled:
+        # Finer archives fill days the daily rollup has not produced yet.
+        # halfhour wins over hourly for the same day; a stored daily rollup is
+        # only replaced by the 30-minute view (more trustworthy extremes),
+        # never by the on-the-fly hourly view.
+        for point in _consolidate(await _fetch_halfhour(), "daily"):
+            by_bucket[point["at"]] = point
+        for point in _consolidate(await _fetch_hourly(), "daily"):
+            if point["at"] not in by_bucket:
+                by_bucket[point["at"]] = point
+        if not by_bucket:
             resolved_tier = "daily (raw only)"
 
     if resolution == "halfhour":
         for point in await _fetch_halfhour():
             by_bucket[_bucket_start(point["at"], "halfhour")] = point
-        # No halfhour rollup yet (new tier) -> derive 30-min buckets from
-        # hourly rollups so a 1W/1M window still renders at 30-min resolution.
-        if not by_bucket:
-            for point in _consolidate(await _fetch_hourly(), "halfhour"):
-                by_bucket[point["at"]] = point
-            if by_bucket:
-                resolved_tier = "halfhour (from hourly)"
+        # The 30-minute archive is new; overlay hourly history so a 1W/1M
+        # window renders at 30-minute resolution from day one.  Native slots
+        # are the truth for their bucket; hourly-derived fill the gaps.
+        had_native = bool(by_bucket)
+        for point in _consolidate(await _fetch_hourly(), "halfhour"):
+            key = _bucket_start(point["at"], "halfhour")
+            if key not in by_bucket:
+                by_bucket[key] = point
+        if not had_native and by_bucket:
+            resolved_tier = "halfhour (from hourly)"
 
     if resolution == "hourly":
         for point in await _fetch_hourly():
             by_bucket[_bucket_start(point["at"], "hourly")] = point
         # Sparse hourly history -> bucket halfhour rollups up to the hour.
-        if not by_bucket:
-            for point in _consolidate(await _fetch_halfhour(), "hourly"):
-                by_bucket[point["at"]] = point
-            if by_bucket:
-                resolved_tier = "hourly (from 30m)"
+        # A 30-minute view of the same hour is finer, so it wins for that
+        # bucket.
+        had_native = bool(by_bucket)
+        for point in _consolidate(await _fetch_halfhour(), "hourly"):
+            by_bucket[point["at"]] = point
+        if not had_native and by_bucket:
+            resolved_tier = "hourly (from 30m)"
 
     for point in _consolidate(await _fetch_raw(), resolution):
         by_bucket[point["at"]] = point

@@ -259,3 +259,117 @@ async def test_daily_fallback_prefers_halfhour_over_hourly():
     assert row["max"] == 800.0, "30-minute peak must survive into the daily bucket"
     assert row["min"] == 2.0
     assert row["value"] == 20.0
+
+
+# ---------------------------------------------------------------------------
+# Partial-archive fallback (silent data loss)
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_partially_filled_halfhour_archive_still_fills_older_hours_from_hourly():
+    """A *partially* rolled halfhour archive must not suppress the fallback.
+
+    Regression: the read path only fell back to a coarser archive when the
+    requested tier returned *nothing* (``if not by_bucket``).  The halfhour
+    rollup is new, so a 30d window right after deploy has a few days of
+    halfhour slots and 25+ days of hourly history.  The old code rendered the
+    few halfhour days and silently dropped every older day — the chart looked
+    "almost empty" with no error anywhere.
+    """
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(days=29), "avg": 90.0,
+         "min": 88.0, "max": 92.0},
+    ]
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(hours=1), "avg": 10.0,
+         "min": 8.0, "max": 12.0},
+        {"graph_id": "g", "hour": start + timedelta(hours=2), "avg": 30.0,
+         "min": 28.0, "max": 32.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(halfhour=halfhour, hourly=hourly), "g", start, start + timedelta(days=30)
+    )
+
+    by_at = {row["at"]: row for row in data}
+    # older hours come from the hourly archive, bucket-by-bucket
+    assert start + timedelta(hours=1) in by_at, "older hourly history was dropped"
+    assert start + timedelta(hours=2) in by_at, "older hourly history was dropped"
+    assert by_at[start + timedelta(hours=1)]["max"] == 12.0
+    # the recent slot comes from the halfhour archive
+    assert start + timedelta(days=29) in by_at
+    assert by_at[start + timedelta(days=29)]["max"] == 92.0
+    assert len(data) == 3, f"expected 3 buckets, got {len(data)}: {sorted(by_at)}"
+
+
+@pytest.mark.anyio
+async def test_partially_filled_hourly_archive_still_fills_recent_hours_from_halfhour():
+    """Same partial-archive trap on the hourly path, recent side."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(hours=1), "avg": 10.0,
+         "min": 8.0, "max": 12.0},
+    ]
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(hours=20), "avg": 60.0,
+         "min": 58.0, "max": 62.0},
+        {"graph_id": "g", "slot": start + timedelta(hours=20, minutes=30), "avg": 70.0,
+         "min": 68.0, "max": 72.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2)
+    )
+
+    by_at = {row["at"]: row for row in data}
+    assert resolution == "hourly"
+    assert start + timedelta(hours=1) in by_at, "hourly rollup lost"
+    assert start + timedelta(hours=20) in by_at, "recent halfhour data lost"
+    # both 30-minute slots collapse into the 20:00 hourly bucket
+    assert by_at[start + timedelta(hours=20)]["value"] == 65.0
+    assert by_at[start + timedelta(hours=20)]["max"] == 72.0
+
+
+@pytest.mark.anyio
+async def test_partially_filled_daily_archive_keeps_halfhour_backed_days():
+    """A few stored daily rollups must not hide days only halfhour can fill."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    daily = [
+        {"graph_id": "g", "date": start, "avg": 5.0, "min": 1.0, "max": 7.0},
+    ]
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(days=40, hours=1), "avg": 100.0,
+         "min": 98.0, "max": 900.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(daily=daily, halfhour=halfhour), "g", start, start + timedelta(days=70)
+    )
+
+    by_day = {row["at"]: row for row in data}
+    assert resolution == "daily"
+    assert by_day[start]["max"] == 7.0, "stored daily rollup must be kept"
+    assert start + timedelta(days=40) in by_day, "halfhour-backed day was dropped"
+    assert by_day[start + timedelta(days=40)]["max"] == 900.0
+
+
+@pytest.mark.anyio
+async def test_finer_archive_wins_over_coarser_for_the_same_bucket():
+    """Overlay must be priority-ordered, not last-writer-wins."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    # Stored daily rollup says the day peaked at 7; the finer 30-minute archive
+    # for the same day saw 900. The finer, more trustworthy extreme must win.
+    daily = [{"graph_id": "g", "date": start, "avg": 5.0, "min": 1.0, "max": 7.0}]
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(hours=1), "avg": 10.0,
+         "min": 2.0, "max": 900.0},
+    ]
+
+    data, _ = await get_graph_data(
+        Db(daily=daily, halfhour=halfhour), "g", start, start + timedelta(days=70)
+    )
+
+    by_day = {row["at"]: row for row in data}
+    assert by_day[start]["max"] == 900.0, (
+        "a finer archive must not be overwritten by the coarser daily rollup"
+    )
