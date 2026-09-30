@@ -213,11 +213,23 @@ async def startup_seed():
         await db.monitoring_checks.create_index([("enabled", 1), ("created_at", 1)])
         await db.monitoring_probes.create_index([("check_id", 1), ("at", -1)])
         # Probe samples were unbounded (104k docs and climbing since Aug 13).
-        # ``at`` is a BSON Date here, so the TTL actually applies; keep 90d to
-        # match the hourly graph rollup retention.
-        await db.monitoring_probes.create_index("at", expireAfterSeconds=90 * 86400)
+        # ``at`` is a BSON Date here, so the TTL actually applies.
+        #
+        # Retention = 30d, deliberately NOT the 90d used by the hourly graph
+        # rollups.  These are *raw* point samples at up to 30s/check: prod is
+        # at 2,154 docs/day for a single check, so 90d would be ~194k docs per
+        # check and millions across a full registry — i.e. the same unbounded
+        # scan shape that caused the ddos_samples COLLSCAN storm.  The only
+        # reader is the check-history view (latest-N on demand; no reader needs
+        # long raw history), and this matches the sibling `noc_probes` archive,
+        # which is pruned to 30d by `run_noc_probe_retention`.
+        # If long-range uptime history is ever wanted, add a daily rollup rather
+        # than extending raw retention.
+        await db.monitoring_probes.create_index("at", expireAfterSeconds=30 * 86400)
         await db.monitoring_check_state.create_index("check_id", unique=True)
         await db.monitoring_events.create_index([("check_id", 1), ("at", -1)])
+        # Transition events only (~349 docs in 7 weeks) — low volume and they are
+        # the check's narrative history, so 90d is safe here.
         await db.monitoring_events.create_index("at", expireAfterSeconds=90 * 86400)
         # Monitoring graphs + samples (MRTG-style SNMP/ping graphs)
         await db.monitoring_graphs.create_index([("enabled", 1), ("interval_seconds", 1)])

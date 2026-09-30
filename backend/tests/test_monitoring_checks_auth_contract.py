@@ -94,7 +94,16 @@ def test_monitoring_indexes_match_registry_and_probe_queries():
     graph_sample_lines = [line for line in monitoring_lines if "monitoring_graph_samples" in line]
     non_graph_lines = [line for line in monitoring_lines if "monitoring_graph_samples" not in line]
     # probes/events carry sample/event payloads (BSON Date `at`) and DO use
-    # TTL (90d) — same retention policy as the hourly graph rollups.
+    # TTL.  probes = 30d (raw 30s point samples; matches the noc_probes
+    # archive), events = 90d (low-volume transition history).
     non_sample_lines = [line for line in non_graph_lines
                         if "monitoring_probes" not in line and "monitoring_events" not in line]
     assert "expireAfterSeconds" not in "\n".join(non_sample_lines), "Non-sample monitoring indexes must not use TTL"
+    # Regression guard: the raw probe archive must stay in the 30d class.  At
+    # prod rate (2,154 docs/day/check) a 90d window reintroduces the unbounded
+    # collection shape that caused the ddos_samples COLLSCAN storm.
+    probe_ttl_lines = [line for line in non_graph_lines
+                       if "monitoring_probes.create_index" in line and "expireAfterSeconds" in line]
+    assert probe_ttl_lines, "monitoring_probes must declare a TTL index"
+    assert "30 * 86400" in probe_ttl_lines[0], (
+        f"monitoring_probes TTL must be 30d, found: {probe_ttl_lines[0].strip()}")

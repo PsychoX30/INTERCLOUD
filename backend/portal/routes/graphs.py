@@ -604,11 +604,16 @@ async def monitoring_health(staff=Depends(require_roles("admin", "support"))):
     # --- per-graph freshness vs its own poll interval ----------------------
     graph_rows = []
     unhealthy = 0
+    # Same RBAC filter as the listings: a non-admin must not learn the names or
+    # error strings of graphs outside their visible_roles.
+    health_query: dict = {"enabled": True}
+    if staff.get("role") != "admin":
+        health_query["visible_roles"] = staff.get("role")
     try:
         graphs = await db.monitoring_graphs.find(
-            {"enabled": True}, {"name": 1, "display_name": 1, "interface_name": 1,
-                                "interval_seconds": 1, "last_poll_at": 1,
-                                "last_poll_state": 1, "last_poll_error": 1}
+            health_query, {"name": 1, "display_name": 1, "interface_name": 1,
+                           "interval_seconds": 1, "last_poll_at": 1,
+                           "last_poll_state": 1, "last_poll_error": 1}
         ).to_list(1000)
     except Exception:
         graphs = []
@@ -618,6 +623,11 @@ async def monitoring_health(staff=Depends(require_roles("admin", "support"))):
         last = g.get("last_poll_at")
         age_seconds = None
         if isinstance(last, datetime):
+            # Older backends persisted naive UTC; the sweep now writes aware
+            # datetimes. Normalize so this can never raise (a 500 here would be
+            # exactly the kind of silent failure the endpoint exists to catch).
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
             age_seconds = (now - last).total_seconds()
         # 3 missed intervals = genuinely stalled, not just a slow sweep.
         stale = age_seconds is None or age_seconds > max(interval * 3, 120)
