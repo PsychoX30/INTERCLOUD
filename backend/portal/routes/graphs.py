@@ -10,9 +10,10 @@ import uuid
 import socket
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..auth import get_current_admin, get_current_user, get_current_staff, require_roles
+from ..audit import log_audit
 from ..monitoring_graphs import (
     serialize_graph,
     probe_graph,
@@ -31,7 +32,9 @@ from ..monitoring_samples import (
     ensure_indexes as ensure_sample_indexes,
 )
 from ..monitoring_reports import graph_export_response
-from .shared import _get_db, _oid
+from .. import graph_alerts as ga
+from .. import models as m
+from .shared import _get_db, _oid, _iso, _now
 from bson import ObjectId
 
 router = APIRouter()
@@ -558,6 +561,7 @@ _SAMPLE_COLLECTIONS = (
     ("monitoring_graph_samples_halfhour", "slot"),
     ("monitoring_graph_samples_hourly", "hour"),
     ("monitoring_graph_samples_daily", "date"),
+    ("monitoring_graph_alerts", "fired_at"),
 )
 
 
@@ -669,6 +673,19 @@ async def monitoring_health(staff=Depends(require_roles("admin", "support"))):
     except Exception as exc:
         leases["error"] = f"{type(exc).__name__}: {exc}"
 
+    # --- alert rules / open alerts -----------------------------------------
+    alerts = {"rules": 0, "open": 0, "suppressed_open": 0, "maintenance_windows": 0,
+              "error": None}
+    try:
+        alerts["rules"] = await db[ga.RULES_COLLECTION].count_documents({"enabled": True})
+        alerts["open"] = await db[ga.ALERTS_COLLECTION].count_documents({"resolved_at": None})
+        alerts["suppressed_open"] = await db[ga.ALERTS_COLLECTION].count_documents(
+            {"resolved_at": None, "suppressed": True})
+        alerts["maintenance_windows"] = await db[ga.WINDOWS_COLLECTION].count_documents(
+            {"enabled": True})
+    except Exception as exc:
+        alerts["error"] = f"{type(exc).__name__}: {exc}"
+
     # --- verdict ----------------------------------------------------------
     problems = []
     for c in collections:
@@ -688,4 +705,139 @@ async def monitoring_health(staff=Depends(require_roles("admin", "support"))):
         "graphs": {"total": len(graph_rows), "unhealthy": unhealthy, "items": graph_rows},
         "collections": collections,
         "leases": leases,
+        "alerts": alerts,
     }
+
+
+# ---------------------------------------------------------------------------
+# Graph alert rules CRUD (phase 3)
+# ---------------------------------------------------------------------------
+def _serialize_rule(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "metric": d.get("metric", "bps"),
+        "comparator": d.get("comparator", ">"),
+        "threshold": d.get("threshold", 0),
+        "consecutive": int(d.get("consecutive") or 2),
+        "severity": d.get("severity", "warning"),
+        "enabled": bool(d.get("enabled", True)),
+        "graph_id": d.get("graph_id") or None,
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+@router.get("/admin/monitoring/alert-rules")
+async def alert_rules_list(staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    docs = await db[ga.RULES_COLLECTION].find({}).sort("created_at", -1).to_list(200)
+    return [_serialize_rule(d) for d in docs]
+
+
+@router.post("/admin/monitoring/alert-rules")
+async def alert_rules_create(payload: m.GraphAlertRuleIn, request: Request,
+                             admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    doc = payload.model_dump(exclude_none=True)
+    doc["created_at"] = _now()
+    r = await db[ga.RULES_COLLECTION].insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="monitoring.alert_rule_created",
+                    category="monitoring", target_type="graph_alert_rule",
+                    target_id=str(r.inserted_id), target_label=payload.name, request=request)
+    return _serialize_rule(doc)
+
+
+@router.put("/admin/monitoring/alert-rules/{rule_id}")
+async def alert_rules_update(rule_id: str, payload: m.GraphAlertRuleIn, request: Request,
+                             admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    res = await db[ga.RULES_COLLECTION].update_one(
+        {"_id": _oid(rule_id)}, {"$set": payload.model_dump(exclude_none=True)})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    d = await db[ga.RULES_COLLECTION].find_one({"_id": _oid(rule_id)})
+    await log_audit(db, actor=admin, action="monitoring.alert_rule_updated",
+                    category="monitoring", target_type="graph_alert_rule",
+                    target_id=rule_id, target_label=str(d.get("name", "")), request=request)
+    return _serialize_rule(d)
+
+
+@router.delete("/admin/monitoring/alert-rules/{rule_id}")
+async def alert_rules_delete(rule_id: str, admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    r = await db[ga.RULES_COLLECTION].delete_one({"_id": _oid(rule_id)})
+    if not r.deleted_count:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    return {"deleted": r.deleted_count}
+
+
+# ---------------------------------------------------------------------------
+# Maintenance windows CRUD (phase 3)
+# ---------------------------------------------------------------------------
+def _serialize_window(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "starts_at": d.get("starts_at", ""),
+        "ends_at": d.get("ends_at", ""),
+        "graph_ids": d.get("graph_ids") or [],
+        "enabled": bool(d.get("enabled", True)),
+        "created_at": _iso(d.get("created_at", "")),
+    }
+
+
+def _validate_window_dates(payload: m.MaintenanceWindowIn) -> None:
+    start = datetime.fromisoformat(payload.starts_at.replace("Z", "+00:00"))
+    end = datetime.fromisoformat(payload.ends_at.replace("Z", "+00:00"))
+    if start >= end:
+        raise HTTPException(status_code=422, detail="ends_at must be after starts_at")
+
+
+@router.get("/admin/monitoring/maintenance-windows")
+async def maintenance_windows_list(staff=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    docs = await db[ga.WINDOWS_COLLECTION].find({}).sort("created_at", -1).to_list(200)
+    return [_serialize_window(d) for d in docs]
+
+
+@router.post("/admin/monitoring/maintenance-windows")
+async def maintenance_windows_create(payload: m.MaintenanceWindowIn, request: Request,
+                                     admin=Depends(require_roles("admin", "support"))):
+    _validate_window_dates(payload)
+    db = await _get_db()
+    doc = payload.model_dump()
+    doc["created_at"] = _now()
+    r = await db[ga.WINDOWS_COLLECTION].insert_one(doc)
+    doc["_id"] = r.inserted_id
+    await log_audit(db, actor=admin, action="monitoring.maintenance_window_created",
+                    category="monitoring", target_type="maintenance_window",
+                    target_id=str(r.inserted_id), target_label=payload.name, request=request)
+    return _serialize_window(doc)
+
+
+@router.put("/admin/monitoring/maintenance-windows/{window_id}")
+async def maintenance_windows_update(window_id: str, payload: m.MaintenanceWindowIn,
+                                     request: Request,
+                                     admin=Depends(require_roles("admin", "support"))):
+    _validate_window_dates(payload)
+    db = await _get_db()
+    res = await db[ga.WINDOWS_COLLECTION].update_one(
+        {"_id": _oid(window_id)}, {"$set": payload.model_dump()})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Maintenance window not found")
+    d = await db[ga.WINDOWS_COLLECTION].find_one({"_id": _oid(window_id)})
+    await log_audit(db, actor=admin, action="monitoring.maintenance_window_updated",
+                    category="monitoring", target_type="maintenance_window",
+                    target_id=window_id, target_label=str(d.get("name", "")), request=request)
+    return _serialize_window(d)
+
+
+@router.delete("/admin/monitoring/maintenance-windows/{window_id}")
+async def maintenance_windows_delete(window_id: str,
+                                     admin=Depends(require_roles("admin", "support"))):
+    db = await _get_db()
+    r = await db[ga.WINDOWS_COLLECTION].delete_one({"_id": _oid(window_id)})
+    if not r.deleted_count:
+        raise HTTPException(status_code=404, detail="Maintenance window not found")
+    return {"deleted": r.deleted_count}

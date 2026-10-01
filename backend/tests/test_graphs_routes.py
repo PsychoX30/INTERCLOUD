@@ -130,7 +130,9 @@ class _Leases:
 class _Db:
     _COLLECTIONS = ("monitoring_graphs", "monitoring_graph_samples_raw",
                     "monitoring_graph_samples_hourly", "monitoring_graph_samples_daily",
-                    "monitoring_graph_samples_halfhour", "scheduler_leases")
+                    "monitoring_graph_samples_halfhour", "scheduler_leases",
+                    "graph_alert_rules", "monitoring_graph_alerts",
+                    "monitoring_maintenance_windows")
 
     def __init__(self):
         self.monitoring_graphs = _Graphs()
@@ -139,6 +141,9 @@ class _Db:
         self.monitoring_graph_samples_daily = _DummyColl()
         self.monitoring_graph_samples_halfhour = _DummyColl()
         self.scheduler_leases = _Leases()
+        self.graph_alert_rules = _DummyColl()
+        self.monitoring_graph_alerts = _DummyColl()
+        self.monitoring_maintenance_windows = _DummyColl()
 
     def __getitem__(self, name):
         """Motor exposes collections via db[name]; mirror it so route code that

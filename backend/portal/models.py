@@ -414,6 +414,54 @@ class NotifChannelOut(NotifChannelIn):
     created_at: str = ""
 
 
+# ---------- NOC / Monitoring: graph alert rules + maintenance windows ----------
+class GraphAlertRuleIn(BaseModel):
+    """Threshold/state alert on a monitoring graph (phase 3).
+
+    ``metric == "state"`` ignores threshold/comparator and fires when the poll
+    state is not ``ok`` (dead graph). Numeric metrics compare the stored sample
+    (bps rate / ping ms / pps) against ``threshold`` with ``comparator``.
+    ``consecutive`` is the debounce: N consecutive breaching polls must be
+    observed before the alert fires (default 2 — a single flap never pages).
+    ``graph_id`` empty means "all graphs"; otherwise the rule only evaluates
+    that one graph.
+    """
+
+    name: str = Field(min_length=2, max_length=120)
+    metric: Literal["bps", "pps", "ms", "state"] = "bps"
+    comparator: Literal[">", ">=", "<", "<="] = ">"
+    threshold: float = Field(default=0, ge=0)
+    consecutive: int = Field(default=2, ge=1, le=100)
+    severity: Literal["info", "warning", "critical"] = "warning"
+    enabled: bool = True
+    graph_id: Optional[str] = None
+
+
+class GraphAlertRuleOut(GraphAlertRuleIn):
+    id: str
+    created_at: str = ""
+
+
+class MaintenanceWindowIn(BaseModel):
+    """Suppress alert dispatch (not evaluation) for the duration of a window.
+
+    ``graph_ids`` empty = all graphs. ``starts_at``/``ends_at`` are ISO-8601
+    with timezone (e.g. ``2026-10-01T22:00:00+07:00``). Alerts that fire inside
+    the window are still recorded to history with ``suppressed: true``.
+    """
+
+    name: str = Field(min_length=2, max_length=120)
+    starts_at: str
+    ends_at: str
+    graph_ids: List[str] = []
+    enabled: bool = True
+
+
+class MaintenanceWindowOut(MaintenanceWindowIn):
+    id: str
+    created_at: str = ""
+
+
 class DDoSIncidentOut(BaseModel):
     id: str
     target: str

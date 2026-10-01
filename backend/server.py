@@ -244,6 +244,15 @@ async def startup_seed():
         await db.monitoring_graph_samples_hourly.create_index("hour", expireAfterSeconds=90 * 86400)
         await db.monitoring_graph_samples_daily.create_index([("graph_id", 1), ("date", -1)], unique=True)
         await db.monitoring_graph_samples_daily.create_index("date", expireAfterSeconds=730 * 86400)
+        # Graph alert history + rule state + maintenance windows (phase 3).
+        # Alert history is narrative, so 90d — same as the hourly rollup it
+        # describes. Rule/state collections are tiny; window docs are few.
+        await db.monitoring_graph_alerts.create_index([("graph_id", 1), ("fired_at", -1)])
+        await db.monitoring_graph_alerts.create_index(
+            "fired_at", expireAfterSeconds=90 * 86400)
+        await db.monitoring_graph_alert_state.create_index(
+            [("rule_id", 1), ("graph_id", 1)], unique=True)
+        await db.monitoring_maintenance_windows.create_index([("starts_at", 1), ("ends_at", 1)])
         # Network map nodes/links
         await db.network_map_nodes.create_index([("created_at", 1)])
         await db.network_map_links.create_index([("source_id", 1)])

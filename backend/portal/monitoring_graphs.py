@@ -614,13 +614,17 @@ def _compute_rate(current: float, prev: Optional[dict], now: datetime,
 # Graph sweep (mirrors run_monitoring_probe_sweep)
 # ---------------------------------------------------------------------------
 async def _record_graph_status(db, *, graph: dict, state: str,
-                                error: str = "") -> None:
+                                error: str = "", value=None) -> None:
     """Persist the outcome of the last poll on the graph document.
 
     Without this, a graph whose OID went stale (e.g. the device renumbered its
     interfaces) looks identical to a healthy idle one: both simply stop
     producing samples. Recording the state lets the UI flag a dead graph
     instead of silently rendering an empty chart.
+
+    ``value`` is the *stored* sample (the computed bps rate for counter graphs),
+    not the raw SNMP counter, so a threshold rule compares against what the
+    operator actually sees plotted.
     """
     try:
         await db.monitoring_graphs.update_one(
@@ -633,6 +637,16 @@ async def _record_graph_status(db, *, graph: dict, state: str,
         )
     except Exception:  # noqa: BLE001 - status is advisory, never break polling
         logger.debug("[graphs] status update failed for %s", graph.get("_id"), exc_info=True)
+
+    # Phase 3: graph alert evaluation. Hooked here (not in probe_graph) so every
+    # poll path — success, counter baseline, SNMP error, ping — is covered.
+    # Evaluation is fully isolated: a bad rule must never break polling.
+    try:
+        from .graph_alerts import evaluate_graph_alerts
+        await evaluate_graph_alerts(
+            db, graph=graph, state=state, value=value, error=error)
+    except Exception:  # noqa: BLE001 - advisory, never break polling
+        logger.debug("[graphs] alert evaluation failed for %s", graph.get("_id"), exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -777,7 +791,7 @@ async def probe_graph(db, *, graph: dict, owner: str,
         now = datetime.now(timezone.utc)
         sample = {"graph_id": graph_id, "at": now, "value": value, "raw": ""}
         await db.monitoring_graph_samples_raw.insert_one(sample)
-        await _record_graph_status(db, graph=graph, state="ok")
+        await _record_graph_status(db, graph=graph, state="ok", value=value)
         return {"probed": True, "value": value}
 
     # SNMP-based graph
@@ -855,7 +869,7 @@ async def probe_graph(db, *, graph: dict, owner: str,
     if g_type in COUNTER_GRAPH_TYPES:
         sample["raw_counter"] = snmp_result["value"]
     await db.monitoring_graph_samples_raw.insert_one(sample)
-    await _record_graph_status(db, graph=graph, state="ok")
+    await _record_graph_status(db, graph=graph, state="ok", value=value)
     return {"probed": True, "value": value}
 
 
