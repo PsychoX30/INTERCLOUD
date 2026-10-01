@@ -6,7 +6,10 @@ while read endpoints use require_roles("admin", "support").
 import ast
 from pathlib import Path
 
-GRAPHS_FILE = Path("/home/support/INTERCLOUD/backend/portal/routes/graphs.py")
+# Resolve relative to this file so the test asserts against the SUT in the
+# checkout that runs it (a hardcoded absolute path silently read the canonical
+# repo tree from any other worktree/clone — QA finding, auth guard went blind).
+GRAPHS_FILE = Path(__file__).resolve().parents[1] / "portal/routes/graphs.py"
 ADMIN = "get_current_admin"
 REQUIRE_ROLES = "require_roles"
 
