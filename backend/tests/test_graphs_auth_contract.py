@@ -111,6 +111,14 @@ def test_discover_sensors_requires_admin():
     assert _has_admin_default(defaults), "discover_sensors must use get_current_admin"
 
 
+def test_monitoring_health_requires_admin_or_support():
+    fns = _load_functions()
+    defaults = list(_defaults(fns["monitoring_health"]))
+    assert _has_require_roles(defaults, ["admin", "support"]), (
+        "monitoring_health must require admin+support (RBAC health coverage)"
+    )
+
+
 # --- Client endpoints must use get_current_user ---
 def test_client_endpoints_use_get_current_user():
     fns = _load_functions()

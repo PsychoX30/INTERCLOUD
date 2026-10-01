@@ -581,3 +581,93 @@ async def test_health_flags_missing_ttl_and_stale_graph(db):
     assert "stalled or in error" in joined, joined
     assert out["healthy"] is False
     assert out["graphs"]["unhealthy"] == 1
+
+
+@pytest.mark.anyio
+async def test_health_support_sees_only_own_graphs(db):
+    """RBAC regression (attack a): a support viewer must not learn about — or
+    count — graphs outside their visible_roles.
+
+    The old tests invoked monitoring_health directly and the fake find()
+    ignored the query, so nothing proved the endpoint applied the same
+    visible_roles filter as the listings. This test records the query the
+    endpoint sends to Mongo AND filters the fake rows by it, proving both
+    the filter is sent and the response cannot leak other graphs."""
+    now = _dt.now(_tz.utc)
+    own = {"_id": ObjectId(), "name": "Mine", "display_name": "Mine",
+           "interval_seconds": 20, "last_poll_at": now,
+           "last_poll_state": "ok", "last_poll_error": "",
+           "visible_roles": ["admin", "support"]}
+    admin_only = {"_id": ObjectId(), "name": "SecretAdmin",
+                  "display_name": "SecretAdmin",
+                  "interval_seconds": 20,
+                  "last_poll_at": now - _td(hours=2),
+                  "last_poll_state": "error",
+                  "last_poll_error": "snmp timeout",
+                  "visible_roles": ["admin"]}
+    sales_only = {"_id": ObjectId(), "name": "SalesGraph",
+                  "display_name": "SalesGraph",
+                  "interval_seconds": 20,
+                  "last_poll_at": now - _td(hours=2),
+                  "last_poll_state": "error",
+                  "last_poll_error": "down",
+                  "visible_roles": ["admin", "sales"]}
+    db.monitoring_graphs.rows = [own, admin_only, sales_only]
+
+    seen_queries = []
+
+    def filtered_find(query=None, projection=None, **_kw):
+        seen_queries.append(query or {})
+        rows = db.monitoring_graphs.rows
+        vr = (query or {}).get("visible_roles")
+        if vr:
+            rows = [r for r in rows if vr in (r.get("visible_roles") or [])]
+        return _Cursor(rows)
+
+    db.monitoring_graphs.find = filtered_find
+
+    out = await routes.monitoring_health({"role": "support", "id": "b"})
+
+    # The endpoint must push the RBAC filter down to the query layer.
+    assert seen_queries and seen_queries[0].get("visible_roles") == "support", (
+        f"health query did not carry visible_roles filter: {seen_queries}")
+    # Support sees exactly their own graph; the stalled admin/sales graphs
+    # never surface in the response nor inflate the unhealthy count.
+    assert out["graphs"]["total"] == 1, out["graphs"]
+    assert out["graphs"]["items"][0]["name"] == "Mine"
+    assert out["graphs"]["unhealthy"] == 0
+    names = {i["name"] for i in out["graphs"]["items"]}
+    assert "SecretAdmin" not in names, names
+    assert "SalesGraph" not in names, names
+
+
+@pytest.mark.anyio
+async def test_health_admin_sees_all_graphs_and_flags_unhealthy(db):
+    """Admins are not scoped by visible_roles: they see every graph so global
+    health is not masked by the support filter."""
+    now = _dt.now(_tz.utc)
+    db.monitoring_graphs.rows = [
+        {"_id": ObjectId(), "name": "A", "interval_seconds": 20,
+         "last_poll_at": now, "last_poll_state": "ok", "last_poll_error": "",
+         "visible_roles": ["admin"]},
+        {"_id": ObjectId(), "name": "B", "interval_seconds": 20,
+         "last_poll_at": now - _td(hours=2), "last_poll_state": "error",
+         "last_poll_error": "timeout", "visible_roles": ["admin", "sales"]},
+        {"_id": ObjectId(), "name": "C", "interval_seconds": 20,
+         "last_poll_at": now - _td(hours=2), "last_poll_state": "error",
+         "last_poll_error": "timeout", "visible_roles": ["admin", "support"]},
+    ]
+    seen_queries = []
+
+    def unfiltered_find(query=None, projection=None, **_kw):
+        seen_queries.append(query or {})
+        return _Cursor(db.monitoring_graphs.rows)
+
+    db.monitoring_graphs.find = unfiltered_find
+
+    out = await routes.monitoring_health({"role": "admin", "id": "a"})
+
+    assert seen_queries, "health endpoint never queried graphs"
+    assert "visible_roles" not in seen_queries[0], seen_queries[0]
+    assert out["graphs"]["total"] == 3, out["graphs"]
+    assert out["graphs"]["unhealthy"] == 2, out["graphs"]
