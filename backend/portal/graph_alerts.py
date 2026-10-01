@@ -276,7 +276,7 @@ async def dispatch_graph_alert(db, *, alert: dict, rule: dict, graph: dict) -> l
     delivery log shape, so operators learn the system once.
     """
     from . import integrations_v2 as iv2
-    from .emails import deliver, wrap_html, log_notification
+    from .emails import deliver, wrap_html
 
     channels = await db.notif_channels.find(
         {"enabled": True, "events": {"$in": ["graph", "alerts"]}}).to_list(50)
@@ -324,18 +324,17 @@ async def dispatch_graph_alert(db, *, alert: dict, rule: dict, graph: dict) -> l
             except Exception:  # noqa: BLE001
                 status = "failed"
 
+        # Single delivery-log shape (shared with the DDoS dispatcher). There is
+        # no separate log_notification helper; write the row directly so a
+        # missing helper can never silently swallow a dispatch.
         try:
-            await log_notification(db, event="graph_alert", channel_type=ch.get("type", ""),
-                                   channel_target=target, status=status,
-                                   subject=subject, ref_id=alert.get("graph_id", ""))
-        except Exception:  # noqa: BLE001 - log shape is not ours to enforce here
-            try:
-                await db.ddos_notify_log.insert_one({
-                    "incident_id": alert.get("graph_id", ""), "target": alert.get("target", ""),
-                    "channel_type": ch.get("type", ""), "channel_target": target,
-                    "status": status, "at": _now().isoformat(), "event": "graph_alert"})
-            except Exception:  # noqa: BLE001
-                logger.debug("[alerts] notify log write failed", exc_info=True)
+            await db.ddos_notify_log.insert_one({
+                "incident_id": alert.get("graph_id", ""), "target": alert.get("target", ""),
+                "channel_type": ch.get("type", ""), "channel_target": target,
+                "subject": subject, "status": status,
+                "at": _now().isoformat(), "event": "graph_alert"})
+        except Exception:  # noqa: BLE001
+            logger.debug("[alerts] notify log write failed", exc_info=True)
         notified.append(f"{ch.get('type')}:{target}")
 
     if notified and alert.get("_id") is not None:

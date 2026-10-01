@@ -13,6 +13,7 @@ const CHANNEL_META = {
 const EVENTS = [
   { key: "ddos", label: "Insiden DDoS" },
   { key: "device_down", label: "Device down" },
+  { key: "graph", label: "Monitoring graph alert" },
   { key: "invoice_overdue", label: "Invoice overdue" },
 ];
 

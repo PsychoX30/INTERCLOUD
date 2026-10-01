@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import sys
+import types
 
 import pytest
 from bson import ObjectId
@@ -250,6 +252,45 @@ def test_rule_scoped_to_other_graph_ignored():
     asyncio.run(ga.evaluate_graph_alerts(db, graph=g, state="ok", value=95e6, now=NOW))
     # no alert state row ever created (rule didn't apply)
     assert db.monitoring_graph_alert_state.docs == []
+
+
+def test_webhook_dispatch_posts_and_logs_sent(monkeypatch):
+    """Regression: a missing notification-log helper must not abort dispatch."""
+    db = FakeDb()
+    db.notif_channels.docs = [{
+        "type": "webhook", "target": "http://127.0.0.1:18888/hook",
+        "events": ["graph"], "enabled": True,
+    }]
+    posted = []
+
+    class _Response:
+        status_code = 200
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, target, json):
+            posted.append((target, json))
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=lambda **_kw: _Client()))
+    alert = {"_id": ObjectId(), "graph_id": "g1", "graph_name": "eth0 In",
+             "target": "10.0.0.1", "rule_name": "High traffic", "metric": "bps",
+             "value": 42.0, "threshold": 10.0, "comparator": ">", "severity": "warning",
+             "state": "ok"}
+    notified = asyncio.run(ga.dispatch_graph_alert(
+        db, alert=alert, rule=_rule(), graph=_graph()))
+
+    assert notified == ["webhook:http://127.0.0.1:18888/hook"]
+    assert posted and posted[0][0] == "http://127.0.0.1:18888/hook"
+    assert posted[0][1]["alert"]["graph_id"] == "g1"
+    log = db.ddos_notify_log.inserted[0]
+    assert log["event"] == "graph_alert"
+    assert log["status"] == "sent"
 
 
 @pytest.mark.parametrize("metric,threshold,comparator,value,expected", [
