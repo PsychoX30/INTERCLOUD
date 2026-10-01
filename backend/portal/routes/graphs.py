@@ -45,6 +45,35 @@ VALID_GRAPH_TYPES = {
 }
 
 
+async def _visible_graph_ids(db, staff: dict) -> Optional[list[str]]:
+    """Return every graph id visible to non-admin staff; ``None`` means unrestricted.
+
+    Uses MongoDB ``distinct`` rather than ``to_list(N)`` so row-level
+    authorization never silently weakens past an arbitrary page cap.
+    """
+    if staff.get("role") == "admin":
+        return None
+    ids = await db.monitoring_graphs.distinct(
+        "_id", {"visible_roles": staff.get("role")}
+    )
+    return [str(graph_id) for graph_id in ids]
+
+
+async def _require_visible_graph_ids(db, staff: dict, graph_ids: list[str]) -> None:
+    """Reject a non-admin mutation that targets a graph outside its scope.
+
+    List filtering alone is insufficient: a caller who knows an object ID must
+    not be able to create, edit, or delete a graph-scoped rule/window for a
+    hidden graph. Return 404 so the response does not disclose that it exists.
+    """
+    visible_ids = await _visible_graph_ids(db, staff)
+    if visible_ids is None:
+        return
+    requested = {str(graph_id) for graph_id in graph_ids if graph_id}
+    if not requested.issubset(set(visible_ids)):
+        raise HTTPException(status_code=404, detail="Monitoring graph not found")
+
+
 def _clean_or_400(cleaner, value):
     """Convert validation failures into API client errors, not 500s."""
     try:
@@ -677,12 +706,25 @@ async def monitoring_health(staff=Depends(require_roles("admin", "support"))):
     alerts = {"rules": 0, "open": 0, "suppressed_open": 0, "maintenance_windows": 0,
               "error": None}
     try:
-        alerts["rules"] = await db[ga.RULES_COLLECTION].count_documents({"enabled": True})
-        alerts["open"] = await db[ga.ALERTS_COLLECTION].count_documents({"resolved_at": None})
+        # Counts must respect the same row-level scoping as the graph rows above,
+        # otherwise a non-admin learns how many alerts exist on graphs they
+        # cannot see (an information leak through aggregate counters).
+        rule_q: dict = {"enabled": True}
+        alert_q: dict = {"resolved_at": None}
+        window_q: dict = {"enabled": True}
+        if staff.get("role") != "admin":
+            vis = await _visible_graph_ids(db, staff)
+            rule_q = {"enabled": True,
+                      "$or": [{"graph_id": {"$in": vis}}, {"graph_id": {"$in": ["", None]}}]}
+            alert_q = {"resolved_at": None, "graph_id": {"$in": vis}}
+            window_q = {"enabled": True,
+                        "$or": [{"graph_ids": {"$in": vis}}, {"graph_ids": []}]}
+        alerts["rules"] = await db[ga.RULES_COLLECTION].count_documents(rule_q)
+        alerts["open"] = await db[ga.ALERTS_COLLECTION].count_documents(alert_q)
         alerts["suppressed_open"] = await db[ga.ALERTS_COLLECTION].count_documents(
-            {"resolved_at": None, "suppressed": True})
+            {**alert_q, "suppressed": True})
         alerts["maintenance_windows"] = await db[ga.WINDOWS_COLLECTION].count_documents(
-            {"enabled": True})
+            window_q)
     except Exception as exc:
         alerts["error"] = f"{type(exc).__name__}: {exc}"
 
@@ -730,7 +772,14 @@ def _serialize_rule(d: dict) -> dict:
 @router.get("/admin/monitoring/alert-rules")
 async def alert_rules_list(staff=Depends(require_roles("admin", "support"))):
     db = await _get_db()
-    docs = await db[ga.RULES_COLLECTION].find({}).sort("created_at", -1).to_list(200)
+    # Scope to graphs visible to this role (same pattern as monitoring_health graph rows)
+    visible_ids = await _visible_graph_ids(db, staff)
+    if visible_ids is not None:
+        # Rules with graph_id set must match; rules with empty graph_id (global) are visible
+        query = {"$or": [{"graph_id": {"$in": visible_ids}}, {"graph_id": {"$in": ["", None]}}]}
+    else:
+        query = {}
+    docs = await db[ga.RULES_COLLECTION].find(query).sort("created_at", -1).to_list(200)
     return [_serialize_rule(d) for d in docs]
 
 
@@ -738,6 +787,7 @@ async def alert_rules_list(staff=Depends(require_roles("admin", "support"))):
 async def alert_rules_create(payload: m.GraphAlertRuleIn, request: Request,
                              admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
+    await _require_visible_graph_ids(db, admin, [payload.graph_id or ""])
     doc = payload.model_dump(exclude_none=True)
     doc["created_at"] = _now()
     r = await db[ga.RULES_COLLECTION].insert_one(doc)
@@ -752,6 +802,7 @@ async def alert_rules_create(payload: m.GraphAlertRuleIn, request: Request,
 async def alert_rules_update(rule_id: str, payload: m.GraphAlertRuleIn, request: Request,
                              admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
+    await _require_visible_graph_ids(db, admin, [payload.graph_id or ""])
     res = await db[ga.RULES_COLLECTION].update_one(
         {"_id": _oid(rule_id)}, {"$set": payload.model_dump(exclude_none=True)})
     if not res.matched_count:
@@ -766,6 +817,10 @@ async def alert_rules_update(rule_id: str, payload: m.GraphAlertRuleIn, request:
 @router.delete("/admin/monitoring/alert-rules/{rule_id}")
 async def alert_rules_delete(rule_id: str, admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
+    existing = await db[ga.RULES_COLLECTION].find_one({"_id": _oid(rule_id)})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    await _require_visible_graph_ids(db, admin, [existing.get("graph_id") or ""])
     r = await db[ga.RULES_COLLECTION].delete_one({"_id": _oid(rule_id)})
     if not r.deleted_count:
         raise HTTPException(status_code=404, detail="Alert rule not found")
@@ -775,13 +830,19 @@ async def alert_rules_delete(rule_id: str, admin=Depends(require_roles("admin", 
 # ---------------------------------------------------------------------------
 # Maintenance windows CRUD (phase 3)
 # ---------------------------------------------------------------------------
-def _serialize_window(d: dict) -> dict:
+def _serialize_window(d: dict, visible_ids: Optional[set[str]] = None) -> dict:
+    graph_ids = [str(graph_id) for graph_id in (d.get("graph_ids") or [])]
+    if visible_ids is not None:
+        # A window may span visible and hidden graphs. Returning the raw list
+        # would leak hidden graph identifiers even though the row itself
+        # legitimately intersects the caller's scope.
+        graph_ids = [graph_id for graph_id in graph_ids if graph_id in visible_ids]
     return {
         "id": str(d["_id"]),
         "name": d.get("name", ""),
         "starts_at": d.get("starts_at", ""),
         "ends_at": d.get("ends_at", ""),
-        "graph_ids": d.get("graph_ids") or [],
+        "graph_ids": graph_ids,
         "enabled": bool(d.get("enabled", True)),
         "created_at": _iso(d.get("created_at", "")),
     }
@@ -797,8 +858,19 @@ def _validate_window_dates(payload: m.MaintenanceWindowIn) -> None:
 @router.get("/admin/monitoring/maintenance-windows")
 async def maintenance_windows_list(staff=Depends(require_roles("admin", "support"))):
     db = await _get_db()
-    docs = await db[ga.WINDOWS_COLLECTION].find({}).sort("created_at", -1).to_list(200)
-    return [_serialize_window(d) for d in docs]
+    # Scope to graphs visible to this role.
+    visible_ids = await _visible_graph_ids(db, staff)
+    if visible_ids is not None:
+        # Windows scoped to a visible graph intersect; global windows (empty list) stay visible.
+        query = {"$or": [
+            {"graph_ids": {"$in": visible_ids}},
+            {"graph_ids": []},
+        ]}
+    else:
+        query = {}
+    docs = await db[ga.WINDOWS_COLLECTION].find(query).sort("created_at", -1).to_list(200)
+    visible_set = set(visible_ids) if visible_ids is not None else None
+    return [_serialize_window(d, visible_set) for d in docs]
 
 
 @router.post("/admin/monitoring/maintenance-windows")
@@ -806,6 +878,7 @@ async def maintenance_windows_create(payload: m.MaintenanceWindowIn, request: Re
                                      admin=Depends(require_roles("admin", "support"))):
     _validate_window_dates(payload)
     db = await _get_db()
+    await _require_visible_graph_ids(db, admin, payload.graph_ids)
     doc = payload.model_dump()
     doc["created_at"] = _now()
     r = await db[ga.WINDOWS_COLLECTION].insert_one(doc)
@@ -822,6 +895,7 @@ async def maintenance_windows_update(window_id: str, payload: m.MaintenanceWindo
                                      admin=Depends(require_roles("admin", "support"))):
     _validate_window_dates(payload)
     db = await _get_db()
+    await _require_visible_graph_ids(db, admin, payload.graph_ids)
     res = await db[ga.WINDOWS_COLLECTION].update_one(
         {"_id": _oid(window_id)}, {"$set": payload.model_dump()})
     if not res.matched_count:
@@ -837,6 +911,10 @@ async def maintenance_windows_update(window_id: str, payload: m.MaintenanceWindo
 async def maintenance_windows_delete(window_id: str,
                                      admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
+    existing = await db[ga.WINDOWS_COLLECTION].find_one({"_id": _oid(window_id)})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Maintenance window not found")
+    await _require_visible_graph_ids(db, admin, existing.get("graph_ids") or [])
     r = await db[ga.WINDOWS_COLLECTION].delete_one({"_id": _oid(window_id)})
     if not r.deleted_count:
         raise HTTPException(status_code=404, detail="Maintenance window not found")
@@ -877,6 +955,11 @@ async def graph_alerts_list(open_only: bool = False, limit: int = 50,
     """Recent alert events. `open_only=true` filters to unresolved rows."""
     db = await _get_db()
     query = {"resolved_at": None} if open_only else {}
+    # Same row-level scoping as the graph listings: a non-admin must not read
+    # alerts raised on graphs outside their visible_roles.
+    visible_ids = await _visible_graph_ids(db, staff)
+    if visible_ids is not None:
+        query["graph_id"] = {"$in": visible_ids}
     capped = min(max(int(limit or 50), 1), 200)
     docs = await db[ga.ALERTS_COLLECTION].find(query).sort("fired_at", -1).to_list(capped)
     return [_serialize_alert(d) for d in docs]
