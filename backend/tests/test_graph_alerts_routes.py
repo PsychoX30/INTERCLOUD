@@ -199,6 +199,52 @@ async def test_maintenance_window_update_and_delete(db):
 
 
 # ---------------------------------------------------------------------------
+# Alert event history
+# ---------------------------------------------------------------------------
+class _AlertColl(_Coll):
+    """find() honours the query so open_only filtering can be proven."""
+    def find(self, query=None, *_a, **_kw):
+        rows = self.docs
+        if query and "resolved_at" in query:
+            rows = [d for d in rows if d.get("resolved_at") is None]
+        return _Cursor(rows)
+
+
+@pytest.mark.anyio
+async def test_graph_alerts_list_open_only_filters(monkeypatch):
+    value = _Db()
+    value.monitoring_graph_alerts = _AlertColl([
+        {"_id": ObjectId(), "rule_name": "open one", "fired_at": "2026-10-01T00:00:00+00:00",
+         "resolved_at": None, "severity": "critical", "suppressed": False, "dispatched": True},
+        {"_id": ObjectId(), "rule_name": "resolved one", "fired_at": "2026-09-30T00:00:00+00:00",
+         "resolved_at": "2026-09-30T01:00:00+00:00", "suppressed": False, "dispatched": True},
+        {"_id": ObjectId(), "rule_name": "suppressed open", "fired_at": "2026-10-01T02:00:00+00:00",
+         "resolved_at": None, "suppressed": True, "dispatched": False},
+    ])
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    all_rows = await routes.graph_alerts_list(False, 50, ADMIN)
+    assert len(all_rows) == 3
+
+    open_rows = await routes.graph_alerts_list(True, 50, ADMIN)
+    assert {r["rule_name"] for r in open_rows} == {"open one", "suppressed open"}
+    # open flag is derived from resolved_at, suppressed is reported honestly
+    suppressed = [r for r in open_rows if r["rule_name"] == "suppressed open"][0]
+    assert suppressed["open"] is True and suppressed["suppressed"] is True
+    assert suppressed["dispatched"] is False
+
+
+@pytest.mark.anyio
+async def test_graph_alerts_list_caps_limit(monkeypatch):
+    value = _Db()
+    value.monitoring_graph_alerts = _AlertColl(
+        [{"_id": ObjectId(), "rule_name": f"r{i}", "resolved_at": None} for i in range(10)])
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+    rows = await routes.graph_alerts_list(False, 0, ADMIN)  # 0 must not mean "no rows"
+    assert len(rows) == 10
+
+
+# ---------------------------------------------------------------------------
 # RBAC contract (AST — no FastAPI dependency execution needed)
 # ---------------------------------------------------------------------------
 def _route_dep_names(func: ast.AsyncFunctionDef) -> list[str]:
@@ -223,7 +269,7 @@ def test_alert_and_window_routes_require_admin_or_support():
     wanted = {
         "alert_rules_list", "alert_rules_create", "alert_rules_update",
         "alert_rules_delete", "maintenance_windows_list", "maintenance_windows_create",
-        "maintenance_windows_update", "maintenance_windows_delete",
+        "maintenance_windows_update", "maintenance_windows_delete", "graph_alerts_list",
     }
     seen = {}
     for node in ast.walk(tree):

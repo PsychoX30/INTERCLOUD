@@ -841,3 +841,42 @@ async def maintenance_windows_delete(window_id: str,
     if not r.deleted_count:
         raise HTTPException(status_code=404, detail="Maintenance window not found")
     return {"deleted": r.deleted_count}
+
+
+# ---------------------------------------------------------------------------
+# Alert event history (read-only)
+# ---------------------------------------------------------------------------
+def _serialize_alert(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]),
+        "rule_id": d.get("rule_id", ""),
+        "rule_name": d.get("rule_name", ""),
+        "graph_id": d.get("graph_id", ""),
+        "graph_name": d.get("graph_name", ""),
+        "target": d.get("target", ""),
+        "metric": d.get("metric", ""),
+        "comparator": d.get("comparator", ""),
+        "threshold": d.get("threshold", 0),
+        "severity": d.get("severity", "warning"),
+        "value": d.get("value"),
+        "state": d.get("state", ""),
+        "error": d.get("error", ""),
+        "fired_at": _iso(d.get("fired_at", "")),
+        "resolved_at": _iso(d.get("resolved_at", "")) if d.get("resolved_at") else "",
+        # `open` is computed from resolved_at, never from a stored flag, so a
+        # reaper that resolves rows can't leave the UI showing stale open alerts.
+        "open": d.get("resolved_at") is None,
+        "dispatched": bool(d.get("dispatched")),
+        "suppressed": bool(d.get("suppressed")),
+    }
+
+
+@router.get("/admin/monitoring/graph-alerts")
+async def graph_alerts_list(open_only: bool = False, limit: int = 50,
+                            staff=Depends(require_roles("admin", "support"))):
+    """Recent alert events. `open_only=true` filters to unresolved rows."""
+    db = await _get_db()
+    query = {"resolved_at": None} if open_only else {}
+    capped = min(max(int(limit or 50), 1), 200)
+    docs = await db[ga.ALERTS_COLLECTION].find(query).sort("fired_at", -1).to_list(capped)
+    return [_serialize_alert(d) for d in docs]

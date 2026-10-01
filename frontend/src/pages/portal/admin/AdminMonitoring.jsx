@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search, ChevronDown, ChevronRight, Copy, Check, ChevronUp } from "lucide-react";
+import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search, ChevronDown, ChevronRight, Copy, Check, ChevronUp, Bell } from "lucide-react";
 import { ResponsiveContainer, LineChart, AreaChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Legend } from "recharts";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -212,20 +212,41 @@ const AdminMonitoring = () => {
   const { user } = useAuth() || {};
   const isAdmin = user?.role === "admin";
   const [tab, setTab] = useState("ping");
+  // Open-alert count lives here (not in AlertsTab) so operators see it on the
+  // tab strip even while they're on another tab. null = not loaded yet, which
+  // renders no badge rather than a misleading "0".
+  const [openAlerts, setOpenAlerts] = useState(null);
+
+  const refreshAlertBadge = useCallback(async () => {
+    try {
+      const r = await api.get("/admin/monitoring/graph-alerts", { params: { open_only: true, limit: 200 } });
+      setOpenAlerts((r.data || []).length);
+    } catch { setOpenAlerts(null); }
+  }, []);
+
+  useEffect(() => { refreshAlertBadge(); }, [refreshAlertBadge]);
 
   return (
     <div data-testid="monitoring-page">
       <PageHeader
         title="Monitoring"
-        subtitle="Unified monitoring: ping checks, SNMP/MRTG graphs, and network map."
+        subtitle="Unified monitoring: ping checks, SNMP/MRTG graphs, alerts, and network map."
       />
       <div className="flex items-center gap-2 mb-4 border-b border-slate-200 overflow-x-auto">
         <TabBtn active={tab === "ping"} onClick={() => setTab("ping")} icon={Activity} testid="tab-ping">Ping Checks</TabBtn>
         <TabBtn active={tab === "graphs"} onClick={() => setTab("graphs")} icon={BarChart3} testid="tab-graphs">SNMP Graphs</TabBtn>
+        <TabBtn active={tab === "alerts"} onClick={() => setTab("alerts")} icon={Bell} testid="tab-alerts">Alert Rules</TabBtn>
         <TabBtn active={tab === "map"} onClick={() => setTab("map")} icon={MapIcon} testid="tab-map">Network Map</TabBtn>
+        {openAlerts > 0 && (
+          <span className="mb-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700"
+                data-testid="monitoring-open-alerts">
+            {openAlerts} open
+          </span>
+        )}
       </div>
       {tab === "ping" && <PingTab isAdmin={isAdmin} />}
       {tab === "graphs" && <GraphsTab isAdmin={isAdmin} />}
+      {tab === "alerts" && <AlertsTab isAdmin={isAdmin} onChanged={refreshAlertBadge} />}
       {tab === "map" && <NetworkMapTab isAdmin={isAdmin} />}
     </div>
   );
@@ -1442,6 +1463,334 @@ const GraphForm = ({ value, onChange, onSubmit, onClose, onAfterSave }) => {
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!value.enabled} onChange={e => set("enabled", e.target.checked)} /> Enabled</label>
         <div className="flex justify-end gap-2"><button type="button" className={btnSecondary} onClick={onClose}>Cancel</button><button type="submit" className={btnPrimary}>Save</button></div>
       </form>
+    </div>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════════
+// Alert Rules Tab (phase 3)
+// ═════════════════════════════════════════════════════════════════
+const ALERT_METRICS = [
+  { value: "bps", label: "Traffic rate (bps)" },
+  { value: "pps", label: "Packets per second (pps)" },
+  { value: "ms", label: "Ping latency (ms)" },
+  { value: "state", label: "Poll state (dead / error)" },
+];
+
+const RULE_EMPTY = {
+  name: "", metric: "bps", comparator: ">", threshold: 0,
+  consecutive: 2, severity: "warning", enabled: true, graph_id: "",
+};
+
+const WINDOW_EMPTY = { name: "", starts_at: "", ends_at: "", graph_ids: [], enabled: true };
+
+// Minutes east of UTC with an explicit sign — the backend only accepts ISO-8601
+// WITH timezone, so a naive `datetime-local` value is invalid input.
+const tzOffsetString = () => {
+  const mins = -new Date().getTimezoneOffset();
+  const sign = mins < 0 ? "-" : "+";
+  const abs = Math.abs(mins);
+  return `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+};
+
+// "2026-10-01T22:00" (local wall clock) -> "2026-10-01T22:00:00+07:00"
+const toIsoWithTz = (localValue) => {
+  if (!localValue) return "";
+  const v = localValue.length === 16 ? `${localValue}:00` : localValue;
+  return `${v}${tzOffsetString()}`;
+};
+
+const fmtMetric = (metric, value, comparator, threshold) => {
+  if (metric === "state") return "state != ok";
+  const unit = metric === "ms" ? " ms" : metric === "pps" ? " pps" : " bps";
+  const shown = metric === "bps" ? fmtBps(threshold) : String(threshold ?? "");
+  return `${unit.trim()} ${comparator} ${shown}`;
+};
+
+const SeverityPill = ({ severity }) => {
+  const tone = severity === "critical" ? "bg-red-100 text-red-700"
+    : severity === "warning" ? "bg-amber-100 text-amber-700"
+    : "bg-slate-100 text-slate-600";
+  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${tone}`}>{severity}</span>;
+};
+
+const AlertsTab = ({ isAdmin, onChanged }) => {
+  const [rules, setRules] = useState(null);
+  const [windows, setWindows] = useState(null);
+  const [events, setEvents] = useState(null);
+  const [showAllEvents, setShowAllEvents] = useState(false);
+  const [editingRule, setEditingRule] = useState(null);
+  const [editingWindow, setEditingWindow] = useState(null);
+  const [graphs, setGraphs] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setError("");
+      const [r, w, e, g] = await Promise.all([
+        api.get("/admin/monitoring/alert-rules"),
+        api.get("/admin/monitoring/maintenance-windows"),
+        api.get("/admin/monitoring/graph-alerts", { params: { open_only: showAllEvents ? false : true, limit: 50 } }),
+        api.get("/admin/monitoring/graphs").catch(() => ({ data: [] })),
+      ]);
+      setRules(r.data || []);
+      setWindows(w.data || []);
+      setEvents(e.data || []);
+      setGraphs(g.data || []);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to load alerting data");
+      setRules([]); setWindows([]); setEvents([]);
+    }
+  }, [showAllEvents]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const afterWrite = async (msg) => {
+    setInfo(msg); setEditingRule(null); setEditingWindow(null);
+    await load();
+    if (onChanged) onChanged();
+  };
+
+  const saveRule = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError("");
+    const payload = {
+      name: editingRule.name,
+      metric: editingRule.metric,
+      comparator: editingRule.comparator,
+      threshold: Number(editingRule.threshold) || 0,
+      consecutive: Number(editingRule.consecutive) || 2,
+      severity: editingRule.severity,
+      enabled: !!editingRule.enabled,
+      graph_id: editingRule.graph_id || null,
+    };
+    try {
+      if (editingRule.id) await api.put(`/admin/monitoring/alert-rules/${editingRule.id}`, payload);
+      else await api.post("/admin/monitoring/alert-rules", payload);
+      await afterWrite("Alert rule saved.");
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to save alert rule");
+    } finally { setBusy(false); }
+  };
+
+  const removeRule = async (id) => {
+    if (!window.confirm("Delete this alert rule?")) return;
+    try { await api.delete(`/admin/monitoring/alert-rules/${id}`); await afterWrite("Alert rule deleted."); }
+    catch (err) { setError(err?.response?.data?.detail || "Failed to delete alert rule"); }
+  };
+
+  const toggleRule = async (rule) => {
+    const payload = { ...rule, enabled: !rule.enabled, graph_id: rule.graph_id || null };
+    delete payload.id; delete payload.created_at;
+    try { await api.put(`/admin/monitoring/alert-rules/${rule.id}`, payload); await afterWrite(payload.enabled ? "Rule enabled." : "Rule disabled."); }
+    catch (err) { setError(err?.response?.data?.detail || "Failed to toggle rule"); }
+  };
+
+  const saveWindow = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError("");
+    const payload = {
+      name: editingWindow.name,
+      starts_at: toIsoWithTz(editingWindow.starts_at),
+      ends_at: toIsoWithTz(editingWindow.ends_at),
+      graph_ids: editingWindow.graph_ids || [],
+      enabled: !!editingWindow.enabled,
+    };
+    try {
+      if (editingWindow.id) await api.put(`/admin/monitoring/maintenance-windows/${editingWindow.id}`, payload);
+      else await api.post("/admin/monitoring/maintenance-windows", payload);
+      await afterWrite("Maintenance window saved.");
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to save maintenance window — ends_at must be after starts_at");
+    } finally { setBusy(false); }
+  };
+
+  const removeWindow = async (id) => {
+    if (!window.confirm("Delete this maintenance window?")) return;
+    try { await api.delete(`/admin/monitoring/maintenance-windows/${id}`); await afterWrite("Maintenance window deleted."); }
+    catch (err) { setError(err?.response?.data?.detail || "Failed to delete window"); }
+  };
+
+  if (rules === null) return <Loading label="Loading alert rules…" />;
+
+  const graphLabel = (id) => {
+    const g = graphs.find(x => x.id === id);
+    return g ? (g.display_name || g.name) : id;
+  };
+
+  return (
+    <div data-testid="alerts-tab">
+      <div className="flex items-center gap-2 mb-4">
+        <button className={btnSecondary} onClick={load} data-testid="alerts-refresh"><RefreshCw className="h-4 w-4" /> Refresh</button>
+        {isAdmin && <button className={btnPrimary} onClick={() => { setInfo(""); setEditingRule({ ...RULE_EMPTY }); }} data-testid="alerts-add-rule"><Plus className="h-4 w-4" /> Add rule</button>}
+        {isAdmin && <button className={btnSecondary} onClick={() => { setInfo(""); setEditingWindow({ ...WINDOW_EMPTY }); }} data-testid="alerts-add-window"><Plus className="h-4 w-4" /> Add maintenance</button>}
+      </div>
+      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" data-testid="alerts-error">{error}</div>}
+      {info && <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{info}</div>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card className="p-5">
+          <h3 className="font-extrabold text-[#0a2350] mb-3">Alert rules ({rules.length})</h3>
+          {rules.length === 0
+            ? <EmptyState title="No alert rules" body="Add a rule to be notified when a graph breaches a threshold or goes dead." />
+            : (
+              <div className="space-y-3">
+                {rules.map(r => (
+                  <div key={r.id} className="rounded-lg border border-slate-200 p-3" data-testid="alert-rule-row">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 font-semibold text-sm text-[#0a2350]">{r.name}</span>
+                      <SeverityPill severity={r.severity} />
+                      {!r.enabled && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-500">off</span>}
+                      {isAdmin && (<>
+                        <button className="text-xs text-slate-500 hover:text-[#0a2350]" title={r.enabled ? "Disable" : "Enable"} onClick={() => toggleRule(r)}><PlayCircle className="h-3.5 w-3.5" /></button>
+                        <button className="text-xs text-slate-500 hover:text-[#0a2350]" onClick={() => { setInfo(""); setEditingRule({ ...r, graph_id: r.graph_id || "" }); }}><Edit className="h-3.5 w-3.5" /></button>
+                        <button className="text-xs text-red-500 hover:text-red-700" onClick={() => removeRule(r.id)}><Trash2 className="h-3.5 w-3.5" /></button>
+                      </>)}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {fmtMetric(r.metric, r.value, r.comparator, r.threshold)}
+                      <span className="text-slate-400"> · debounce {r.consecutive} poll(s)</span>
+                      <span className="text-slate-400"> · scope {r.graph_id ? graphLabel(r.graph_id) : "all graphs"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="font-extrabold text-[#0a2350] mb-3">Maintenance windows ({windows.length})</h3>
+          <p className="mb-3 text-xs text-slate-500">Suppresses notification dispatch only — suppressed alerts are still recorded below.</p>
+          {windows.length === 0
+            ? <EmptyState title="No maintenance windows" body="Add one to silence alerts during planned work." />
+            : (
+              <div className="space-y-3">
+                {windows.map(w => (
+                  <div key={w.id} className="rounded-lg border border-slate-200 p-3" data-testid="maintenance-row">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 font-semibold text-sm text-[#0a2350]">{w.name}</span>
+                      {!w.enabled && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-500">off</span>}
+                      {isAdmin && (<>
+                        <button className="text-xs text-slate-500 hover:text-[#0a2350]" onClick={() => { setInfo(""); setEditingWindow({ ...w, starts_at: (w.starts_at || "").slice(0, 16), ends_at: (w.ends_at || "").slice(0, 16) }); }}><Edit className="h-3.5 w-3.5" /></button>
+                        <button className="text-xs text-red-500 hover:text-red-700" onClick={() => removeWindow(w.id)}><Trash2 className="h-3.5 w-3.5" /></button>
+                      </>)}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {stamp(w.starts_at)} → {stamp(w.ends_at)}
+                      <span className="text-slate-400"> · {(w.graph_ids || []).length ? `${w.graph_ids.length} graph(s)` : "all graphs"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+        </Card>
+      </div>
+
+      <Card className="mt-5 p-5">
+        <div className="mb-3 flex items-center gap-3">
+          <h3 className="font-extrabold text-[#0a2350]">Alert history</h3>
+          <div className="ml-auto flex items-center gap-2">
+            <button className={btnSecondary} onClick={() => setShowAllEvents(false)} data-testid="events-filter-open">Open</button>
+            <button className={btnSecondary} onClick={() => setShowAllEvents(true)} data-testid="events-filter-all">All</button>
+          </div>
+        </div>
+        {events.length === 0
+          ? <EmptyState title={showAllEvents ? "No alerts recorded" : "No open alerts"} body={showAllEvents ? "Nothing has fired yet." : "All clear — switch to All to see resolved history."} />
+          : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr><th className="py-2">Fired</th><th className="py-2">Rule</th><th className="py-2">Graph</th><th className="py-2">Severity</th><th className="py-2">Value</th><th className="py-2">Status</th></tr>
+                </thead>
+                <tbody>
+                  {events.map(ev => (
+                    <tr key={ev.id} className="border-t border-slate-100" data-testid="alert-event-row">
+                      <td className="py-2 whitespace-nowrap">{stamp(ev.fired_at)}</td>
+                      <td className="py-2">{ev.rule_name || "—"}</td>
+                      <td className="py-2">{ev.graph_name || ev.graph_id}</td>
+                      <td className="py-2"><SeverityPill severity={ev.severity} /></td>
+                      <td className="py-2">
+                        {ev.metric === "state" ? (ev.state || "—") : (ev.value === null || ev.value === undefined ? "—" : (ev.metric === "bps" ? fmtBps(ev.value) : `${ev.value} ${ev.metric}`))}
+                      </td>
+                      <td className="py-2">
+                        {ev.open
+                          ? <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold uppercase text-red-700">open</span>
+                          : <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-700">resolved</span>}
+                        {ev.suppressed && <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-700" title="Fired during maintenance — no notification sent">muted</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </Card>
+
+      {editingRule && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setEditingRule(null)}>
+          <form className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6" onClick={e => e.stopPropagation()} onSubmit={saveRule} data-testid="alert-rule-form">
+            <h2 className="text-lg font-extrabold text-[#0a2350]">{editingRule.id ? "Edit alert rule" : "Add alert rule"}</h2>
+            <label className="block"><span className={labelClass}>Name</span><input required maxLength={120} className={inputClass} value={editingRule.name} onChange={e => setEditingRule({ ...editingRule, name: e.target.value })} /></label>
+            <label className="block"><span className={labelClass}>Metric</span>
+              <select className={inputClass} value={editingRule.metric} onChange={e => setEditingRule({ ...editingRule, metric: e.target.value })}>
+                {ALERT_METRICS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select>
+            </label>
+            {editingRule.metric !== "state" && (
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block"><span className={labelClass}>Comparator</span>
+                  <select className={inputClass} value={editingRule.comparator} onChange={e => setEditingRule({ ...editingRule, comparator: e.target.value })}>
+                    <option value=">">greater than</option>
+                    <option value="<">less than</option>
+                  </select>
+                </label>
+                <label className="block"><span className={labelClass}>Threshold</span><input type="number" min="0" step="any" className={inputClass} value={editingRule.threshold} onChange={e => setEditingRule({ ...editingRule, threshold: e.target.value })} /></label>
+              </div>
+            )}
+            {editingRule.metric === "state" && <p className="text-xs text-slate-500">Fires when the poll state is not <code>ok</code> (graph dead or in error). Threshold is ignored.</p>}
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block"><span className={labelClass}>Debounce (consecutive polls)</span><input type="number" min="1" max="100" className={inputClass} value={editingRule.consecutive} onChange={e => setEditingRule({ ...editingRule, consecutive: e.target.value })} /></label>
+              <label className="block"><span className={labelClass}>Severity</span>
+                <select className={inputClass} value={editingRule.severity} onChange={e => setEditingRule({ ...editingRule, severity: e.target.value })}>
+                  <option value="info">info</option><option value="warning">warning</option><option value="critical">critical</option>
+                </select>
+              </label>
+            </div>
+            <label className="block"><span className={labelClass}>Scope</span>
+              <select className={inputClass} value={editingRule.graph_id} onChange={e => setEditingRule({ ...editingRule, graph_id: e.target.value })}>
+                <option value="">All graphs</option>
+                {graphs.map(g => <option key={g.id} value={g.id}>{g.display_name || g.name}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!editingRule.enabled} onChange={e => setEditingRule({ ...editingRule, enabled: e.target.checked })} /> Enabled</label>
+            <div className="flex justify-end gap-2">
+              <button type="button" className={btnSecondary} onClick={() => setEditingRule(null)}>Cancel</button>
+              <button type="submit" className={btnPrimary} disabled={busy} data-testid="alert-rule-save">{busy ? "Saving…" : "Save"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editingWindow && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setEditingWindow(null)}>
+          <form className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6" onClick={e => e.stopPropagation()} onSubmit={saveWindow} data-testid="maintenance-form">
+            <h2 className="text-lg font-extrabold text-[#0a2350]">{editingWindow.id ? "Edit maintenance window" : "Add maintenance window"}</h2>
+            <label className="block"><span className={labelClass}>Name</span><input required maxLength={120} className={inputClass} value={editingWindow.name} onChange={e => setEditingWindow({ ...editingWindow, name: e.target.value })} /></label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block"><span className={labelClass}>Starts</span><input required type="datetime-local" className={inputClass} value={editingWindow.starts_at} onChange={e => setEditingWindow({ ...editingWindow, starts_at: e.target.value })} /></label>
+              <label className="block"><span className={labelClass}>Ends</span><input required type="datetime-local" className={inputClass} value={editingWindow.ends_at} onChange={e => setEditingWindow({ ...editingWindow, ends_at: e.target.value })} /></label>
+            </div>
+            <p className="text-xs text-slate-500">Times are saved with your current timezone offset ({tzOffsetString()}). Leave scope empty to mute every graph.</p>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!editingWindow.enabled} onChange={e => setEditingWindow({ ...editingWindow, enabled: e.target.checked })} /> Enabled</label>
+            <div className="flex justify-end gap-2">
+              <button type="button" className={btnSecondary} onClick={() => setEditingWindow(null)}>Cancel</button>
+              <button type="submit" className={btnPrimary} disabled={busy} data-testid="maintenance-save">{busy ? "Saving…" : "Save"}</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };
