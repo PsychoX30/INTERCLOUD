@@ -783,3 +783,75 @@ async def test_maintenance_window_update_hidden_window_to_global_404(monkeypatch
     except HTTPException as exc:
         assert exc.status_code == 404
     assert value.monitoring_maintenance_windows.docs[0] == before
+
+
+# QA repro (Dudung, ece1980 FAIL): an already-global rule/window must stay
+# admin-only to UPDATE, not just to delete or to retarget from hidden->global.
+@pytest.mark.anyio
+async def test_alert_rule_update_existing_global_404(monkeypatch):
+    value = _seed_scoped_db()
+    global_rule = value.graph_alert_rules.docs[1]
+    rule_id = str(global_rule["_id"])
+    before = dict(global_rule)
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    payload = m.GraphAlertRuleIn(name="hijacked", metric="state", graph_id=None,
+                                 consecutive=2, severity="critical", enabled=False)
+    try:
+        await routes.alert_rules_update(rule_id, payload, None, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.graph_alert_rules.docs[1] == before
+
+
+@pytest.mark.anyio
+async def test_maintenance_window_update_existing_global_404(monkeypatch):
+    value = _seed_scoped_db()
+    global_window = value.monitoring_maintenance_windows.docs[1]
+    window_id = str(global_window["_id"])
+    before = dict(global_window)
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    payload = m.MaintenanceWindowIn(name="hijacked",
+                                    starts_at="2026-10-01T22:00:00+07:00",
+                                    ends_at="2026-10-02T02:00:00+07:00",
+                                    graph_ids=[], enabled=False)
+    try:
+        await routes.maintenance_windows_update(window_id, payload, None, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.monitoring_maintenance_windows.docs[1] == before
+
+
+@pytest.mark.anyio
+async def test_alert_rule_delete_existing_global_404(monkeypatch):
+    value = _seed_scoped_db()
+    global_rule = value.graph_alert_rules.docs[1]
+    rule_id = str(global_rule["_id"])
+    before = dict(global_rule)
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    try:
+        await routes.alert_rules_delete(rule_id, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.graph_alert_rules.docs[1] == before
+
+
+@pytest.mark.anyio
+async def test_maintenance_window_delete_existing_global_404(monkeypatch):
+    value = _seed_scoped_db()
+    global_window = value.monitoring_maintenance_windows.docs[1]
+    window_id = str(global_window["_id"])
+    before = dict(global_window)
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    try:
+        await routes.maintenance_windows_delete(window_id, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.monitoring_maintenance_windows.docs[1] == before

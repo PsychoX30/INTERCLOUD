@@ -75,8 +75,16 @@ async def _require_visible_graph_ids(db, staff: dict, graph_ids: list[str]) -> N
 
 
 def _rule_graph_ids(d: dict) -> list[str]:
-    """Scope of an existing alert rule as a list (single graph or global)."""
-    return [str(d.get("graph_id") or "")]
+    """Scope of an existing alert rule as a list (single graph or global).
+
+    An empty ``graph_id`` means the rule is *global* — it fires for every
+    graph, including admin-only ones — so it scopes to ``[]`` exactly like
+    a global maintenance window. Returning ``[""]`` instead would make the
+    visibility guard treat the empty string as a visible graph id and let
+    support mutate a global rule it cannot even list.
+    """
+    graph_id = d.get("graph_id")
+    return [str(graph_id)] if graph_id else []
 
 
 def _window_graph_ids(d: dict) -> list[str]:
@@ -852,7 +860,11 @@ async def alert_rules_delete(rule_id: str, admin=Depends(require_roles("admin", 
     existing = await db[ga.RULES_COLLECTION].find_one({"_id": _oid(rule_id)})
     if existing is None:
         raise HTTPException(status_code=404, detail="Alert rule not found")
-    await _require_visible_graph_ids(db, admin, [existing.get("graph_id") or ""])
+    # Same object-level guard as update: a global rule (empty graph_id) or a
+    # rule scoped to a hidden graph is admin-only to delete. _require_visible_graph_ids
+    # alone would wave through a global rule because its empty scope is a
+    # trivial subset of any visible set.
+    await _require_visible_object(db, admin, _rule_graph_ids(existing))
     r = await db[ga.RULES_COLLECTION].delete_one({"_id": _oid(rule_id)})
     if not r.deleted_count:
         raise HTTPException(status_code=404, detail="Alert rule not found")
@@ -953,7 +965,9 @@ async def maintenance_windows_delete(window_id: str,
     existing = await db[ga.WINDOWS_COLLECTION].find_one({"_id": _oid(window_id)})
     if existing is None:
         raise HTTPException(status_code=404, detail="Maintenance window not found")
-    await _require_visible_graph_ids(db, admin, existing.get("graph_ids") or [])
+    # Object-level guard, matching update: a global window (empty graph_ids) or
+    # one scoped to a hidden graph is admin-only to delete.
+    await _require_visible_object(db, admin, _window_graph_ids(existing))
     r = await db[ga.WINDOWS_COLLECTION].delete_one({"_id": _oid(window_id)})
     if not r.deleted_count:
         raise HTTPException(status_code=404, detail="Maintenance window not found")
