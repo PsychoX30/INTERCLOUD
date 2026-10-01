@@ -74,6 +74,32 @@ async def _require_visible_graph_ids(db, staff: dict, graph_ids: list[str]) -> N
         raise HTTPException(status_code=404, detail="Monitoring graph not found")
 
 
+def _rule_graph_ids(d: dict) -> list[str]:
+    """Scope of an existing alert rule as a list (single graph or global)."""
+    return [str(d.get("graph_id") or "")]
+
+
+def _window_graph_ids(d: dict) -> list[str]:
+    """Scope of an existing maintenance window (list of graphs; empty = global)."""
+    return [str(graph_id) for graph_id in (d.get("graph_ids") or [])]
+
+
+async def _require_visible_object(db, staff: dict, existing_graph_ids: list[str]) -> None:
+    """Row-level guard: non-admin may not mutate an object scoped to hidden graphs.
+
+    An empty ``existing_graph_ids`` means the stored object is *global* — it
+    touches every graph, including admin-only ones — so it must be admin-only
+    to mutate as well. Without this, support could hijack a global rule/window
+    by ID and silently alter alerting for graphs it cannot even list. As with
+    ``_require_visible_graph_ids`` the answer is 404, never a disclosure.
+    """
+    if staff.get("role") == "admin":
+        return
+    if not existing_graph_ids:
+        raise HTTPException(status_code=404, detail="Monitoring object not found")
+    await _require_visible_graph_ids(db, staff, existing_graph_ids)
+
+
 def _clean_or_400(cleaner, value):
     """Convert validation failures into API client errors, not 500s."""
     try:
@@ -805,8 +831,12 @@ async def alert_rules_update(rule_id: str, payload: m.GraphAlertRuleIn, request:
     existing = await db[ga.RULES_COLLECTION].find_one({"_id": _oid(rule_id)})
     if existing is None:
         raise HTTPException(status_code=404, detail="Alert rule not found")
-    await _require_visible_graph_ids(db, admin, [
-        existing.get("graph_id") or "", payload.graph_id or ""])
+    # Visibility guard on the OBJECT, not just the payload: a non-admin must not
+    # edit a rule scoped to a hidden graph, nor a global rule (empty graph_id)
+    # which touches graphs it cannot see. Then guard the target scope, so a
+    # visible rule cannot be retargeted onto a hidden graph either.
+    await _require_visible_object(db, admin, _rule_graph_ids(existing))
+    await _require_visible_graph_ids(db, admin, [payload.graph_id or ""])
     res = await db[ga.RULES_COLLECTION].update_one(
         {"_id": _oid(rule_id)}, {"$set": payload.model_dump(exclude_none=True)})
     d = await db[ga.RULES_COLLECTION].find_one({"_id": _oid(rule_id)})
@@ -900,8 +930,13 @@ async def maintenance_windows_update(window_id: str, payload: m.MaintenanceWindo
     existing = await db[ga.WINDOWS_COLLECTION].find_one({"_id": _oid(window_id)})
     if existing is None:
         raise HTTPException(status_code=404, detail="Maintenance window not found")
+    existing_ids = _window_graph_ids(existing)
+    # Guard the OBJECT first (hidden or global windows are admin-only), then
+    # the payload targets, so a visible window cannot be retargeted to hidden
+    # graphs.
+    await _require_visible_object(db, admin, existing_ids)
     await _require_visible_graph_ids(
-        db, admin, list(existing.get("graph_ids") or []) + list(payload.graph_ids))
+        db, admin, existing_ids + list(payload.graph_ids))
     res = await db[ga.WINDOWS_COLLECTION].update_one(
         {"_id": _oid(window_id)}, {"$set": payload.model_dump()})
     d = await db[ga.WINDOWS_COLLECTION].find_one({"_id": _oid(window_id)})
