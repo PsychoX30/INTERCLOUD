@@ -802,11 +802,13 @@ async def alert_rules_create(payload: m.GraphAlertRuleIn, request: Request,
 async def alert_rules_update(rule_id: str, payload: m.GraphAlertRuleIn, request: Request,
                              admin=Depends(require_roles("admin", "support"))):
     db = await _get_db()
-    await _require_visible_graph_ids(db, admin, [payload.graph_id or ""])
+    existing = await db[ga.RULES_COLLECTION].find_one({"_id": _oid(rule_id)})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    await _require_visible_graph_ids(db, admin, [
+        existing.get("graph_id") or "", payload.graph_id or ""])
     res = await db[ga.RULES_COLLECTION].update_one(
         {"_id": _oid(rule_id)}, {"$set": payload.model_dump(exclude_none=True)})
-    if not res.matched_count:
-        raise HTTPException(status_code=404, detail="Alert rule not found")
     d = await db[ga.RULES_COLLECTION].find_one({"_id": _oid(rule_id)})
     await log_audit(db, actor=admin, action="monitoring.alert_rule_updated",
                     category="monitoring", target_type="graph_alert_rule",
@@ -895,11 +897,13 @@ async def maintenance_windows_update(window_id: str, payload: m.MaintenanceWindo
                                      admin=Depends(require_roles("admin", "support"))):
     _validate_window_dates(payload)
     db = await _get_db()
-    await _require_visible_graph_ids(db, admin, payload.graph_ids)
+    existing = await db[ga.WINDOWS_COLLECTION].find_one({"_id": _oid(window_id)})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Maintenance window not found")
+    await _require_visible_graph_ids(
+        db, admin, list(existing.get("graph_ids") or []) + list(payload.graph_ids))
     res = await db[ga.WINDOWS_COLLECTION].update_one(
         {"_id": _oid(window_id)}, {"$set": payload.model_dump()})
-    if not res.matched_count:
-        raise HTTPException(status_code=404, detail="Maintenance window not found")
     d = await db[ga.WINDOWS_COLLECTION].find_one({"_id": _oid(window_id)})
     await log_audit(db, actor=admin, action="monitoring.maintenance_window_updated",
                     category="monitoring", target_type="maintenance_window",

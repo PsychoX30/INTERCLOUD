@@ -680,3 +680,69 @@ async def test_maintenance_window_delete_404_on_hidden_graph(monkeypatch):
         raise AssertionError("expected 404")
     except HTTPException as exc:
         assert exc.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Update-move attack: a support staff member who knows an object ID must NOT be
+# able to move an admin-only rule/window onto a visible graph via PUT.
+# --------------------------------------------------------------------------- #
+@pytest.mark.anyio
+async def test_alert_rule_update_cannot_move_hidden_rule_to_visible_graph(monkeypatch):
+    value = _seed_scoped_db()
+    admin_rule_id = str(value.graph_alert_rules.docs[0]["_id"])  # on SecretAdmin
+    visible_id = str(value.monitoring_graphs.rows[0]["_id"])     # support-visible
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    payload = m.GraphAlertRuleIn(name="moved", metric="state",
+                                 graph_id=visible_id, consecutive=2,
+                                 severity="warning")
+    try:
+        await routes.alert_rules_update(admin_rule_id, payload, None, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    # rule must still live on the hidden graph (unchanged)
+    assert value.graph_alert_rules.docs[0]["name"] == "secret rule"
+
+
+@pytest.mark.anyio
+async def test_alert_rule_update_cannot_retarget_visible_rule_to_hidden_graph(monkeypatch):
+    value = _seed_scoped_db()
+    # create a rule on the support-visible graph as admin
+    async def _get_db():
+        return value
+    monkeypatch.setattr(routes, "_get_db", _get_db)
+    visible_id = str(value.monitoring_graphs.rows[0]["_id"])
+    created = await routes.alert_rules_create(
+        m.GraphAlertRuleIn(name="mine", metric="state", graph_id=visible_id,
+                           consecutive=2, severity="info"), None, ADMIN)
+    hidden_id = str(value.monitoring_graphs.rows[1]["_id"])  # SecretAdmin
+
+    payload = m.GraphAlertRuleIn(name="moved", metric="state",
+                                 graph_id=hidden_id, consecutive=2,
+                                 severity="warning")
+    try:
+        await routes.alert_rules_update(created["id"], payload, None, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.graph_alert_rules.docs[-1]["graph_id"] == visible_id
+
+
+@pytest.mark.anyio
+async def test_maintenance_window_update_cannot_move_hidden_to_visible(monkeypatch):
+    value = _seed_scoped_db()
+    admin_window_id = str(value.monitoring_maintenance_windows.docs[0]["_id"])
+    visible_id = str(value.monitoring_graphs.rows[0]["_id"])
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    payload = m.MaintenanceWindowIn(name="moved",
+                                    starts_at="2026-10-01T22:00:00+07:00",
+                                    ends_at="2026-10-02T02:00:00+07:00",
+                                    graph_ids=[visible_id], enabled=True)
+    try:
+        await routes.maintenance_windows_update(admin_window_id, payload, None, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.monitoring_maintenance_windows.docs[0]["name"] == "secret window"
