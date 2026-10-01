@@ -746,3 +746,40 @@ async def test_maintenance_window_update_cannot_move_hidden_to_visible(monkeypat
     except HTTPException as exc:
         assert exc.status_code == 404
     assert value.monitoring_maintenance_windows.docs[0]["name"] == "secret window"
+
+
+# QA repro (Dudung, 47ea733 FAIL): making a hidden object global must be denied.
+@pytest.mark.anyio
+async def test_alert_rule_update_hidden_rule_to_global_404(monkeypatch):
+    value = _seed_scoped_db()
+    before = dict(value.graph_alert_rules.docs[0])
+    admin_rule_id = str(before["_id"])
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    payload = m.GraphAlertRuleIn(name="hijacked", metric="state", graph_id=None,
+                                 consecutive=2, severity="info", enabled=False)
+    try:
+        await routes.alert_rules_update(admin_rule_id, payload, None, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.graph_alert_rules.docs[0] == before
+
+
+@pytest.mark.anyio
+async def test_maintenance_window_update_hidden_window_to_global_404(monkeypatch):
+    value = _seed_scoped_db()
+    before = dict(value.monitoring_maintenance_windows.docs[0])
+    admin_window_id = str(before["_id"])
+    monkeypatch.setattr(routes, "_get_db", AsyncMock(return_value=value))
+
+    payload = m.MaintenanceWindowIn(name="hijacked",
+                                    starts_at="2026-10-01T22:00:00+07:00",
+                                    ends_at="2026-10-02T02:00:00+07:00",
+                                    graph_ids=[], enabled=False)
+    try:
+        await routes.maintenance_windows_update(admin_window_id, payload, None, _support_staff())
+        raise AssertionError("expected 404")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert value.monitoring_maintenance_windows.docs[0] == before
