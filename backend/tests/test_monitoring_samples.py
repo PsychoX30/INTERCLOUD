@@ -354,15 +354,29 @@ async def test_partially_filled_daily_archive_keeps_halfhour_backed_days():
 
 
 @pytest.mark.anyio
-async def test_finer_archive_wins_over_coarser_for_the_same_bucket():
-    """Overlay must be priority-ordered, not last-writer-wins."""
+async def test_partially_covering_finer_archive_must_not_lower_coarser_peak():
+    """Resolution must never override coverage.
+
+    SUPERSEDED ASSERTION (was ``test_finer_archive_wins_over_coarser_for_the_same_bucket``):
+    that test asserted a single 30-minute slot for a day (``max=900``) must beat
+    a stored daily rollup for the same day (``max=7``), on the reasoning that a
+    finer archive holds "more trustworthy extremes".  QA reproduced that
+    assumption as a live defect: it let a *partial* 30-minute view overwrite a
+    complete day rollup, silently reporting a 900 bps day peak as 7.
+
+    The daily rollup is built from all 24 hourly rollups
+    (``downsample_hourly_to_daily``), so its max already covers the whole day;
+    one 30-minute slot covers 1/48th of it and can only *lower* that peak.  Both
+    are derived from the same raw samples, so a genuinely higher peak in the
+    finer archive is a data-consistency bug, not a reason to prefer it.
+    """
     start = datetime(2026, 1, 1, tzinfo=UTC)
-    # Stored daily rollup says the day peaked at 7; the finer 30-minute archive
-    # for the same day saw 900. The finer, more trustworthy extreme must win.
-    daily = [{"graph_id": "g", "date": start, "avg": 5.0, "min": 1.0, "max": 7.0}]
+    # Daily rollup for the day says it peaked at 900; one 30-minute slot of the
+    # same day only saw 7.  The partial slot must not erase the day's peak.
+    daily = [{"graph_id": "g", "date": start, "avg": 5.0, "min": 1.0, "max": 900.0}]
     halfhour = [
         {"graph_id": "g", "slot": start + timedelta(hours=1), "avg": 10.0,
-         "min": 2.0, "max": 900.0},
+         "min": 2.0, "max": 7.0},
     ]
 
     data, _ = await get_graph_data(
@@ -371,7 +385,7 @@ async def test_finer_archive_wins_over_coarser_for_the_same_bucket():
 
     by_day = {row["at"]: row for row in data}
     assert by_day[start]["max"] == 900.0, (
-        "a finer archive must not be overwritten by the coarser daily rollup"
+        "a partially covering finer archive must not lower the coarser day peak"
     )
 
 
@@ -436,3 +450,63 @@ async def test_halfhour_still_fills_hours_the_hourly_rollup_missing():
     assert start + timedelta(hours=20) in by_at, "gap hour was not filled"
     assert by_at[start + timedelta(hours=20)]["max"] == 72.0
     assert by_at[start + timedelta(hours=20)]["min"] == 58.0
+
+
+@pytest.mark.anyio
+async def test_daily_rollup_peak_not_overwritten_by_partial_halfhour_slot():
+    """Attack (b) — the daily branch replaced a stored daily rollup with the
+    30-minute view for the same day, erasing the day's real peak.
+
+    The 30-minute tier is new, so for weeks after deploy a month window has a
+    handful of halfhour slots plus complete daily rollups for older days — yet
+    the overlay ran unconditionally.  Same overwrite class already fixed on the
+    hourly path (66bbb01); the daily path still had `by_bucket[at] = point`.
+
+    A daily rollup covers the whole day (peak 900); a 30-minute slot covers one
+    hour and can only *lower* that peak (seen-so-far 7).  Finer archives fill
+    gaps, they never replace a coarser archive whose bucket they only partly
+    cover.
+    """
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    daily = [{"graph_id": "g", "date": start, "avg": 12.0, "min": 3.0, "max": 900.0}]
+    halfhour = [
+        {"graph_id": "g", "slot": start + timedelta(hours=1), "avg": 5.0,
+         "min": 5.0, "max": 7.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(daily=daily, halfhour=halfhour), "g", start, start + timedelta(days=70)
+    )
+
+    assert resolution == "daily"
+    row = next(r for r in data if r["at"] == start)
+    assert row["max"] == 900.0, (
+        "stored daily rollup peak was overwritten by a partial 30-minute view"
+    )
+    assert row["min"] == 3.0
+    assert row["value"] == 12.0
+
+
+@pytest.mark.anyio
+async def test_daily_still_fills_days_the_daily_rollup_missing():
+    """...but a day the daily rollup has not produced yet must still be filled
+    from the finer archives — that gap-fill is the entire reason for the overlay."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    daily = [{"graph_id": "g", "date": start, "avg": 12.0, "min": 3.0, "max": 900.0}]
+    next_day = start + timedelta(days=1)
+    halfhour = [
+        {"graph_id": "g", "slot": next_day + timedelta(hours=1), "avg": 60.0,
+         "min": 58.0, "max": 62.0},
+        {"graph_id": "g", "slot": next_day + timedelta(hours=1, minutes=30),
+         "avg": 70.0, "min": 68.0, "max": 72.0},
+    ]
+
+    data, _ = await get_graph_data(
+        Db(daily=daily, halfhour=halfhour), "g", start, start + timedelta(days=70)
+    )
+
+    by_at = {row["at"]: row for row in data}
+    assert by_at[start]["max"] == 900.0, "stored daily rollup must be kept"
+    assert next_day in by_at, "day missing from the daily rollup was not filled"
+    assert by_at[next_day]["max"] == 72.0
+    assert by_at[next_day]["min"] == 58.0

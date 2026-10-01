@@ -216,12 +216,23 @@ async def get_graph_data(
     if resolution == "daily":
         for point in await _fetch_daily():
             by_bucket[_bucket_start(point["at"], "daily")] = point
-        # Finer archives fill days the daily rollup has not produced yet.
-        # halfhour wins over hourly for the same day; a stored daily rollup is
-        # only replaced by the 30-minute view (more trustworthy extremes),
-        # never by the on-the-fly hourly view.
+        # Finer archives fill only the days the daily rollup has not produced
+        # yet; they never replace a day it already covers.  The daily rollup is
+        # the designated accumulator for the day — built from all 24 hourly
+        # rollups — so it holds the true intra-day peak.  A 30-minute view of
+        # the same day sees at most 2 of its 48 slots, so it can only *lower*
+        # that peak; a day genuinely covered end-to-end by 30-minute slots would
+        # have a daily rollup of its own.
+        #
+        # Regression: the halfhour loop below wrote unconditionally, so the
+        # first days the new 30-minute tier produced replaced stored daily
+        # rollups — a 900 bps day peak silently reported as 7.  Same overwrite
+        # class already fixed on the hourly path (66bbb01); resolution must not
+        # override coverage.
+        # halfhour outranks hourly for the days both of them can fill.
         for point in _consolidate(await _fetch_halfhour(), "daily"):
-            by_bucket[point["at"]] = point
+            if point["at"] not in by_bucket:
+                by_bucket[point["at"]] = point
         for point in _consolidate(await _fetch_hourly(), "daily"):
             if point["at"] not in by_bucket:
                 by_bucket[point["at"]] = point
