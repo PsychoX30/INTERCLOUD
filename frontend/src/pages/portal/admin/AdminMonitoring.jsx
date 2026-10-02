@@ -6,6 +6,7 @@ import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
 import { api } from "../../../portal/api";
 import { trafficStats } from "./trafficStats";
+import { presetWindow } from "./graphRange";
 import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
@@ -400,14 +401,19 @@ const GraphsTab = ({ isAdmin }) => {
   // so the chart reflects the new range (previously the preset only set state;
   // the chart never re-queried, and `to` froze at click time).
   const setRange = (hours) => {
+    const window = presetWindow(hours);
+    if (!window) return;
     setRangeHours(hours);
-    setFrom(new Date(Date.now() - hours * 3600 * 1000).toISOString());
+    setFrom(window.from);
+    // Keep preset mode sliding for subsequent auto-refreshes. The immediate
+    // request still receives this exact `to` explicitly so it cannot read the
+    // previous range from a stale React closure.
     setTo("");
     if (expandedId) {
-      loadData(expandedId);
+      loadData(expandedId, window);
       const g = (graphs || []).find(x => x.id === expandedId);
       const pair = g ? findTrafficPair(graphs || [], g) : null;
-      if (pair) loadPairData(pair.id);
+      if (pair) loadPairData(pair.id, window);
     }
   };
   const RANGES = [
