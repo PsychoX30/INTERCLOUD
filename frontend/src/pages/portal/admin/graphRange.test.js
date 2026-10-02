@@ -1,4 +1,4 @@
-import { presetWindow, chartXDomain, earliestSampleMs, historyGapNote, parseApiTs, formatGraphTick, DISPLAY_TZ } from "./graphRange";
+import { presetWindow, chartXDomain, earliestSampleMs, historyGapNote, parseApiTs, formatGraphTick, formatWibDateTime, formatWibTime, DISPLAY_TZ } from "./graphRange";
 
 // Timezone defect (prod 6082a52): the API serialises naive UTC datetimes
 // without an offset ("2026-10-02T15:05:00.063000"). `new Date()` treats an
@@ -46,6 +46,23 @@ describe("formatGraphTick (Asia/Jakarta)", () => {
 
   it("returns empty for a missing timestamp", () => {
     expect(formatGraphTick(null, DAY)).toBe("");
+  });
+});
+
+describe("shared WIB display formatters", () => {
+  const T = "2026-10-02T16:05:00Z"; // 23:05 WIB
+
+  it("formats date-time in Jakarta with an explicit WIB suffix", () => {
+    expect(formatWibDateTime(T)).toBe("02 Oct 2026, 23:05 WIB");
+  });
+
+  it("formats a monitoring event time in Jakarta", () => {
+    expect(formatWibTime(T)).toBe("23:05 WIB");
+  });
+
+  it("returns a fallback for empty or invalid values", () => {
+    expect(formatWibDateTime("")).toBe("-");
+    expect(formatWibTime("garbage")).toBe("-");
   });
 });
 

@@ -6,10 +6,10 @@ import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
 import { api } from "../../../portal/api";
 import { trafficStats } from "./trafficStats";
-import { chartXDomain, presetWindow, parseApiTs, formatGraphTick, earliestSampleMs, historyGapNote } from "./graphRange";
+import { chartXDomain, presetWindow, parseApiTs, formatGraphTick, formatWibDateTime, formatWibTime, earliestSampleMs, historyGapNote } from "./graphRange";
 import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 
-const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
+const stamp = (value) => formatWibDateTime(value);
 const PING_EMPTY = { name: "", target: "", enabled: true, interval_seconds: 300 };
 const GRAPH_EMPTY = {
   name: "",
@@ -299,7 +299,7 @@ const PingTab = ({ isAdmin }) => {
 
 const HistoryPanel = ({ history, onClose }) => {
   const [expanded, setExpanded] = useState(true);
-  const samples = [...(history.samples || [])].reverse().map(s => ({ ...s, label: s.at ? new Date(s.at).toLocaleTimeString() : "-" }));
+  const samples = [...(history.samples || [])].reverse().map(s => ({ ...s, label: formatWibTime(s.at) }));
 
   // Latency + loss summary over the returned window (nulls excluded).
   const pingStats = useMemo(() => {

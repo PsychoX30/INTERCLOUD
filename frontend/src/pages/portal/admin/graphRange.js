@@ -65,6 +65,26 @@ export const formatGraphTick = (timestamp, spanMs) => {
   return new Intl.DateTimeFormat("en-GB", { ...common, month: "short", year: "numeric" }).format(date);
 };
 
+// Shared WIB display formatters for non-chart timestamps (ping history, alert
+// events, maintenance windows). These accept either ISO strings or epoch ms.
+const WIB_DATE_TIME = new Intl.DateTimeFormat("en-GB", {
+  timeZone: DISPLAY_TZ, hour12: false,
+  day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+});
+const WIB_TIME = new Intl.DateTimeFormat("en-GB", {
+  timeZone: DISPLAY_TZ, hour12: false, hour: "2-digit", minute: "2-digit",
+});
+
+export const formatWibDateTime = (value) => {
+  const ms = toMs(value);
+  return ms != null ? `${WIB_DATE_TIME.format(new Date(ms))} WIB` : "-";
+};
+
+export const formatWibTime = (value) => {
+  const ms = toMs(value);
+  return ms != null ? `${WIB_TIME.format(new Date(ms))} WIB` : "-";
+};
+
 export const earliestSampleMs = (rows) => {
   const values = (rows || []).map((row) => finiteMs(row?.ts)).filter((v) => v != null);
   return values.length ? Math.min(...values) : null;

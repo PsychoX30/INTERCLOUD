@@ -117,6 +117,16 @@ describe("AdminMonitoring preset range wiring", () => {
     expect(source).toContain("formatGraphTick(value, spanMs)");
   });
 
+  // Every timestamp on the Monitoring page must be shown in WIB, not in the
+  // viewer's device zone: ping history labels, "last probe", alert events and
+  // maintenance windows all render through `stamp()`.
+  it("renders non-chart monitoring timestamps in WIB", () => {
+    expect(source).toContain("const stamp = (value) => formatWibDateTime(value);");
+    expect(source).toContain("label: formatWibTime(s.at)");
+    expect(source).not.toMatch(/new Date\(value\)\.toLocaleString\(\)/);
+    expect(source).not.toMatch(/new Date\(s\.at\)\.toLocaleTimeString\(\)/);
+  });
+
   it("includes the dashed MAX envelope in the visible Y-axis domain", () => {
     const start = source.indexOf("const visibleVals = merged.flatMap");
     const end = source.indexOf("];", start);
