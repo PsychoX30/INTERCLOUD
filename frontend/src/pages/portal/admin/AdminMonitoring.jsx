@@ -5,6 +5,7 @@ import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState,
 import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
 import { api } from "../../../portal/api";
+import { trafficStats } from "./trafficStats";
 import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
@@ -128,61 +129,9 @@ const yTickFormatter = (unit) => (v) => {
 // Recharts Tooltip formatter: [formattedValue, seriesLabel]
 const tooltipFormatter = (unit) => (value) => [fmtValue(value, unit), ""];
 
-// Compute aggregate stats from a merged IN/OUT traffic series.
-// Returns peak, average, 95th percentile rates in bps, plus total transfer volume.
-// When rollup rows carry server-computed `inMin/inMax/outMin/outMax` (available
-// for ranges beyond the raw tier, where the server already consolidated several
-// raw samples per bucket) the peak and the percentile use those extremes.
-// Otherwise a 1D/1W/1M view would silently understate peaks: every bucket is an
-// average, so intra-bucket spikes are erased and the 95th percentile tracks the
-// average of averages instead of real traffic. Falls back to bucket values when
-// the extremes are absent (raw-resolution responses).
-const trafficStats = (merged, intervalSec = 60) => {
-  const nums = (arr) => arr.filter(v => v != null && !Number.isNaN(v)).map(Number);
-  const inVals = nums(merged.map(d => d.in));
-  const outVals = nums(merged.map(d => d.out));
-  // Extremes for the percentile/peak computation, keeping unknown entries
-  // filtered out. Empty array means "no extremes available" → fall back.
-  const inExtremes = nums(merged.map(d => d.inMax));
-  const outExtremes = nums(merged.map(d => d.outMax));
-  const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
-  const max = (arr) => (arr.length ? Math.max(...arr) : null);
-  const percentile95 = (arr) => {
-    if (!arr.length) return null;
-    const sorted = [...arr].sort((a, b) => a - b);
-    const idx = Math.ceil(sorted.length * 0.95) - 1;
-    return sorted[Math.max(0, idx)];
-  };
-  // Total transfer: sum(rate_bps * interval_seconds) / 8 = bytes, then convert to GB
-  const totalIn = inVals.length ? (inVals.reduce((a, b) => a + b, 0) * intervalSec) / 8 / 1e9 : null;
-  const totalOut = outVals.length ? (outVals.reduce((a, b) => a + b, 0) * intervalSec) / 8 / 1e9 : null;
-
-  // Peak = the largest value seen anywhere, preferring per-bucket extremes.
-  // Written out explicitly so a genuine peak of 0 bps still reports 0 instead
-  // of falling through a `||` chain.
-  const peakOf = (vals, extremes) => {
-    const candidates = [...vals, ...extremes];
-    return candidates.length ? Math.max(...candidates) : null;
-  };
-
-  return {
-    maxIn: peakOf(inVals, inExtremes),
-    maxOut: peakOf(outVals, outExtremes),
-    avgIn: avg(inVals),
-    avgOut: avg(outVals),
-    // Percentile over intra-bucket extremes when the server provided them.
-    percentile95In: percentile95(inExtremes.length ? inExtremes : inVals),
-    percentile95Out: percentile95(outExtremes.length ? outExtremes : outVals),
-    totalInGB: totalIn,
-    totalOutGB: totalOut,
-    currentIn: inVals.length ? inVals[inVals.length - 1] : null,
-    currentOut: outVals.length ? outVals[outVals.length - 1] : null,
-    // True when peaks/percentile came from per-bucket extremes rather than the
-    // plotted averages, so the UI can say so instead of implying the line peak
-    // is the real peak.
-    peaksFromRollup: inExtremes.length > 0 || outExtremes.length > 0,
-  };
-};
+// Aggregate stats (Now/Avg/Max/95th/Total) live in ./trafficStats so they are
+// unit-tested without Recharts. 95th = AVERAGE series (LibreNMS semantics);
+// Total = sum(avg × real bucket width). See trafficStats.test.js.
 
 const StatCard = ({ label, value, color }) => (
   <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-center">
@@ -870,13 +819,20 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
   }, [samples, pairSamples, primaryIsIn]);
 
   const unit = graph?.unit || (isTraffic ? "bps" : "");
-  const intervalSec = graph?.interval_seconds || 60;
+  const intervalSec = graph?.interval_seconds || 300;
   // Interface speed (bps) from the graph config, when the operator supplied it.
   // MRTG/LibreNMS show this as "Port Speed" so utilisation can be read off directly.
   const portSpeedBps = isTraffic
     ? (graph?.port_speed_bps || graph?.if_speed_bps || graph?.speed_bps || null)
     : null;
-  const stats = useMemo(() => isTraffic && pair ? trafficStats(merged, intervalSec) : null, [isTraffic, pair, merged, intervalSec]);
+  const stats = useMemo(() => isTraffic && pair ? trafficStats(merged, {
+    intervalSec,
+    // get_graph_data chooses this tier server-side; never infer step from the
+    // merged timestamps because IN/OUT polls may straddle a whole-second key.
+    resolution: graphData?.resolution,
+    fromMs,
+    toMs,
+  }) : null, [isTraffic, pair, merged, intervalSec, graphData?.resolution, fromMs, toMs]);
 
   // Y-axis auto-scales to the peak value within the selected range (0 → peak),
   // matching Cacti/LibreNMS/PRTG behaviour. A little headroom keeps the peak
@@ -1028,8 +984,8 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
           </table>
           {stats.peaksFromRollup && (
             <p className="mt-1 text-[10px] text-slate-400">
-              Maximum &amp; 95th dihitung dari puncak per-bucket rollup server (bukan rata-rata);
-              garis putus-putus = envelope MAX bucket.
+              Maximum memakai envelope MAX per-bucket; 95th dihitung dari seri AVERAGE
+              seperti LibreNMS. Garis putus-putus = envelope MAX bucket.
             </p>
           )}
         </div>
