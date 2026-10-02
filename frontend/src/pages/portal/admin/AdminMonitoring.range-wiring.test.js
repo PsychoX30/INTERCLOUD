@@ -62,4 +62,18 @@ describe("AdminMonitoring preset range wiring", () => {
     expect(lp).toContain("const seq = ++pairSeq.current;");
     expect(lp).toMatch(/if \(seq !== pairSeq\.current\) return/);
   });
+
+  // Double-request defect (found by frontend review of 1840b5b): the sibling
+  // effect depended on the loadPairData identity, which changes whenever
+  // from/to change. setRange already loads the pair explicitly, so the effect
+  // fired a SECOND pair request on every preset/custom range change. The effect
+  // must react only to graph selection, reading the loader through a ref.
+  it("fires the sibling pair effect on selection only, not on loader identity", () => {
+    const start = source.indexOf("// Load sibling pair data whenever a graph is selected");
+    const end = source.indexOf("const refreshIntervalMs", start);
+    const body = source.slice(start, end);
+    expect(source).toContain("const loadPairRef = useRef(loadPairData);");
+    expect(body).toContain("loadPairRef.current(pair.id)");
+    expect(body).not.toMatch(/\}, \[expandedId, graphs, loadPairData\]\);/);
+  });
 });

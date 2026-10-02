@@ -494,6 +494,12 @@ const GraphsTab = ({ isAdmin }) => {
     }
   }, [from, to]);
 
+  // The sibling-selection effect must not depend on loadPairData's identity:
+  // that callback changes with from/to, while range handlers already issue the
+  // pair request explicitly. Keep the latest callback in a ref instead.
+  const loadPairRef = useRef(loadPairData);
+  loadPairRef.current = loadPairData;
+
   const refreshData = useCallback(async () => {
     if (!expandedId) return;
     // Recompute both ends on every preset refresh. Keeping the click-time
@@ -508,14 +514,20 @@ const GraphsTab = ({ isAdmin }) => {
     }
   }, [expandedId, graphs, loadData, loadPairData, rangeHours]);
 
-  // Load sibling pair data whenever a graph is selected for viewing.
+  // Load sibling pair data whenever a graph is selected for viewing. Range
+  // handlers (preset/custom/refresh) already load the pair explicitly with the
+  // current window, so this effect reacts to SELECTION ONLY — it must not fire
+  // again just because from/to changed and produced a new loadPairData identity
+  // (that was the double-request defect). The latest callback is read through
+  // the ref, so the effect deps stay [expandedId, graphs].
   useEffect(() => {
     if (!expandedId || !graphs) { setPairData(null); return; }
     const g = graphs.find(x => x.id === expandedId);
     const pair = g ? findTrafficPair(graphs, g) : null;
     if (!pair) { setPairData(null); return; }
-    loadPairData(pair.id);
-  }, [expandedId, graphs, loadPairData]);
+    loadPairRef.current(pair.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedId, graphs]);
 
   // Auto-refresh the open graph panel so traffic feels realtime.  Follow the
   // graph's own poll interval instead of a hardcoded 30s, otherwise a 20s
