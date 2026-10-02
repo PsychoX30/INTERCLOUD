@@ -27,4 +27,39 @@ describe("AdminMonitoring preset range wiring", () => {
     expect(body).not.toMatch(/loadData\(expandedId\);/);
     expect(body).not.toMatch(/loadPairData\(pair\.id\);/);
   });
+
+  // Auto-refresh in preset mode must recompute BOTH ends of the window from
+  // rangeHours. The old code left `from` frozen at click time and only slid
+  // `to`, so a "1D" view silently grew to 2d, 3d... as time passed.
+  it("recomputes a fresh sliding window on preset auto-refresh", () => {
+    const start = source.indexOf("const refreshData = useCallback");
+    const end = source.indexOf("}, [expandedId", start);
+    const body = source.slice(start, end);
+    expect(body).toContain("presetWindow(rangeHours)");
+    // the recomputed window must flow into both loaders
+    expect(body).toMatch(/loadData\(expandedId, win\)/);
+    expect(body).toMatch(/loadPairData\(pair\.id, win\)/);
+  });
+
+  // Latest-wins: a slow response from a previous range click must not overwrite
+  // the freshest selection. Each loader stamps a monotonic seq and bails if a
+  // newer request has superseded it before applying state.
+  it("guards primary and pair loaders against stale-response overwrite", () => {
+    expect(source).toContain("const dataSeq = useRef(0);");
+    expect(source).toContain("const pairSeq = useRef(0);");
+
+    const ld = source.slice(
+      source.indexOf("const loadData = useCallback"),
+      source.indexOf("const loadPairData = useCallback"),
+    );
+    expect(ld).toContain("const seq = ++dataSeq.current;");
+    expect(ld).toMatch(/if \(seq !== dataSeq\.current\) return/);
+
+    const lp = source.slice(
+      source.indexOf("const loadPairData = useCallback"),
+      source.indexOf("const refreshData = useCallback"),
+    );
+    expect(lp).toContain("const seq = ++pairSeq.current;");
+    expect(lp).toMatch(/if \(seq !== pairSeq\.current\) return/);
+  });
 });

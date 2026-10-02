@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Edit, Loader2, Map as MapIcon, Network, PlayCircle, Plus, RefreshCw, Trash2, X, BarChart3, Download, Search, ChevronDown, ChevronRight, Copy, Check, ChevronUp, Bell } from "lucide-react";
 import { ResponsiveContainer, LineChart, AreaChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Legend } from "recharts";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Handle, Position, MarkerType } from "@xyflow/react";
@@ -396,6 +396,10 @@ const GraphsTab = ({ isAdmin }) => {
   // 24h instead of freezing at the moment the preset was clicked.
   const [rangeHours, setRangeHours] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  // Monotonic request generations enforce latest-wins. Without these, a slow
+  // response from an older range click can overwrite the newest graph/pair.
+  const dataSeq = useRef(0);
+  const pairSeq = useRef(0);
 
   // Range presets: set a sliding window and immediately reload the open graph
   // so the chart reflects the new range (previously the preset only set state;
@@ -453,6 +457,7 @@ const GraphsTab = ({ isAdmin }) => {
 
   const loadData = useCallback(async (id, opts = {}) => {
     if (!id) return;
+    const seq = ++dataSeq.current;
     // In preset (sliding) mode `to` is "" so this recomputes on every fetch and
     // the chart keeps advancing; the old code stored a fixed `to` at click time
     // and refreshed it forever, so new samples never appeared.
@@ -461,32 +466,47 @@ const GraphsTab = ({ isAdmin }) => {
     try {
       setError("");
       const r = await api.get(`/admin/monitoring/graphs/${id}/data`, { params: { from: effFrom, to: effTo, resolution: "auto" } });
+      if (seq !== dataSeq.current) return null;
       setExpandedId(id);
       setGraphData(r.data);
       return r.data;
-    } catch (e) { setError(e?.response?.data?.detail || "Failed to load graph data"); return null; }
-  }, [from, to, rangeHours]);
+    } catch (e) {
+      if (seq !== dataSeq.current) return null;
+      setError(e?.response?.data?.detail || "Failed to load graph data");
+      return null;
+    }
+  }, [from, to]);
 
   const loadPairData = useCallback(async (pairId, opts = {}) => {
     if (!pairId) return;
+    const seq = ++pairSeq.current;
     const effTo = opts.to || to || new Date().toISOString();
     const effFrom = opts.from || from || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     try {
       const pr = await api.get(`/admin/monitoring/graphs/${pairId}/data`, { params: { from: effFrom, to: effTo, resolution: "auto" } });
+      if (seq !== pairSeq.current) return null;
       setPairData(pr.data);
-    } catch (e) { setPairData(null); }
-  }, [from, to, rangeHours]);
+      return pr.data;
+    } catch (e) {
+      if (seq !== pairSeq.current) return null;
+      setPairData(null);
+      return null;
+    }
+  }, [from, to]);
 
   const refreshData = useCallback(async () => {
     if (!expandedId) return;
-    const data = await loadData(expandedId);
+    // Recompute both ends on every preset refresh. Keeping the click-time
+    // `from` while advancing only `to` makes a nominal 1D window grow forever.
+    const win = rangeHours ? presetWindow(rangeHours) : undefined;
+    const data = await loadData(expandedId, win);
     if (data && graphs) {
       const g = graphs.find(x => x.id === expandedId);
       const pair = g ? findTrafficPair(graphs, g) : null;
-      if (pair) await loadPairData(pair.id);
+      if (pair) await loadPairData(pair.id, win);
       else setPairData(null);
     }
-  }, [expandedId, graphs, loadData, loadPairData]);
+  }, [expandedId, graphs, loadData, loadPairData, rangeHours]);
 
   // Load sibling pair data whenever a graph is selected for viewing.
   useEffect(() => {
