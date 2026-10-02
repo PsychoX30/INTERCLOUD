@@ -6,7 +6,7 @@ import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
 import { api } from "../../../portal/api";
 import { trafficStats } from "./trafficStats";
-import { presetWindow } from "./graphRange";
+import { chartXDomain, presetWindow } from "./graphRange";
 import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
@@ -409,10 +409,9 @@ const GraphsTab = ({ isAdmin }) => {
     if (!window) return;
     setRangeHours(hours);
     setFrom(window.from);
-    // Keep preset mode sliding for subsequent auto-refreshes. The immediate
-    // request still receives this exact `to` explicitly so it cannot read the
-    // previous range from a stale React closure.
-    setTo("");
+    // Keep the concrete window visible to GraphDataPanel. Auto-refresh slides
+    // both ends, so the XAxis always receives a valid domain.
+    setTo(window.to);
     if (expandedId) {
       loadData(expandedId, window);
       const g = (graphs || []).find(x => x.id === expandedId);
@@ -505,6 +504,7 @@ const GraphsTab = ({ isAdmin }) => {
     // Recompute both ends on every preset refresh. Keeping the click-time
     // `from` while advancing only `to` makes a nominal 1D window grow forever.
     const win = rangeHours ? presetWindow(rangeHours) : undefined;
+    if (win) { setFrom(win.from); setTo(win.to); }
     const data = await loadData(expandedId, win);
     if (data && graphs) {
       const g = graphs.find(x => x.id === expandedId);
@@ -811,7 +811,7 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
   const rangeSpan = fromMs && toMs && toMs > fromMs ? toMs - fromMs : Math.max(graphSpanMs(samples), graphSpanMs(pairSamples));
   const xTickFormatter = useMemo(() => chartTickFormatter(rangeSpan), [rangeSpan]);
   const xDataKey = "ts";
-  const xDomain = (fromMs && toMs && toMs > fromMs) ? [fromMs, toMs] : undefined;
+  const xDomain = chartXDomain(from, to);
 
   // Merge timelines for a single chart with IN and OUT series.
   // `graphData` is whichever direction the user opened; `pairData` is its sibling.

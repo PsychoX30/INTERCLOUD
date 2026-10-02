@@ -1,4 +1,33 @@
-import { presetWindow } from "./graphRange";
+import { presetWindow, chartXDomain } from "./graphRange";
+
+// Regression guard for the "every range looks the same" visual collapse.
+// A numeric time XAxis with domain={undefined} falls back to Recharts' default
+// [0, "auto"], i.e. it starts at the 1970 epoch, so 2026 samples are squeezed
+// into a sliver at the right edge for EVERY preset. The domain must be the
+// selected window, or at worst the data extent — never undefined.
+describe("chartXDomain", () => {
+  const F = "2026-10-01T10:00:00.000Z";
+  const T = "2026-10-02T10:00:00.000Z";
+
+  it("uses the selected window when both ends are valid", () => {
+    expect(chartXDomain(F, T)).toEqual([Date.parse(F), Date.parse(T)]);
+  });
+
+  it("falls back to the data extent instead of undefined when `to` is empty", () => {
+    expect(chartXDomain(F, "")).toEqual(["dataMin", "dataMax"]);
+  });
+
+  it("falls back to the data extent for an inverted or invalid window", () => {
+    expect(chartXDomain(T, F)).toEqual(["dataMin", "dataMax"]);
+    expect(chartXDomain("garbage", T)).toEqual(["dataMin", "dataMax"]);
+  });
+
+  it("never returns a domain that starts at the epoch", () => {
+    const d = chartXDomain("", "");
+    expect(d).not.toBeUndefined();
+    expect(d[0]).not.toBe(0);
+  });
+});
 
 // Regression guard for the bug where clicking 1D / 1W / 1M / 1Y rendered the
 // same series. `setRange` called setFrom(...) and then immediately loadData()

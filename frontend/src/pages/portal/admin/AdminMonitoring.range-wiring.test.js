@@ -41,6 +41,31 @@ describe("AdminMonitoring preset range wiring", () => {
     expect(body).toMatch(/loadPairData\(pair\.id, win\)/);
   });
 
+  // Visual-collapse defect (prod 52738f5): preset mode stored to="" so the
+  // chart panel got toMs=null, xDomain=undefined and Recharts drew the X axis
+  // from epoch 0 — every preset looked identical. Preset state must hold the
+  // concrete window end, and auto-refresh must slide BOTH stored ends.
+  it("stores the concrete window end for presets, not an empty string", () => {
+    const start = source.indexOf("const setRange = (hours) => {");
+    const end = source.indexOf("const RANGES = [", start);
+    const body = source.slice(start, end);
+    expect(body).toContain("setTo(window.to);");
+    expect(body).not.toContain('setTo("")');
+  });
+
+  it("slides both stored ends of the window on preset auto-refresh", () => {
+    const start = source.indexOf("const refreshData = useCallback");
+    const end = source.indexOf("}, [expandedId", start);
+    const body = source.slice(start, end);
+    expect(body).toMatch(/setFrom\(win\.from\)/);
+    expect(body).toMatch(/setTo\(win\.to\)/);
+  });
+
+  it("derives the chart X domain via chartXDomain, never a bare undefined", () => {
+    expect(source).toContain("chartXDomain(from, to)");
+    expect(source).not.toMatch(/: undefined;\s*\n\s*\/\/ Merge timelines/);
+  });
+
   // Latest-wins: a slow response from a previous range click must not overwrite
   // the freshest selection. Each loader stamps a monotonic seq and bails if a
   // newer request has superseded it before applying state.
