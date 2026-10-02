@@ -6,7 +6,7 @@ import "@xyflow/react/dist/style.css";
 import { useAuth } from "../../../portal/AuthContext";
 import { api } from "../../../portal/api";
 import { trafficStats } from "./trafficStats";
-import { chartXDomain, presetWindow } from "./graphRange";
+import { chartXDomain, presetWindow, parseApiTs, formatGraphTick, earliestSampleMs, historyGapNote } from "./graphRange";
 import { Card, EmptyState, Loading, PageHeader, StatusBadge, btnDanger, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 
 const stamp = (value) => value ? new Date(value).toLocaleString() : "-";
@@ -141,21 +141,12 @@ const StatCard = ({ label, value, color }) => (
   </div>
 );
 
-const formatGraphTick = (timestamp, spanMs) => {
-  if (!timestamp) return "";
-  const d = new Date(timestamp);
-  if (spanMs <= 2 * 86400000) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  if (spanMs <= 14 * 86400000) return d.toLocaleDateString([], { day: "2-digit", month: "short" });
-  if (spanMs <= 180 * 86400000) return d.toLocaleDateString([], { day: "2-digit", month: "short" });
-  return d.toLocaleDateString([], { month: "short", year: "numeric" });
-};
+const chartTickFormatter = (spanMs) => (value) => formatGraphTick(value, spanMs);
 
 const graphSpanMs = (data) => {
-  const points = (data || []).map(s => new Date(s.at).getTime()).filter(Number.isFinite);
+  const points = (data || []).map(s => parseApiTs(s.at)).filter(Number.isFinite);
   return points.length > 1 ? Math.max(...points) - Math.min(...points) : 0;
 };
-
-const chartTickFormatter = (spanMs) => (value) => formatGraphTick(value, spanMs);
 
 // ── Main wrapper ─────────────────────────────────────────────────
 const AdminMonitoring = () => {
@@ -796,8 +787,10 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
   const isTraffic = graph && (graph.type === "snmp_traffic_in" || graph.type === "snmp_traffic_out");
   const pair = isTraffic ? findTrafficPair(graphs || [], graph) : null;
 
-  const samples = (graphData.data || []).map(s => ({ ...s, at: s.at, ts: s.at ? new Date(s.at).getTime() : null }));
-  const pairSamples = (pairData?.data || []).map(s => ({ ...s, at: s.at, ts: s.at ? new Date(s.at).getTime() : null }));
+  // API sample timestamps are UTC even when legacy payloads omit the `Z` suffix.
+  // Parse them explicitly before comparing them against the ISO UTC range.
+  const samples = (graphData.data || []).map(s => ({ ...s, at: s.at, ts: parseApiTs(s.at) }));
+  const pairSamples = (pairData?.data || []).map(s => ({ ...s, at: s.at, ts: parseApiTs(s.at) }));
   const title = cleanGraphName(graph?.display_name || graph?.name) || `Graph ${graphData.graph_id}`;
   const graphErr = graph?.last_poll_state === "error" ? (graph?.last_poll_error || "last poll failed") : "";
 
@@ -888,9 +881,14 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       // Toggle IN / OUT / BOTH by hiding series; Y-axis scales to whatever is shown.
       const showIn = trafficView !== "out";
       const showOut = trafficView !== "in";
+      // Include the dashed MAX-envelope values so the Y axis scales to the real
+      // peak. Otherwise the envelope line (e.g. 649 Mbps) is clipped above a
+      // Y axis sized only to the AVERAGE area (e.g. 398 Mbps).
       const visibleVals = merged.flatMap(row => [
         showIn ? row.in : null,
         showOut ? row.out : null,
+        showIn ? row.inMax : null,
+        showOut ? row.outMax : null,
       ]);
       const yDomain = yDomainForValues(visibleVals);
       const p95In = stats?.percentile95In;
@@ -984,6 +982,24 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
         </div>
       )}
       {renderChart()}
+      {(() => {
+        // Long presets (1W/1M/1Y) keep the full requested window on the X axis
+        // so missing history reads as honest empty space rather than being
+        // autofitted away. Tell the operator where the data actually begins so
+        // the empty left side is not mistaken for a broken chart.
+        const note = historyGapNote(from, to, earliestSampleMs(samples));
+        if (!note) return null;
+        const dataFromLabel = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Asia/Jakarta", hour12: false,
+          day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+        }).format(new Date(note.dataFrom));
+        return (
+          <p className="mt-2 text-[11px] text-slate-500" data-testid="history-gap-note">
+            Data tersedia sejak {dataFromLabel} WIB. Bagian kiri grafik kosong karena
+            graph ini belum memiliki histori selama rentang yang dipilih.
+          </p>
+        );
+      })()}
       {isTraffic && pair && stats && (
         <div className="mt-3 overflow-x-auto" data-testid="mrtg-stats-table">
           <table className="w-full text-xs border-collapse">

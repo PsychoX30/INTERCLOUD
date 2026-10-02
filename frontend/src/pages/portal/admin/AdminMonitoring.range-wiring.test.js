@@ -101,4 +101,27 @@ describe("AdminMonitoring preset range wiring", () => {
     expect(body).toContain("loadPairRef.current(pair.id)");
     expect(body).not.toMatch(/\}, \[expandedId, graphs, loadPairData\]\);/);
   });
+
+  // History-gap indicator: 1W/1M/1Y presets keep the FULL requested window on
+  // the X axis (honest gaps, no autofit). Young graphs then show a mostly
+  // empty left side, which reads like a broken chart. The panel must derive a
+  // gap note from the actual first sample and render it, not hide the gap.
+  it("renders a history-gap note derived from the first sample", () => {
+    expect(source).toContain("historyGapNote(from, to,");
+    expect(source).toContain("earliestSampleMs(");
+    expect(source).toContain('data-testid="history-gap-note"');
+  });
+
+  it("parses API sample timestamps as UTC and formats ticks in Jakarta", () => {
+    expect(source).toContain("parseApiTs(s.at)");
+    expect(source).toContain("formatGraphTick(value, spanMs)");
+  });
+
+  it("includes the dashed MAX envelope in the visible Y-axis domain", () => {
+    const start = source.indexOf("const visibleVals = merged.flatMap");
+    const end = source.indexOf("];", start);
+    const body = source.slice(start, end);
+    expect(body).toContain("row.inMax");
+    expect(body).toContain("row.outMax");
+  });
 });
