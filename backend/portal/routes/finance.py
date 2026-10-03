@@ -8,6 +8,7 @@ import logging
 import secrets
 import re
 import html
+import json
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
@@ -978,18 +979,28 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
             ),
         )
 
+    if new_invoice_numbers and not sales_person_id:
+        # A name alone cannot distinguish two people sharing a display name.
+        # Reject new ambiguous writes even on an empty collection: a read-check
+        # cannot prevent a concurrent ID-based request. Legacy reads still use
+        # name fallback. The frontend already requires and sends this ID.
+        raise HTTPException(status_code=422, detail="sales_person_id is required when commissioning an invoice")
+
+    # Legacy rows still need a bounded, period-filtered cursor scan; never
+    # materialize the whole collection. Ensure the atomic index before writing.
+    await _ensure_sales_fee_dedupe_index(db)
     if new_invoice_numbers:
-        # Legacy read-check: rows written before `dedupe_claims` existed (and
-        # rows whose salesperson is only identified by name) cannot be covered
-        # by the unique index, so they still need a scan. `length=None` returns
-        # every document — a hard cap would silently skip old rows.
-        existing = await db.sales_fees.find({}).to_list(length=None)
-        for e in existing:
+        legacy_query = {"$or": [
+            {"period_yyyy_mm": period},
+            {"period_yyyy_mm": {"$in": [None, ""]}, "date": {"$regex": f"^{re.escape(period)}"}},
+        ]}
+        async for e in db.sales_fees.find(legacy_query):
             e_period = e.get("period_yyyy_mm") or (e.get("date") or "")[:7]
             if e_period != period:
                 continue
             if not _same_salesperson(e):
                 continue
+
             dup = new_invoice_numbers & _invoice_numbers(e)
             if dup:
                 raise HTTPException(
@@ -999,6 +1010,7 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
                         f"sales person ini pada periode {period}."
                     ),
                 )
+
 
     doc = {"date": date_str, "amount": amount,
            "notes": payload.get("notes", ""), "period_yyyy_mm": period,
@@ -1011,15 +1023,15 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
     if sales_person_id:
         doc["sales_person_id"] = sales_person_id
 
-    # Atomic duplicate protection. The read-check above cannot stop two
-    # concurrent requests from both passing, so every new row also carries a
-    # computed claim array that a unique multikey index rejects on collision.
-    # Keys use the salesperson id when available, else the casefolded name, so
-    # the claim is stable for the identity the guard actually compares.
-    person_key = sales_person_id or sales_person_name
-    if new_invoice_numbers and person_key:
+    # Atomic duplicate protection. JSON + percent-encoding makes the indexed
+    # key collision-safe (unlike delimiter concatenation).  The namespace
+    # (person.kind) keeps name-identified claims apart from ID-identified
+    # claims so two distinct users who share a display name never collide.
+    if new_invoice_numbers:
         doc["dedupe_claims"] = sorted(
-            f"{period}|{person_key}|{inv}" for inv in new_invoice_numbers
+            _claim_key(period, sales_person_id or sales_person_name, inv,
+                       by_id=bool(sales_person_id))
+            for inv in new_invoice_numbers
         )
 
     try:
@@ -1061,15 +1073,34 @@ def _fmt_amount(v):
 
 
 def _esc(value: str | None, fallback: str = "-") -> str:
-    """Escape HTML-special characters and render user-controlled values safely.
-
-    Returns a string where < > & ' \" are escaped. If value is empty/None,
-    returns the human-friendly placeholder `fallback`. Used consistently in
-    PDF/HTML slips to prevent XSS.
-    """
-    if not value:
+    """Escape user-controlled text before inserting it into slip HTML."""
+    if value is None or str(value) == "":
         return fallback
-    return html.escape(str(value))
+    return html.escape(str(value), quote=True)
+
+
+def _safe_period(value: str) -> str:
+    """Return a display-safe YYYY-MM period, never raw input."""
+    value = str(value or "")
+    return value if re.fullmatch(r"\d{4}-\d{2}", value) else "-"
+
+
+def _claim_key(period: str, salesperson: str, invoice: str, *, by_id: bool) -> str:
+    """Build an unambiguous, namespace-separated unique-index claim."""
+    payload = {"v": 1, "period": period, "person": {"kind": "id" if by_id else "name", "value": salesperson}, "invoice": invoice}
+    return "sf:" + quote(json.dumps(payload, sort_keys=True, separators=(",", ":")), safe="")
+
+
+async def _ensure_sales_fee_dedupe_index(db) -> None:
+    """Ensure the atomic guard exists; never write fees without it."""
+    try:
+        await db.sales_fees.create_index(
+            "dedupe_claims", unique=True,
+            partialFilterExpression={"dedupe_claims": {"$exists": True}},
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Sales-fee dedupe index unavailable")
+        raise HTTPException(status_code=503, detail="Sales fee dedupe protection is unavailable") from exc
 
 
 @router.get("/admin/finance/sales-context")
@@ -1147,11 +1178,12 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
     d = await db.salaries.find_one({"_id": _oid(sid)})
     if not d:
         raise HTTPException(status_code=404, detail="Salary entry not found")
-    period = d.get("period_yyyy_mm") or (d.get("date") or "")[:7]
+    period = _safe_period(d.get("period_yyyy_mm") or (d.get("date") or "")[:7])
+    payment_date = _esc((d.get("date") or "")[:10])
     amount = float(d.get("amount") or 0)
     amount_str = "Rp " + f"{amount:,.0f}".replace(",", ".")
     employee = _esc(d.get("employee"))
-    category = _esc(d.get("category")) or "Gaji pokok"
+    category = _esc(d.get("category")) if d.get("category") else "Gaji pokok"
     issued = datetime.now(timezone.utc).date().isoformat()
     division = _esc(d.get("division"))
     position = _esc(d.get("position"))
@@ -1173,7 +1205,7 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
         breakdown_html = ""
     ref = f"{str(d['_id'])[-8:].upper()}" if d.get("_id") else "-"
     note = _esc(d.get("notes"))
-    employee_slug_source = str(d.get("employee") or "")
+    emp_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", employee).strip("-") or "karyawan"
     html_out = f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: A4; margin: 24mm 18mm; }}
       body {{ font-family: Helvetica, Arial, sans-serif; color: #0f172a; font-size: 13px; }}
@@ -1204,7 +1236,7 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
         <tr><th>Jabatan</th><td>{position}</td></tr>
         <tr><th>Periode</th><td>{period}</td></tr>
         <tr><th>Kategori</th><td>{category}</td></tr>
-        <tr><th>Tanggal pembayaran</th><td>{(d.get("date") or "")[:10]}</td></tr>
+        <tr><th>Tanggal pembayaran</th><td>{payment_date}</td></tr>
         <tr><th>Jumlah diterima (net)</th><td class="amt">{amount_str}</td></tr>
         <tr><th>Catatan</th><td>{note}</td></tr>
       </table>
@@ -1217,7 +1249,6 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
     </body></html>"""
     if format == "pdf":
         pdf_bytes = _render_pdf_bytes(html_out)
-        emp_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", employee).strip("-") or "karyawan"
         return Response(content=pdf_bytes, media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="SlipGaji-{emp_slug}-{period}.pdf"'})
     return HTMLResponse(content=html_out)
@@ -1230,7 +1261,8 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
     d = await db.sales_fees.find_one({"_id": _oid(sid)})
     if not d:
         raise HTTPException(status_code=404, detail="Sales fee entry not found")
-    period = d.get("period_yyyy_mm") or (d.get("date") or "")[:7]
+    period = _safe_period(d.get("period_yyyy_mm") or (d.get("date") or "")[:7])
+    payment_date = _esc((d.get("date") or "")[:10])
     amount = float(d.get("amount") or 0)
     amount_str = "Rp " + f"{amount:,.0f}".replace(",", ".")
     person = _esc(d.get("sales_person"))
@@ -1316,9 +1348,9 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
       <div class="meta">Diterbitkan {_esc(issued)} · No. ref {sf_ref}</div>
       <table>
         <tr><th>Nama sales</th><td style="font-weight:700">{person}</td></tr>
-        <tr><th>Periode</th><td>{_esc(period)}</td></tr>
+        <tr><th>Periode</th><td>{period}</td></tr>
         <tr><th>Invoice terkait</th><td>{invoice_no}</td></tr>
-        <tr><th>Tanggal pembayaran</th><td>{_esc((d.get("date") or "")[:10])}</td></tr>
+        <tr><th>Tanggal pembayaran</th><td>{payment_date}</td></tr>
         <tr><th>Jumlah fee (net)</th><td class="amt">{amount_str}</td></tr>
         <tr><th>Catatan</th><td>{sf_note}</td></tr>
       </table>

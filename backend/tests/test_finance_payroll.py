@@ -6,6 +6,61 @@ from datetime import datetime, timezone
 from bson import ObjectId
 import pytest
 from portal.routes import finance as finance_routes
+from html.parser import HTMLParser
+import json
+
+
+class _SlipParser(HTMLParser):
+    """Parse slip HTML to prove no injected element/attribute became live."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tags = set()
+        self.event_attrs = []
+        self.attrs_by_tag = {}
+        self._text = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag)
+        for name, value in attrs:
+            self.attrs_by_tag.setdefault(name, []).append(value)
+            if name.lower().startswith("on"):
+                self.event_attrs.append((tag, name, value))
+
+    handle_startendtag = handle_starttag
+
+    def handle_data(self, data):
+        self._text.append(data)
+
+    @property
+    def text(self):
+        return "".join(self._text)
+
+    def attr_values_for(self, name):
+        return self.attrs_by_tag.get(name, [])
+
+
+def _parse_html(body: str) -> _SlipParser:
+    p = _SlipParser()
+    p.feed(body)
+    return p
+
+
+def _breakdown_row_cells(body: str):
+    """Return the <td> cell texts of the first sales-fee breakdown data row.
+
+    Scoped to the "Rincian Fee" table so the top summary rows (which also use
+    <td>) don't confuse the extraction.
+    """
+    import re as _re
+    # Isolate the Rincian Fee table block
+    m = _re.search(r"Rincian Fee.*?</table>", body, _re.S)
+    scope = m.group(0) if m else body
+    for tr in _re.findall(r"<tr>(.*?)</tr>", scope, _re.S):
+        tds = _re.findall(r"<td[^>]*>(.*?)</td>", tr, _re.S)
+        if tds and "colspan" not in tr:  # skip the Total row (uses colspan)
+            return [_re.sub(r"<[^>]+>", "", c).strip() for c in tds]
+    return []
 
 
 # ---------- Async cursor/collection mocks (reuse finance_pagination pattern) ----------
@@ -51,12 +106,17 @@ class _Cursor:
 class _Collection:
     def __init__(self, rows):
         self.rows = rows
+        self.index_calls = []
 
     def find(self, query):
         return _Cursor(self._filtered(query))
 
     async def count_documents(self, query):
         return len(self._filtered(query))
+
+    async def create_index(self, keys, **kwargs):
+        self.index_calls.append((keys, kwargs))
+        return "idx"
 
     async def distinct(self, field, query):
         vals = set()
@@ -108,6 +168,14 @@ class _Collection:
     def _filtered(self, query):
         if not query:
             return list(self.rows)
+        if "$or" in query:
+            out, seen = [], set()
+            for sub in query["$or"]:
+                for r in self._filtered(sub):
+                    if id(r) not in seen:
+                        seen.add(id(r))
+                        out.append(r)
+            return out
         out = []
         for r in self.rows:
             match = True
@@ -115,13 +183,18 @@ class _Collection:
                 if k == "q":  # regex search on name/employee
                     continue  # handled at cursor level
                 if isinstance(v, dict):
-                    if k == "$regex":
-                        match = str(r.get(k, "")).lower().find(v.get("$regex", "").lower()) >= 0
+                    if "$regex" in v:
+                        import re as _re
+                        match = bool(_re.search(v["$regex"], str(r.get(k, "")), _re.I))
+                    elif "$exists" in v:
+                        match = (k in r) == bool(v["$exists"])
                     elif "$in" in v:
                         match = r.get(k) in v["$in"]
                     else:
                         match = False
-                    break
+                    if not match:
+                        break
+                    continue
                 if r.get(k) != v:
                     match = False
                     break
@@ -587,13 +660,21 @@ async def test_sales_fee_slip_escapes_html_injection(db, admin):
     slip = await finance_routes.render_sales_fee_slip(
         str(db.sales_fees.rows[0]["_id"]), format="html", admin=admin)
     body = slip.body.decode()
-    # raw markup must NOT appear as live tags
-    assert "<b>Evil</b>" not in body.replace("&lt;b&gt;Evil&lt;/b&gt;", "")
-    assert "<script>" not in body
-    # full event handler attribute must be broken (space + > inserted)
-    assert "onerror=alert(" not in body or "&gt;alert" in body
-    # escaped form must be present instead
-    assert "&lt;script&gt;" in body or "&lt;b&gt;Evil&lt;/b&gt;" in body
+    # 1) STRUCTURAL: no injected element or attribute survives parsing.
+    parsed = _parse_html(body)
+    assert "script" not in parsed.tags, "injected <script> became a live element"
+    assert "img" not in parsed.tags, "injected <img> became a live element"
+    assert "b" not in parsed.tags, "injected <b> became a live element"
+    assert not parsed.event_attrs, f"event-handler attributes injected: {parsed.event_attrs}"
+    assert "x" not in parsed.attr_values_for("src"), "injected src=x survived"
+    # 2) EXACT escaped strings must be present as inert text.
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+    assert "&lt;b&gt;Evil&lt;/b&gt; &amp; Co" in body
+    assert "&lt;img src=x onerror=alert(1)&gt;" in body
+    # 3) The payloads must appear ONLY as text, never as markup.
+    for payload in ("<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "<b>Evil</b>"):
+        assert payload not in body
+    assert "alert(1)" in parsed.text  # present, but inert text
 
 
 @pytest.mark.anyio
@@ -612,8 +693,16 @@ async def test_sales_fee_slip_missing_ref_renders_placeholder(db, admin):
     # must NOT leak the raw ObjectId/hex id
     assert "deadbeefdeadbeefdeadbeef" not in body
     assert "cafebabecafebabecafebabe" not in body
-    # must fall back to a human placeholder
-    assert "Unknown customer" in body or "Unknown service" in body or body.count("-") >= 0
+    # Meaningful assertion: the breakdown row's Customer and Service cells must
+    # each hold exactly the "-" placeholder (not an empty or id-bearing cell).
+    cells = _breakdown_row_cells(body)
+    assert cells, "no breakdown row rendered"
+    # columns: Keterangan | Invoice # | Customer | Service | Nominal
+    assert len(cells) == 5, cells
+    assert cells[0] == "Fee"
+    assert cells[1] == "INV-A"
+    assert cells[2] == "-", f"customer cell should be placeholder, got {cells[2]!r}"
+    assert cells[3] == "-", f"service cell should be placeholder, got {cells[3]!r}"
 
 
 @pytest.mark.anyio
@@ -655,18 +744,14 @@ async def test_sales_fee_create_duplicate_keyerror_maps_to_409(db, admin, monkey
 
 @pytest.mark.anyio
 async def test_sales_fee_create_scan_cap_still_detects_duplicate(db, admin, monkeypatch):
-    """Guard must not be bypassed by a 5000-row scan cap; use period query."""
-    from unittest.mock import MagicMock
+    """Guard must not be bypassed by a period-unfiltered scan; must use period query."""
     today = datetime.now(timezone.utc).date().isoformat()
     period = today[:7]
-    # simulate a DB whose find({}).to_list() returns only 1 row but a real
-    # duplicate exists for the same period (would be missed by naive scan)
     existing = _sf(0, date=today, period_yyyy_mm=period, sales_person_id="sales123",
                    items=[{"description": "Existing", "amount": 5000,
                            "invoice_id": "inv-1", "invoice_number": "INV-001"}])
-    real_cursor = MagicMock()
-    real_cursor.to_list = AsyncMock(return_value=[existing])
-    db.sales_fees.find = MagicMock(return_value=real_cursor)
+    # _Cursor supports async iteration; the full test collection is pre-populated.
+    db.sales_fees.rows = [existing]
     with pytest.raises(finance_routes.HTTPException) as exc:
         await finance_routes._sf_create(payload={
             "date": today, "sales_person_id": "sales123", "sales_person": "Sales Test",
@@ -713,6 +798,179 @@ async def test_sales_fee_slip_shows_invoice_per_item(db, admin):
 
 
 # -------------------- HTTP regression tests (real FastAPI routing) --------------------
+
+# -------------------- DEDUPE HARDENING TESTS --------------------
+
+@pytest.mark.anyio
+async def test_sales_fee_create_fails_closed_when_index_unavailable(db, admin):
+    """Fee creation must not proceed if the atomic dedupe index can't be ensured."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    calls = []
+
+    async def _broken_index(*a, **k):
+        calls.append(True)
+        raise RuntimeError("index build failed")
+
+    db.sales_fees.create_index = _broken_index
+    with pytest.raises(finance_routes.HTTPException) as exc:
+        await finance_routes._sf_create(payload={
+            "date": today, "sales_person_id": "sales123", "sales_person": "Sales Test",
+            "items": [{"description": "A", "amount": 5000, "invoice_number": "INV-001"}],
+        }, admin=admin)
+    assert exc.value.status_code == 503
+    assert calls, "index ensure must have been attempted"
+    assert db.sales_fees.rows == [], "no fee may be written without the guard"
+
+
+@pytest.mark.anyio
+async def test_sales_fee_dedupe_claims_are_collision_safe_and_namespaced(db, admin):
+    """Claims must namespace identity so no delimiter collision is possible."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    period = today[:7]
+    created = await finance_routes._sf_create(payload={
+        "date": today, "sales_person_id": "sales123", "sales_person": "Sales Test",
+        "items": [{"description": "A", "amount": 5000,
+                   "invoice_number": "INV-1|sales123", "invoice_id": "x"}],
+    }, admin=admin)
+    claims = db.sales_fees.rows[-1].get("dedupe_claims") or []
+    assert len(claims) == 1
+    claim = claims[0]
+    # Namespaced + encoded, not naive delimiter concatenation
+    assert claim.startswith("sf:")
+    assert "|" not in claim or "%7C" in claim
+    assert period in claim
+    # Same period/invoice but a DIFFERENT salesperson id yields a distinct claim
+    other = await finance_routes._sf_create(payload={
+        "date": today, "sales_person_id": "sales999", "sales_person": "Sales Test",
+        "items": [{"description": "B", "amount": 7000, "invoice_number": "INV-1|sales123"}],
+    }, admin=admin)
+    other_claims = db.sales_fees.rows[-1].get("dedupe_claims") or []
+    assert other_claims and other_claims[0] != claim
+    assert created["amount"] == 5000 and other["amount"] == 7000
+
+
+@pytest.mark.anyio
+async def test_sales_fee_name_only_commissioning_rejected(db, admin):
+    """Name-only invoice commissioning is rejected: identity is not atomic-safe."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    db.sales_fees.rows = [_sf(
+        0, date=today, period_yyyy_mm=today[:7], sales_person_id="sales123",
+        sales_person="Sales Test",
+        items=[{"description": "Existing", "amount": 5000,
+                "invoice_id": "inv-1", "invoice_number": "INV-001"}],
+    )]
+    with pytest.raises(finance_routes.HTTPException) as exc:
+        await finance_routes._sf_create(payload={
+            "date": today, "sales_person": "Sales Test",  # no sales_person_id
+            "items": [{"description": "Ambiguous", "amount": 10000,
+                       "invoice_id": "inv-2", "invoice_number": "INV-002"}],
+        }, admin=admin)
+    assert exc.value.status_code == 422
+    assert "sales_person_id" in exc.value.detail
+    assert len(db.sales_fees.rows) == 1
+
+
+@pytest.mark.anyio
+async def test_sales_fee_distinct_ids_with_same_name_are_both_allowed(db, admin):
+    """Two distinct salesperson IDs sharing a display name must NOT collide."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    first = await finance_routes._sf_create(payload={
+        "date": today, "sales_person_id": "sales123", "sales_person": "Sales Sama",
+        "items": [{"description": "A", "amount": 5000, "invoice_number": "INV-001"}],
+    }, admin=admin)
+    second = await finance_routes._sf_create(payload={
+        "date": today, "sales_person_id": "sales999", "sales_person": "Sales Sama",
+        "items": [{"description": "B", "amount": 7000, "invoice_number": "INV-001"}],
+    }, admin=admin)
+    assert first["amount"] == 5000 and second["amount"] == 7000
+    assert len(db.sales_fees.rows) == 2
+    c1 = db.sales_fees.rows[0]["dedupe_claims"][0]
+    c2 = db.sales_fees.rows[1]["dedupe_claims"][0]
+    assert c1 != c2, "distinct IDs must produce distinct claims"
+
+
+@pytest.mark.anyio
+async def test_sales_fee_legacy_scan_is_period_filtered_and_streamed(db, admin):
+    """The legacy scan must query by period and stream — never scan everything."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    period = today[:7]
+    queries = []
+    original_find = db.sales_fees.find
+
+    def _recording_find(query):
+        queries.append(query)
+        return original_find(query)
+
+    db.sales_fees.find = _recording_find
+    await finance_routes._sf_create(payload={
+        "date": today, "sales_person_id": "sales123", "sales_person": "Sales Test",
+        "items": [{"description": "A", "amount": 5000, "invoice_number": "INV-001"}],
+    }, admin=admin)
+    assert queries, "legacy scan must run"
+    q = queries[-1]
+    assert q != {}, "scan must not be a whole-collection query"
+    text = json.dumps(q, default=str)
+    assert period in text, f"scan must be period-filtered: {q}"
+    assert "to_list" not in text
+
+
+@pytest.mark.anyio
+async def test_salary_slip_category_fallback_and_period_escaping(db, admin):
+    """Empty category falls back to the default; malformed period is neutralized."""
+    emp = _emp(1, division="NOC", position="Engineer")
+    db.employees.rows = [emp]
+    s = _sal(0, emp, category="", period_yyyy_mm="<script>alert(1)</script>")
+    db.salaries.rows = [s]
+    slip = await finance_routes.render_salary_slip(str(s["_id"]), format="html", admin=admin)
+    body = slip.body.decode()
+    parsed = _parse_html(body)
+    assert "script" not in parsed.tags
+    assert "<script>alert(1)</script>" not in body
+    assert "Gaji pokok" in body, "empty category must fall back to default"
+    assert "-" in body, "malformed period must render a safe placeholder"
+
+
+@pytest.mark.anyio
+async def test_sales_fee_slip_period_and_date_escaped(db, admin):
+    """Period/date derived from DB must never emit live markup."""
+    db.users = _Collection([])
+    db.services = _Collection([])
+    db.sales_fees.rows = [_sf(
+        0, period_yyyy_mm="2026-08\"><script>alert(1)</script>",
+        date="2026-08-01", notes="ok")]
+    slip = await finance_routes.render_sales_fee_slip(
+        str(db.sales_fees.rows[0]["_id"]), format="html", admin=admin)
+    body = slip.body.decode()
+    parsed = _parse_html(body)
+    assert "script" not in parsed.tags
+    assert "<script>" not in body
+    assert "<th>Periode</th><td>-</td>" in body
+    # period is unparseable -> safe placeholder, never raw markup
+    assert "-&quot;&gt;" not in body
+    assert "-&quot;" not in body.split("<th>Periode</th>")[1][:60]
+
+
+@pytest.mark.anyio
+async def test_sales_fee_slip_pdf_filename_is_safe(db, admin, monkeypatch):
+    """Content-Disposition filename must contain no quotes, slashes, or markup."""
+    db.users = _Collection([])
+    db.services = _Collection([])
+    db.sales_fees.rows = [_sf(0, sales_person="Bad\"Name/../../<script>")]
+    rendered = {}
+
+    def _fake_pdf(html_str):
+        rendered["html"] = html_str
+        return b"%PDF-1.4"
+
+    monkeypatch.setattr(finance_routes, "_render_pdf_bytes", _fake_pdf)
+    resp = await finance_routes.render_sales_fee_slip(
+        str(db.sales_fees.rows[0]["_id"]), format="pdf", admin=admin)
+    cd = resp.headers["content-disposition"]
+    filename = cd.split('filename="')[1].rsplit('"', 1)[0]
+    assert '"' not in filename
+    assert "/" not in filename and "\\" not in filename
+    assert "<" not in filename and ">" not in filename
+    assert filename.endswith(".pdf")
 
 @pytest.fixture
 async def http_client(db, admin):

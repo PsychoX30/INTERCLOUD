@@ -24,10 +24,26 @@ import portal.routes.finance as finance_mod
 # ---------------------------------------------------------------------------
 
 def _async_cursor(docs):
-    """Return a mock async cursor supporting .sort(...).to_list(...)"""
+    """Return a mock async cursor supporting .sort(...).to_list(...) and
+    `async for` (the sales-fee dedupe scan streams rows)."""
     cursor = MagicMock()
     cursor.sort = MagicMock(return_value=cursor)
     cursor.to_list = AsyncMock(return_value=docs)
+
+    rows = list(docs)
+
+    def _aiter(self):
+        cursor._it = iter(rows)
+        return cursor
+
+    async def _anext(self):
+        try:
+            return next(cursor._it)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    cursor.__aiter__ = _aiter
+    cursor.__anext__ = _anext
     return cursor
 
 
@@ -38,9 +54,10 @@ def _db():
                  "invoices", "assets", "expenses", "reports", "cashflow",
                  "credit_notes", "ledger", "finalized_reports", "settings"):
         setattr(d, coll, MagicMock())
-    # sales_fees dedupe guard calls .find({}).to_list(5000); give it an
-    # async to_list so create/delete tests stay green.
+    # sales_fees dedupe guard streams a period-filtered cursor via `async for`
+    # and ensures the atomic unique index before every write.
     d.sales_fees.find.return_value = _async_cursor([])
+    d.sales_fees.create_index = AsyncMock(return_value="dedupe_claims_1")
     d.__getitem__.side_effect = lambda k: getattr(d, k)
     return d
 
@@ -133,7 +150,7 @@ class TestLedgerCrud:
         db.sales_fees.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
         with _patch_db(db), _patch_require_roles():
             created = await finance_mod._sf_create(payload={
-                "date": self._today, "amount": 2000, "sales_person": "S", "invoice_number": "INV-1", "notes": ""
+                "date": self._today, "amount": 2000, "sales_person_id": "sales-S", "sales_person": "S", "invoice_number": "INV-1", "notes": ""
             }, admin=_admin())
             assert created["sales_person"] == "S"
             assert created["amount"] == 2000

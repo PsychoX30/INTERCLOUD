@@ -16,13 +16,33 @@ def _coll():
     c.insert_one = AsyncMock()
     c.delete_one = AsyncMock()
     c.update_one = AsyncMock()
+    # dedupe guard now ensures the atomic index before writing; and the
+    # period-filtered legacy scan streams via `async for` (never to_list).
+    c.create_index = AsyncMock(return_value="dedupe_claims_1")
     c.find = MagicMock()
-    # finance handlers now call .find({}).to_list(5000) for the dedupe guard;
-    # give the mock a real async to_list so non-dedupe tests stay green.
-    cur = MagicMock()
-    cur.to_list = AsyncMock(return_value=[])
-    c.find.return_value = cur
+    c.find.return_value = _empty_cursor()
     return c
+
+
+def _empty_cursor(rows=None):
+    """Async-iterable cursor mock supporting `async for` (and to_list)."""
+    rows = list(rows or [])
+
+    class _Cur:
+        async def to_list(self, length=None):
+            return list(rows)
+
+        def __aiter__(self):
+            self._it = iter(rows)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    return _Cur()
 
 
 def _insert_id(doc, _id=None):
@@ -64,7 +84,7 @@ class TestLedgerCreateWithItems:
             out = await handler(payload={
                 "date": "2099-12-01",  # far future → never month-locked
                 "notes": "pytest",
-                "sales_person": "S",
+                "sales_person_id": "sales-S", "sales_person": "S",
                 "invoice_number": "INV-M",
                 "items": [
                     {"description": "A", "amount": 50000},
@@ -97,7 +117,7 @@ class TestLedgerCreateWithItems:
         with _patch_db(db):
             out = await finance_mod._sf_create(payload={
                 "date": "2099-12-01", "amount": 25000,
-                "sales_person": "S", "invoice_number": "INV-L",
+                "sales_person_id": "sales-S", "sales_person": "S", "invoice_number": "INV-L",
             }, admin=STAFF)
             assert out["amount"] == 25000
             assert "items" not in out  # serializer omits empty items

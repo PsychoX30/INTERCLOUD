@@ -261,13 +261,6 @@ async def startup_seed():
         await db.media_assets.create_index([("tags", 1)])
         # Content calendar
         await db.content_calendar.create_index([("scheduled_at", 1)])
-        # Sales fees dedupe: a computed claim array (period|salesperson|invoice)
-        # rejects concurrent duplicate commissioning atomically. Partial filter
-        # so only new rows carrying `dedupe_claims` are indexed — legacy rows
-        # without the field are untouched and never cause a null-key collision.
-        await db.sales_fees.create_index(
-            "dedupe_claims", unique=True,
-            partialFilterExpression={"dedupe_claims": {"$exists": True}})
         # Seed atomic number counters from existing data so concurrent
         # first-writes can never collide with legacy numbers.
         for coll, prefix in (("invoices", "INV"), ("tickets", "TCK"),
@@ -284,6 +277,20 @@ async def startup_seed():
                     {"$max": {"seq": legacy}}, upsert=True)
     except Exception as e:
         logger.warning(f"Index create issue: {e}")
+    # Sales-fee dedupe index is a CORRECTNESS guard, not a perf index: a
+    # swallowed failure here would silently allow duplicate commissioning.
+    # Keep it in its own block so it is never masked by the broad try above,
+    # and log at ERROR. `_sf_create` additionally re-ensures it before every
+    # write and fails closed (503) if it is still unavailable.
+    try:
+        await db.sales_fees.create_index(
+            "dedupe_claims", unique=True,
+            partialFilterExpression={"dedupe_claims": {"$exists": True}})
+        logger.info("Sales-fee dedupe unique index ensured.")
+    except Exception as e:
+        logger.error(
+            "CRITICAL: sales_fees.dedupe_claims unique index unavailable (%s). "
+            "Sales-fee creation will fail closed until this is resolved.", e)
     try:
         from portal.seed import seed_all
         await seed_all(db)
