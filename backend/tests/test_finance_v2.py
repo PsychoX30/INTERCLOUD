@@ -86,16 +86,19 @@ class TestMonthLock:
 # ---------------------------------------------------------------------------
 
 class TestLedgerCrud:
+    _today = date.today().isoformat()
+    _period = _today[:7]
+
     @pytest.mark.asyncio
     async def test_kas_kecil_create_and_delete(self):
         oid = ObjectId()
         db = _db()
         db.kas_kecil.insert_one = AsyncMock(return_value=MagicMock(inserted_id=oid))
-        db.kas_kecil.find_one = AsyncMock(return_value={"_id": oid, "date": "2026-08-01", "period_yyyy_mm": "2026-08"})
+        db.kas_kecil.find_one = AsyncMock(return_value={"_id": oid, "date": self._today, "period_yyyy_mm": self._period})
         db.kas_kecil.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
         with _patch_db(db), _patch_require_roles():
             created = await finance_mod._kk_create(payload={
-                "date": "2026-08-01", "amount": 1000, "category": "office", "vendor": "kopi", "notes": "q"
+                "date": self._today, "amount": 1000, "category": "office", "vendor": "kopi", "notes": "q"
             }, admin=_admin())
             assert created["amount"] == 1000
             assert created["category"] == "office"
@@ -107,11 +110,11 @@ class TestLedgerCrud:
         oid = ObjectId()
         db = _db()
         db.salaries.insert_one = AsyncMock(return_value=MagicMock(inserted_id=oid))
-        db.salaries.find_one = AsyncMock(return_value={"_id": oid, "date": "2026-08-01", "period_yyyy_mm": "2026-08"})
+        db.salaries.find_one = AsyncMock(return_value={"_id": oid, "date": self._today, "period_yyyy_mm": self._period})
         db.salaries.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
         with _patch_db(db), _patch_require_roles():
             created = await finance_mod._sal_create(payload={
-                "date": "2026-08-01", "amount": 5000, "employee": "Budi", "category": "NOC", "notes": ""
+                "date": self._today, "amount": 5000, "employee": "Budi", "category": "NOC", "notes": ""
             }, admin=_admin())
             assert created["employee"] == "Budi"
             assert created["amount"] == 5000
@@ -123,11 +126,11 @@ class TestLedgerCrud:
         oid = ObjectId()
         db = _db()
         db.sales_fees.insert_one = AsyncMock(return_value=MagicMock(inserted_id=oid))
-        db.sales_fees.find_one = AsyncMock(return_value={"_id": oid, "date": "2026-08-01", "period_yyyy_mm": "2026-08"})
+        db.sales_fees.find_one = AsyncMock(return_value={"_id": oid, "date": self._today, "period_yyyy_mm": self._period})
         db.sales_fees.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
         with _patch_db(db), _patch_require_roles():
             created = await finance_mod._sf_create(payload={
-                "date": "2026-08-01", "amount": 2000, "sales_person": "S", "invoice_number": "INV-1", "notes": ""
+                "date": self._today, "amount": 2000, "sales_person": "S", "invoice_number": "INV-1", "notes": ""
             }, admin=_admin())
             assert created["sales_person"] == "S"
             assert created["amount"] == 2000

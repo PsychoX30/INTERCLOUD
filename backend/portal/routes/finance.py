@@ -782,9 +782,20 @@ def _ledger_list_query(
         order: str = "",
         q: str = "",
         period: str = "",
+        division: str = "",
+        employee_id: str = "",
+        sales_person_id: str = "",
         admin=Depends(get_current_admin),
-        **extra,
     ):
+        # Explicit optional query params (division/employee_id/sales_person_id)
+        # instead of **kwargs: FastAPI turns a bare **kwargs into a REQUIRED
+        # query param named "extra", which made every GET return 422
+        # "query.extra Field required". See test_ledger_list_no_required_extra_param.
+        extra = {
+            "division": division,
+            "employee_id": employee_id,
+            "sales_person_id": sales_person_id,
+        }
         db = await _get_db()
         sort_key = sort if sort in sort_fields else default_sort
         direction = -1 if (order or default_order) == "desc" else 1
@@ -794,6 +805,14 @@ def _ledger_list_query(
         for k, v in extra_filters.items():
             val = extra.get(k)
             if val:
+                # ObjectId-typed fields (salaries.employee_id) are stored as
+                # BSON ObjectId but arrive as hex strings — coerce so the
+                # "Semua karyawan" filter actually matches.
+                if k == "employee_id":
+                    try:
+                        val = ObjectId(str(val))
+                    except Exception:
+                        raise HTTPException(status_code=400, detail=f"Invalid employee_id: {val}")
                 query[v] = val
         if period:
             query["period_yyyy_mm"] = period

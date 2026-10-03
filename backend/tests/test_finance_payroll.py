@@ -267,7 +267,7 @@ async def test_salary_create_requires_employee_id(db, admin):
     # Without employee_id should fail with 422 (new behavior)
     try:
         await finance_routes._sal_create(payload={
-            "date": "2026-08-25", "category": "reguler", "notes": "no emp"
+            "date": datetime.now(timezone.utc).date().isoformat(), "category": "reguler", "notes": "no emp"
         }, admin=admin)
         assert False, "expected 422"
     except Exception as exc:
@@ -278,8 +278,9 @@ async def test_salary_create_requires_employee_id(db, admin):
 async def test_salary_create_with_valid_employee_id(db, admin):
     emp = _emp(1, division="NOC", position="Engineer")
     db.employees.rows = [emp]
+    _today = datetime.now(timezone.utc).date().isoformat()
     created = await finance_routes._sal_create(payload={
-        "date": "2026-08-25",
+        "date": _today,
         "employee_id": str(emp["_id"]),
         "category": "reguler",
         "items": [
@@ -293,7 +294,7 @@ async def test_salary_create_with_valid_employee_id(db, admin):
     assert created["division"] == emp["division"]
     assert created["position"] == emp["position"]
     assert created["amount"] == 6000000
-    assert created["period_yyyy_mm"] == "2026-08"
+    assert created["period_yyyy_mm"] == _today[:7]
     assert len(created.get("items", [])) == 2
 
 
@@ -302,7 +303,7 @@ async def test_salary_create_invalid_employee_id_rejected(db, admin):
     db.employees.rows = []
     try:
         await finance_routes._sal_create(payload={
-            "date": "2026-08-25",
+            "date": datetime.now(timezone.utc).date().isoformat(),
             "employee_id": "invalid",
             "category": "reguler",
             "items": [{"description": "Gaji pokok", "amount": 5000000}],
@@ -346,8 +347,9 @@ async def test_salary_pagination_filter_sort(db, admin):
 
 @pytest.mark.anyio
 async def test_sales_fee_multi_invoice_items(db, admin):
+    _today = datetime.now(timezone.utc).date().isoformat()
     payload = {
-        "date": "2026-08-25",
+        "date": _today,
         "sales_person_id": "sales123",
         "sales_person": "Sales Test",
         "notes": "test",
@@ -358,7 +360,7 @@ async def test_sales_fee_multi_invoice_items(db, admin):
     }
     created = await finance_routes._sf_create(payload=payload, admin=admin)
     assert created["amount"] == 300000
-    assert created["period_yyyy_mm"] == "2026-08"
+    assert created["period_yyyy_mm"] == _today[:7]
     items = created.get("items") or []
     assert len(items) == 2
     assert all("invoice_id" in it for it in items)
@@ -376,6 +378,40 @@ async def test_sales_fee_multi_invoice_items(db, admin):
     # backward compat
     res = await finance_routes._sf_list(admin=admin)
     assert isinstance(res, list)
+
+
+# -------------------- ROUTE SIGNATURE (FastAPI dependency) TESTS --------------------
+
+def _get_route(router, path):
+    for r in router.routes:
+        if getattr(r, "path", "") == path and "GET" in getattr(r, "methods", set()):
+            return r
+    raise AssertionError(f"no GET route {path}")
+
+
+def test_ledger_list_no_required_extra_param():
+    """Regression: **kwargs in _ledger_list_query._list made FastAPI register a
+    REQUIRED query param named 'extra', so GET /admin/salaries (and sales-fees)
+    always returned 422 'query.extra Field required' in production.
+
+    The explicit division/employee_id/sales_person_id params must be optional,
+    and no required 'extra' param may exist.
+    """
+    for path in ("/admin/salaries", "/admin/sales-fees"):
+        route = _get_route(finance_routes.router, path)
+        params = {p.name: p for p in route.dependant.query_params}
+        assert "extra" not in params, f"{path} still registers a required 'extra' param"
+        for name in ("division", "employee_id", "sales_person_id"):
+            assert name in params, f"{path} missing explicit optional {name}"
+            assert params[name].required is False, f"{path}.{name} must be optional"
+
+
+def test_ledger_list_explicit_filters_default_empty():
+    """The explicit filter params must default to '' so no filter is applied."""
+    for name in ("division", "employee_id", "sales_person_id"):
+        route = _get_route(finance_routes.router, "/admin/salaries")
+        p = {x.name: x for x in route.dependant.query_params}[name]
+        assert p.default == ""
 
 
 # -------------------- SLIP PDF SERIALIZATION TESTS --------------------
@@ -398,3 +434,91 @@ async def test_sales_fee_slip_shows_invoice_per_item(db, admin):
     body = slip.body.decode()
     assert "INV-A" in body
     assert "INV-B" in body
+
+
+# -------------------- HTTP regression tests (real FastAPI routing) --------------------
+
+@pytest.fixture
+async def http_client(db, admin):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    app = FastAPI()
+    app.include_router(finance_routes.router, prefix="/api/portal")
+    app.dependency_overrides[finance_routes.get_current_admin] = lambda: admin
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://test/api/portal/") as client:
+        yield client
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["salaries", "sales-fees"])
+@pytest.mark.parametrize("params", [{}, {"paginate": "1", "limit": "20", "skip": "0", "sort": "date", "order": "desc"}])
+async def test_http_ledger_list_no_required_extra(http_client, path, params):
+    """Replay the UI GET, not a direct Python call which bypasses validation."""
+    response = await http_client.get(f"admin/{path}", params=params)
+    assert response.status_code == 200, response.text
+    assert response.json() == ({"items": [], "total": 0, "limit": 20, "skip": 0} if params else [])
+
+
+@pytest.mark.anyio
+async def test_http_salary_save_reload_filter(http_client, db):
+    emp = _emp(1, division="NOC", position="Engineer")
+    other = _emp(2, division="Sales")
+    db.employees.rows = [emp, other]
+    date = datetime.now(timezone.utc).date().isoformat()
+    db.salaries.rows = [_sal(0, other, date=date, period_yyyy_mm=date[:7])]
+    payload = {"date": date, "employee_id": str(emp["_id"]), "category": "reguler",
+               "items": [{"description": "Gaji pokok", "amount": 5000000},
+                         {"description": "Bonus", "amount": 1000000}]}
+    response = await http_client.post("admin/salaries", json=payload)
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert created["employee"] == emp["name"]
+    assert created["division"] == "NOC"
+    assert created["position"] == "Engineer"
+    assert created["amount"] == 6000000
+    for filters, expected in [({}, 2), ({"employee_id": str(emp["_id"])}, 1),
+                              ({"division": "NOC", "period": date[:7]}, 1)]:
+        response = await http_client.get("admin/salaries", params={"paginate": 1, **filters})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total"] == expected
+        assert len(body["items"]) == expected
+        assert created["id"] in [item["id"] for item in body["items"]]
+    response = await http_client.get("admin/salaries", params={"employee_id": "not-an-objectid"})
+    assert response.status_code == 400, response.text
+
+
+@pytest.mark.anyio
+async def test_http_fee_save_reload_filter(http_client, db):
+    date = datetime.now(timezone.utc).date().isoformat()
+    db.sales_fees.rows = [_sf(0, sales_person_id="other-sales", date=date, period_yyyy_mm=date[:7])]
+    payload = {"date": date, "sales_person_id": "sales123", "sales_person": "Test Sales",
+               "items": [{"description": "Fee A", "amount": 100000, "invoice_number": "INV-A"},
+                         {"description": "Fee B", "amount": 200000, "invoice_number": "INV-B"}]}
+    response = await http_client.post("admin/sales-fees", json=payload)
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert created["amount"] == 300000
+    assert [item["invoice_number"] for item in created["items"]] == ["INV-A", "INV-B"]
+    for filters, expected in [({}, 2), ({"sales_person_id": "sales123", "period": date[:7]}, 1)]:
+        response = await http_client.get("admin/sales-fees", params={"paginate": 1, **filters})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total"] == expected
+        assert len(body["items"]) == expected
+        assert created["id"] in [item["id"] for item in body["items"]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["salaries", "sales-fees"])
+async def test_http_ledger_lists_still_require_auth(db, path):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    app = FastAPI()
+    app.include_router(finance_routes.router, prefix="/api/portal")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/api/portal/admin/{path}")
+        assert response.status_code == 401, response.text
