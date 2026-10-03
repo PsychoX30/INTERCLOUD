@@ -261,6 +261,13 @@ async def startup_seed():
         await db.media_assets.create_index([("tags", 1)])
         # Content calendar
         await db.content_calendar.create_index([("scheduled_at", 1)])
+        # Sales fees dedupe: a computed claim array (period|salesperson|invoice)
+        # rejects concurrent duplicate commissioning atomically. Partial filter
+        # so only new rows carrying `dedupe_claims` are indexed — legacy rows
+        # without the field are untouched and never cause a null-key collision.
+        await db.sales_fees.create_index(
+            "dedupe_claims", unique=True,
+            partialFilterExpression={"dedupe_claims": {"$exists": True}})
         # Seed atomic number counters from existing data so concurrent
         # first-writes can never collide with legacy numbers.
         for coll, prefix in (("invoices", "INV"), ("tickets", "TCK"),

@@ -7,10 +7,12 @@ import asyncio
 import logging
 import secrets
 import re
+import html
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -977,9 +979,11 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
         )
 
     if new_invoice_numbers:
-        # Fetch all sales_fees and filter in Python so legacy rows that lack
-        # sales_person_id are not excluded by the Mongo query.
-        existing = await db.sales_fees.find({}).to_list(5000)
+        # Legacy read-check: rows written before `dedupe_claims` existed (and
+        # rows whose salesperson is only identified by name) cannot be covered
+        # by the unique index, so they still need a scan. `length=None` returns
+        # every document — a hard cap would silently skip old rows.
+        existing = await db.sales_fees.find({}).to_list(length=None)
         for e in existing:
             e_period = e.get("period_yyyy_mm") or (e.get("date") or "")[:7]
             if e_period != period:
@@ -1007,7 +1011,27 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
     if sales_person_id:
         doc["sales_person_id"] = sales_person_id
 
-    r = await db.sales_fees.insert_one(doc)
+    # Atomic duplicate protection. The read-check above cannot stop two
+    # concurrent requests from both passing, so every new row also carries a
+    # computed claim array that a unique multikey index rejects on collision.
+    # Keys use the salesperson id when available, else the casefolded name, so
+    # the claim is stable for the identity the guard actually compares.
+    person_key = sales_person_id or sales_person_name
+    if new_invoice_numbers and person_key:
+        doc["dedupe_claims"] = sorted(
+            f"{period}|{person_key}|{inv}" for inv in new_invoice_numbers
+        )
+
+    try:
+        r = await db.sales_fees.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Invoice {', '.join(sorted(new_invoice_numbers))} sudah memiliki fee sales untuk "
+                f"sales person ini pada periode {period}."
+            ),
+        )
     doc["_id"] = r.inserted_id
     return _generic_ledger_serialize(doc)
 
@@ -1034,6 +1058,18 @@ router.delete("/admin/sales-fees/{item_id}")(_sf_delete)
 
 def _fmt_amount(v):
     return "Rp " + f"{float(v or 0):,.0f}".replace(",", ".")
+
+
+def _esc(value: str | None, fallback: str = "-") -> str:
+    """Escape HTML-special characters and render user-controlled values safely.
+
+    Returns a string where < > & ' \" are escaped. If value is empty/None,
+    returns the human-friendly placeholder `fallback`. Used consistently in
+    PDF/HTML slips to prevent XSS.
+    """
+    if not value:
+        return fallback
+    return html.escape(str(value))
 
 
 @router.get("/admin/finance/sales-context")
@@ -1114,15 +1150,15 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
     period = d.get("period_yyyy_mm") or (d.get("date") or "")[:7]
     amount = float(d.get("amount") or 0)
     amount_str = "Rp " + f"{amount:,.0f}".replace(",", ".")
-    employee = d.get("employee") or "-"
-    category = d.get("category") or "Gaji pokok"
+    employee = _esc(d.get("employee"))
+    category = _esc(d.get("category")) or "Gaji pokok"
     issued = datetime.now(timezone.utc).date().isoformat()
-    division = d.get("division") or "-"
-    position = d.get("position") or "-"
+    division = _esc(d.get("division"))
+    position = _esc(d.get("position"))
     items = d.get("items") or []
     if items:
         item_rows = "".join(
-            f'<tr><td>{it.get("description") or "-"}</td>'
+            f'<tr><td>{_esc(it.get("description"))}</td>'
             f'<td style="text-align:right">{_fmt_amount(it.get("amount"))}</td></tr>'
             for it in items)
         breakdown_html = f"""
@@ -1135,7 +1171,10 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
       </table>"""
     else:
         breakdown_html = ""
-    html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
+    ref = f"{str(d['_id'])[-8:].upper()}" if d.get("_id") else "-"
+    note = _esc(d.get("notes"))
+    employee_slug_source = str(d.get("employee") or "")
+    html_out = f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: A4; margin: 24mm 18mm; }}
       body {{ font-family: Helvetica, Arial, sans-serif; color: #0f172a; font-size: 13px; }}
       .head {{ display: flex; justify-content: space-between; border-bottom: 3px solid #0a2350; padding-bottom: 14px; }}
@@ -1158,7 +1197,7 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
           <div style="font-weight:800;color:#0a2350">{period}</div></div>
       </div>
       <h1>Slip Gaji Karyawan</h1>
-      <div class="meta">Diterbitkan {issued} · No. ref {str(d["_id"])[-8:].upper()}</div>
+      <div class="meta">Diterbitkan {_esc(issued)} · No. ref {ref}</div>
       <table>
         <tr><th>Nama karyawan</th><td style="font-weight:700">{employee}</td></tr>
         <tr><th>Divisi</th><td>{division}</td></tr>
@@ -1167,7 +1206,7 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
         <tr><th>Kategori</th><td>{category}</td></tr>
         <tr><th>Tanggal pembayaran</th><td>{(d.get("date") or "")[:10]}</td></tr>
         <tr><th>Jumlah diterima (net)</th><td class="amt">{amount_str}</td></tr>
-        <tr><th>Catatan</th><td>{d.get("notes") or "-"}</td></tr>
+        <tr><th>Catatan</th><td>{note}</td></tr>
       </table>
       {breakdown_html}
       <div class="foot">
@@ -1177,11 +1216,11 @@ async def render_salary_slip(sid: str, format: str = "pdf", admin=Depends(get_cu
       <div class="conf">Dokumen ini bersifat rahasia dan dihasilkan otomatis oleh Intercloud Portal.</div>
     </body></html>"""
     if format == "pdf":
-        pdf_bytes = _render_pdf_bytes(html)
+        pdf_bytes = _render_pdf_bytes(html_out)
         emp_slug = re.sub(r"[^A-Za-z0-9_-]+", "-", employee).strip("-") or "karyawan"
         return Response(content=pdf_bytes, media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="SlipGaji-{emp_slug}-{period}.pdf"'})
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html_out)
 
 
 @router.get("/documents/sales-fee-slip/{sid}")
@@ -1194,8 +1233,8 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
     period = d.get("period_yyyy_mm") or (d.get("date") or "")[:7]
     amount = float(d.get("amount") or 0)
     amount_str = "Rp " + f"{amount:,.0f}".replace(",", ".")
-    person = d.get("sales_person") or "-"
-    invoice_no = d.get("invoice_number") or "-"
+    person = _esc(d.get("sales_person"))
+    invoice_no = _esc(d.get("invoice_number"))
     issued = datetime.now(timezone.utc).date().isoformat()
     items = d.get("items") or []
     if items:
@@ -1219,17 +1258,17 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
         service_map: dict = {}
         if customer_ids:
             for u in await db.users.find({"_id": {"$in": customer_ids}}).to_list(500):
-                customer_map[str(u["_id"])] = u.get("name") or u.get("email") or str(u["_id"])
+                customer_map[str(u["_id"])] = _esc(u.get("name") or u.get("email"))
         if service_ids:
             for s in await db.services.find({"_id": {"$in": service_ids}}).to_list(500):
-                service_map[str(s["_id"])] = s.get("name") or str(s["_id"])
+                service_map[str(s["_id"])] = _esc(s.get("name"))
 
         item_rows = "".join(
             f'<tr>'
-            f'<td>{it.get("description") or "-"}</td>'
-            f'<td>{it.get("invoice_number") or "-"}</td>'
-            f'<td>{customer_map.get(str(it.get("customer_id") or ""), it.get("customer_id") or "-")}</td>'
-            f'<td>{service_map.get(str(it.get("service_id") or ""), it.get("service_id") or "-")}</td>'
+            f'<td>{_esc(it.get("description"))}</td>'
+            f'<td>{_esc(it.get("invoice_number"))}</td>'
+            f'<td>{customer_map.get(str(it.get("customer_id") or ""), "-")}</td>'
+            f'<td>{service_map.get(str(it.get("service_id") or ""), "-")}</td>'
             f'<td style="text-align:right">{_fmt_amount(it.get("amount"))}</td>'
             f'</tr>'
             for it in items)
@@ -1249,7 +1288,9 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
       </table>"""
     else:
         breakdown_html = ""
-    html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
+    sf_ref = f"{str(d['_id'])[-8:].upper()}" if d.get("_id") else "-"
+    sf_note = _esc(d.get("notes"))
+    html_out = f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: A4; margin: 24mm 18mm; }}
       body {{ font-family: Helvetica, Arial, sans-serif; color: #0f172a; font-size: 13px; }}
       .head {{ display: flex; justify-content: space-between; border-bottom: 3px solid #0a2350; padding-bottom: 14px; }}
@@ -1272,14 +1313,14 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
           <div style="font-weight:800;color:#0a2350">{period}</div></div>
       </div>
       <h1>Slip Fee Penjualan</h1>
-      <div class="meta">Diterbitkan {issued} · No. ref {str(d["_id"])[-8:].upper()}</div>
+      <div class="meta">Diterbitkan {_esc(issued)} · No. ref {sf_ref}</div>
       <table>
         <tr><th>Nama sales</th><td style="font-weight:700">{person}</td></tr>
-        <tr><th>Periode</th><td>{period}</td></tr>
+        <tr><th>Periode</th><td>{_esc(period)}</td></tr>
         <tr><th>Invoice terkait</th><td>{invoice_no}</td></tr>
-        <tr><th>Tanggal pembayaran</th><td>{(d.get("date") or "")[:10]}</td></tr>
+        <tr><th>Tanggal pembayaran</th><td>{_esc((d.get("date") or "")[:10])}</td></tr>
         <tr><th>Jumlah fee (net)</th><td class="amt">{amount_str}</td></tr>
-        <tr><th>Catatan</th><td>{d.get("notes") or "-"}</td></tr>
+        <tr><th>Catatan</th><td>{sf_note}</td></tr>
       </table>
       {breakdown_html}
       <div class="foot">
@@ -1289,11 +1330,11 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
       <div class="conf">Dokumen ini bersifat rahasia dan dihasilkan otomatis oleh Intercloud Portal.</div>
     </body></html>"""
     if format == "pdf":
-        pdf_bytes = _render_pdf_bytes(html)
+        pdf_bytes = _render_pdf_bytes(html_out)
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", person).strip("-") or "sales"
         return Response(content=pdf_bytes, media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="SlipFeeSales-{slug}-{period}.pdf"'})
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html_out)
 
 
 # ---------------- Finance detailed report ----------------

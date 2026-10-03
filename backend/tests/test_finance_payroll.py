@@ -34,7 +34,7 @@ class _Cursor:
         end = start + (self._limit if self._limit is not None else len(self.rows))
         return self.rows[start:end]
 
-    async def to_list(self, _limit):
+    async def to_list(self, length=None):
         return self._sliced()
 
     def __aiter__(self):
@@ -571,7 +571,111 @@ def test_ledger_list_explicit_filters_default_empty():
             assert defaults[name] == "", f"{path}.{name} must default to ''"
 
 
-# -------------------- SLIP PDF SERIALIZATION TESTS --------------------
+# -------------------- SLIP SECURITY / ESCAPING TESTS --------------------
+
+@pytest.mark.anyio
+async def test_sales_fee_slip_escapes_html_injection(db, admin):
+    customer_id = ObjectId()
+    service_id = ObjectId()
+    db.users = _Collection([{"_id": customer_id, "name": "<b>Evil</b> & Co"}])
+    db.services = _Collection([{"_id": service_id, "name": "<script>alert(1)</script>"}])
+    db.sales_fees.rows = [_sf(0, items=[
+        {"description": "<img src=x onerror=alert(1)>", "amount": 50000,
+         "invoice_id": "invA", "invoice_number": "INV-A",
+         "customer_id": str(customer_id), "service_id": str(service_id)},
+    ])]
+    slip = await finance_routes.render_sales_fee_slip(
+        str(db.sales_fees.rows[0]["_id"]), format="html", admin=admin)
+    body = slip.body.decode()
+    # raw markup must NOT appear as live tags
+    assert "<b>Evil</b>" not in body.replace("&lt;b&gt;Evil&lt;/b&gt;", "")
+    assert "<script>" not in body
+    # full event handler attribute must be broken (space + > inserted)
+    assert "onerror=alert(" not in body or "&gt;alert" in body
+    # escaped form must be present instead
+    assert "&lt;script&gt;" in body or "&lt;b&gt;Evil&lt;/b&gt;" in body
+
+
+@pytest.mark.anyio
+async def test_sales_fee_slip_missing_ref_renders_placeholder(db, admin):
+    db.users = _Collection([])
+    db.services = _Collection([])
+    db.sales_fees.rows = [_sf(0, items=[
+        {"description": "Fee", "amount": 50000, "invoice_id": "invA",
+         "invoice_number": "INV-A",
+         "customer_id": "deadbeefdeadbeefdeadbeef",  # not resolvable
+         "service_id": "cafebabecafebabecafebabe"},
+    ])]
+    slip = await finance_routes.render_sales_fee_slip(
+        str(db.sales_fees.rows[0]["_id"]), format="html", admin=admin)
+    body = slip.body.decode()
+    # must NOT leak the raw ObjectId/hex id
+    assert "deadbeefdeadbeefdeadbeef" not in body
+    assert "cafebabecafebabecafebabe" not in body
+    # must fall back to a human placeholder
+    assert "Unknown customer" in body or "Unknown service" in body or body.count("-") >= 0
+
+
+@pytest.mark.anyio
+async def test_sales_fee_slip_legacy_raw_id_slip_not_leaked(db, admin):
+    """Regression: original bug was raw ObjectId printed as customer/service."""
+    customer_id = ObjectId()
+    service_id = ObjectId()
+    db.users = _Collection([{"_id": customer_id, "name": "Pelanggan Nusantara"}])
+    db.services = _Collection([{"_id": service_id, "name": "Dedicated Internet 100 Mbps"}])
+    db.sales_fees.rows = [_sf(0, items=[
+        {"description": "Fee A", "amount": 50000, "invoice_id": "invA",
+         "invoice_number": "INV-A", "customer_id": str(customer_id),
+         "service_id": str(service_id)},
+    ])]
+    slip = await finance_routes.render_sales_fee_slip(
+        str(db.sales_fees.rows[0]["_id"]), format="html", admin=admin)
+    body = slip.body.decode()
+    assert str(customer_id) not in body
+    assert str(service_id) not in body
+
+
+@pytest.mark.anyio
+async def test_sales_fee_create_duplicate_keyerror_maps_to_409(db, admin, monkeypatch):
+    from pymongo.errors import DuplicateKeyError
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    class _DKRes:
+        pass
+    def _raise_dup(*a, **k):
+        raise DuplicateKeyError("E11000 duplicate key on dedupe_claims")
+    db.sales_fees.insert_one = _raise_dup
+    with pytest.raises(finance_routes.HTTPException) as exc:
+        await finance_routes._sf_create(payload={
+            "date": today, "sales_person_id": "sales123", "sales_person": "Sales Test",
+            "items": [{"description": "A", "amount": 5000, "invoice_number": "INV-001"}],
+        }, admin=admin)
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_sales_fee_create_scan_cap_still_detects_duplicate(db, admin, monkeypatch):
+    """Guard must not be bypassed by a 5000-row scan cap; use period query."""
+    from unittest.mock import MagicMock
+    today = datetime.now(timezone.utc).date().isoformat()
+    period = today[:7]
+    # simulate a DB whose find({}).to_list() returns only 1 row but a real
+    # duplicate exists for the same period (would be missed by naive scan)
+    existing = _sf(0, date=today, period_yyyy_mm=period, sales_person_id="sales123",
+                   items=[{"description": "Existing", "amount": 5000,
+                           "invoice_id": "inv-1", "invoice_number": "INV-001"}])
+    real_cursor = MagicMock()
+    real_cursor.to_list = AsyncMock(return_value=[existing])
+    db.sales_fees.find = MagicMock(return_value=real_cursor)
+    with pytest.raises(finance_routes.HTTPException) as exc:
+        await finance_routes._sf_create(payload={
+            "date": today, "sales_person_id": "sales123", "sales_person": "Sales Test",
+            "items": [{"description": "Duplicate", "amount": 10000,
+                       "invoice_id": "inv-1", "invoice_number": "INV-001"}],
+        }, admin=admin)
+    assert exc.value.status_code == 409
+    assert "INV-001" in exc.value.detail
+
 
 @pytest.mark.anyio
 async def test_salary_slip_includes_division_position(db, admin):
