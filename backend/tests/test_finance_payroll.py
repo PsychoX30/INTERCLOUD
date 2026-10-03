@@ -380,13 +380,27 @@ async def test_sales_fee_multi_invoice_items(db, admin):
     assert isinstance(res, list)
 
 
-# -------------------- ROUTE SIGNATURE (FastAPI dependency) TESTS --------------------
+# -------------------- ROUTE SIGNATURE (FastAPI contract) TESTS --------------------
 
-def _get_route(router, path):
-    for r in router.routes:
-        if getattr(r, "path", "") == path and "GET" in getattr(r, "methods", set()):
-            return r
-    raise AssertionError(f"no GET route {path}")
+def _ledger_openapi_query_params(path):
+    """Return {param_name: required_bool} from the PUBLIC OpenAPI schema.
+
+    Deliberately uses app.openapi() (the public contract FastAPI generates)
+    instead of route.dependant.query_params internals: ModelField internals
+    (.required attribute) differ across FastAPI/Pydantic versions and caused
+    cross-env test failures (Tatang's FAIL on 2355963). The OpenAPI schema is
+    the stable, version-independent contract.
+    """
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(finance_routes.router)
+    schema = app.openapi()
+    op = schema["paths"][path]["get"]
+    return {
+        p["name"]: bool(p.get("required"))
+        for p in op.get("parameters", [])
+        if p.get("in") == "query"
+    }
 
 
 def test_ledger_list_no_required_extra_param():
@@ -398,20 +412,28 @@ def test_ledger_list_no_required_extra_param():
     and no required 'extra' param may exist.
     """
     for path in ("/admin/salaries", "/admin/sales-fees"):
-        route = _get_route(finance_routes.router, path)
-        params = {p.name: p for p in route.dependant.query_params}
+        params = _ledger_openapi_query_params(path)
         assert "extra" not in params, f"{path} still registers a required 'extra' param"
         for name in ("division", "employee_id", "sales_person_id"):
             assert name in params, f"{path} missing explicit optional {name}"
-            assert params[name].required is False, f"{path}.{name} must be optional"
+            assert params[name] is False, f"{path}.{name} must be optional"
 
 
 def test_ledger_list_explicit_filters_default_empty():
     """The explicit filter params must default to '' so no filter is applied."""
-    for name in ("division", "employee_id", "sales_person_id"):
-        route = _get_route(finance_routes.router, "/admin/salaries")
-        p = {x.name: x for x in route.dependant.query_params}[name]
-        assert p.default == ""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(finance_routes.router)
+    schema = app.openapi()
+    for path in ("/admin/salaries", "/admin/sales-fees"):
+        op = schema["paths"][path]["get"]
+        defaults = {
+            p["name"]: p.get("schema", {}).get("default")
+            for p in op.get("parameters", [])
+            if p.get("in") == "query"
+        }
+        for name in ("division", "employee_id", "sales_person_id"):
+            assert defaults[name] == "", f"{path}.{name} must default to ''"
 
 
 # -------------------- SLIP PDF SERIALIZATION TESTS --------------------
