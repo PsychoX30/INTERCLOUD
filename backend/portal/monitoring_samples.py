@@ -42,17 +42,19 @@ def _resolve_tier(span: timedelta) -> str:
 
     Boundaries (point counts for the preset that lands there):
       ``<= 6h``  -> raw       (20s,  1H  = 180 pts)
-      ``<= 2d``  -> hourly    (1h,   1D  =  24 pts)
+      ``<= 2d``  -> fivemin   (5m,   1D  = 288 pts)   LibreNMS-parity
       ``<= 60d`` -> halfhour  (30m,  1W  = 336 pts, 1M = 1440 pts)
       else       -> daily     (1d,   1Y  = 365 pts)
 
-    The 30-minute tier exists because a 1M preset used to fall straight to
-    daily and rendered 30 points, hiding every intra-day spike.
+    The 5-minute tier replaces the old 1-hour tier for 1D so the chart has
+    the same granularity LibreNMS gets from its ``:1`` RRA. Raw TTL is 7d
+    at 20s cadence (~4.3k docs for 1D, well under _RAW_FETCH_LIMIT), so
+    on-the-fly consolidation covers 1D-2d without a stored rollup.
     """
     if span <= timedelta(hours=6):
         return "raw"
     elif span <= timedelta(days=2):
-        return "hourly"
+        return "fivemin"
     elif span <= timedelta(days=60):
         return "halfhour"
     else:
@@ -63,6 +65,9 @@ def _bucket_start(dt: datetime, tier: str) -> datetime:
     """Truncate *dt* to the start of its bucket for the given tier."""
     if tier == "raw":
         return dt
+    elif tier == "fivemin":
+        # 5-minute slots: :00, :05, :10 ...
+        return dt.replace(minute=(dt.minute // 5) * 5, second=0, microsecond=0)
     elif tier == "halfhour":
         # 30-minute slots: :00 and :30
         return dt.replace(minute=30 if dt.minute >= 30 else 0, second=0, microsecond=0)
@@ -202,6 +207,16 @@ async def get_graph_data(
 
     if resolution == "raw":
         return await _fetch_raw(), resolution
+
+    if resolution == "fivemin":
+        # No dedicated stored rollup for 5-minute buckets: raw TTL (7d) always
+        # covers the <=2d window this tier serves, so on-the-fly
+        # consolidation from raw is both sufficient and simplest — exactly
+        # the same math _consolidate() already uses for every other tier.
+        by_bucket_fivemin: dict[datetime, dict] = {}
+        for point in _consolidate(await _fetch_raw(), "fivemin"):
+            by_bucket_fivemin[point["at"]] = point
+        return [by_bucket_fivemin[key] for key in sorted(by_bucket_fivemin)], resolution
 
     # Overlay archives by target bucket, from coarsest to finest.  A finer
     # archive always wins over a coarser one for the same bucket, and an

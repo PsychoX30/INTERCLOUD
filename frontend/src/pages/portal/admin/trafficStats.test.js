@@ -31,6 +31,19 @@ describe("trafficStats — LibreNMS-style semantics", () => {
     expect(stats.bucketSeconds).toBe(3600);
   });
 
+  test("fivemin total uses 300s buckets even when poll interval is 20s", () => {
+    const base = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      ts: base + i * 5 * 60 * 1000,
+      in: 10e6,
+      out: 5e6,
+    }));
+    const stats = trafficStats(rows, { resolution: "fivemin", intervalSec: 20 });
+    expect(stats.bucketSeconds).toBe(300);
+    expect(stats.totalInGB).toBeCloseTo((10e6 * 12 * 300) / 8 / 1e9, 5);
+    expect(stats.totalOutGB).toBeCloseTo((5e6 * 12 * 300) / 8 / 1e9, 5);
+  });
+
   test("split IN/OUT rows never collapse the step to their sub-second gap", () => {
     const base = Date.UTC(2026, 0, 1, 0, 0, 0);
     const rows = Array.from({ length: 10 }, (_, i) => [

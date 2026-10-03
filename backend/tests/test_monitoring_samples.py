@@ -51,7 +51,9 @@ async def test_hourly_range_consolidates_raw_when_rollup_is_missing():
         {"graph_id": "g", "at": start + timedelta(hours=1, minutes=5), "value": 50},
     ]
 
-    data, resolution = await get_graph_data(Db(raw=raw), "g", start, start + timedelta(hours=7))
+    data, resolution = await get_graph_data(
+        Db(raw=raw), "g", start, start + timedelta(hours=7), resolution="hourly"
+    )
 
     assert resolution == "hourly"
     assert [(row["at"], row["value"], row["min"], row["max"]) for row in data] == [
@@ -69,7 +71,9 @@ async def test_raw_consolidation_replaces_same_hour_rollup_without_duplicate_buc
         {"graph_id": "g", "at": start + timedelta(minutes=20), "value": 30.0},
     ]
 
-    data, _ = await get_graph_data(Db(raw=raw, hourly=hourly), "g", start, start + timedelta(hours=7))
+    data, _ = await get_graph_data(
+        Db(raw=raw, hourly=hourly), "g", start, start + timedelta(hours=7), resolution="hourly"
+    )
 
     assert len(data) == 1
     assert data[0]["at"] == start
@@ -190,10 +194,43 @@ def test_resolve_tier_maps_presets_to_expected_buckets():
     from portal.monitoring_samples import _resolve_tier
 
     assert _resolve_tier(timedelta(hours=1)) == "raw"
-    assert _resolve_tier(timedelta(hours=24)) == "hourly"
+    assert _resolve_tier(timedelta(hours=24)) == "fivemin"
+    assert _resolve_tier(timedelta(days=2)) == "fivemin"
     assert _resolve_tier(timedelta(days=7)) == "halfhour"
     assert _resolve_tier(timedelta(days=30)) == "halfhour"
     assert _resolve_tier(timedelta(days=365)) == "daily"
+
+
+def test_bucket_start_fivemin_truncates_to_five_minute_slot():
+    from portal.monitoring_samples import _bucket_start
+
+    dt = datetime(2026, 1, 1, 10, 7, 42, 500, tzinfo=UTC)
+    assert _bucket_start(dt, "fivemin") == datetime(2026, 1, 1, 10, 5, tzinfo=UTC)
+    dt2 = datetime(2026, 1, 1, 10, 0, 1, tzinfo=UTC)
+    assert _bucket_start(dt2, "fivemin") == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+
+
+@pytest.mark.anyio
+async def test_day_range_consolidates_raw_into_five_minute_buckets():
+    """A 1D window renders at 5-minute resolution from raw (LibreNMS-like),
+    not the coarse 1-hour tier. Peaks must survive via per-bucket max."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    raw = [
+        {"graph_id": "g", "at": start + timedelta(minutes=1), "value": 10.0},
+        {"graph_id": "g", "at": start + timedelta(minutes=3), "value": 30.0},
+        {"graph_id": "g", "at": start + timedelta(minutes=6), "value": 50.0},
+        {"graph_id": "g", "at": start + timedelta(minutes=9), "value": 70.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(raw=raw), "g", start, start + timedelta(hours=24)
+    )
+
+    assert resolution == "fivemin"
+    assert [(row["at"], row["value"], row["min"], row["max"]) for row in data] == [
+        (start, 20.0, 10.0, 30.0),
+        (start + timedelta(minutes=5), 60.0, 50.0, 70.0),
+    ]
 
 
 @pytest.mark.anyio
@@ -318,7 +355,8 @@ async def test_partially_filled_hourly_archive_still_fills_recent_hours_from_hal
     ]
 
     data, resolution = await get_graph_data(
-        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2)
+        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2),
+        resolution="hourly",
     )
 
     by_at = {row["at"]: row for row in data}
@@ -414,7 +452,8 @@ async def test_halfhour_does_not_overwrite_stored_hourly_rollup_extremes():
     ]
 
     data, resolution = await get_graph_data(
-        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2)
+        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2),
+        resolution="hourly",
     )
 
     assert resolution == "hourly"
@@ -442,7 +481,8 @@ async def test_halfhour_still_fills_hours_the_hourly_rollup_missing():
     ]
 
     data, _ = await get_graph_data(
-        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2)
+        Db(hourly=hourly, halfhour=halfhour), "g", start, start + timedelta(days=2),
+        resolution="hourly",
     )
 
     by_at = {row["at"]: row for row in data}

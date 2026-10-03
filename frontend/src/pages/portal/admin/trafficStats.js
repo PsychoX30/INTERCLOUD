@@ -8,6 +8,7 @@
 //   IN/OUT rows, and mixed archive sources must not change a bucket's width.
 
 const RESOLUTION_SECONDS = {
+  fivemin: 5 * 60,
   halfhour: 30 * 60,
   hourly: 60 * 60,
   daily: 24 * 60 * 60,
@@ -15,6 +16,7 @@ const RESOLUTION_SECONDS = {
 
 const resolutionStep = (resolution, intervalSec) => {
   const name = String(resolution || "").toLowerCase();
+  if (name.startsWith("fivemin")) return RESOLUTION_SECONDS.fivemin;
   if (name.startsWith("halfhour")) return RESOLUTION_SECONDS.halfhour;
   if (name.startsWith("hourly")) return RESOLUTION_SECONDS.hourly;
   if (name.startsWith("daily")) return RESOLUTION_SECONDS.daily;
