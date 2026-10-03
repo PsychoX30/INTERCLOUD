@@ -834,6 +834,10 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       row[dir] = s.value;
       row[`${dir}Min`] = s.min ?? s.value;
       row[`${dir}Max`] = s.max ?? s.value;
+      // A fivemin response may contain a historical hourly fallback for one
+      // direction while the other still has raw 5-minute data. Keep the
+      // actual width per direction so Total Transfer never cross-charges it.
+      row[`${dir}Step`] = s.step;
       return row;
     };
     const primaryDir = primaryIsIn ? "in" : "out";
@@ -1034,8 +1038,8 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
           </table>
           {stats.peaksFromRollup && (
             <p className="mt-1 text-[10px] text-slate-400">
-              Maximum memakai envelope MAX per-bucket; 95th dihitung dari seri AVERAGE
-              seperti LibreNMS. Garis putus-putus = envelope MAX bucket.
+              Maximum dan 95th dihitung dari seri yang ditampilkan pada grafik
+              (IN/OUT AVERAGE per bucket). Tidak ada garis tambahan di chart.
             </p>
           )}
         </div>

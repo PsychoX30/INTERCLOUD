@@ -228,13 +228,18 @@ async def get_graph_data(
         raw_points = await _fetch_raw()
         if not raw_points:
             # Do not fabricate twelve 5-minute values from one hourly average.
-            # Return honest hourly points with an explicit resolved label.
+            # Return honest hourly points with an explicit resolved label and
+            # the true per-bucket step (3600s) so transfer volume is correct.
             hourly_points = await _fetch_hourly()
+            for p in hourly_points:
+                p["step"] = 3600
             return hourly_points, "hourly (fivemin fallback)"
         by_bucket_fivemin: dict[datetime, dict] = {}
         for point in _consolidate(await _fetch_hourly(), "fivemin"):
+            point["step"] = 3600  # hourly-derived 5-min slot = 3600s of history
             by_bucket_fivemin[point["at"]] = point
         for point in _consolidate(raw_points, "fivemin"):
+            point["step"] = 300  # raw-derived 5-min slot = 300s of history
             by_bucket_fivemin[point["at"]] = point
         return [by_bucket_fivemin[key] for key in sorted(by_bucket_fivemin)], resolution
 

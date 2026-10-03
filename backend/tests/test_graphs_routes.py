@@ -327,6 +327,7 @@ async def test_graph_data_admin_can_access_any(db):
     routes.get_graph_data = AsyncMock(return_value=([], "raw"))
     out = await routes.graph_data(
         gid, from_="2026-01-01T00:00:00Z", to="2026-01-02T00:00:00Z",
+        resolution="auto",
         staff={"role": "admin"},
     )
     assert out["graph_id"] == gid
@@ -375,6 +376,25 @@ async def test_graph_data_rejects_from_after_to(db):
             staff={"role": "admin"},
         )
     assert exc.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_graph_data_rejects_unknown_resolution(db):
+    gid = str(ObjectId())
+    db.monitoring_graphs.rows = [{
+        "_id": ObjectId(gid), "name": "G", "target": "8.8.8.8",
+        "visible_roles": ["admin", "support"],
+    }]
+    with pytest.raises(HTTPException) as exc:
+        await routes.graph_data(
+            gid,
+            from_="2026-01-01T00:00:00Z",
+            to="2026-01-02T00:00:00Z",
+            resolution="garbage",
+            staff={"role": "admin"},
+        )
+    assert exc.value.status_code == 400
+    assert "Invalid resolution" in str(exc.value.detail)
 
 
 # ---------------------------------------------------------------------------

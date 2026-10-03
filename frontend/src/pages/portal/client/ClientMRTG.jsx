@@ -141,7 +141,15 @@ const ClientMRTG = () => {
             <div className="flex items-center gap-2 mb-4">
               <Activity className="h-4 w-4 text-[#f5b120]" />
               <div className="font-extrabold text-[#0a2350]">
-                Traffic ({unit || "value"}) — {data.resolution === "raw" ? "high-res samples" : data.resolution === "hourly" ? "hourly avg" : "daily avg"}
+                Traffic ({unit || "value"}) — {(() => {
+                  const r = String(data.resolution || "").toLowerCase();
+                  if (r === "raw") return "high-res samples";
+                  if (r === "fivemin" || r.startsWith("fivemin")) return "5-min avg";
+                  if (r === "hourly" || r.startsWith("hourly")) return "hourly avg";
+                  if (r === "halfhour" || r.startsWith("halfhour")) return "30-min avg";
+                  if (r === "daily" || r.startsWith("daily")) return "daily avg";
+                  return "avg";
+                })()}
               </div>
             </div>
             <div className="h-96">

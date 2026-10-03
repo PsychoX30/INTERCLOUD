@@ -443,6 +443,19 @@ async def delete_graph(graph_id: str, admin=Depends(get_current_admin)):
 # ---------------------------------------------------------------------------
 # Admin graph data endpoint (read)
 # ---------------------------------------------------------------------------
+_ALLOWED_GRAPH_RESOLUTIONS = {"auto", "raw", "fivemin", "halfhour", "hourly", "daily"}
+
+
+def _validate_graph_resolution(resolution: str) -> str:
+    value = str(resolution or "auto").strip().lower()
+    if value not in _ALLOWED_GRAPH_RESOLUTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid resolution; expected auto, raw, fivemin, halfhour, hourly, or daily",
+        )
+    return value
+
+
 @router.get("/admin/monitoring/graphs/{graph_id}/data")
 async def graph_data(
     graph_id: str,
@@ -470,6 +483,7 @@ async def graph_data(
     if from_dt >= to_dt:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
 
+    resolution = _validate_graph_resolution(resolution)
     data, resolved_resolution = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
     return {"graph_id": graph_id, "resolution": resolved_resolution, "data": data}
 
@@ -529,6 +543,7 @@ async def export_graph(
         raise HTTPException(status_code=400, detail="Invalid date format (use ISO 8601)")
     if from_dt >= to_dt:
         raise HTTPException(status_code=400, detail="'from' must be before 'to'")
+    resolution = _validate_graph_resolution(resolution)
     rows, _ = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
     if pair_id:
         pair_rows, _ = await get_graph_data(db, pair_id, from_dt, to_dt, resolution=resolution)
@@ -591,6 +606,7 @@ async def client_graph_data(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format (use ISO 8601)")
 
+    resolution = _validate_graph_resolution(resolution)
     data, resolved_resolution = await get_graph_data(db, graph_id, from_dt, to_dt, resolution=resolution)
     return {"graph_id": graph_id, "resolution": resolved_resolution, "data": data}
 

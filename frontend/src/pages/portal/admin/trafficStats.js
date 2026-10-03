@@ -45,8 +45,15 @@ export function trafficStats(merged, options = {}) {
 
   // A rollup timestamp is the bucket start. Clamp boundary buckets to the
   // requested range. Raw points use the configured poll interval because they
-  // are observations, not calendar-aligned rollup buckets.
-  const rowSeconds = (row) => {
+  // are observations, not calendar-aligned rollup buckets. Each row may carry
+  // an explicit `step` (seconds) from the server — used when a fivemin view
+  // blends raw-derived (300s) and hourly-derived (3600s) buckets so transfer
+  // volume is integrated with the TRUE per-bucket width, never a global guess.
+  const rowSeconds = (row, dir) => {
+    const explicitStep = row?.[`${dir}Step`] ?? row?.step;
+    if (Number.isFinite(Number(explicitStep)) && Number(explicitStep) > 0) {
+      return Number(explicitStep);
+    }
     if (String(resolution || "").toLowerCase().startsWith("raw")) return stepSec;
     const start = Number(row?.ts);
     if (!Number.isFinite(start)) return stepSec;
@@ -63,7 +70,7 @@ export function trafficStats(merged, options = {}) {
     merged.forEach((row) => {
       const value = Number(row?.[dir]);
       if (!Number.isFinite(value)) return;
-      bitSeconds += value * rowSeconds(row);
+      bitSeconds += value * rowSeconds(row, dir);
       count += 1;
     });
     return count ? bitSeconds / 8 / 1e9 : null;

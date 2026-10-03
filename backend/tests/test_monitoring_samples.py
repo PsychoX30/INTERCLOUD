@@ -303,6 +303,42 @@ async def test_fivemin_raw_wins_over_hourly_for_same_bucket():
 
 
 @pytest.mark.anyio
+async def test_fivemin_partial_raw_carries_per_bucket_step():
+    """Regression for P1: when raw is present for some buckets but hourly
+    fills the gaps, each returned row must carry its TRUE per-bucket step so
+    the frontend integrates transfer volume correctly. A raw-derived row is
+    300s; an hourly-derived row is 3600s. Labeling everything 'fivemin' (300s)
+    made the hourly rows undercount transfer ~12x."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    # Raw covers only the first 5-minute bucket (00:00-00:05).
+    raw = [
+        {"graph_id": "g", "at": start + timedelta(minutes=1), "value": 50.0},
+        {"graph_id": "g", "at": start + timedelta(minutes=2), "value": 70.0},
+    ]
+    # Hourly covers two later hours (those buckets have no raw).
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(hours=1), "avg": 100.0, "min": 90.0, "max": 110.0},
+        {"graph_id": "g", "hour": start + timedelta(hours=2), "avg": 200.0, "min": 180.0, "max": 220.0},
+    ]
+    data, resolution = await get_graph_data(
+        Db(raw=raw, hourly=hourly), "g", start, start + timedelta(hours=24)
+    )
+    assert resolution == "fivemin"
+    # Row for the raw bucket: step 300s.
+    raw_row = data[0]
+    assert raw_row["at"] == start
+    assert raw_row["value"] == 60.0  # (50+70)/2
+    assert raw_row["step"] == 300
+    # Rows for the hourly buckets: step 3600s, not 300.
+    h1 = next(r for r in data if r["at"] == start + timedelta(hours=1))
+    h2 = next(r for r in data if r["at"] == start + timedelta(hours=2))
+    assert h1["step"] == 3600
+    assert h2["step"] == 3600
+    # Sanity: the two hourly buckets must NOT be 12 fake 5-minute rows.
+    assert len([r for r in data if r["step"] == 3600]) == 2
+
+
+@pytest.mark.anyio
 async def test_month_range_uses_halfhour_rollup_when_present():
     """A 1M window reads the 30-minute archive directly (1440 pts, not 30)."""
     start = datetime(2026, 1, 1, tzinfo=UTC)

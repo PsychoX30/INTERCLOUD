@@ -24,6 +24,27 @@ describe("trafficStats — LibreNMS-style semantics", () => {
     expect(stats.maxOut).toBeCloseTo(50e6, -3);
   });
 
+  test("fivemin mixed rows use per-row step for transfer, not global step", () => {
+    const base = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const rows = [
+      { ts: base, in: 60e6, inStep: 300, out: 30e6, outStep: 300 },   // both raw-derived
+      { ts: base + 3600 * 1000, in: 100e6, inStep: 3600, out: 50e6, outStep: 3600 },  // both hourly-derived
+      { ts: base + 7200 * 1000, in: 200e6, inStep: 3600, out: 100e6, outStep: 3600 },
+      // Mixed case: IN from hourly fallback, OUT still raw
+      { ts: base + 10800 * 1000, in: 150e6, inStep: 3600, out: 75e6, outStep: 300 },
+    ];
+    const stats = trafficStats(rows, { resolution: "fivemin", intervalSec: 300 });
+    // IN total: 60*300 + 100*3600 + 200*3600 + 150*3600 = 18000 + 360000 + 720000 + 540000 = 1638000
+    const expectedInBitSec = 60e6 * 300 + 100e6 * 3600 + 200e6 * 3600 + 150e6 * 3600;
+    expect(stats.totalInGB).toBeCloseTo(expectedInBitSec / 8 / 1e9, 8);
+    // OUT total: 30*300 + 50*3600 + 100*3600 + 75*300 = 9000 + 180000 + 360000 + 22500 = 571500
+    const expectedOutBitSec = 30e6 * 300 + 50e6 * 3600 + 100e6 * 3600 + 75e6 * 300;
+    expect(stats.totalOutGB).toBeCloseTo(expectedOutBitSec / 8 / 1e9, 8);
+    // Verify we are NOT using global 300s for all rows
+    const wrongIn = (60e6 + 100e6 + 200e6 + 150e6) * 300 / 8 / 1e9;
+    expect(stats.totalInGB).not.toBeCloseTo(wrongIn, 5);
+  });
+
   test("hourly total uses server resolution, not configured poll interval", () => {
     const stats = trafficStats(buildHourlyWithRamp(), hourlyOptions);
     expect(stats.totalInGB).toBeCloseTo((10e6 * 24 * 3600) / 8 / 1e9, 5);
