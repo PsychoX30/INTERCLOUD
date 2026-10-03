@@ -115,9 +115,10 @@ class _Collection:
                 if k == "q":  # regex search on name/employee
                     continue  # handled at cursor level
                 if isinstance(v, dict):
-                    # simple equality for test
                     if k == "$regex":
                         match = str(r.get(k, "")).lower().find(v.get("$regex", "").lower()) >= 0
+                    elif "$in" in v:
+                        match = r.get(k) in v["$in"]
                     else:
                         match = False
                     break
@@ -135,6 +136,7 @@ class _Db:
         self.salaries = _Collection([])
         self.sales_fees = _Collection([])
         self.users = _Collection([])
+        self.services = _Collection([])
 
     def __getitem__(self, name):
         return getattr(self, name)
@@ -380,6 +382,66 @@ async def test_sales_fee_multi_invoice_items(db, admin):
     assert isinstance(res, list)
 
 
+@pytest.mark.anyio
+async def test_sales_fee_rejects_same_invoice_period_and_salesperson(db, admin):
+    """The same invoice may not be commissioned twice for one sales/month."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    db.sales_fees.rows = [_sf(
+        0,
+        date=today,
+        period_yyyy_mm=today[:7],
+        sales_person_id="sales123",
+        items=[{"description": "Existing", "amount": 5000,
+                "invoice_id": "inv-1", "invoice_number": "INV-001"}],
+    )]
+    payload = {
+        "date": today,
+        "sales_person_id": "sales123",
+        "sales_person": "Sales Test",
+        "items": [{"description": "Duplicate", "amount": 10000,
+                   "invoice_id": "inv-1", "invoice_number": " inv-001 "}],
+    }
+
+    with pytest.raises(finance_routes.HTTPException) as exc:
+        await finance_routes._sf_create(payload=payload, admin=admin)
+
+    assert exc.value.status_code == 409
+    assert "INV-001" in exc.value.detail
+    assert len(db.sales_fees.rows) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "date,sales_person_id,invoice_number",
+    [
+        ("2099-11-01", "sales123", "INV-001"),  # different period
+        ("2099-12-01", "sales999", "INV-001"),  # different salesperson
+        ("2099-12-01", "sales123", "INV-002"),  # different invoice
+    ],
+)
+async def test_sales_fee_allows_when_any_dedupe_dimension_differs(
+    db, admin, date, sales_person_id, invoice_number,
+):
+    db.sales_fees.rows = [_sf(
+        0,
+        date="2099-12-01",
+        period_yyyy_mm="2099-12",
+        sales_person_id="sales123",
+        items=[{"description": "Existing", "amount": 5000,
+                "invoice_id": "inv-1", "invoice_number": "INV-001"}],
+    )]
+    created = await finance_routes._sf_create(payload={
+        "date": date,
+        "sales_person_id": sales_person_id,
+        "sales_person": "Sales Test",
+        "items": [{"description": "Allowed", "amount": 10000,
+                   "invoice_id": "inv-new", "invoice_number": invoice_number}],
+    }, admin=admin)
+
+    assert created["amount"] == 10000
+    assert len(db.sales_fees.rows) == 2
+
+
 # -------------------- ROUTE SIGNATURE (FastAPI contract) TESTS --------------------
 
 def _ledger_openapi_query_params(path):
@@ -451,11 +513,26 @@ async def test_salary_slip_includes_division_position(db, admin):
 
 @pytest.mark.anyio
 async def test_sales_fee_slip_shows_invoice_per_item(db, admin):
-    db.sales_fees.rows = [_sf(0)]
+    customer_id = ObjectId()
+    service_id = ObjectId()
+    db.users = _Collection([{"_id": customer_id, "name": "Pelanggan Nusantara"}])
+    db.services = _Collection([{"_id": service_id, "name": "Dedicated Internet 100 Mbps"}])
+    db.sales_fees.rows = [_sf(0, items=[
+        {"description": "Fee A", "amount": 50000, "invoice_id": "invA",
+         "invoice_number": "INV-A", "customer_id": str(customer_id),
+         "service_id": str(service_id)},
+        {"description": "Fee B", "amount": 50000, "invoice_id": "invB",
+         "invoice_number": "INV-B", "customer_id": str(customer_id),
+         "service_id": str(service_id)},
+    ])]
     slip = await finance_routes.render_sales_fee_slip(str(db.sales_fees.rows[0]["_id"]), format="html", admin=admin)
     body = slip.body.decode()
     assert "INV-A" in body
     assert "INV-B" in body
+    assert "Pelanggan Nusantara" in body
+    assert "Dedicated Internet 100 Mbps" in body
+    assert str(customer_id) not in body
+    assert str(service_id) not in body
 
 
 # -------------------- HTTP regression tests (real FastAPI routing) --------------------

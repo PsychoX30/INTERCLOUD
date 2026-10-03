@@ -930,6 +930,42 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
     if items:
         amount = sum(it["amount"] for it in items)
 
+    sales_person_id = str(payload["sales_person_id"]) if payload.get("sales_person_id") else ""
+
+    # Dedupe guard: the same invoice may not be commissioned twice for the
+    # same salesperson in the same period. Any differing dimension (invoice,
+    # period, or salesperson) is allowed.
+    new_invoice_numbers = {
+        str(it.get("invoice_number") or "").strip().upper()
+        for it in items
+        if str(it.get("invoice_number") or "").strip()
+    }
+    if not new_invoice_numbers and str(payload.get("invoice_number") or "").strip():
+        new_invoice_numbers = {str(payload["invoice_number"]).strip().upper()}
+
+    if sales_person_id and new_invoice_numbers:
+        existing = await db.sales_fees.find({"sales_person_id": sales_person_id}).to_list(5000)
+        for e in existing:
+            e_period = e.get("period_yyyy_mm") or (e.get("date") or "")[:7]
+            if e_period != period:
+                continue
+            e_invoice_numbers = {
+                str(it.get("invoice_number") or "").strip().upper()
+                for it in (e.get("items") or [])
+                if str(it.get("invoice_number") or "").strip()
+            }
+            if not e_invoice_numbers and str(e.get("invoice_number") or "").strip():
+                e_invoice_numbers = {str(e["invoice_number"]).strip().upper()}
+            dup = new_invoice_numbers & e_invoice_numbers
+            if dup:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Invoice {', '.join(sorted(dup))} sudah memiliki fee sales untuk "
+                        f"sales person ini pada periode {period}."
+                    ),
+                )
+
     doc = {"date": date_str, "amount": amount,
            "notes": payload.get("notes", ""), "period_yyyy_mm": period,
            "created_at": _now()}
@@ -938,8 +974,8 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
 
     for k in ("sales_person", "invoice_number"):
         doc[k] = payload.get(k, "")
-    if payload.get("sales_person_id"):
-        doc["sales_person_id"] = str(payload["sales_person_id"])
+    if sales_person_id:
+        doc["sales_person_id"] = sales_person_id
 
     r = await db.sales_fees.insert_one(doc)
     doc["_id"] = r.inserted_id
@@ -1133,12 +1169,37 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
     issued = datetime.now(timezone.utc).date().isoformat()
     items = d.get("items") or []
     if items:
+        # Resolve customer and service names from DB so the slip shows
+        # human-readable labels instead of raw ObjectId strings.
+        customer_ids = []
+        service_ids = []
+        for it in items:
+            try:
+                if it.get("customer_id"):
+                    customer_ids.append(ObjectId(it["customer_id"]))
+            except Exception:
+                pass
+            try:
+                if it.get("service_id"):
+                    service_ids.append(ObjectId(it["service_id"]))
+            except Exception:
+                pass
+
+        customer_map: dict = {}
+        service_map: dict = {}
+        if customer_ids:
+            for u in await db.users.find({"_id": {"$in": customer_ids}}).to_list(500):
+                customer_map[str(u["_id"])] = u.get("name") or u.get("email") or str(u["_id"])
+        if service_ids:
+            for s in await db.services.find({"_id": {"$in": service_ids}}).to_list(500):
+                service_map[str(s["_id"])] = s.get("name") or str(s["_id"])
+
         item_rows = "".join(
             f'<tr>'
             f'<td>{it.get("description") or "-"}</td>'
             f'<td>{it.get("invoice_number") or "-"}</td>'
-            f'<td>{it.get("customer_id") or "-"}</td>'
-            f'<td>{it.get("service_id") or "-"}</td>'
+            f'<td>{customer_map.get(str(it.get("customer_id") or ""), it.get("customer_id") or "-")}</td>'
+            f'<td>{service_map.get(str(it.get("service_id") or ""), it.get("service_id") or "-")}</td>'
             f'<td style="text-align:right">{_fmt_amount(it.get("amount"))}</td>'
             f'</tr>'
             for it in items)
