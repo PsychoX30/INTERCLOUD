@@ -127,11 +127,15 @@ describe("AdminMonitoring preset range wiring", () => {
     expect(source).not.toMatch(/new Date\(s\.at\)\.toLocaleTimeString\(\)/);
   });
 
-  it("includes the dashed MAX envelope in the visible Y-axis domain", () => {
+  it("keeps MAX values for Y-axis scaling but does not render extra MAX lines", () => {
     const start = source.indexOf("const visibleVals = merged.flatMap");
     const end = source.indexOf("];", start);
     const body = source.slice(start, end);
     expect(body).toContain("row.inMax");
     expect(body).toContain("row.outMax");
+    expect(source).toContain('dataKey="in" name="IN"');
+    expect(source).toContain('dataKey="out" name="OUT"');
+    expect(source).not.toContain('dataKey="inMax" name="IN max"');
+    expect(source).not.toContain('dataKey="outMax" name="OUT max"');
   });
 });

@@ -881,9 +881,10 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       // Toggle IN / OUT / BOTH by hiding series; Y-axis scales to whatever is shown.
       const showIn = trafficView !== "out";
       const showOut = trafficView !== "in";
-      // Include the dashed MAX-envelope values so the Y axis scales to the real
-      // peak. Otherwise the envelope line (e.g. 649 Mbps) is clipped above a
-      // Y axis sized only to the AVERAGE area (e.g. 398 Mbps).
+      // Scale the Y axis to the real per-bucket peak (MAX envelope) so the
+      // Average areas are not clipped, but DO NOT draw the envelope as a
+      // separate line — LibreNMS shows only the two Average series. Keep MAX
+      // in the stats table via trafficStats peakOf(inVals, inExtremes).
       const visibleVals = merged.flatMap(row => [
         showIn ? row.in : null,
         showOut ? row.out : null,
@@ -912,16 +913,6 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
               )}
               {showOut && (
                 <Area type="monotone" dataKey="out" name="OUT" stroke="#f5b120" strokeWidth={2} fill="rgba(245,177,32,0.18)" fillOpacity={1} dot={false} connectNulls={false} isAnimationActive={false} />
-              )}
-              {/* Envelope: per-bucket maximum from the server rollup, drawn as a
-                  thin dashed line above the average area. At raw resolution the
-                  envelope equals the line itself (min/max are the sample), so
-                  this doubles every point — harmless, but skip it there. */}
-              {showIn && merged.some(d => d.inMax != null && d.inMax !== d.in) && (
-                <Line type="monotone" dataKey="inMax" name="IN max" stroke="#16a34a" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls={false} isAnimationActive={false} />
-              )}
-              {showOut && merged.some(d => d.outMax != null && d.outMax !== d.out) && (
-                <Line type="monotone" dataKey="outMax" name="OUT max" stroke="#f5b120" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls={false} isAnimationActive={false} />
               )}
             </AreaChart>
           </ResponsiveContainer>
