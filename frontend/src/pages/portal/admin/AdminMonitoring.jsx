@@ -42,7 +42,17 @@ const fmtBps = (v) => {
   return `${sign}${abs.toFixed(i > 0 ? 2 : 0)} ${units[i]}`;
 };
 
-// Generic value formatter for non-traffic metrics (CPU %, memory, ms, etc.)
+// Detailed variant: always 2 decimals regardless of scale, for Y-axis ticks
+// where the operator wants to see small rises/falls (LibreNMS-like detail).
+const fmtBpsDetailed = (v) => {
+  if (v == null || isNaN(v)) return "-";
+  const units = ["bps", "kbps", "Mbps", "Gbps", "Tbps"];
+  const sign = v < 0 ? "-" : "";
+  let abs = Math.abs(v);
+  let i = 0;
+  while (abs >= 1000 && i < units.length - 1) { abs /= 1000; i++; }
+  return `${sign}${abs.toFixed(2)} ${units[i]}`;
+};
 const fmtValue = (v, unit) => {
   if (v == null || isNaN(v)) return "-";
   const u = (unit || "").toLowerCase();
@@ -118,10 +128,15 @@ const pairHealth = (row) => {
 };
 
 // Recharts Y-axis tick formatter: compact form without unit suffix repetition.
-const yTickFormatter = (unit) => (v) => {
+// When `detailed` is true (traffic charts), always show 2 decimals so the
+// operator can see small rises/falls — mirroring LibreNMS Y-axis granularity.
+const yTickFormatter = (unit, detailed) => (v) => {
   if (v == null || Number.isNaN(v)) return "";
   const u = (unit || "").toLowerCase();
-  if (u === "bps") return fmtBps(v);
+  if (u === "bps") {
+    if (detailed) return fmtBpsDetailed(v);
+    return fmtBps(v);
+  }
   if (u === "%") return `${Math.round(Number(v))}%`;
   if (u === "ms") return `${Math.round(Number(v))}`;
   return Number(v).toFixed(0);
@@ -896,7 +911,7 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
             <AreaChart data={merged}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
-              <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} width={70} tick={{ fontSize: 10 }} />
+              <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps", true)} width={80} tickCount={8} tick={{ fontSize: 10 }} />
               <Tooltip formatter={tooltipFormatter("bps")} labelFormatter={xTickFormatter} />
               {showIn && (
                 <Area type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} fill="rgba(22,163,74,0.18)" fillOpacity={1} dot={false} connectNulls={false} isAnimationActive={false} />
