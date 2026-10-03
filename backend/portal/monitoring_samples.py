@@ -115,11 +115,22 @@ def _consolidate(samples: list[dict], tier: str) -> list[dict]:
         vals = buckets[bucket_start]
         if not vals:
             continue
+        avg = sum(vals) / len(vals)
+        if tier == "fivemin":
+            # LibreNMS 5-minute RRA stores one AVERAGE point per step; MAX
+            # of that RRA is the peak of those 300s points, not a 20s spike.
+            result.append({
+                "at": bucket_start,
+                "value": avg,
+                "min": avg,
+                "max": avg,
+            })
+            continue
         mins = bucket_mins.get(bucket_start) or vals
         maxs = bucket_maxs.get(bucket_start) or vals
         result.append({
             "at": bucket_start,
-            "value": sum(vals) / len(vals),
+            "value": avg,
             "min": min(mins),
             "max": max(maxs),
         })

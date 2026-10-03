@@ -127,15 +127,30 @@ describe("AdminMonitoring preset range wiring", () => {
     expect(source).not.toMatch(/new Date\(s\.at\)\.toLocaleTimeString\(\)/);
   });
 
-  it("keeps MAX values for Y-axis scaling but does not render extra MAX lines", () => {
+  it("scales to the two plotted averages without hidden MAX lines", () => {
     const start = source.indexOf("const visibleVals = merged.flatMap");
     const end = source.indexOf("];", start);
     const body = source.slice(start, end);
-    expect(body).toContain("row.inMax");
-    expect(body).toContain("row.outMax");
+    // Y-axis scales to exactly the plotted series; no hidden inMax/outMax
+    // envelope inflating the domain. MAX for the table comes from trafficStats.
+    expect(body).toContain("row.in");
+    expect(body).toContain("row.out");
+    expect(body).not.toContain("row.inMax");
+    expect(body).not.toContain("row.outMax");
     expect(source).toContain('dataKey="in" name="IN"');
     expect(source).toContain('dataKey="out" name="OUT"');
     expect(source).not.toContain('dataKey="inMax" name="IN max"');
     expect(source).not.toContain('dataKey="outMax" name="OUT max"');
+  });
+
+  // User decision: chart shows only two lines — no 95th ReferenceLine on chart.
+  // Values remain in the stats table; chart is clean IN + OUT only.
+  it("does not render 95th percentile ReferenceLines on the chart", () => {
+    const chartBlock = source.slice(
+      source.indexOf("<AreaChart data={merged}>"),
+      source.indexOf("</AreaChart>"),
+    );
+    expect(chartBlock).not.toContain("<ReferenceLine");
+    expect(chartBlock).not.toContain("percentile");
   });
 });

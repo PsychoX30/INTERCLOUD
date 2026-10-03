@@ -881,19 +881,15 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
       // Toggle IN / OUT / BOTH by hiding series; Y-axis scales to whatever is shown.
       const showIn = trafficView !== "out";
       const showOut = trafficView !== "in";
-      // Scale the Y axis to the real per-bucket peak (MAX envelope) so the
-      // Average areas are not clipped, but DO NOT draw the envelope as a
-      // separate line — LibreNMS shows only the two Average series. Keep MAX
-      // in the stats table via trafficStats peakOf(inVals, inExtremes).
+      // Chart is exactly two series: IN and OUT averages. Y-axis follows the
+      // plotted lines (LibreNMS-like). 95th stays in the stats table only.
+      // fivemin MAX equals the bucket average, so the table Maximum matches
+      // the peak of these two lines for 1D.
       const visibleVals = merged.flatMap(row => [
         showIn ? row.in : null,
         showOut ? row.out : null,
-        showIn ? row.inMax : null,
-        showOut ? row.outMax : null,
       ]);
       const yDomain = yDomainForValues(visibleVals);
-      const p95In = stats?.percentile95In;
-      const p95Out = stats?.percentile95Out;
       return merged.length ? (
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
@@ -902,12 +898,6 @@ const GraphDataPanel = ({ graphData, pairData, graphs, from, to, onClose }) => {
               <XAxis dataKey={xDataKey} type="number" scale="time" domain={xDomain} tickFormatter={xTickFormatter} minTickGap={24} interval="preserveStartEnd" tickCount={8} tick={{ fontSize: 10 }} />
               <YAxis domain={yDomain} allowDataOverflow tickFormatter={yTickFormatter("bps")} width={70} tick={{ fontSize: 10 }} />
               <Tooltip formatter={tooltipFormatter("bps")} labelFormatter={xTickFormatter} />
-              {showIn && p95In != null && (
-                <ReferenceLine y={p95In} stroke="#16a34a" strokeDasharray="4 4" strokeWidth={1} label={{ value: `95th IN ${fmtBps(p95In)}`, position: "insideTopRight", fontSize: 10, fill: "#16a34a" }} />
-              )}
-              {showOut && p95Out != null && (
-                <ReferenceLine y={p95Out} stroke="#f5b120" strokeDasharray="4 4" strokeWidth={1} label={{ value: `95th OUT ${fmtBps(p95Out)}`, position: "insideBottomRight", fontSize: 10, fill: "#b45309" }} />
-              )}
               {showIn && (
                 <Area type="monotone" dataKey="in" name="IN" stroke="#16a34a" strokeWidth={2} fill="rgba(22,163,74,0.18)" fillOpacity={1} dot={false} connectNulls={false} isAnimationActive={false} />
               )}

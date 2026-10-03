@@ -213,7 +213,7 @@ def test_bucket_start_fivemin_truncates_to_five_minute_slot():
 @pytest.mark.anyio
 async def test_day_range_consolidates_raw_into_five_minute_buckets():
     """A 1D window renders at 5-minute resolution from raw (LibreNMS-like),
-    not the coarse 1-hour tier. Peaks must survive via per-bucket max."""
+    not the coarse 1-hour tier."""
     start = datetime(2026, 1, 1, tzinfo=UTC)
     raw = [
         {"graph_id": "g", "at": start + timedelta(minutes=1), "value": 10.0},
@@ -227,10 +227,37 @@ async def test_day_range_consolidates_raw_into_five_minute_buckets():
     )
 
     assert resolution == "fivemin"
-    assert [(row["at"], row["value"], row["min"], row["max"]) for row in data] == [
-        (start, 20.0, 10.0, 30.0),
-        (start + timedelta(minutes=5), 60.0, 50.0, 70.0),
+    assert [(row["at"], row["value"]) for row in data] == [
+        (start, 20.0),
+        (start + timedelta(minutes=5), 60.0),
     ]
+
+
+@pytest.mark.anyio
+async def test_fivemin_peak_matches_bucket_average_not_raw_spike():
+    """LibreNMS parity: its finest data point is the 300s RRA step, so MAX
+    never sees a sub-5-minute spike. Our fivemin tier must therefore report
+    the bucket average as both avg and max — a 20s outlier inside the bucket
+    must NOT become the reported Maximum. (User decision: MAX from the
+    5-minute bucket, not from raw 20s samples.)"""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    raw = [
+        {"graph_id": "g", "at": start + timedelta(seconds=20), "value": 10.0},
+        {"graph_id": "g", "at": start + timedelta(seconds=40), "value": 20.0},
+        # a 20-second spike that LibreNMS would never observe
+        {"graph_id": "g", "at": start + timedelta(minutes=1), "value": 900.0},
+        {"graph_id": "g", "at": start + timedelta(minutes=2), "value": 30.0},
+    ]
+
+    data, resolution = await get_graph_data(
+        Db(raw=raw), "g", start, start + timedelta(hours=24)
+    )
+
+    assert resolution == "fivemin"
+    row = data[0]
+    assert row["value"] == 240.0          # (10+20+900+30)/4
+    assert row["max"] == 240.0, "MAX must be the 5-minute bucket, not the 20s spike"
+    assert row["min"] == 240.0, "MIN must match the same 5-minute data point"
 
 
 @pytest.mark.anyio
