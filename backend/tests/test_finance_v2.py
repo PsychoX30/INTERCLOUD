@@ -38,6 +38,9 @@ def _db():
                  "invoices", "assets", "expenses", "reports", "cashflow",
                  "credit_notes", "ledger", "finalized_reports", "settings"):
         setattr(d, coll, MagicMock())
+    # sales_fees dedupe guard calls .find({}).to_list(5000); give it an
+    # async to_list so create/delete tests stay green.
+    d.sales_fees.find.return_value = _async_cursor([])
     d.__getitem__.side_effect = lambda k: getattr(d, k)
     return d
 

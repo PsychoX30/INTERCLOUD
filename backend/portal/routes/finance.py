@@ -931,32 +931,62 @@ async def _sf_create(payload: dict, admin=Depends(get_current_admin)):
         amount = sum(it["amount"] for it in items)
 
     sales_person_id = str(payload["sales_person_id"]) if payload.get("sales_person_id") else ""
+    sales_person_name = str(payload.get("sales_person") or "").strip().casefold()
+
+    def _invoice_numbers(entry: dict) -> set:
+        nums = {
+            str(it.get("invoice_number") or "").strip().upper()
+            for it in (entry.get("items") or [])
+            if str(it.get("invoice_number") or "").strip()
+        }
+        if not nums and str(entry.get("invoice_number") or "").strip():
+            nums = {str(entry["invoice_number"]).strip().upper()}
+        return nums
+
+    def _same_salesperson(entry: dict) -> bool:
+        """Legacy rows may lack sales_person_id, so fall back to the name.
+
+        Match when the ids are equal, or when one side has no id but the
+        names match (prevents legacy rows from bypassing the guard).
+        """
+        e_id = str(entry.get("sales_person_id") or "")
+        if sales_person_id:
+            if e_id:
+                return e_id == sales_person_id
+            return bool(sales_person_name) and str(entry.get("sales_person") or "").strip().casefold() == sales_person_name
+        e_name = str(entry.get("sales_person") or "").strip().casefold()
+        return bool(sales_person_name) and e_name == sales_person_name
 
     # Dedupe guard: the same invoice may not be commissioned twice for the
     # same salesperson in the same period. Any differing dimension (invoice,
     # period, or salesperson) is allowed.
-    new_invoice_numbers = {
+    new_invoice_numbers = _invoice_numbers({"items": items, "invoice_number": payload.get("invoice_number")})
+    item_invoice_numbers = [
         str(it.get("invoice_number") or "").strip().upper()
         for it in items
         if str(it.get("invoice_number") or "").strip()
-    }
-    if not new_invoice_numbers and str(payload.get("invoice_number") or "").strip():
-        new_invoice_numbers = {str(payload["invoice_number"]).strip().upper()}
+    ]
+    duplicate_in_request = sorted({n for n in item_invoice_numbers if item_invoice_numbers.count(n) > 1})
+    if duplicate_in_request:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Invoice {', '.join(duplicate_in_request)} muncul lebih dari sekali "
+                f"untuk sales person ini pada periode {period}."
+            ),
+        )
 
-    if sales_person_id and new_invoice_numbers:
-        existing = await db.sales_fees.find({"sales_person_id": sales_person_id}).to_list(5000)
+    if new_invoice_numbers:
+        # Fetch all sales_fees and filter in Python so legacy rows that lack
+        # sales_person_id are not excluded by the Mongo query.
+        existing = await db.sales_fees.find({}).to_list(5000)
         for e in existing:
             e_period = e.get("period_yyyy_mm") or (e.get("date") or "")[:7]
             if e_period != period:
                 continue
-            e_invoice_numbers = {
-                str(it.get("invoice_number") or "").strip().upper()
-                for it in (e.get("items") or [])
-                if str(it.get("invoice_number") or "").strip()
-            }
-            if not e_invoice_numbers and str(e.get("invoice_number") or "").strip():
-                e_invoice_numbers = {str(e["invoice_number"]).strip().upper()}
-            dup = new_invoice_numbers & e_invoice_numbers
+            if not _same_salesperson(e):
+                continue
+            dup = new_invoice_numbers & _invoice_numbers(e)
             if dup:
                 raise HTTPException(
                     status_code=409,

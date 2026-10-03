@@ -411,6 +411,79 @@ async def test_sales_fee_rejects_same_invoice_period_and_salesperson(db, admin):
 
 
 @pytest.mark.anyio
+async def test_sales_fee_rejects_duplicate_invoice_within_one_request(db, admin):
+    today = datetime.now(timezone.utc).date().isoformat()
+    with pytest.raises(finance_routes.HTTPException) as exc:
+        await finance_routes._sf_create(payload={
+            "date": today,
+            "sales_person_id": "sales123",
+            "sales_person": "Sales Test",
+            "items": [
+                {"description": "A", "amount": 5000, "invoice_number": "INV-001"},
+                {"description": "B", "amount": 7000, "invoice_number": " inv-001 "},
+            ],
+        }, admin=admin)
+    assert exc.value.status_code == 409
+    assert "INV-001" in exc.value.detail
+    assert db.sales_fees.rows == []
+
+
+@pytest.mark.anyio
+async def test_sales_fee_rejects_duplicate_against_legacy_row_without_sales_id(db, admin):
+    """Legacy rows lacking sales_person_id must still block a duplicate (name fallback)."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    db.sales_fees.rows = [{
+        "_id": ObjectId(),
+        "date": today,
+        "period_yyyy_mm": today[:7],
+        "sales_person": "Sales Test",
+        "sales_person_id": None,
+        "invoice_number": "INV-001",
+        "amount": 5000,
+        "items": [],
+    }]
+
+    with pytest.raises(finance_routes.HTTPException) as exc:
+        await finance_routes._sf_create(payload={
+            "date": today,
+            "sales_person_id": "sales123",
+            "sales_person": "Sales Test",
+            "items": [{"description": "Duplicate", "amount": 10000,
+                       "invoice_id": "inv-1", "invoice_number": "INV-001"}],
+        }, admin=admin)
+
+    assert exc.value.status_code == 409
+    assert len(db.sales_fees.rows) == 1
+
+
+@pytest.mark.anyio
+async def test_sales_fee_allows_same_invoice_for_different_salesperson_name(db, admin):
+    """A different salesperson may commission the same invoice in the same month."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    db.sales_fees.rows = [{
+        "_id": ObjectId(),
+        "date": today,
+        "period_yyyy_mm": today[:7],
+        "sales_person": "Sales Lain",
+        "sales_person_id": None,
+        "invoice_number": "INV-001",
+        "amount": 5000,
+        "items": [],
+    }]
+
+    created = await finance_routes._sf_create(payload={
+        "date": today,
+        "sales_person_id": "sales123",
+        "sales_person": "Sales Test",
+        "items": [{"description": "Allowed", "amount": 10000,
+                   "invoice_id": "inv-1", "invoice_number": "INV-001"}],
+    }, admin=admin)
+
+    assert created["amount"] == 10000
+    assert len(db.sales_fees.rows) == 2
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "date,sales_person_id,invoice_number",
     [

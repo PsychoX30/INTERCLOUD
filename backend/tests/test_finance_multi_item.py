@@ -17,6 +17,11 @@ def _coll():
     c.delete_one = AsyncMock()
     c.update_one = AsyncMock()
     c.find = MagicMock()
+    # finance handlers now call .find({}).to_list(5000) for the dedupe guard;
+    # give the mock a real async to_list so non-dedupe tests stay green.
+    cur = MagicMock()
+    cur.to_list = AsyncMock(return_value=[])
+    c.find.return_value = cur
     return c
 
 
