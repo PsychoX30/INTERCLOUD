@@ -261,6 +261,48 @@ async def test_fivemin_peak_matches_bucket_average_not_raw_spike():
 
 
 @pytest.mark.anyio
+async def test_fivemin_falls_back_to_hourly_when_raw_expired():
+    """Raw TTL is 7 days. A historical 1D/2D window whose raw has expired must
+    still render via the hourly archive (TTL 90 days) consolidated down to
+    5-minute slots, not return an empty series. (Regression: fivemin path
+    previously returned [] for any window >7 days old.)"""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    hourly = [
+        {"graph_id": "g", "hour": start + timedelta(hours=10), "avg": 100.0, "min": 90.0, "max": 110.0},
+        {"graph_id": "g", "hour": start + timedelta(hours=11), "avg": 200.0, "min": 180.0, "max": 220.0},
+    ]
+    # No raw (expired). Request a 1-day window.
+    data, resolution = await get_graph_data(
+        Db(hourly=hourly), "g", start, start + timedelta(hours=24)
+    )
+    assert resolution == "hourly (fivemin fallback)"
+    assert len(data) == 2  # never invent 12 five-minute values from one hour
+    assert data[0]["at"] == start + timedelta(hours=10)
+    assert data[0]["value"] == 100.0
+    assert data[1]["at"] == start + timedelta(hours=11)
+    assert data[1]["value"] == 200.0
+
+
+@pytest.mark.anyio
+async def test_fivemin_raw_wins_over_hourly_for_same_bucket():
+    """When raw IS available (within TTL), it outranks hourly for the same
+    5-minute bucket — raw holds the true 20s samples."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    hourly = [
+        {"graph_id": "g", "hour": start, "avg": 999.0, "min": 998.0, "max": 1000.0},
+    ]
+    raw = [
+        {"graph_id": "g", "at": start + timedelta(minutes=2), "value": 50.0},
+        {"graph_id": "g", "at": start + timedelta(minutes=3), "value": 70.0},
+    ]
+    data, _ = await get_graph_data(
+        Db(raw=raw, hourly=hourly), "g", start, start + timedelta(hours=24)
+    )
+    # raw bucket 00:00-00:05 value = 60.0, hourly avg = 999.0 -> raw wins
+    assert data[0]["value"] == 60.0, "raw must win over hourly for the same bucket"
+
+
+@pytest.mark.anyio
 async def test_month_range_uses_halfhour_rollup_when_present():
     """A 1M window reads the 30-minute archive directly (1440 pts, not 30)."""
     start = datetime(2026, 1, 1, tzinfo=UTC)

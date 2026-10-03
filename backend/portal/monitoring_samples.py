@@ -220,12 +220,21 @@ async def get_graph_data(
         return await _fetch_raw(), resolution
 
     if resolution == "fivemin":
-        # No dedicated stored rollup for 5-minute buckets: raw TTL (7d) always
-        # covers the <=2d window this tier serves, so on-the-fly
-        # consolidation from raw is both sufficient and simplest — exactly
-        # the same math _consolidate() already uses for every other tier.
+        # 5-minute view is the LibreNMS-parity daily detail. Raw TTL (7d)
+        # covers current windows, but historical 1D/2D windows need the hourly
+        # archive (TTL 90d) consolidated down to 5-minute slots. Raw wins over
+        # hourly for the same bucket, exactly the same "finer wins" rule the
+        # other tiers use.
+        raw_points = await _fetch_raw()
+        if not raw_points:
+            # Do not fabricate twelve 5-minute values from one hourly average.
+            # Return honest hourly points with an explicit resolved label.
+            hourly_points = await _fetch_hourly()
+            return hourly_points, "hourly (fivemin fallback)"
         by_bucket_fivemin: dict[datetime, dict] = {}
-        for point in _consolidate(await _fetch_raw(), "fivemin"):
+        for point in _consolidate(await _fetch_hourly(), "fivemin"):
+            by_bucket_fivemin[point["at"]] = point
+        for point in _consolidate(raw_points, "fivemin"):
             by_bucket_fivemin[point["at"]] = point
         return [by_bucket_fivemin[key] for key in sorted(by_bucket_fivemin)], resolution
 
