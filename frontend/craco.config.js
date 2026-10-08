@@ -107,6 +107,22 @@ let webpackConfig = {
   },
 };
 
+// react-router-dom@7.15.0 ships "main": "./dist/main.js" but only provides
+// dist/index.js — a packaging bug. Jest 27 resolves through "main" and fails;
+// webpack resolves through "module"/"exports" so the app builds fine.
+// Map the bare specifiers to the real entry files for Jest only.
+webpackConfig.jest = {
+  configure: (jestConfig) => {
+    jestConfig.moduleNameMapper = {
+      ...(jestConfig.moduleNameMapper || {}),
+      "^react-router-dom$": "<rootDir>/node_modules/react-router-dom/dist/index.js",
+      "^react-router/dom$": "<rootDir>/node_modules/react-router/dist/development/dom-export.js",
+      "^react-router$": "<rootDir>/node_modules/react-router/dist/development/index.js",
+    };
+    return jestConfig;
+  },
+};
+
 webpackConfig.devServer = (devServerConfig) => {
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {

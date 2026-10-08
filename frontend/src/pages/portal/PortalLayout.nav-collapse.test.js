@@ -8,10 +8,11 @@ import path from "path";
 // a real toggle per group, an accessible expanded state, auto-reveal of the
 // group owning the current route, and persistence so the choice survives nav.
 //
-// Note: this repo has no @testing-library/react, so — like
-// AdminMonitoring.range-wiring.test.js — these are source-level guards. They
-// prove the wiring exists; they do not replace a browser smoke test.
-describe("PortalLayout admin nav folding", () => {
+// Note: this file now has BOTH a behavior companion test that clicks a real DOM
+// (PortalLayout.nav-collapse.behavior.test.jsx, jsdom + RTL) AND these
+// source-level guards. The guards pin the wiring; the behavior test proves the
+// click path end-to-end. The behavior test is the authoritative gate.
+describe("PortalLayout admin nav folding (source guards)", () => {
   const source = fs.readFileSync(path.join(__dirname, "PortalLayout.jsx"), "utf8");
 
   const navRender = source.slice(
@@ -81,9 +82,11 @@ describe("PortalLayout admin nav folding", () => {
     );
     expect(activeBlock).toContain("location.pathname");
     expect(activeBlock).toContain("path.startsWith(`${it.to}/`)");
-    // Direct URL entry must not strand the user in a folded group.
-    expect(activeBlock).toContain("if (next[label]) {");
-    expect(activeBlock).toContain("next[label] = false;");
+    // Direct URL entry must not strand the user in a folded group. The effect
+    // now expands only when the active group *identity* changes; same-group nav
+    // keeps the user's deliberate folded state.
+    expect(activeBlock).toContain("lastExpandedRef.current === label");
+    expect(activeBlock).toContain('setCollapsedGroups((prev) => (prev[label] ? { ...prev, [label]: false } : prev))');
   });
 
   it("persists folded groups across navigation and reload", () => {
@@ -99,7 +102,11 @@ describe("PortalLayout admin nav folding", () => {
       source.indexOf("const toggleGroup = useCallback"),
       source.indexOf("const returnToAdmin = () =>"),
     );
-    expect(toggleBlock).toContain("setCollapsedGroups((prev) => ({ ...prev, [label]: !prev[label] }))");
+    // F1: the inverted value must be the EFFECTIVE collapsed state (what the UI
+    // renders), not the raw stored value — otherwise the first click on a
+    // default-folded group is a no-op.
+    expect(toggleBlock).toContain("const current = prev[label] ?? !activeGroupLabels.includes(label);");
+    expect(toggleBlock).toContain("return { ...prev, [label]: !current };");
   });
 
   it("leaves the client sidebar unfaceted", () => {

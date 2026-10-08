@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { NavLink, Outlet, Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, ServerCog, Receipt, LifeBuoy, ShoppingCart, Activity,
@@ -197,30 +197,41 @@ const PortalLayout = ({ variant = "client" }) => {
     window.localStorage.setItem(STORAGE_KEY_ADMIN_NAV_COLLAPSED, JSON.stringify(collapsedGroups));
   }, [isAdmin, collapsedGroups]);
 
+  // Auto-reveal the group that owns the current route, but ONLY when the active
+  // group itself changes — not on every pathname change within the same group.
+  // Deliberate folding of the CURRENT group is left alone while the user stays
+  // inside it. Only when the user navigates INTO a different active group do we
+  // write `false` for that group, because the page being viewed must stay
+  // visible — that one deliberate exception is the documented trade-off, not a
+  // silent rewrite of an untouched preference.
+  const lastExpandedRef = useRef(null);
+
   useEffect(() => {
     if (!isAdmin || activeGroupLabels.length === 0) return;
-    setCollapsedGroups((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      activeGroupLabels.forEach((label) => {
-        if (next[label]) {
-          next[label] = false;
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
+    const label = activeGroupLabels[0];
+    if (lastExpandedRef.current === label) return; // same group: keep user's choice
+    lastExpandedRef.current = label;
+    setCollapsedGroups((prev) => (prev[label] ? { ...prev, [label]: false } : prev));
   }, [isAdmin, activeGroupLabels]);
 
+  // F1 FIX: toggle must invert the EFFECTIVE collapsed state, i.e. the same
+  // value the UI renders (`stored ?? defaultForThisGroup`). Reading the raw
+  // stored value was wrong for default-folded groups whose stored value is
+  // `undefined`: the first click wrote `!undefined === true` and the group
+  // stayed folded. That no-op first click was the primary interaction of this
+  // whole feature — this test-driven fix keeps raw and rendered state in sync.
   const toggleGroup = useCallback((label) => {
-    setCollapsedGroups((prev) => ({ ...prev, [label]: !prev[label] }));
-  }, []);
+    setCollapsedGroups((prev) => {
+      const current = prev[label] ?? !activeGroupLabels.includes(label);
+      return { ...prev, [label]: !current };
+    });
+  }, [activeGroupLabels]);
 
   // Default state is FOLDED: the sidebar has ~9 groups / ~40 links, which was the
   // reported problem. A label absent from collapsedGroups follows the default —
   // folded unless it owns the current route, so the page you are on stays
-  // visible. Only explicit user toggles are stored, so navigation never silently
-  // rewrites a deliberate choice.
+  // visible. Only explicit user toggles are persisted; the one navigation-driven
+  // exception (entering a NEW active group) is documented on the effect above.
   const isGroupCollapsed = useCallback(
     (label) => collapsedGroups[label] ?? !activeGroupLabels.includes(label),
     [collapsedGroups, activeGroupLabels],
