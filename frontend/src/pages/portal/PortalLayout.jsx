@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from "react";
-import { NavLink, Outlet, Link } from "react-router-dom";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { NavLink, Outlet, Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, ServerCog, Receipt, LifeBuoy, ShoppingCart, Activity,
   Users, Package, FileText, Wallet, Plug, HardDrive, Network, TerminalSquare,
-  Send, Puzzle, Cloud, Menu, X, ChevronDown, LogOut, ExternalLink,
+  Send, Puzzle, Cloud, Menu, X, ChevronDown, ChevronRight, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
   History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
@@ -147,11 +147,86 @@ const NavItem = ({ item, onClick }) => {
   );
 };
 
+const STORAGE_KEY_ADMIN_NAV_COLLAPSED = "ic_admin_nav_collapsed_groups";
+
 const PortalLayout = ({ variant = "client" }) => {
   const { user, logout } = useAuth();
+  const location = useLocation();
   const [open, setOpen] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState({});
   const isAdmin = variant === "admin";
   const impersonating = typeof window !== "undefined" && localStorage.getItem("ic_admin_return");
+
+  const visibleAdminGroups = useMemo(() => {
+    if (!isAdmin) return [];
+    return ADMIN_NAV_GROUPS.map((grp) => {
+      const items = grp.items.filter((it) => {
+        if (it.roles && !it.roles.includes(user?.role)) return false;
+        if (Array.isArray(user?.menu_keys) && user.menu_keys.length > 0) {
+          return user.menu_keys.includes(it.key);
+        }
+        return true;
+      });
+      return { ...grp, items };
+    }).filter((grp) => grp.items.length > 0);
+  }, [isAdmin, user?.role, user?.menu_keys]);
+
+  const activeGroupLabels = useMemo(() => {
+    if (!isAdmin) return [];
+    const path = location.pathname || "";
+    return visibleAdminGroups
+      .filter((grp) => grp.items.some((it) => path === it.to || path.startsWith(`${it.to}/`)))
+      .map((grp) => grp.label);
+  }, [isAdmin, location.pathname, visibleAdminGroups]);
+
+  useEffect(() => {
+    if (!isAdmin || typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY_ADMIN_NAV_COLLAPSED);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === "object") {
+        setCollapsedGroups(parsed);
+      }
+    } catch {
+      // ignore malformed localStorage
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEY_ADMIN_NAV_COLLAPSED, JSON.stringify(collapsedGroups));
+  }, [isAdmin, collapsedGroups]);
+
+  useEffect(() => {
+    if (!isAdmin || activeGroupLabels.length === 0) return;
+    setCollapsedGroups((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      activeGroupLabels.forEach((label) => {
+        if (next[label]) {
+          next[label] = false;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [isAdmin, activeGroupLabels]);
+
+  const toggleGroup = useCallback((label) => {
+    setCollapsedGroups((prev) => ({ ...prev, [label]: !prev[label] }));
+  }, []);
+
+  // Default state is FOLDED: the sidebar has ~9 groups / ~40 links, which was the
+  // reported problem. A label absent from collapsedGroups follows the default —
+  // folded unless it owns the current route, so the page you are on stays
+  // visible. Only explicit user toggles are stored, so navigation never silently
+  // rewrites a deliberate choice.
+  const isGroupCollapsed = useCallback(
+    (label) => collapsedGroups[label] ?? !activeGroupLabels.includes(label),
+    [collapsedGroups, activeGroupLabels],
+  );
+
+  const groupSlug = (label) => label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
   const returnToAdmin = () => {
     const t = localStorage.getItem("ic_admin_return");
@@ -197,24 +272,28 @@ const PortalLayout = ({ variant = "client" }) => {
 
         <nav className="flex-1 overflow-y-auto no-scrollbar px-3 py-4 space-y-1">
           {isAdmin ? (
-            ADMIN_NAV_GROUPS.map((grp) => {
-              const items = grp.items.filter((it) => {
-                if (it.roles && !it.roles.includes(user?.role)) return false;
-                // Fine-grained override: if user.menu_keys is set, restrict to that list.
-                if (Array.isArray(user?.menu_keys) && user.menu_keys.length > 0) {
-                  return user.menu_keys.includes(it.key);
-                }
-                return true;
-              });
-              if (items.length === 0) return null;
+            visibleAdminGroups.map((grp) => {
+              const isCollapsed = isGroupCollapsed(grp.label);
               return (
                 <div key={grp.label} className="mt-4 first:mt-0">
-                  <div className="px-3 text-[10px] uppercase tracking-widest text-white/40 font-bold mb-1.5">
-                    {grp.label}
-                  </div>
-                  {items.map((it) => (
-                    <NavItem key={it.to} item={it} onClick={() => setOpen(false)} />
-                  ))}
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(grp.label)}
+                    className="w-full px-3 py-1.5 rounded-md flex items-center justify-between text-[10px] uppercase tracking-widest text-white/50 font-bold hover:bg-white/10 hover:text-white/80 transition-colors"
+                    data-testid={`nav-group-toggle-${groupSlug(grp.label)}`}
+                    aria-expanded={!isCollapsed}
+                    aria-controls={`nav-group-${groupSlug(grp.label)}`}
+                  >
+                    <span>{grp.label}</span>
+                    {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  </button>
+                  {!isCollapsed && (
+                    <div id={`nav-group-${groupSlug(grp.label)}`}>
+                      {grp.items.map((it) => (
+                        <NavItem key={it.to} item={it} onClick={() => setOpen(false)} />
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })
