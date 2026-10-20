@@ -191,7 +191,12 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
               term.write(data);
             };
             ws.onerror = () => { if (!cancelled) { setState("error"); setErr("Koneksi serial terputus."); } };
-            ws.onclose = () => { if (!cancelled && state !== "connected") { setState("disconnected"); } };
+            ws.onclose = () => {
+              // Functional update: `state` from the enclosing render is stale
+              // inside this handler (it was captured at "connecting").
+              if (cancelled) return;
+              setState((prev) => (prev === "connected" ? "disconnected" : prev));
+            };
 
             // Key input → pve-xtermjs frame "0:LEN:MSG"
             term.onData((input) => {

@@ -160,6 +160,11 @@ async def client_service_auto_renew(sid: str, payload: dict, user=Depends(get_cu
 # ---------------- Client self-service VM control ----------------
 _CLIENT_VM_ACTIONS = ("start", "stop", "reboot", "shutdown", "reset")
 
+# Seconds to wait for Proxmox to answer the termproxy serial handshake
+# ("<pve_user>:<ticket>\n" -> "OK") before giving up and closing the browser
+# socket with 4502. Module-level so tests can shrink it.
+_SERIAL_HANDSHAKE_TIMEOUT = 10
+
 
 _VM_CATEGORIES = ("vps", "cloud", "dedicated")
 
@@ -385,7 +390,7 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
             if mode == "serial":
                 try:
                     await up.send(f"{pve_user}:{vncticket}\n".encode())
-                    reply = await asyncio.wait_for(up.recv(), timeout=10)
+                    reply = await asyncio.wait_for(up.recv(), timeout=_SERIAL_HANDSHAKE_TIMEOUT)
                     rb = reply if isinstance(reply, (bytes, bytearray)) else reply.encode()
                     if rb[:2] != b"OK":
                         logging.getLogger(__name__).warning(

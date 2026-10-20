@@ -11,6 +11,7 @@ These tests pin the fix:
   * an explicit console_type is always honoured
   * an invalid console_type is rejected
 """
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -217,3 +218,235 @@ async def test_invalid_console_type_rejected():
             await client_mod.client_vm_console_info("SID", console_type="telnet", user={"id": "UID", "email": "e@x"})
 
     assert ei.value.status_code == 400
+
+
+# ---------------------------------------------------------------- websocket relay handshake guards
+
+class _DummyUpstream:
+    def __init__(self, first_reply=b"OK", fail_recv=None, hang=False):
+        self.first_reply = first_reply
+        self.fail_recv = fail_recv
+        self.hang = hang
+        self.sent = []
+        self._recv_calls = 0
+
+    async def send(self, data):
+        self.sent.append(data)
+
+    async def recv(self):
+        self._recv_calls += 1
+        if self.hang:
+            # Never answers: exercises the real asyncio.wait_for timeout path.
+            await asyncio.sleep(3600)
+        if self.fail_recv:
+            raise self.fail_recv
+        return self.first_reply
+
+    def __aiter__(self):
+        async def _gen():
+            # Keep iterator alive long enough for _client_to_pve to finish first.
+            await asyncio.sleep(0.2)
+            if False:
+                yield b""
+        return _gen()
+
+
+class _DummyConnectCtx:
+    def __init__(self, upstream):
+        self.upstream = upstream
+
+    async def __aenter__(self):
+        return self.upstream
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _DummyWS:
+    def __init__(self, query_params, offered=("binary",), receive_messages=None):
+        self.query_params = query_params
+        self.scope = {"subprotocols": list(offered)}
+        self._receive_messages = list(receive_messages or [{"type": "websocket.disconnect"}])
+        self.accepted_subprotocol = None
+        self.closed_codes = []
+        self.sent_bytes = []
+
+    async def accept(self, subprotocol=None):
+        self.accepted_subprotocol = subprotocol
+
+    async def close(self, code=1000):
+        self.closed_codes.append(code)
+
+    async def receive(self):
+        if self._receive_messages:
+            return self._receive_messages.pop(0)
+        return {"type": "websocket.disconnect"}
+
+    async def send_bytes(self, data):
+        self.sent_bytes.append(data)
+
+
+@pytest.mark.asyncio
+async def test_console_ws_serial_handshake_ok_sends_user_ticket():
+    from portal.routes import client as client_mod
+
+    ws = _DummyWS({
+        "token": "tok", "port": "5901", "vncticket": "VT", "mode": "serial", "pve_user": "root@pam!IDI"
+    })
+    up = _DummyUpstream(first_reply=b"OK")
+    px = MagicMock(host="https://px.local", token_id=None, token_secret=None)
+
+    with patch.object(client_mod, "_get_db", AsyncMock(return_value=_db_for(_svc()))), \
+         patch.object(client_mod, "_proxmox_settings_for_service", AsyncMock(return_value={"host": "https://px.local"})), \
+         patch.object(client_mod, "_oid", lambda x: x), \
+         patch.object(client_mod, "ObjectId", lambda x: x), \
+         patch("portal.auth.decode_token", return_value={"sub": "UID"}), \
+         patch.object(client_mod.iv2, "ProxmoxClient", return_value=px), \
+         patch("websockets.connect", return_value=_DummyConnectCtx(up)):
+        await client_mod.client_vm_console_ws(ws, "SID")
+
+    assert ws.accepted_subprotocol == "binary"
+    assert up.sent[0] == b"root@pam!IDI:VT\n"
+    assert 4502 not in ws.closed_codes
+
+
+@pytest.mark.asyncio
+async def test_console_ws_serial_handshake_non_ok_closes_4502():
+    from portal.routes import client as client_mod
+
+    ws = _DummyWS({
+        "token": "tok", "port": "5901", "vncticket": "VT", "mode": "serial", "pve_user": "root@pam!IDI"
+    })
+    up = _DummyUpstream(first_reply=b"NO")
+    px = MagicMock(host="https://px.local", token_id=None, token_secret=None)
+
+    with patch.object(client_mod, "_get_db", AsyncMock(return_value=_db_for(_svc()))), \
+         patch.object(client_mod, "_proxmox_settings_for_service", AsyncMock(return_value={"host": "https://px.local"})), \
+         patch.object(client_mod, "_oid", lambda x: x), \
+         patch.object(client_mod, "ObjectId", lambda x: x), \
+         patch("portal.auth.decode_token", return_value={"sub": "UID"}), \
+         patch.object(client_mod.iv2, "ProxmoxClient", return_value=px), \
+         patch("websockets.connect", return_value=_DummyConnectCtx(up)):
+        await client_mod.client_vm_console_ws(ws, "SID")
+
+    assert up.sent[0] == b"root@pam!IDI:VT\n"
+    assert 4502 in ws.closed_codes
+
+
+@pytest.mark.asyncio
+async def test_console_ws_serial_handshake_timeout_closes_4502():
+    from portal.routes import client as client_mod
+
+    ws = _DummyWS({
+        "token": "tok", "port": "5901", "vncticket": "VT", "mode": "serial", "pve_user": "root@pam!IDI"
+    })
+    up = _DummyUpstream(fail_recv=asyncio.TimeoutError())
+    px = MagicMock(host="https://px.local", token_id=None, token_secret=None)
+
+    with patch.object(client_mod, "_get_db", AsyncMock(return_value=_db_for(_svc()))), \
+         patch.object(client_mod, "_proxmox_settings_for_service", AsyncMock(return_value={"host": "https://px.local"})), \
+         patch.object(client_mod, "_oid", lambda x: x), \
+         patch.object(client_mod, "ObjectId", lambda x: x), \
+         patch("portal.auth.decode_token", return_value={"sub": "UID"}), \
+         patch.object(client_mod.iv2, "ProxmoxClient", return_value=px), \
+         patch("websockets.connect", return_value=_DummyConnectCtx(up)):
+        await client_mod.client_vm_console_ws(ws, "SID")
+
+    assert up.sent[0] == b"root@pam!IDI:VT\n"
+    assert 4502 in ws.closed_codes
+
+
+@pytest.mark.asyncio
+async def test_console_ws_serial_missing_pve_user_closes_4400():
+    from portal.routes import client as client_mod
+
+    ws = _DummyWS({
+        "token": "tok", "port": "5901", "vncticket": "VT", "mode": "serial"
+    })
+    px = MagicMock(host="https://px.local", token_id=None, token_secret=None)
+
+    with patch.object(client_mod, "_get_db", AsyncMock(return_value=_db_for(_svc()))), \
+         patch.object(client_mod, "_proxmox_settings_for_service", AsyncMock(return_value={"host": "https://px.local"})), \
+         patch.object(client_mod, "_oid", lambda x: x), \
+         patch.object(client_mod, "ObjectId", lambda x: x), \
+         patch("portal.auth.decode_token", return_value={"sub": "UID"}), \
+         patch.object(client_mod.iv2, "ProxmoxClient", return_value=px), \
+         patch("websockets.connect") as ws_connect:
+        await client_mod.client_vm_console_ws(ws, "SID")
+
+    assert 4400 in ws.closed_codes
+    ws_connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_console_ws_serial_real_timeout_closes_4502():
+    """Upstream never answers the handshake -> asyncio.wait_for must fire and
+    the browser socket must be closed with 4502 (not hang forever)."""
+    from portal.routes import client as client_mod
+
+    ws = _DummyWS({
+        "token": "tok", "port": "5901", "vncticket": "VT", "mode": "serial", "pve_user": "root@pam!IDI"
+    })
+    up = _DummyUpstream(hang=True)
+    px = MagicMock(host="https://px.local", token_id=None, token_secret=None)
+
+    with patch.object(client_mod, "_SERIAL_HANDSHAKE_TIMEOUT", 0.05), \
+         patch.object(client_mod, "_get_db", AsyncMock(return_value=_db_for(_svc()))), \
+         patch.object(client_mod, "_proxmox_settings_for_service", AsyncMock(return_value={"host": "https://px.local"})), \
+         patch.object(client_mod, "_oid", lambda x: x), \
+         patch.object(client_mod, "ObjectId", lambda x: x), \
+         patch("portal.auth.decode_token", return_value={"sub": "UID"}), \
+         patch.object(client_mod.iv2, "ProxmoxClient", return_value=px), \
+         patch("websockets.connect", return_value=_DummyConnectCtx(up)):
+        await asyncio.wait_for(client_mod.client_vm_console_ws(ws, "SID"), timeout=5)
+
+    assert 4502 in ws.closed_codes
+
+
+@pytest.mark.asyncio
+async def test_console_ws_never_leaks_ticket_to_browser():
+    """The PVE ticket is a credential: the relay must only send it upstream,
+    never down to the browser socket."""
+    from portal.routes import client as client_mod
+
+    ws = _DummyWS({
+        "token": "tok", "port": "5901", "vncticket": "SECRET-TICKET", "mode": "serial", "pve_user": "root@pam!IDI"
+    })
+    up = _DummyUpstream(first_reply=b"OK")
+    px = MagicMock(host="https://px.local", token_id=None, token_secret=None)
+
+    with patch.object(client_mod, "_get_db", AsyncMock(return_value=_db_for(_svc()))), \
+         patch.object(client_mod, "_proxmox_settings_for_service", AsyncMock(return_value={"host": "https://px.local"})), \
+         patch.object(client_mod, "_oid", lambda x: x), \
+         patch.object(client_mod, "ObjectId", lambda x: x), \
+         patch("portal.auth.decode_token", return_value={"sub": "UID"}), \
+         patch.object(client_mod.iv2, "ProxmoxClient", return_value=px), \
+         patch("websockets.connect", return_value=_DummyConnectCtx(up)):
+        await client_mod.client_vm_console_ws(ws, "SID")
+
+    assert all(b"SECRET-TICKET" not in bytes(b) for b in ws.sent_bytes)
+    assert up.sent[0] == b"root@pam!IDI:SECRET-TICKET\n"
+
+
+@pytest.mark.asyncio
+async def test_console_ws_vnc_mode_skips_serial_handshake():
+    from portal.routes import client as client_mod
+
+    ws = _DummyWS({
+        "token": "tok", "port": "5900", "vncticket": "VT", "mode": "vnc"
+    })
+    up = _DummyUpstream(first_reply=b"OK")
+    px = MagicMock(host="https://px.local", token_id=None, token_secret=None)
+
+    with patch.object(client_mod, "_get_db", AsyncMock(return_value=_db_for(_svc()))), \
+         patch.object(client_mod, "_proxmox_settings_for_service", AsyncMock(return_value={"host": "https://px.local"})), \
+         patch.object(client_mod, "_oid", lambda x: x), \
+         patch.object(client_mod, "ObjectId", lambda x: x), \
+         patch("portal.auth.decode_token", return_value={"sub": "UID"}), \
+         patch.object(client_mod.iv2, "ProxmoxClient", return_value=px), \
+         patch("websockets.connect", return_value=_DummyConnectCtx(up)):
+        await client_mod.client_vm_console_ws(ws, "SID")
+
+    # No serial handshake in vnc mode.
+    assert up.sent == []
+    assert 4502 not in ws.closed_codes
