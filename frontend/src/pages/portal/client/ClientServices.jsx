@@ -108,8 +108,12 @@ const KS = {
 
 const VncConsoleModal = ({ serviceId, onClose }) => {
   const [RFB, setRFB] = useState(null);
-  const screenRef = useRef(null);
+  const screenRef = useRef(null);   // noVNC canvas mount
+  const termDivRef = useRef(null);  // xterm.js mount
   const rfbRef = useRef(null);
+  const wsRef = useRef(null);       // raw WS for serial
+  const xtermRef = useRef(null);    // xterm Terminal instance
+  const fitRef = useRef(null);      // xterm FitAddon instance
   const [state, setState] = useState("connecting");
   const [err, setErr] = useState("");
   const [info, setInfo] = useState(null);
@@ -121,52 +125,175 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
 
   useEffect(() => {
     let cancelled = false;
+
+    // Clean up any previous connection
+    try { rfbRef.current && rfbRef.current.disconnect(); } catch { /* noop */ }
+    if (wsRef.current && wsRef.current.readyState < 2) {
+      try { wsRef.current.close(); } catch { /* noop */ }
+    }
+    if (xtermRef.current) {
+      try { xtermRef.current.dispose(); } catch { /* noop */ }
+      xtermRef.current = null; fitRef.current = null;
+    }
+    rfbRef.current = null; wsRef.current = null;
+
     setState("connecting");
-    setErr("")
-    Promise.all([
-      api.get(`/client/services/${serviceId}/vm/console`, { params: { console_type: ctype } }),
-      import("@novnc/novnc").then((m) => m.default || m.RFB || m),
-    ])
-      .then(([{ data }, RFBMod]) => {
-        if (cancelled || !screenRef.current) return;
+    setErr("");
+
+    api.get(`/client/services/${serviceId}/vm/console`, { params: { console_type: ctype } })
+      .then(({ data }) => {
+        if (cancelled) return;
         setInfo(data);
-        setRFB(() => RFBMod);
         const base = (process.env.REACT_APP_BACKEND_URL || window.location.origin).replace(/^http/, "ws");
-        const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
-                    `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}`;
-        const rfb = new RFBMod(screenRef.current, url, {
-          credentials: { password: data.ticket },
-          wsProtocols: ["binary"],
-        });
-        rfb.scaleViewport = true;
-        rfb.resizeSession = false;
-        rfb.addEventListener("connect", () => setState("connected"));
-        rfb.addEventListener("disconnect", (e) => {
-          setState("disconnected");
-          if (!(e.detail && e.detail.clean)) setErr("Koneksi console terputus. Tutup dan buka kembali.");
-        });
-        rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: data.ticket }));
-        rfbRef.current = rfb;
+
+        if (data.console_type === "serial") {
+          // ── Serial path: xterm.js + raw WebSocket ─────────────────────────
+          // pve_user is needed by the relay for the termproxy handshake.
+          const pveUser = data.pve_user || "";
+          const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
+                      `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}` +
+                      `&mode=serial&pve_user=${encodeURIComponent(pveUser)}`;
+
+          // Lazy-load xterm (+ its CSS) to avoid bundling it unless serial is chosen
+          Promise.all([
+            import("@xterm/xterm").then((m) => m.Terminal || m.default),
+            import("@xterm/addon-fit").then((m) => m.FitAddon || m.default),
+            import("@xterm/xterm/css/xterm.css"),
+          ]).then(([Terminal, FitAddon]) => {
+            if (cancelled || !termDivRef.current) return;
+            const term = new Terminal({
+              cursorBlink: true,
+              fontFamily: "\"JetBrains Mono\", \"Fira Code\", Menlo, monospace",
+              fontSize: 13,
+              theme: { background: "#0b0f19", foreground: "#e2e8f0" },
+            });
+            const fit = new FitAddon();
+            term.loadAddon(fit);
+            term.open(termDivRef.current);
+            fit.fit();
+            xtermRef.current = term;
+            fitRef.current = fit;
+
+            const ws = new WebSocket(url, ["binary"]);
+            ws.binaryType = "arraybuffer";
+            wsRef.current = ws;
+
+            ws.onopen = () => {
+              if (cancelled) { ws.close(); return; }
+              // Send initial resize frame "1:COLS:ROWS:"
+              ws.send(`1:${term.cols}:${term.rows}:`);
+              setState("connected");
+            };
+            ws.onmessage = (ev) => {
+              if (cancelled) return;
+              const data = ev.data instanceof ArrayBuffer
+                ? new Uint8Array(ev.data) : ev.data;
+              term.write(data);
+            };
+            ws.onerror = () => { if (!cancelled) { setState("error"); setErr("Koneksi serial terputus."); } };
+            ws.onclose = () => { if (!cancelled && state !== "connected") { setState("disconnected"); } };
+
+            // Key input → pve-xtermjs frame "0:LEN:MSG"
+            term.onData((input) => {
+              if (ws.readyState === 1) {
+                const enc = new TextEncoder().encode(input);
+                const prefix = new TextEncoder().encode(`0:${enc.length}:`);
+                const frame = new Uint8Array(prefix.length + enc.length);
+                frame.set(prefix, 0); frame.set(enc, prefix.length);
+                ws.send(frame);
+              }
+            });
+
+            // Resize
+            const resizeObserver = new ResizeObserver(() => {
+              try { fit.fit(); ws.readyState === 1 && ws.send(`1:${term.cols}:${term.rows}:`); } catch { /* noop */ }
+            });
+            if (termDivRef.current) resizeObserver.observe(termDivRef.current);
+            term.onDispose && term.onDispose(() => resizeObserver.disconnect());
+          }).catch((e) => {
+            if (!cancelled) { setState("error"); setErr("Gagal memuat terminal serial."); }
+          });
+
+        } else {
+          // ── VNC path: noVNC / RFB ─────────────────────────────────────────
+          const url = `${base}${data.ws_path}?token=${encodeURIComponent(getToken() || "")}` +
+                      `&port=${encodeURIComponent(data.port)}&vncticket=${encodeURIComponent(data.ticket)}`;
+          import("@novnc/novnc").then((m) => {
+            const RFBMod = m.default || m.RFB || m;
+            if (cancelled || !screenRef.current) return;
+            setRFB(() => RFBMod);
+            const rfb = new RFBMod(screenRef.current, url, {
+              credentials: { password: data.ticket },
+              wsProtocols: ["binary"],
+            });
+            rfb.scaleViewport = true;
+            rfb.resizeSession = false;
+            rfb.addEventListener("connect", () => setState("connected"));
+            rfb.addEventListener("disconnect", (e) => {
+              setState("disconnected");
+              if (!(e.detail && e.detail.clean)) setErr("Koneksi console terputus. Tutup dan buka kembali.");
+            });
+            rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: data.ticket }));
+            rfbRef.current = rfb;
+          }).catch((e) => {
+            if (!cancelled) { setState("error"); setErr("Gagal memuat noVNC."); }
+          });
+        }
       })
       .catch((e) => {
-        setState("error");
-        setErr(e?.response?.data?.detail || "Gagal membuka console");
+        if (!cancelled) {
+          setState("error");
+          setErr(e?.response?.data?.detail || "Gagal membuka console");
+        }
       });
+
     return () => {
       cancelled = true;
       try { rfbRef.current && rfbRef.current.disconnect(); } catch { /* noop */ }
       rfbRef.current = null;
+      try { wsRef.current && wsRef.current.close(); } catch { /* noop */ }
+      wsRef.current = null;
+      try { xtermRef.current && xtermRef.current.dispose(); } catch { /* noop */ }
+      xtermRef.current = null; fitRef.current = null;
     };
   }, [serviceId, ctype]);
 
-  const sendKey = (keysym) => {
+  // Escape sequences for serial terminals (xterm path). VNC uses X11 keysyms.
+  const SERIAL_SEQ = {
+    Esc: "\x1b", Tab: "\t", Enter: "\r", Backspace: "\x7f", Delete: "\x1b[3~",
+    F1: "\x1bOP", F2: "\x1bOQ", F3: "\x1bOR", F4: "\x1bOS",
+    F5: "\x1b[15~", F6: "\x1b[17~", F7: "\x1b[18~", F8: "\x1b[19~",
+    F9: "\x1b[20~", F10: "\x1b[21~", F11: "\x1b[23~", F12: "\x1b[24~",
+  };
+
+  const sendSerial = (text) => {
+    const term = xtermRef.current;
+    const ws = wsRef.current;
+    if (!term || !ws || ws.readyState !== 1) return;
+    const enc = new TextEncoder().encode(text);
+    const prefix = new TextEncoder().encode(`0:${enc.length}:`);
+    const frame = new Uint8Array(prefix.length + enc.length);
+    frame.set(prefix, 0); frame.set(enc, prefix.length);
+    ws.send(frame);
+    term.focus && term.focus();
+  };
+
+  const sendKey = (keysym, label) => {
+    if (xtermRef.current) {
+      if (SERIAL_SEQ[label]) sendSerial(SERIAL_SEQ[label]);
+      return;
+    }
     const rfb = rfbRef.current;
     if (!rfb) return;
     try { rfb.sendKey(keysym, null, true); rfb.sendKey(keysym, null, false); } catch { /* noop */ }
     rfb.focus && rfb.focus();
   };
 
-  const sendCombo = (mods, keysym) => {
+  const sendCombo = (mods, keysym, seq) => {
+    if (xtermRef.current) {
+      if (seq) sendSerial(seq);
+      return;
+    }
     const rfb = rfbRef.current;
     if (!rfb) return;
     try {
@@ -180,20 +307,31 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
 
   const specialKeys = [
     { label: "Ctrl+Alt+Del", run: () => { try { rfbRef.current?.sendCtrlAltDel(); } catch { /* noop */ } } },
-    { label: "Esc", run: () => sendKey(KS.Esc) },
-    { label: "Tab", run: () => sendKey(KS.Tab) },
-    { label: "Enter", run: () => sendKey(KS.Enter) },
+    { label: "Esc", run: () => sendKey(KS.Esc, "Esc") },
+    { label: "Tab", run: () => sendKey(KS.Tab, "Tab") },
+    { label: "Enter", run: () => sendKey(KS.Enter, "Enter") },
     ...["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"].map((f) => ({
-      label: f, run: () => sendKey(KS[f]),
+      label: f, run: () => sendKey(KS[f], f),
     })),
-    { label: "Ctrl+Alt+F2 (TTY2)", run: () => sendCombo([KS.Ctrl, KS.Alt], KS.F2) },
+    { label: "Ctrl+Alt+F2 (TTY2)", run: () => sendCombo([KS.Ctrl, KS.Alt], KS.F2, "\x1b[12~") },
   ];
 
   // Paste-as-typing: kirim teks sebagai ketikan keyboard ke VM (clipboard 2 arah
   // butuh agent dalam VM, tidak diperlukan untuk kasus umum).
   const pasteToVm = async () => {
+    if (!pasteText) return;
+    // Serial: xterm sends raw text; no per-char key simulation needed.
+    if (xtermRef.current) {
+      setPasting(true);
+      try {
+        sendSerial(pasteText);
+        setMenu("");
+        setPasteText("");
+      } finally { setPasting(false); }
+      return;
+    }
     const rfb = rfbRef.current;
-    if (!rfb || !pasteText) return;
+    if (!rfb) return;
     setPasting(true);
     try {
       for (const ch of pasteText) {
@@ -318,7 +456,14 @@ const VncConsoleModal = ({ serviceId, onClose }) => {
           </div>
         </div>
         <div className="flex-1 relative min-h-0" onClick={() => menu && setMenu("")}>
-          <div ref={screenRef} className="absolute inset-0" />
+          {/* noVNC canvas — visible only for VNC sessions */}
+          <div ref={screenRef} className={`absolute inset-0${info?.console_type === "serial" ? " hidden" : ""}`} />
+          {/* xterm.js terminal — visible only for serial sessions */}
+          <div
+            ref={termDivRef}
+            data-testid="serial-terminal"
+            className={`absolute inset-0 overflow-hidden p-1${info?.console_type === "serial" ? "" : " hidden"}`}
+          />
           {state === "connecting" && (
             <div className="absolute inset-0 flex items-center justify-center text-white/70 text-sm">Menghubungkan ke console…</div>
           )}

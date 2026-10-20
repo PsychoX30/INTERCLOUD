@@ -302,18 +302,33 @@ async def client_vm_console_info(sid: str, console_type: str = "vnc", user=Depen
         "at": _now(), "action": f"console_opened_{ctype}", "by": user.get("email", "")}}})
     return {"ok": True, "node": cfg["node"], "vmid": int(cfg["vmid"]),
             "port": t.get("port"), "ticket": t.get("ticket"),
+            "pve_user": t.get("user") if ctype == "serial" else None,
             "console_type": ctype,
             "ws_path": f"/api/portal/client/services/{sid}/vm/console-ws"}
 
 
 @router.websocket("/client/services/{sid}/vm/console-ws")
 async def client_vm_console_ws(ws: WebSocket, sid: str):
-    """WS relay browser (noVNC) <-> Proxmox vncwebsocket. Klien tidak perlu
-    kredensial Proxmox - autentikasi via JWT portal + vncticket sekali pakai."""
+    """WS relay browser <-> Proxmox vncwebsocket.
+
+    Supports two protocols on the SAME endpoint (chosen via ?mode=):
+      mode=vnc    - transparent byte pipe (RFB/noVNC); default (back-compat).
+      mode=serial - termproxy handshake:
+        1. Send "<pve_user>:<ticket>\\n" to Proxmox, expect "OK".
+        2. Then pipe bytes PVE->browser raw (xterm renders VT100 directly).
+           Browser->PVE frames follow pve-xtermjs framing: "0:LEN:MSG",
+           "1:COLS:ROWS:", "2" (ping). The browser does the framing; relay
+           still just forwards bytes verbatim after handshake.
+
+    Klien tidak perlu kredensial Proxmox - autentikasi via JWT portal +
+    vncticket sekali pakai.
+    """
     from portal import auth as _auth
     token = ws.query_params.get("token", "")
     port = ws.query_params.get("port", "")
     vncticket = ws.query_params.get("vncticket", "")
+    mode = (ws.query_params.get("mode", "vnc") or "vnc").lower()
+    pve_user = ws.query_params.get("pve_user", "") or ws.query_params.get("user", "")
     try:
         payload = _auth.decode_token(token)
         uid = payload["sub"]
@@ -332,6 +347,10 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
             and cfg.get("node") and cfg.get("vmid") and s and port and vncticket):
         await ws.close(code=4403)
         return
+    if mode == "serial" and not pve_user:
+        # Serial handshake needs a username; refuse rather than silently stall.
+        await ws.close(code=4400)
+        return
     px = iv2.ProxmoxClient(s)
     scheme = "wss" if px.host.startswith("https") else "ws"
     hostpart = px.host.split("://", 1)[1]
@@ -347,9 +366,11 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
         ssl_ctx = _ssl.create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = _ssl.CERT_NONE
-    # Echo back the "binary" subprotocol only when the client (noVNC) offered it.
+    # Echo back the "binary" subprotocol only when the client offered it.
     # Forcing a subprotocol the client didn't request makes the browser reject
-    # the upgrade -> silent disconnect.
+    # the upgrade -> silent disconnect. Both noVNC and xterm.js over the
+    # Proxmox termproxy use the "binary" subprotocol, so this still works
+    # for serial mode.
     offered = ws.scope.get("subprotocols") or []
     accept_sub = "binary" if "binary" in offered else None
     await ws.accept(subprotocol=accept_sub)
@@ -357,6 +378,26 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
         async with _wsl.connect(upstream, additional_headers=headers, ssl=ssl_ctx,
                                 subprotocols=["binary"], max_size=None,
                                 open_timeout=15, ping_interval=20) as up:
+            # SERIAL HANDSHAKE: pve-xtermjs sends "user:ticket\n" and expects
+            # "OK" before any terminal data flows. Doing this server-side (not
+            # in the browser) keeps the raw ticket off the client, same as
+            # noVNC mode.
+            if mode == "serial":
+                try:
+                    await up.send(f"{pve_user}:{vncticket}\n".encode())
+                    reply = await asyncio.wait_for(up.recv(), timeout=10)
+                    rb = reply if isinstance(reply, (bytes, bytearray)) else reply.encode()
+                    if rb[:2] != b"OK":
+                        logging.getLogger(__name__).warning(
+                            "serial handshake rejected sid=%s reply=%r", sid, rb[:40])
+                        await ws.close(code=4502)
+                        return
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "serial handshake failed sid=%s", sid)
+                    await ws.close(code=4502)
+                    return
+
             async def _client_to_pve():
                 while True:
                     msg = await ws.receive()
@@ -377,7 +418,7 @@ async def client_vm_console_ws(ws: WebSocket, sid: str):
             for p in pending:
                 p.cancel()
     except Exception:
-        logging.getLogger(__name__).exception("noVNC relay error sid=%s", sid)
+        logging.getLogger(__name__).exception("console relay error sid=%s mode=%s", sid, mode)
     finally:
         try:
             await ws.close()

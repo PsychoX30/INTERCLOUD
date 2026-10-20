@@ -351,17 +351,31 @@ class ProxmoxClient:
     async def serial_ticket(self, node: str, vmid: int) -> dict:
         """Returns {ticket, port, cert} for serial termproxy.
 
-        Proxmox exposes serial consoles via the termproxy endpoint with
-        console=serial. The returned ticket is used with /vncwebsocket just
-        like a VNC ticket, but the stream is a serial terminal instead of a
-        graphical framebuffer.
+        Proxmox qemu termproxy schema (PVE::API2::Qemu) accepts only `node`,
+        `vmid`, and `serial` (optional, enum serial0..serial3). The older
+        `console=serial` parameter does NOT exist in this schema and Proxmox
+        rejects it with HTTP 400 "property is not defined in schema".
+
+        Verified live against Proxmox 8.x on node1/114 (vga=serial0,
+        serial0=socket):
+          console=serial -> 400 Parameter verification failed
+          empty          -> 200 (opens display/default, port 5900)
+          serial=serial0 -> 200 (opens serial terminal, port 5901)
+
+        Our VMs are provisioned with serial0=socket, so serial0 is always
+        the correct target.
         """
-        data = await self._post(f"/nodes/{node}/qemu/{vmid}/termproxy", {"console": "serial"})
-        # termproxy returns port and ticket; keep shape compatible with vnc_ticket
+        data = await self._post(f"/nodes/{node}/qemu/{vmid}/termproxy", {"serial": "serial0"})
+        # termproxy returns port, ticket, user, upid. We must preserve `user`
+        # because the vncwebsocket upgrade for termproxy requires a text-mode
+        # handshake "<user>:<ticket>\n" after WS open before the serial stream
+        # emits any data (vncproxy/RFB does not need this — that's the lap-2
+        # bug fixed in client.console-ws relay).
         return {
             "ticket": data.get("ticket"),
             "port": data.get("port"),
             "cert": data.get("cert"),
+            "user": data.get("user"),
         }
 
     async def vm_config(self, node: str, vmid: int) -> dict:
