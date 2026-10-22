@@ -1410,6 +1410,10 @@ def _ddos_direction(src: str, dst: str, prefixes: list[str]) -> str | None:
 
 
 def _ddos_target(src: str, dst: str, direction: str) -> str:
+    # For an inbound attack the internal destination is the victim; for an
+    # outbound attack the internal source is the *attacker* (spam/scanner/
+    # reflection source).  RTBH works in both cases: announcing the address
+    # drops all traffic to/from it at the provider edge.
     return dst if direction == "inbound" else src
 
 
@@ -1642,8 +1646,12 @@ async def run_ddos_detection_sweep(db) -> dict:
                     and bgp_config.get("bgp_community")
                 )
                 from .ddos_guard import select_mitigation_strategy
+                # Direction must be forwarded: for non-volumetric attacks an
+                # inbound victim must NOT be auto-blackholed (that disconnects
+                # the customer), while an outbound internal source must be.
                 strategy = select_mitigation_strategy(
-                    severity, attack_type, prefixes, upstream_ready)
+                    severity, attack_type, prefixes, upstream_ready,
+                    direction=direction)
                 mitigation_type = "none" if strategy == "alert" else strategy
             elif bool(rule.get("auto_blackhole")) or action == "alert_blackhole":
                 mitigation_type = "local_blackhole"
@@ -1672,41 +1680,72 @@ async def run_ddos_detection_sweep(db) -> dict:
                 r = await db.ddos_incidents.insert_one(incident)
                 incident["_id"] = r.inserted_id
                 opened += 1
-            if mitigation_type == "local_blackhole" and (
+            if mitigation_type in ("local_blackhole", "bgp_rtbh") and (
                     not existing or not existing.get("blackholed_prefix")):
                 prefix = f"{target}/32"
                 from .ddos_guard import evaluate_auto_blackhole, load_whitelist
+                from . import rtbh as _rtbh
                 whitelist = await load_whitelist(db)
                 verdict = evaluate_auto_blackhole(prefix, direction, whitelist=whitelist)
+                mit_device = _resolve_mitigation_device(rule, devices)
+                mit_device_name = (mit_device or {}).get("name") or "unknown"
                 if not verdict.allowed:
                     log.warning("[ddos] auto-blackhole skipped: %s (%s)", prefix, verdict.reason)
+                elif not mit_device:
+                    log.error("[ddos] no mitigation device for rule %s; skipping blackhole", rule.get("name"))
                 else:
-                    mit_device = _resolve_mitigation_device(rule, devices)
-                    if not mit_device:
-                        ok, bh, route = False, {"error": "no mitigation device configured"}, None
-                        log.error("[ddos] no mitigation device for rule %s; skipping blackhole", rule.get("name"))
+                    client = iv2.MikrotikClient(mit_device)
+                    if mitigation_type == "bgp_rtbh":
+                        import secrets as _secrets
+                        token = _secrets.token_hex(4)
+                        plan = _rtbh.plan_rtbh(
+                            target=target, direction=direction,
+                            community=(bgp_config or {}).get("bgp_community", _rtbh.DEFAULT_RTBH_COMMUNITY),
+                            upstream_name=(bgp_config or {}).get("upstream_name", ""),
+                            scope_prefixes=prefixes, whitelist=whitelist, token=token)
+                        if not plan.allowed:
+                            log.warning("[ddos] RTBH plan denied: %s (%s)", prefix, plan.reason)
+                            result = _rtbh.RTBHResult(prefix=prefix, errors=[plan.reason])
+                        else:
+                            ros_major = int((mit_device or {}).get("ros_major") or 7)
+                            # Execute only when the rule is explicitly set to
+                            # auto-mitigate.  RTBH is powerful and upstream-
+                            # facing, so it is opt-in per rule, never implicit.
+                            result = await _a.get_event_loop().run_in_executor(
+                                None, lambda c=client, p=plan, r=ros_major:
+                                _rtbh.apply_rtbh(c, p, dry_run=False, ros_major=r))
+                        ok = result.ok
+                        route = {"id": result.route_id}
+                        bh = result.as_dict()
+                        commands = result.commands
                     else:
                         try:
-                            client = iv2.MikrotikClient(mit_device)
                             bh = await _a.get_event_loop().run_in_executor(
                                 None, lambda c=client, p=prefix, n=rule.get("name", ""):
                                 c.blackhole_add(p, comment=f"auto-mitigasi ({n})"))
                             route = await _a.get_event_loop().run_in_executor(
                                 None, lambda c=client, p=prefix: c.blackhole_find_by_prefix(p)) if bh.get("ok") else None
                             ok = bool(bh.get("ok"))
+                            commands = []
                         except Exception as exc:
                             ok, bh, route = False, {"error": str(exc)}, None
-                    mit_device_name = (mit_device or {}).get("name") or "unknown"
+                            commands = []
+                    # Persist audit regardless of success so failures are visible.
+                    log_detail = str(bh)[:300]
+                    if commands:
+                        log_detail = " | ".join(commands) + " :: " + log_detail
                     await db.blackhole_log.insert_one({"prefix": prefix, "action": "add",
                         "by": f"auto-mitigasi ({rule.get('name', '')})", "source": "auto",
-                        "device": mit_device_name, "ok": ok, "detail": str(bh)[:300], "at": now_iso})
+                        "device": mit_device_name, "ok": ok, "detail": log_detail, "at": now_iso})
                     if ok:
                         blackholed += 1
-                        await db.ddos_incidents.update_one({"_id": incident["_id"]}, {"$set": {
+                        upd = {
                             "status": "mitigated", "blackholed_prefix": prefix,
-                            "blackhole_route_id": (route or {}).get("id")}})
-                        incident.update({"status": "mitigated", "blackholed_prefix": prefix,
-                                         "blackhole_route_id": (route or {}).get("id")})
+                            "blackhole_route_id": (route or {}).get("id"),
+                            "rtbh_filter_id": result.filter_id if mitigation_type == "bgp_rtbh" else None,
+                        }
+                        await db.ddos_incidents.update_one({"_id": incident["_id"]}, {"$set": upd})
+                        incident.update(upd)
             try:
                 await dispatch_ddos_notifications(db, incident)
             except Exception:
@@ -1729,8 +1768,21 @@ async def run_ddos_detection_sweep(db) -> dict:
         if not device_doc or not inc.get("blackhole_route_id"):
             continue
         client = iv2.MikrotikClient(device_doc)
-        result = await _a.get_event_loop().run_in_executor(
-            None, lambda c=client, rid=inc["blackhole_route_id"]: c.blackhole_remove(rid))
+        if inc.get("rtbh_filter_id"):
+            # Withdraw the upstream announcement before removing the route, so
+            # the prefix is never advertised with a blackhole community after
+            # the operator believes mitigation ended.
+            from . import rtbh as _rtbh
+            withdraw = await _a.get_event_loop().run_in_executor(
+                None, lambda c=client, rid=inc["blackhole_route_id"],
+                fid=inc.get("rtbh_filter_id"): _rtbh.withdraw_rtbh(
+                    c, prefix=inc.get("blackholed_prefix", ""),
+                    route_id=rid, filter_id=fid))
+            result = {"ok": withdraw.ok, "errors": withdraw.errors,
+                      "local_ok": withdraw.local_ok, "announce_ok": withdraw.announce_ok}
+        else:
+            result = await _a.get_event_loop().run_in_executor(
+                None, lambda c=client, rid=inc["blackhole_route_id"]: c.blackhole_remove(rid))
         if result.get("ok"):
             await db.blackhole_log.insert_one({"prefix": inc.get("blackholed_prefix", ""),
                 "action": "remove", "by": "auto-recovery", "source": "auto",
@@ -1738,6 +1790,17 @@ async def run_ddos_detection_sweep(db) -> dict:
             await db.ddos_incidents.update_one({"_id": inc["_id"]}, {"$set": {
                 "status": "resolved", "ended_at": now_iso}})
             resolved += 1
+        else:
+            # A failed withdrawal is a live routing hazard: the prefix may still
+            # be blackholed upstream.  Log it loudly instead of silently
+            # retrying forever with no trace.
+            log.error("[ddos] RTBH/blackhole withdrawal FAILED for %s on %s: %s",
+                      inc.get("blackholed_prefix"), inc.get("device"),
+                      result.get("errors") or result.get("error"))
+            await db.blackhole_log.insert_one({"prefix": inc.get("blackholed_prefix", ""),
+                "action": "remove", "by": "auto-recovery", "source": "auto",
+                "device": inc.get("device", ""), "ok": False,
+                "detail": str(result)[:300], "at": now_iso})
 
     return {"at": now_iso, "devices_sampled": sampled_devices,
             "targets_seen": len(breached_keys), "incidents_opened": opened,

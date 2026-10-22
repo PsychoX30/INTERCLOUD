@@ -56,6 +56,44 @@ def test_external_destination_not_protected():
     assert not guard.is_protected("8.8.8.8/32", ["157.20.32.0/24"])
 
 
+# ---- containment: a wider CIDR must not be used to bypass the whitelist ----
+# Regression for a real safety hole: is_protected() used to test only the
+# target's network_address, so a /24 or /16 whose *network address* was not
+# itself whitelisted slipped through even though it contained the NAT gateway.
+def test_wider_cidr_containing_gateway_is_protected():
+    wl = ["157.20.32.1/32", "157.20.32.254/32"]
+    # 157.20.32.0/24 contains both gateways -> blackholing it takes everyone down
+    assert guard.is_protected("157.20.32.0/24", wl)
+    assert guard.is_protected("157.20.0.0/16", wl)
+    assert guard.is_protected("157.20.32.0/23", wl)
+
+
+def test_wider_cidr_bypass_is_blocked_by_manual_guard():
+    wl = ["157.20.32.1/32", "157.20.32.254/32"]
+    assert guard.check_manual_blackhole("157.20.32.0/24", wl) is not None
+    assert guard.check_manual_blackhole("157.20.0.0/16", wl) is not None
+
+
+def test_wider_cidr_bypass_is_blocked_by_auto_guard():
+    verdict = guard.evaluate_auto_blackhole(
+        target="157.20.32.0/24", direction="inbound",
+        whitelist=["157.20.32.254/32"])
+    assert verdict.allowed is False
+
+
+def test_disjoint_cidr_is_not_protected():
+    # A /24 next door must stay actionable, otherwise the guard is useless.
+    wl = ["157.20.32.254/32"]
+    assert not guard.is_protected("157.20.33.0/24", wl)
+    assert not guard.is_protected("157.21.0.0/16", wl)
+
+
+def test_ipv6_and_ipv4_do_not_crash_or_match():
+    # ip_network.overlaps() raises on mixed versions; the guard must not raise.
+    assert not guard.is_protected("2001:db8::/32", ["157.20.32.254/32"])
+    assert not guard.is_protected("157.20.32.10/32", ["2001:db8::/32"])
+
+
 # ---- auto-mitigation decision ----
 def test_auto_blackhole_denied_for_protected_target():
     verdict = guard.evaluate_auto_blackhole(

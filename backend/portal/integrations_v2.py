@@ -1527,6 +1527,152 @@ class MikrotikClient:
                         "comment": r.get("comment") or ""}
         return None
 
+    # ---------- BGP RTBH announcement ----------
+    def rtbh_announce(self, prefix: str, community: str, comment: str,
+                      *, upstream_name: str = "", ros_major: int = 7) -> dict:
+        """Announce *prefix* to the upstream with an RTBH community.
+
+        Creating the filter rule alone does NOT drop anything: the chain must
+        also be attached to the BGP peer's output filter.  This method therefore
+        fails closed — it returns ``ok: False`` unless it can prove (a) a
+        connection/peer matching *upstream_name* exists and (b) the chain is an
+        output filter of that peer.  A silent "rule created but never used"
+        success would be worse than an honest failure.
+
+        RouterOS 7 uses ``/routing/filter/rule`` with ``bgp-out-community``;
+        RouterOS 6 uses ``/routing/filter`` with ``bgp-communities``. We try the
+        requested syntax and fall back to the other so a mis-detected version
+        does not silently disable mitigation.
+        """
+        if ros_major >= 7:
+            attempts = [
+                ("/routing/filter/rule/add",
+                 {"chain": "rtbh-out",
+                  "rule": (f"if (dst=={prefix} && protocol=static) "
+                           f"{{ set bgp-out-community {community}; accept }}"),
+                  "comment": comment}),
+                ("/routing/filter/add",
+                 {"chain": "rtbh-out",
+                  "rule": (f"if (dst-address={prefix} && protocol=static) "
+                           f"{{ set bgp-communities {community}; accept }}"),
+                  "comment": comment}),
+            ]
+        else:
+            attempts = [
+                ("/routing/filter/add",
+                 {"chain": "rtbh-out",
+                  "rule": (f"if (dst-address={prefix} && protocol=static) "
+                           f"{{ set bgp-communities {community}; accept }}"),
+                  "comment": comment}),
+                ("/routing/filter/rule/add",
+                 {"chain": "rtbh-out",
+                  "rule": (f"if (dst=={prefix} && protocol=static) "
+                           f"{{ set bgp-out-community {community}; accept }}"),
+                  "comment": comment}),
+            ]
+        try:
+            api = self._connect()
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        errors = []
+        for path, params in attempts:
+            try:
+                list(api(path, **params))
+                rule_id = None
+                try:
+                    rows = list(api.path(*path.strip("/").split("/")[:-1]))
+                    for r in rows:
+                        if (r.get("comment") or "") == comment:
+                            rule_id = r.get(".id")
+                            break
+                except Exception:
+                    pass
+                # Fail closed: the chain must be attached to the peer, or the
+                # announcement is decorative.
+                attach = self._ensure_rtbh_chain_attached(api, upstream_name)
+                try: api.close()
+                except Exception: pass
+                if not attach.get("ok"):
+                    return {"ok": False, "prefix": prefix, "id": rule_id,
+                            "error": attach.get("error") or "RTBH chain is not attached to the upstream peer"}
+                return {"ok": True, "prefix": prefix, "community": community,
+                        "id": rule_id, "path": path,
+                        "peer": attach.get("peer"), "attached": attach.get("attached")}
+            except Exception as e:
+                errors.append(f"{path}: {type(e).__name__}: {e}")
+        try: api.close()
+        except Exception: pass
+        return {"ok": False, "error": " | ".join(errors), "prefix": prefix}
+
+    def _ensure_rtbh_chain_attached(self, api, upstream_name: str) -> dict:
+        """Verify (and if needed attach) the ``rtbh-out`` chain on the peer.
+
+        Read-only when the chain is already present. Attaching is only
+        attempted for an exactly-matching connection so we never mutate an
+        unrelated BGP session.
+        """
+        want = (upstream_name or "").strip()
+        peers = []
+        for candidate in ("/routing/bgp/connection", "/routing/bgp/peer"):
+            try:
+                peers = list(api.path(*candidate.strip("/").split("/")))
+                if peers:
+                    break
+            except Exception:
+                continue
+        if not peers:
+            return {"ok": False, "error": "no BGP connection/peer readable on device"}
+
+        matches = []
+        for p in peers:
+            name = (p.get("name") or p.get("remote-address") or "").strip()
+            if want and (want == name or want in name):
+                matches.append(p)
+        if not matches:
+            return {"ok": False,
+                    "error": f"no BGP peer matching upstream '{want}'"}
+
+        peer = matches[0]
+        current = (peer.get("output.filter-chain") or peer.get("filter-chain") or "").strip()
+        if current == "rtbh-out":
+            return {"ok": True, "attached": True, "peer": peer.get("name") or peer.get(".id"),
+                    "note": "chain already attached"}
+        if current:
+            # Never silently replace somebody else's output filter.
+            return {"ok": False, "peer": peer.get("name"),
+                    "error": (f"peer '{peer.get('name')}' already uses output filter chain "
+                              f"'{current}'; refusing to overwrite")}
+
+        path = "/routing/bgp/connection/set" if peer.get("remote-address") is not None else "/routing/bgp/peer/set"
+        try:
+            list(api(path, **{".id": peer.get(".id"), "output.filter-chain": "rtbh-out"}))
+            return {"ok": True, "attached": True, "peer": peer.get("name") or peer.get(".id"),
+                    "note": "chain attached by portal"}
+        except Exception as e:
+            return {"ok": False, "peer": peer.get("name"),
+                    "error": f"could not attach chain: {type(e).__name__}: {e}"}
+
+    def rtbh_withdraw(self, rule_id: str) -> dict:
+        """Remove a routing filter rule created by ``rtbh_announce``."""
+        if not rule_id:
+            return {"ok": False, "error": "no filter rule id supplied"}
+        try:
+            api = self._connect()
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        errors = []
+        for path in ("/routing/filter/rule/remove", "/routing/filter/remove"):
+            try:
+                list(api(path, **{".id": rule_id}))
+                try: api.close()
+                except Exception: pass
+                return {"ok": True, "id": rule_id}
+            except Exception as e:
+                errors.append(f"{path}: {type(e).__name__}: {e}")
+        try: api.close()
+        except Exception: pass
+        return {"ok": False, "error": " | ".join(errors), "id": rule_id}
+
     # ---------- Backup ----------
     def backup_list(self) -> list:
         try:

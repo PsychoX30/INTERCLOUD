@@ -49,27 +49,31 @@ def normalize_prefix(prefix: str) -> str:
     return f"{net.network_address}/{net.prefixlen}"
 
 
-def _ip_in_network(ip_str: str, net_str: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(ip_str)
-        net = ipaddress.ip_network(net_str, strict=False)
-        return ip in net
-    except ValueError:
-        return False
-
-
 def is_protected(target: str, whitelist: Optional[list[str]] = None) -> bool:
-    """Check if a target prefix falls within any whitelisted network."""
+    """Check if a target prefix overlaps any whitelisted network.
+
+    The old implementation reduced ``target`` to its ``network_address`` and
+    then tested that single IP for membership.  That let a *wider* CIDR whose
+    network address was not itself whitelisted (e.g. ``157.20.32.0/24`` when
+    the whitelist holds ``157.20.32.254/32``) slip through, even though it
+    contained the protected NAT gateway.  The check must be an **overlap**
+    test: any intersection between the target network and a whitelisted
+    network means the action could reach a protected address and is refused.
+    """
     wl = whitelist or DEFAULT_WHITELIST
-    # target may be "1.2.3.4" or "1.2.3.4/32" — normalize to extract host IP
     try:
         target_net = ipaddress.ip_network(target, strict=False)
-        target_ip = str(target_net.network_address)
     except ValueError:
         return False
 
     for wl_prefix in wl:
-        if _ip_in_network(target_ip, wl_prefix):
+        try:
+            wl_net = ipaddress.ip_network(wl_prefix, strict=False)
+        except ValueError:
+            continue
+        if target_net.version != wl_net.version:
+            continue
+        if target_net.overlaps(wl_net):
             return True
     return False
 
@@ -159,6 +163,7 @@ def select_mitigation_strategy(
     attack_type: str,
     scope_prefixes: list[str],
     upstream_peer_available: bool,
+    direction: str = "inbound",
 ) -> str:
     """Return the best automated mitigation strategy for an incident.
 
@@ -166,7 +171,16 @@ def select_mitigation_strategy(
       - No scope prefixes → alert only (don't act on unknown targets).
       - Severity medium or low → alert only.
       - Critical or high + volumetric attack + upstream peer available → bgp_rtbh.
-      - Critical or high + non-volumetric attack, or no upstream peer → local_blackhole.
+      - Critical or high + volumetric attack, no upstream peer → local_blackhole.
+      - Critical or high + **non-volumetric** attack (HTTP/SYN flood, unknown):
+        never auto-blackhole an inbound target. Blackholing the victim's own
+        address disconnects the customer without addressing the cause — L7 and
+        SYN floods need rate-limiting/WAF/edge controls, not a route drop.
+        Outbound is the exception: the target is our own internal *source*
+        attacking somebody else, so dropping it there is the correct action.
+
+    ``direction`` defaults to ``inbound`` so existing callers keep the safe
+    behaviour unless they explicitly pass a direction.
     """
     if not scope_prefixes:
         return "alert"
@@ -178,4 +192,7 @@ def select_mitigation_strategy(
         return "bgp_rtbh" if upstream_peer_available else "local_blackhole"
 
     # Critical/high non-volumetric (e.g. HTTP/SYN flood) or unknown type.
-    return "local_blackhole"
+    if direction == "outbound":
+        return "bgp_rtbh" if upstream_peer_available else "local_blackhole"
+
+    return "alert"

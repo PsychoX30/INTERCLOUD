@@ -54,16 +54,19 @@ def test_high_dns_amplification_prefers_bgp_rtbh():
     assert strategy == "bgp_rtbh"
 
 
-# 4. High severity + HTTP Flood → local blackhole even with upstream peer
-#    (HTTP is L7, not volumetric at link level, BGP RTBH is overkill)
-def test_high_http_flood_prefers_local():
+# 4. High severity + HTTP Flood (inbound) → alert only.
+#    Superseded policy: an inbound L7 flood must NOT auto-blackhole the victim's
+#    own address — that disconnects the customer without fixing the cause.
+#    HTTP floods need rate-limit/WAF/edge controls. See QA finding #5.
+def test_high_http_flood_inbound_alert_only():
     strategy = select_mitigation_strategy(
         severity="high",
         attack_type="HTTP Flood",
         scope_prefixes=["157.20.32.0/24"],
         upstream_peer_available=True,
+        direction="inbound",
     )
-    assert strategy == "local_blackhole"
+    assert strategy == "alert"
 
 
 # 5. Medium severity → alert only, NO automatic mitigation
@@ -110,13 +113,26 @@ def test_high_traffic_anomaly_bgp_rtbh():
     assert strategy == "bgp_rtbh"
 
 
-# 9. Critical SYN Flood + no upstream → local_blackhole
-def test_critical_syn_flood_no_upstream():
+# 9. Critical SYN Flood + no upstream → alert only (inbound victim protection)
+def test_critical_syn_flood_no_upstream_inbound_alert():
     strategy = select_mitigation_strategy(
         severity="critical",
         attack_type="SYN Flood",
         scope_prefixes=["157.20.32.0/24"],
         upstream_peer_available=False,
+        direction="inbound",
+    )
+    assert strategy == "alert"
+
+
+# 9b. Critical SYN Flood outbound + no upstream → local blackhole of our source
+def test_critical_syn_flood_outbound_local():
+    strategy = select_mitigation_strategy(
+        severity="critical",
+        attack_type="SYN Flood",
+        scope_prefixes=["157.20.32.0/24"],
+        upstream_peer_available=False,
+        direction="outbound",
     )
     assert strategy == "local_blackhole"
 
@@ -148,16 +164,64 @@ def test_volumetric_types_are_recognized(atk):
     assert strategy == "bgp_rtbh"
 
 
-# 12. Non-volumetric types → local_blackhole (even with upstream peer)
+# 12. Non-volumetric types, inbound → alert only (victim must not be dropped)
 @pytest.mark.parametrize("atk", [
     "HTTP Flood",
     "SYN Flood",
 ])
-def test_non_volumetric_types_local_blackhole(atk):
+def test_non_volumetric_types_inbound_alert(atk):
     strategy = select_mitigation_strategy(
         severity="high",
         attack_type=atk,
         scope_prefixes=["157.20.32.0/24"],
         upstream_peer_available=True,
+        direction="inbound",
     )
-    assert strategy == "local_blackhole"
+    assert strategy == "alert"
+
+
+# 12b. Same types, outbound → our attacking source IS mitigated
+@pytest.mark.parametrize("atk", [
+    "HTTP Flood",
+    "SYN Flood",
+])
+def test_non_volumetric_types_outbound_mitigated(atk):
+    strategy = select_mitigation_strategy(
+        severity="high",
+        attack_type=atk,
+        scope_prefixes=["157.20.32.0/24"],
+        upstream_peer_available=True,
+        direction="outbound",
+    )
+    assert strategy == "bgp_rtbh"
+
+def test_non_volumetric_inbound_is_alert_only():
+    """An inbound L7/SYN flood must NOT auto-blackhole the victim."""
+    r = select_mitigation_strategy(
+        "critical", "HTTP Flood", ["157.20.32.0/24"], True, direction="inbound")
+    assert r == "alert"
+
+
+def test_non_volumetric_outbound_still_mitigates():
+    """Outbound target is our own attacking source -> drop it."""
+    r = select_mitigation_strategy(
+        "critical", "HTTP Flood", ["157.20.32.0/24"], True, direction="outbound")
+    assert r == "bgp_rtbh"
+
+
+def test_non_volumetric_outbound_without_peer_is_local():
+    r = select_mitigation_strategy(
+        "high", "SYN Flood", ["157.20.32.0/24"], False, direction="outbound")
+    assert r == "local_blackhole"
+
+
+def test_direction_defaults_to_inbound_safe():
+    """Existing callers that omit direction keep the safe behavior."""
+    r = select_mitigation_strategy("critical", "Unknown", ["157.20.32.0/24"], True)
+    assert r == "alert"
+
+
+def test_volumetric_inbound_still_uses_rtbh():
+    r = select_mitigation_strategy(
+        "critical", "UDP Flood", ["157.20.32.0/24"], True, direction="inbound")
+    assert r == "bgp_rtbh"

@@ -17,7 +17,7 @@ const DIR_CLS = {
 };
 
 const ACTION_LABELS = { alert: "Alert", alert_blackhole: "Auto-blackhole", alert_bgp_blackhole: "BGP RTBH" };
-const MITIGATION_LABELS = { none: "-", local_blackhole: "Local /32", bgp_rtbh: "BGP intent" };
+const MITIGATION_LABELS = { none: "-", local_blackhole: "Local /32", bgp_rtbh: "BGP RTBH" };
 
 const flowDetail = (h) => {
   const parts = [];

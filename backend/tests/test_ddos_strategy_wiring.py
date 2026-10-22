@@ -61,6 +61,12 @@ def patch_mikrotik(monkeypatch):
         def blackhole_remove(self, route_id):
             return {"ok": True, "id": route_id}
 
+        def rtbh_announce(self, prefix, community, comment, *, upstream_name="", ros_major=7):
+            return {"ok": True, "id": "filter-001", "peer": upstream_name, "attached": True}
+
+        def rtbh_withdraw(self, rule_id):
+            return {"ok": True, "id": rule_id}
+
     monkeypatch.setattr(iv2, "MikrotikClient", FakeClient)
     from portal import emails as _em
     monkeypatch.setattr(_em, "iv2", iv2)
@@ -123,8 +129,10 @@ async def test_bgp_action_no_upstream_falls_back_to_local(db, monkeypatch):
 
 
 # 4. action=alert_bgp_blackhole + high severity volumetric + upstream available
-#    → strategy=bgp_rtbh → record intent, do NOT execute BGP, no local blackhole
-async def test_bgp_action_with_upstream_records_intent(db, monkeypatch):
+#    → strategy=bgp_rtbh → install host route AND announce RTBH community.
+# This used to only record intent (a dangerous silent no-op); the fake client
+# lets this unit test prove the executor now reaches the RouterOS adapter.
+async def test_bgp_action_with_upstream_executes_rtbh(db, monkeypatch):
     db.ddos_threshold_rules._docs = [_rule(action="alert_bgp_blackhole")]
     db.mikrotik_devices._docs = [_device()]
     flows = [_flow("8.8.8.8", "157.20.32.50", proto="udp", dp="53", pps=200_000)]
@@ -144,5 +152,7 @@ async def test_bgp_action_with_upstream_records_intent(db, monkeypatch):
 
     inc = db.ddos_incidents._docs[0]
     assert inc["mitigation_type"] == "bgp_rtbh"
-    assert inc["status"] == "active"  # not mitigated — BGP not executed
-    assert inc.get("blackholed_prefix") is None  # no local blackhole applied
+    assert inc["status"] == "mitigated"
+    assert inc["blackholed_prefix"] == "157.20.32.50/32"
+    assert inc["blackhole_route_id"] == "route-001"
+    assert inc["rtbh_filter_id"] == "filter-001"

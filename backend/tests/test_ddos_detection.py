@@ -304,7 +304,10 @@ async def test_rolling_window_aggregation(db, monkeypatch):
     now = datetime.now(timezone.utc)
     for i in range(3):
         db.ddos_samples._docs.append({
-            "at": (now - timedelta(seconds=60 * i)).isoformat(),
+            # MUST be a datetime: sweep stores BSON Dates and filters with a
+            # real Date range (see emails.py). ISO strings used to slip through
+            # here and made the assertion lock in the old buggy behavior.
+            "at": now - timedelta(seconds=60 * i),
             "key": "inbound:157.20.32.50",
             "direction": "inbound", "target": "157.20.32.50",
             "bps": 0, "pps": 120_000,
