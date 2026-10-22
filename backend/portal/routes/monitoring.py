@@ -26,6 +26,7 @@ def _serialize_check(doc: dict) -> dict:
         "type": doc.get("type", "ping"),
         "enabled": bool(doc.get("enabled", True)),
         "interval_seconds": int(doc.get("interval_seconds") or 300),
+        "retries": int(doc.get("retries") or 0),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
     }
@@ -72,6 +73,19 @@ def _clean_enabled(value) -> bool:
     return value
 
 
+def _clean_retries(value) -> int:
+    try:
+        retries = int(value if value is not None else 1)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="retries must be an integer") from exc
+    if not 0 <= retries <= 10:
+        raise HTTPException(
+            status_code=400,
+            detail="retries must be between 0 and 10",
+        )
+    return retries
+
+
 @router.get("/admin/monitoring/checks")
 async def monitoring_checks_list(staff=Depends(require_roles("admin", "support"))):
     db = await _get_db()
@@ -89,6 +103,7 @@ async def monitoring_check_create(payload: dict, admin=Depends(get_current_admin
         "type": "ping",
         "enabled": _clean_enabled(payload.get("enabled", True)),
         "interval_seconds": _clean_interval(payload.get("interval_seconds")),
+        "retries": _clean_retries(payload.get("retries")),
         "created_at": now,
         "updated_at": now,
     }
@@ -109,6 +124,8 @@ async def monitoring_check_update(check_id: str, payload: dict, admin=Depends(ge
         updates["enabled"] = _clean_enabled(payload["enabled"])
     if "interval_seconds" in payload:
         updates["interval_seconds"] = _clean_interval(payload["interval_seconds"])
+    if "retries" in payload:
+        updates["retries"] = _clean_retries(payload["retries"])
     if not updates:
         raise HTTPException(status_code=400, detail="No supported monitoring-check fields supplied")
     updates["updated_at"] = datetime.now(timezone.utc)
@@ -146,10 +163,12 @@ async def monitoring_check_history(check_id: str,
         "check": _serialize_check(doc),
         "state": {
             "status": state.get("status") or "unknown",
+            "confirmed_status": state.get("confirmed_status") or state.get("status") or "unknown",
             "target": state.get("target") or doc.get("target") or "",
             "last_at": state.get("last_at"),
             "last_rtt_ms": state.get("last_rtt_ms"),
             "consecutive_failures": int(state.get("consecutive_failures") or 0),
+            "retries": int(state.get("retries") or doc.get("retries") or 0),
         },
         "samples": [{
             "at": sample.get("at"),
@@ -180,10 +199,45 @@ async def monitoring_check_run(check_id: str, admin=Depends(get_current_admin)):
 
     admin_id = admin.get("id") or admin.get("_id") or "admin"
     owner = f"manual:{admin_id}:{uuid.uuid4().hex}"
+    from ..monitoring import _check_retries
     return await probe_target(
         db,
         target=str(doc.get("target") or "").strip(),
         check_id=str(doc["_id"]),
         owner=owner,
+        retries=_check_retries(doc.get("retries")),
+        check_name=str(doc.get("name") or ""),
     )
+
+
+@router.get("/admin/monitoring/checks/{check_id}/uptime")
+async def monitoring_check_uptime(check_id: str,
+                                  staff=Depends(require_roles("admin", "support")),
+                                  hours: int = 24):
+    """Uptime-Kuma style: expected schedule slots vs observed samples.
+
+    ``hours`` must be an int in 1–720 (30 days).  Out-of-range or
+    non-integer values are rejected (HTTP 400) rather than silently clamped,
+    so a caller never receives an authoritative-looking number for a window
+    that was never requested.  The response distinguishes ``gaps`` (monitoring
+    did not observe the check — unknown, not DOWN) from ``down`` (a probe ran
+    and failed), and reports ``coverage_pct`` / ``uptime_pct_conservative`` so
+    a stalled scheduler shows up honestly instead of as 100%.
+    """
+    from ..monitoring import uptime_summary
+    db = await _get_db()
+    doc = await db.monitoring_checks.find_one({"_id": _oid(check_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Monitoring check not found")
+    try:
+        hours = int(hours if hours is not None else 24)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="hours must be an integer") from exc
+    if not 1 <= hours <= 720:
+        raise HTTPException(
+            status_code=400, detail="hours must be between 1 and 720")
+    try:
+        return await uptime_summary(db, check_id=check_id, hours=hours)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 

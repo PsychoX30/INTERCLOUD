@@ -52,6 +52,9 @@ class _State:
         return self._existing.get("doc")
     async def update_one(self, _q, _u, upsert=False):
         self.upserts.append((_q, _u, upsert))
+        # Real Mongo reports the number of matched rows; the transition
+        # compare-and-swap treats matched_count==1 as its claim.
+        return type("R", (), {"matched_count": 1})()
 
 
 class _Events:

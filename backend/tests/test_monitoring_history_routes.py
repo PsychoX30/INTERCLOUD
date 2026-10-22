@@ -72,10 +72,16 @@ async def test_history_returns_selected_state_samples_and_events(monkeypatch):
     out = await routes.monitoring_check_history(check_id, {"role": "support"}, limit=100)
 
     assert out["check"]["id"] == check_id
+    # ``confirmed_status``/``retries`` are part of the contract: the UI must be
+    # able to tell a *pending* probe (unconfirmed failure) from a confirmed
+    # DOWN, so the raw ``status`` alone is not enough.
     assert out["state"] == {
-        "status": "up", "target": "8.8.8.8", "last_at": at,
-        "last_rtt_ms": 2.5, "consecutive_failures": 0,
+        "status": "up", "confirmed_status": "up", "target": "8.8.8.8", "last_at": at,
+        "last_rtt_ms": 2.5, "consecutive_failures": 0, "retries": 0,
     }
+    assert "secret" not in out["state"]
+    assert all("raw" not in sample for sample in out["samples"])
+    assert all("internal" not in event for event in out["events"])
     assert out["samples"] == [{"at": at, "up": True, "rtt_ms": 2.5,
                                 "rtt_min_ms": 2.1, "rtt_max_ms": 2.9,
                                 "loss": 0.0, "resolved_ip": "8.8.8.8"}]

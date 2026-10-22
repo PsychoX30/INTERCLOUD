@@ -264,7 +264,8 @@ async def test_manual_run_probes_persisted_target_with_unique_owner(db, monkeypa
     }]
     calls = []
 
-    async def fake_probe(db_arg, *, target, check_id, owner, timeout=2.0):
+    async def fake_probe(db_arg, *, target, check_id, owner, timeout=2.0,
+                         retries=0, check_name=""):
         calls.append((db_arg, target, check_id, owner, timeout))
         return {"status": "up", "up": True, "event": None, "rtt_ms": 1.2, "loss": 0.0}
 
