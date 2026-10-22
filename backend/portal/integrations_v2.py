@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
 import time
@@ -1227,6 +1228,16 @@ class MikrotikClient:
         self.username = c.get("username")
         self.password = c.get("password")
         self.use_tls = bool(c.get("use_tls", False))
+        # RouterOS major version (6 or 7) — None until read from the device.
+        # Routing-filter / blackhole syntax differs between the two; guessing
+        # is how the old code produced commands the router rejected.
+        stored = c.get("ros_major")
+        self._ros_major = int(stored) if stored else None
+
+    def _ros_major_required(self) -> int | None:
+        """Return the device's RouterOS major, refusing when unknown."""
+        major = self._ros_major if self._ros_major is not None else self.ros_major_or_fail()
+        return major if major in (6, 7) else None
 
     def _connect(self):
         """Connect to RouterOS, transparently handling the two login flavours.
@@ -1260,9 +1271,52 @@ class MikrotikClient:
             api = self._connect()
             info = list(api.path("system", "resource"))
             api.close()
-            return {"ok": True, "message": f"RouterOS {info[0].get('version')}", "details": info[0]}
+            details = dict(info[0])
+            version = str(details.get("version") or "")
+            details["ros_major"] = self.ros_major(version)
+            return {"ok": True, "message": f"RouterOS {version}", "details": details}
         except Exception as e:
             return {"ok": False, "message": f"Connection failed: {type(e).__name__}: {e}"}
+
+    @staticmethod
+    def ros_major(version: str | None) -> int | None:
+        """Parse the RouterOS major version, or ``None`` if unknown.
+
+        RouterOS 6 and 7 use different syntax for routing filters and for
+        blackhole routes.  Guessing 7 when the device is actually v6 produces
+        commands the router rejects at execution time, so callers must be able
+        to tell "unknown" apart from "7" and refuse to act when it is unknown.
+        """
+        if not version:
+            return None
+        match = re.search(r"(\d+)", str(version))
+        return int(match.group(1)) if match else None
+
+    def ros_major_or_fail(self) -> int | None:
+        """Return the device's RouterOS major version, reading it if needed.
+
+        Returns ``None`` when the version cannot be determined.  A caller that
+        needs version-specific syntax must treat that as a refusal, not fall
+        back to a guess.
+        """
+        if self._ros_major is not None:
+            return self._ros_major
+        api = None
+        try:
+            api = self._connect()
+            rows = list(api.path("system", "resource"))
+            if rows:
+                self._ros_major = self.ros_major(rows[0].get("version"))
+                return self._ros_major
+        except Exception:
+            return None
+        finally:
+            if api is not None:
+                try:
+                    api.close()
+                except Exception:
+                    pass
+        return None
 
     def list_interfaces(self) -> list:
         try:
@@ -1458,10 +1512,13 @@ class MikrotikClient:
             api = self._connect()
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        # IPv4 and IPv6 live in separate RouterOS menus.  Sending an IPv6
+        # prefix to /ip/route silently fails or targets the wrong subsystem.
+        route_menu = "/ipv6/route" if ipaddress.ip_network(prefix, strict=False).version == 6 else "/ip/route"
         # Try RouterOS 7 style first
         v7_err = None
         try:
-            list(api("/ip/route/add",
+            list(api(f"{route_menu}/add",
                      **{"dst-address": prefix, "blackhole": "yes",
                         "distance": "1", "comment": comment}))
             try: api.close()
@@ -1471,7 +1528,7 @@ class MikrotikClient:
             v7_err = f"{type(e).__name__}: {e}"
         # Fall back to RouterOS 6 style
         try:
-            list(api("/ip/route/add",
+            list(api(f"{route_menu}/add",
                      **{"dst-address": prefix, "type": "blackhole",
                         "distance": "1", "comment": comment}))
             try: api.close()
@@ -1488,8 +1545,14 @@ class MikrotikClient:
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         try:
-            list(api("/ip/route/remove", **{".id": route_id}))
-            return {"ok": True, "id": route_id}
+            last_error = None
+            for menu in ("/ip/route", "/ipv6/route"):
+                try:
+                    list(api(f"{menu}/remove", **{".id": route_id}))
+                    return {"ok": True, "id": route_id}
+                except Exception as exc:
+                    last_error = exc
+            raise last_error or RuntimeError("route remove failed")
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         finally:
@@ -1510,9 +1573,10 @@ class MikrotikClient:
         except Exception:
             return None
         rows: list = []
+        route_menu = "/ipv6/route" if ipaddress.ip_network(prefix, strict=False).version == 6 else "/ip/route"
         for query in ("?blackhole=yes", "?type=blackhole"):
             try:
-                rows = list(api.rawCmd("/ip/route/print", query))
+                rows = list(api.rawCmd(f"{route_menu}/print", query))
                 if rows:
                     break
             except Exception:
@@ -1529,128 +1593,169 @@ class MikrotikClient:
 
     # ---------- BGP RTBH announcement ----------
     def rtbh_announce(self, prefix: str, community: str, comment: str,
-                      *, upstream_name: str = "", ros_major: int = 7) -> dict:
+                      *, upstream_name: str = "", ros_major: int | None = None) -> dict:
         """Announce *prefix* to the upstream with an RTBH community.
+
+        ``ros_major`` is normally omitted: the client then reads the device's
+        RouterOS version itself and refuses to emit version-specific syntax
+        when it cannot be determined.  A caller that already knows the version
+        (a test, or a device doc that stores it) may pass it explicitly.
 
         Creating the filter rule alone does NOT drop anything: the chain must
         also be attached to the BGP peer's output filter.  This method therefore
-        fails closed — it returns ``ok: False`` unless it can prove (a) a
-        connection/peer matching *upstream_name* exists and (b) the chain is an
-        output filter of that peer.  A silent "rule created but never used"
-        success would be worse than an honest failure.
+        fails closed — it returns ``ok: False`` unless it can prove (a) exactly
+        one BGP peer matches *upstream_name* and (b) the ``rtbh-out`` chain is
+        already an output filter of that peer.
 
-        RouterOS 7 uses ``/routing/filter/rule`` with ``bgp-out-community``;
-        RouterOS 6 uses ``/routing/filter`` with ``bgp-communities``. We try the
-        requested syntax and fall back to the other so a mis-detected version
-        does not silently disable mitigation.
+        It never attaches the chain itself.  A RouterOS routing filter chain
+        defaults to **reject**, and ``rtbh-out`` contains a single rule that
+        matches one prefix.  Setting ``output.filter-chain=rtbh-out`` would
+        therefore stop us advertising *every other* prefix to that upstream —
+        a total outage triggered by a DDoS sweep.  Attaching it is a one-time
+        operator decision, made outside the automated path.
+
+        Syntax (verified against MikroTik docs):
+          * RouterOS 7 — ``/routing/filter/rule`` with a ``rule=`` script body.
+            The writable community property is ``bgp-communities``; there is no
+            ``bgp-out-community`` (only ``bgp-out-med`` exists).
+          * RouterOS 6 — ``/routing/filter`` with discrete properties.  It has
+            no ``rule=`` parameter and no ``dst-address`` matcher.
+          * ``append bgp-communities`` (not ``set``) is used so an existing
+            community attribute on the route is not overwritten.
         """
+        # A wrong major version yields commands the router rejects, so refuse
+        # to act when it cannot be determined — never guess.
+        if ros_major is None:
+            ros_major = self._ros_major_required()
+        if ros_major not in (6, 7):
+            return {"ok": False, "prefix": prefix,
+                    "error": ("RouterOS major version is unknown for this device; "
+                              "refusing to emit version-specific filter syntax")}
+
         if ros_major >= 7:
-            attempts = [
-                ("/routing/filter/rule/add",
-                 {"chain": "rtbh-out",
-                  "rule": (f"if (dst=={prefix} && protocol=static) "
-                           f"{{ set bgp-out-community {community}; accept }}"),
-                  "comment": comment}),
-                ("/routing/filter/add",
-                 {"chain": "rtbh-out",
-                  "rule": (f"if (dst-address={prefix} && protocol=static) "
-                           f"{{ set bgp-communities {community}; accept }}"),
-                  "comment": comment}),
-            ]
+            path = "/routing/filter/rule/add"
+            params = {
+                "chain": "rtbh-out",
+                "rule": (f"if (dst=={prefix} && protocol static) "
+                         f"{{ append bgp-communities {community}; accept }}"),
+                "comment": comment,
+            }
+            list_path = ("routing", "filter", "rule")
         else:
-            attempts = [
-                ("/routing/filter/add",
-                 {"chain": "rtbh-out",
-                  "rule": (f"if (dst-address={prefix} && protocol=static) "
-                           f"{{ set bgp-communities {community}; accept }}"),
-                  "comment": comment}),
-                ("/routing/filter/rule/add",
-                 {"chain": "rtbh-out",
-                  "rule": (f"if (dst=={prefix} && protocol=static) "
-                           f"{{ set bgp-out-community {community}; accept }}"),
-                  "comment": comment}),
-            ]
+            path = "/routing/filter/add"
+            params = {
+                "chain": "rtbh-out",
+                "prefix": prefix,
+                "prefix-length": str(prefix.split("/")[-1]),
+                "protocol": "static",
+                "action": "accept",
+                "set-bgp-communities": community,
+                "comment": comment,
+            }
+            list_path = ("routing", "filter")
+
         try:
             api = self._connect()
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        errors = []
-        for path, params in attempts:
-            try:
-                list(api(path, **params))
-                rule_id = None
-                try:
-                    rows = list(api.path(*path.strip("/").split("/")[:-1]))
-                    for r in rows:
-                        if (r.get("comment") or "") == comment:
-                            rule_id = r.get(".id")
-                            break
-                except Exception:
-                    pass
-                # Fail closed: the chain must be attached to the peer, or the
-                # announcement is decorative.
-                attach = self._ensure_rtbh_chain_attached(api, upstream_name)
-                try: api.close()
-                except Exception: pass
-                if not attach.get("ok"):
-                    return {"ok": False, "prefix": prefix, "id": rule_id,
-                            "error": attach.get("error") or "RTBH chain is not attached to the upstream peer"}
-                return {"ok": True, "prefix": prefix, "community": community,
-                        "id": rule_id, "path": path,
-                        "peer": attach.get("peer"), "attached": attach.get("attached")}
-            except Exception as e:
-                errors.append(f"{path}: {type(e).__name__}: {e}")
+
+        # Verify the peer BEFORE creating anything, so a failure cannot leave an
+        # orphan rule in a chain that somebody may attach later.
+        attach = self._ensure_rtbh_chain_attached(api, upstream_name)
+        if not attach.get("ok"):
+            try: api.close()
+            except Exception: pass
+            return {"ok": False, "prefix": prefix,
+                    "error": attach.get("error") or "RTBH chain is not attached to the upstream peer"}
+
+        try:
+            list(api(path, **params))
+        except Exception as e:
+            try: api.close()
+            except Exception: pass
+            return {"ok": False, "prefix": prefix,
+                    "error": f"{path}: {type(e).__name__}: {e}"}
+
+        # Read the created rule back.  Without its .id the rule can never be
+        # withdrawn, so an unreadable id is a failure, not a success.
+        rule_id = None
+        try:
+            for r in list(api.path(*list_path)):
+                if (r.get("comment") or "") == comment:
+                    rule_id = r.get(".id")
+                    break
+        except Exception as e:
+            rule_id = None
+            read_error = f"{type(e).__name__}: {e}"
+        else:
+            read_error = ""
         try: api.close()
         except Exception: pass
-        return {"ok": False, "error": " | ".join(errors), "prefix": prefix}
+
+        if not rule_id:
+            return {"ok": False, "prefix": prefix, "id": None,
+                    "error": (f"filter rule added to chain rtbh-out but its .id could not be "
+                              f"read back ({read_error or 'no matching comment'}); it cannot be "
+                              f"withdrawn automatically")}
+        return {"ok": True, "prefix": prefix, "community": community,
+                "id": rule_id, "path": path,
+                "peer": attach.get("peer"), "attached": attach.get("attached")}
 
     def _ensure_rtbh_chain_attached(self, api, upstream_name: str) -> dict:
-        """Verify (and if needed attach) the ``rtbh-out`` chain on the peer.
+        """Verify that the ``rtbh-out`` chain is an output filter of the peer.
 
-        Read-only when the chain is already present. Attaching is only
-        attempted for an exactly-matching connection so we never mutate an
-        unrelated BGP session.
+        Strictly read-only.  Matching is exact (a substring match could pick
+        ``not-transit`` for ``transit``) and ambiguous matches are rejected
+        rather than resolved by API ordering.
         """
         want = (upstream_name or "").strip()
-        peers = []
+        if not want:
+            return {"ok": False, "error": "no upstream name configured for RTBH"}
+
+        peers: list = []
+        origin = ""
         for candidate in ("/routing/bgp/connection", "/routing/bgp/peer"):
             try:
-                peers = list(api.path(*candidate.strip("/").split("/")))
-                if peers:
-                    break
+                rows = list(api.path(*candidate.strip("/").split("/")))
             except Exception:
                 continue
+            if rows:
+                peers, origin = rows, candidate
+                break
         if not peers:
             return {"ok": False, "error": "no BGP connection/peer readable on device"}
 
         matches = []
         for p in peers:
-            name = (p.get("name") or p.get("remote-address") or "").strip()
-            if want and (want == name or want in name):
+            name = (p.get("name") or "").strip()
+            remote = (p.get("remote-address") or "").strip()
+            if want == name or (remote and want == remote):
                 matches.append(p)
         if not matches:
+            return {"ok": False, "error": f"no BGP peer matching upstream '{want}'"}
+        if len(matches) > 1:
+            names = ", ".join((m.get("name") or m.get(".id") or "?") for m in matches)
             return {"ok": False,
-                    "error": f"no BGP peer matching upstream '{want}'"}
+                    "error": f"upstream '{want}' matches {len(matches)} BGP peers ({names}); "
+                             f"refusing to guess which one to use"}
 
         peer = matches[0]
-        current = (peer.get("output.filter-chain") or peer.get("filter-chain") or "").strip()
+        current = (peer.get("output.filter-chain") or "").strip()
         if current == "rtbh-out":
-            return {"ok": True, "attached": True, "peer": peer.get("name") or peer.get(".id"),
+            return {"ok": True, "attached": True, "origin": origin,
+                    "peer": peer.get("name") or peer.get(".id"),
                     "note": "chain already attached"}
         if current:
-            # Never silently replace somebody else's output filter.
             return {"ok": False, "peer": peer.get("name"),
-                    "error": (f"peer '{peer.get('name')}' already uses output filter chain "
-                              f"'{current}'; refusing to overwrite")}
-
-        path = "/routing/bgp/connection/set" if peer.get("remote-address") is not None else "/routing/bgp/peer/set"
-        try:
-            list(api(path, **{".id": peer.get(".id"), "output.filter-chain": "rtbh-out"}))
-            return {"ok": True, "attached": True, "peer": peer.get("name") or peer.get(".id"),
-                    "note": "chain attached by portal"}
-        except Exception as e:
-            return {"ok": False, "peer": peer.get("name"),
-                    "error": f"could not attach chain: {type(e).__name__}: {e}"}
+                    "error": (f"peer '{peer.get('name')}' uses output filter chain "
+                              f"'{current}'; the rtbh-out chain must be chained from it "
+                              f"(jump rule) by an operator — refusing to replace it")}
+        return {"ok": False, "peer": peer.get("name"),
+                "error": (f"peer '{peer.get('name')}' has no output filter chain. A RouterOS "
+                          f"filter chain defaults to reject, so attaching a chain that only "
+                          f"matches the RTBH prefix would withdraw every other prefix. "
+                          f"An operator must chain rtbh-out with an explicit accept for "
+                          f"normal traffic before RTBH can be used.")}
 
     def rtbh_withdraw(self, rule_id: str) -> dict:
         """Remove a routing filter rule created by ``rtbh_announce``."""

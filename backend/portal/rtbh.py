@@ -1,4 +1,4 @@
-"""BGP RTBH (Remote Triggered Black Hole) execution.
+"""BGP RTBH (Remote Triggered Black Hole) execution — destination-based only.
 
 Why this module exists
 ----------------------
@@ -9,16 +9,30 @@ announced upstream, so operators believed traffic was being dropped at the
 provider edge when in reality the circuit kept saturating.  That is a silent
 failure of the worst kind, so RTBH now has a real executor.
 
-Direction semantics (important)
--------------------------------
-``outbound`` — the *internal source* is attacking somebody else (spam, scan,
-amplified reflection, compromised customer VPS).  Target = internal source.
-This is the primary use case requested by the operator: keep RTBH, point it at
-the IP that is attacking outward.
+Why OUTBOUND is refused (important)
+-----------------------------------
+An earlier revision of this module claimed that announcing an internal
+*attacker* as a /32 would stop its outbound attack.  That claim is wrong and
+was removed:
 
-``inbound`` — traffic is aimed at an internal destination.  Target = internal
-destination.  RTBH here means sacrificing that address to protect the rest of
-the network, so it is only reachable through an explicit rule action.
+* Forwarding selects a route by **destination**.  A packet from an internal
+  host attacking the internet has ``dst`` = the external victim, so neither a
+  ``dst-address=<attacker>/32 blackhole=yes`` route nor an upstream
+  announcement of the attacker prefix ever matches it.  The attack continues
+  at full rate.
+* The side effect is worse than nothing: the attacker's /32 becomes a blackhole
+  for traffic **destined to** that host, so the customer disappears from
+  monitoring and remote access while still attacking.
+* Dropping traffic by *source* requires Source RTBH, i.e. destination-based
+  RTBH combined with **uRPF at the provider edge** (RFC 5635 section 4).  That
+  is a capability of the upstream, not something we can trigger from here, and
+  RFC 5635 requires a *separate* community plus NO_EXPORT for it.  None of that
+  is modeled or verified in this codebase, so ``plan_rtbh()`` refuses
+  ``direction="outbound"`` with an explicit reason instead of pretending.
+
+So this module implements destination RTBH only: the target is an internal
+*victim* we are willing to sacrifice to protect the rest of the network.  That
+is reachable through an explicit rule action, never implicitly.
 
 Safety model
 ------------
@@ -29,10 +43,12 @@ Safety model
    refuse before any device is touched.
 3. Execution is split into two independently reported steps:
    - local blackhole route  — always attempted, reduces router CPU;
-   - upstream announcement  — the actual RTBH part, via routing filter rule
+   - upstream announcement  — the actual RTBH part, via a routing filter rule
      that stamps the BGP community so the upstream drops the prefix.
    A failure in step 2 never hides step 1, and the result carries a per-step
-   status so the incident record cannot claim more than what happened.
+   status so the incident record cannot claim more than what happened.  When
+   step 2 fails, step 1 is **rolled back** so no unrecoverable local blackhole
+   is left behind.
 4. Every step returns the exact RouterOS command that was issued.  That string
    is persisted to ``blackhole_log`` so an operator can audit and reproduce.
 """
@@ -42,8 +58,9 @@ import ipaddress
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Community used by most upstreams for RTBH.  A configured value always wins;
-# this is only the fallback that makes ``plan_rtbh`` usable in tests.
+# Community used by most upstreams for destination RTBH.  A configured value
+# always wins; this is only the fallback that makes ``plan_rtbh`` usable in
+# tests.  This is NOT valid for source RTBH (RFC 5635 requires a separate one).
 DEFAULT_RTBH_COMMUNITY = "65535:666"
 
 # Prefix length we are willing to announce.  A /32 (or /128) is the only sane
@@ -56,6 +73,9 @@ RTBH_PREFIXLEN_V6 = 128
 # require the portal-generated id as well.
 ROUTE_COMMENT_PREFIX = "portal-rtbh"
 FILTER_COMMENT_PREFIX = "portal-rtbh-filter"
+
+# Directions this module is allowed to act on.
+SUPPORTED_DIRECTIONS = ("inbound",)
 
 
 @dataclass
@@ -94,6 +114,7 @@ class RTBHResult:
     ok: bool = False
     local_ok: bool = False
     announce_ok: bool = False
+    rolled_back: bool = False
     prefix: str = ""
     community: str = ""
     route_id: Optional[str] = None
@@ -107,6 +128,7 @@ class RTBHResult:
             "ok": self.ok,
             "local_ok": self.local_ok,
             "announce_ok": self.announce_ok,
+            "rolled_back": self.rolled_back,
             "prefix": self.prefix,
             "community": self.community,
             "route_id": self.route_id,
@@ -170,8 +192,15 @@ def plan_rtbh(
                         token=token, allowed=False, reason=reason,
                         scope_prefixes=scope)
 
-    if direction not in ("inbound", "outbound"):
-        return deny(f"Invalid direction for RTBH: {direction!r}")
+    if direction not in SUPPORTED_DIRECTIONS:
+        # Outbound is not "RTBH with a different target", it is a different
+        # mechanism (source filtering at the provider edge, RFC 5635 section 4).
+        # Refusing loudly is the only honest answer while that capability is
+        # neither modeled nor verified.
+        return deny(
+            f"RTBH direction {direction!r} is not supported: blocking an internal "
+            f"attacker requires provider-side uRPF/S-RTBH, not a destination "
+            f"blackhole announcement")
 
     try:
         addr = ipaddress.ip_address(target.split("/")[0])
@@ -208,34 +237,55 @@ def _ros7_announce_rule(plan: RTBHPlan) -> str:
     Matches the exact blackhole prefix and stamps the RTBH community on the
     outbound advertisement.  ``accept`` is intentional: the prefix must be
     advertised, not filtered out.
+
+    The writable property is ``bgp-communities`` (RFC 1997).  There is no
+    ``bgp-out-community`` property in RouterOS — the only ``bgp-out-*``
+    property is ``bgp-out-med``.  The previous value made every announcement
+    fail on the device.
     """
-    return (f'if (dst=={plan.prefix} && protocol=static) '
-            f'{{ set bgp-out-community {plan.community}; accept }}')
+    return (f'if (dst=={plan.prefix} && protocol static) '
+            f'{{ append bgp-communities {plan.community}; accept }}')
 
 
 def _ros6_announce_rule(plan: RTBHPlan) -> str:
-    """RouterOS 6 routing filter (``/routing filter``) body."""
-    return (f'if (dst-address={plan.prefix} && protocol=static) '
-            f'{{ set bgp-communities {plan.community}; accept }}')
+    """RouterOS 6 routing filter.
+
+    RouterOS 6 has no ``rule=`` script parameter (that is v7 only) and no
+    ``dst-address`` matcher; it uses discrete properties.  Kept for the audit
+    string only — the executor sends these as real parameters.
+    """
+    return (f'prefix={plan.prefix} prefix-length={plan.prefix.split("/")[-1]} '
+            f'protocol=static action=accept '
+            f'set-bgp-communities={plan.community}')
 
 
-def build_commands(plan: RTBHPlan, *, ros_major: int = 7) -> list[str]:
-    """Return the RouterOS commands for *plan*, for dry-run and for audit."""
+def build_commands(plan: RTBHPlan, *, ros_major: int | None = None) -> list[str]:
+    """Return the RouterOS commands for *plan*, for dry-run and for audit.
+
+    The command list must match what ``apply_rtbh`` really does, otherwise the
+    ``blackhole_log`` audit trail would describe a different action than the one
+    performed — exactly the kind of drift that made the original bug invisible.
+
+    ``ros_major=None`` (unknown version) emits the v7 filter command as an
+    explicit guess for display; ``apply_rtbh`` itself refuses when unknown.
+    """
     if not plan.allowed:
         return []
-    body = _ros7_announce_rule(plan) if ros_major >= 7 else _ros6_announce_rule(plan)
-    chain = "/routing/filter/rule/add" if ros_major >= 7 else "/routing/filter/add"
-    chain_args = ("chain=rtbh-out" if ros_major >= 7
-                  else "chain=rtbh-out")
-    return [
-        (f'/ip/route/add dst-address={plan.prefix} blackhole=yes '
-         f'distance=1 comment="{plan.route_comment}"'),
-        f'{chain} {chain_args} rule="{body}" comment="{plan.filter_comment}"',
-    ]
+    route_cmd = (f'/ip/route/add dst-address={plan.prefix} blackhole=yes '
+                 f'distance=1 comment="{plan.route_comment}"')
+    if ros_major is None or ros_major >= 7:
+        filter_cmd = (f'/routing/filter/rule/add chain=rtbh-out '
+                      f'rule="{_ros7_announce_rule(plan)}" '
+                      f'comment="{plan.filter_comment}"')
+    else:
+        filter_cmd = (f'/routing/filter/add chain=rtbh-out '
+                      f'{_ros6_announce_rule(plan)} '
+                      f'comment="{plan.filter_comment}"')
+    return [route_cmd, filter_cmd]
 
 
 def apply_rtbh(client, plan: RTBHPlan, *, dry_run: bool = True,
-               ros_major: int = 7) -> RTBHResult:
+               ros_major: int | None = None) -> RTBHResult:
     """Execute *plan* on *client* (a ``MikrotikClient``).
 
     Steps are independent so partial mitigation is reported truthfully:
@@ -260,33 +310,72 @@ def apply_rtbh(client, plan: RTBHPlan, *, dry_run: bool = True,
         result.errors.append("dry_run: commands built but not executed")
         return result
 
+    # A wrong major version yields commands the router rejects, so refuse to
+    # act when it cannot be determined — never guess.
+    if ros_major is None:
+        ros_major = getattr(client, "_ros_major", None)
+        if ros_major is None and hasattr(client, "_ros_major_required"):
+            ros_major = client._ros_major_required()
+    if ros_major not in (6, 7):
+        result.errors.append("RouterOS major version unknown; refusing to act")
+        return result
+
     # --- step 1: local blackhole route -----------------------------------
     try:
         bh = client.blackhole_add(plan.prefix, comment=plan.route_comment)
         if bh.get("ok"):
             route = client.blackhole_find_by_prefix(plan.prefix)
-            result.local_ok = True
-            result.route_id = (route or {}).get("id")
+            route_id = (route or {}).get("id")
+            if route_id:
+                result.local_ok = True
+                result.route_id = route_id
+            else:
+                # A route we cannot identify cannot be withdrawn later. Treat it
+                # as a failure so nothing claims mitigation we cannot undo.
+                result.errors.append(
+                    "local blackhole added but no route id could be read back; "
+                    "refusing to proceed")
         else:
             result.errors.append(f"local blackhole failed: {bh.get('error')}")
     except Exception as exc:  # never let a device error escape the sweep
         result.errors.append(f"local blackhole raised: {type(exc).__name__}: {exc}")
 
+    if not result.local_ok:
+        return result
+
     # --- step 2: upstream announcement -----------------------------------
-    if result.local_ok:
+    try:
+        add = client.rtbh_announce(
+            plan.prefix, plan.community, plan.filter_comment,
+            upstream_name=plan.upstream_name, ros_major=ros_major)
+        if add.get("ok"):
+            result.announce_ok = True
+            result.filter_id = add.get("id")
+        else:
+            result.errors.append(f"announce failed: {add.get('error')}")
+            # Keep a filter id the device did create, so recovery can remove it.
+            result.filter_id = add.get("id")
+    except Exception as exc:
+        result.errors.append(f"announce raised: {type(exc).__name__}: {exc}")
+
+    # --- rollback: never leave an unannounced local blackhole behind ------
+    # Without an upstream announcement the route only blackholes inbound
+    # traffic to the victim, which is pure collateral damage: the attack is not
+    # mitigated and the customer disappears. Remove it.
+    if not result.announce_ok:
         try:
-            add = client.rtbh_announce(
-                plan.prefix, plan.community, plan.filter_comment,
-                upstream_name=plan.upstream_name, ros_major=ros_major)
-            if add.get("ok"):
-                result.announce_ok = True
-                result.filter_id = add.get("id")
+            res = client.blackhole_remove(result.route_id)
+            if res.get("ok"):
+                result.rolled_back = True
+                result.local_ok = False
+                result.route_id = None
+                result.errors.append("local blackhole rolled back (announce failed)")
             else:
-                result.errors.append(f"announce failed: {add.get('error')}")
+                result.errors.append(
+                    f"ROLLBACK FAILED, local blackhole may persist: {res.get('error')}")
         except Exception as exc:
-            result.errors.append(f"announce raised: {type(exc).__name__}: {exc}")
-    else:
-        result.errors.append("announce skipped: local blackhole did not succeed")
+            result.errors.append(
+                f"ROLLBACK RAISED, local blackhole may persist: {type(exc).__name__}: {exc}")
 
     result.ok = result.local_ok and result.announce_ok
     return result

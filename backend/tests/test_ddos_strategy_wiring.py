@@ -129,10 +129,12 @@ async def test_bgp_action_no_upstream_falls_back_to_local(db, monkeypatch):
 
 
 # 4. action=alert_bgp_blackhole + high severity volumetric + upstream available
-#    → strategy=bgp_rtbh → install host route AND announce RTBH community.
-# This used to only record intent (a dangerous silent no-op); the fake client
-# lets this unit test prove the executor now reaches the RouterOS adapter.
-async def test_bgp_action_with_upstream_executes_rtbh(db, monkeypatch):
+#    → strategy=local_blackhole. Automatic BGP RTBH is disabled (see
+#    ddos_guard.select_mitigation_strategy): it requires verified provider
+#    routing policy (community, RouterOS syntax, non-destructive output filter,
+#    rollback). Until then a DB flag must not turn the detector into a BGP
+#    policy editor that could withdraw every announced prefix.
+async def test_bgp_action_with_upstream_degrades_to_local(db, monkeypatch):
     db.ddos_threshold_rules._docs = [_rule(action="alert_bgp_blackhole")]
     db.mikrotik_devices._docs = [_device()]
     flows = [_flow("8.8.8.8", "157.20.32.50", proto="udp", dp="53", pps=200_000)]
@@ -151,8 +153,7 @@ async def test_bgp_action_with_upstream_executes_rtbh(db, monkeypatch):
     await run_ddos_detection_sweep(db)
 
     inc = db.ddos_incidents._docs[0]
-    assert inc["mitigation_type"] == "bgp_rtbh"
+    assert inc["mitigation_type"] == "local_blackhole"
     assert inc["status"] == "mitigated"
     assert inc["blackholed_prefix"] == "157.20.32.50/32"
     assert inc["blackhole_route_id"] == "route-001"
-    assert inc["rtbh_filter_id"] == "filter-001"

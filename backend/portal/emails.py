@@ -26,6 +26,7 @@ crashes and the admin can see why nothing arrived.
 
 from __future__ import annotations
 import asyncio
+import ipaddress
 import logging
 import os
 import re
@@ -1410,10 +1411,12 @@ def _ddos_direction(src: str, dst: str, prefixes: list[str]) -> str | None:
 
 
 def _ddos_target(src: str, dst: str, direction: str) -> str:
-    # For an inbound attack the internal destination is the victim; for an
+    # For an inbound attack the internal destination is the victim. For an
     # outbound attack the internal source is the *attacker* (spam/scanner/
-    # reflection source).  RTBH works in both cases: announcing the address
-    # drops all traffic to/from it at the provider edge.
+    # reflection source). NOTE: destination RTBH only helps the inbound case —
+    # announcing an internal source prefix does not stop its egress (forwarding
+    # keys on destination; source filtering needs provider-side uRPF/S-RTBH).
+    # select_mitigation_strategy therefore refuses outbound auto-mitigation.
     return dst if direction == "inbound" else src
 
 
@@ -1646,9 +1649,10 @@ async def run_ddos_detection_sweep(db) -> dict:
                     and bgp_config.get("bgp_community")
                 )
                 from .ddos_guard import select_mitigation_strategy
-                # Direction must be forwarded: for non-volumetric attacks an
-                # inbound victim must NOT be auto-blackholed (that disconnects
-                # the customer), while an outbound internal source must be.
+                # Direction is forwarded so the selector can refuse outbound
+                # auto-mitigation explicitly. Destination-based RTBH cannot stop
+                # an internal source from sending (forwarding keys on
+                # destination); that needs provider-side uRPF/S-RTBH.
                 strategy = select_mitigation_strategy(
                     severity, attack_type, prefixes, upstream_ready,
                     direction=direction)
@@ -1682,7 +1686,9 @@ async def run_ddos_detection_sweep(db) -> dict:
                 opened += 1
             if mitigation_type in ("local_blackhole", "bgp_rtbh") and (
                     not existing or not existing.get("blackholed_prefix")):
-                prefix = f"{target}/32"
+                # /32 for IPv4, /128 for IPv6: never auto-blackhole less than a host.
+                _ip = ipaddress.ip_address(target)
+                prefix = f"{target}/{32 if _ip.version == 4 else 128}"
                 from .ddos_guard import evaluate_auto_blackhole, load_whitelist
                 from . import rtbh as _rtbh
                 whitelist = await load_whitelist(db)
@@ -1707,7 +1713,14 @@ async def run_ddos_detection_sweep(db) -> dict:
                             log.warning("[ddos] RTBH plan denied: %s (%s)", prefix, plan.reason)
                             result = _rtbh.RTBHResult(prefix=prefix, errors=[plan.reason])
                         else:
-                            ros_major = int((mit_device or {}).get("ros_major") or 7)
+                            # Do not guess the RouterOS grammar. ``apply_rtbh``
+                            # discovers the version from the router when absent
+                            # and fails closed if discovery is unavailable.
+                            ros_major = (mit_device or {}).get("ros_major")
+                            try:
+                                ros_major = int(ros_major) if ros_major is not None else None
+                            except (TypeError, ValueError):
+                                ros_major = None
                             # Execute only when the rule is explicitly set to
                             # auto-mitigate.  RTBH is powerful and upstream-
                             # facing, so it is opt-in per rule, never implicit.
