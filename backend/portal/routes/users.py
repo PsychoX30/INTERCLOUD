@@ -209,7 +209,6 @@ ADMIN_MENU_CATALOG = [
     {"key": "owner_dashboard", "label": "Executive Overview","group": "Overview",       "default_roles": ["admin", "owner"]},
     {"key": "media_library",   "label": "Media Library",    "group": "Creative",       "default_roles": ["admin", "creative"]},
     {"key": "content_calendar","label": "Content Calendar", "group": "Creative",       "default_roles": ["admin", "creative"]},
-    {"key": "utm_builder",     "label": "UTM Builder",      "group": "Creative",       "default_roles": ["admin", "creative", "sales"]},
     {"key": "branding",        "label": "Branding",         "group": "System",         "default_roles": ["admin"]},
     {"key": "site_content",    "label": "Landing CMS",      "group": "System",         "default_roles": ["admin"]},
     {"key": "backup",          "label": "Backup & Restore", "group": "System",         "default_roles": ["admin"]},

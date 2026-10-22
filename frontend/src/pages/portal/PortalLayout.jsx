@@ -104,7 +104,6 @@ const ADMIN_NAV_GROUPS = [
     items: [
       { key: "media_library",    to: "/portal/admin/media-library",    label: "Media Library",    icon: Images,       testid: "nav-media-library",    roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
       { key: "content_calendar", to: "/portal/admin/content-calendar", label: "Content Calendar", icon: CalendarDays, testid: "nav-content-calendar", roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
-      { key: "utm_builder",      to: "/portal/admin/utm-builder",      label: "UTM Builder",      icon: Link2,        testid: "nav-utm-builder",      roles: ["admin", "creative", "sales"] },
       { key: "form_builder",     to: "/portal/admin/form-builder",     label: "Form Builder",     icon: FormInput,    testid: "nav-form-builder",     roles: ["admin", "creative", "sales"] },
     ],
   },

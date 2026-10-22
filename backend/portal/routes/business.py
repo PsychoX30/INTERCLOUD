@@ -2732,36 +2732,6 @@ async def docs_preview(did: str, staff=Depends(get_current_staff)):
 
 
 
-@router.get("/admin/utm-links")
-async def utm_links_list(staff=Depends(get_current_staff)):
-    db = await _get_db()
-    docs = await db.utm_links.find({}).sort("created_at", -1).to_list(200)
-    return [{"id": str(d["_id"]), "url": d.get("url", ""), "base": d.get("base", ""),
-             "params": d.get("params", {}), "label": d.get("label", ""),
-             "created_by": d.get("created_by", ""), "created_at": _iso(d.get("created_at", ""))}
-            for d in docs]
-
-
-@router.post("/admin/utm-links")
-async def utm_links_create(payload: dict, staff=Depends(get_current_staff)):
-    db = await _get_db()
-    url = str(payload.get("url", "")).strip()
-    if not url.startswith("http"):
-        raise HTTPException(status_code=400, detail="URL tidak valid")
-    doc = {"url": url, "base": payload.get("base", ""), "params": payload.get("params", {}),
-           "label": payload.get("label", ""), "created_by": staff.get("email", ""),
-           "created_at": _now()}
-    res = await db.utm_links.insert_one(doc)
-    return {"ok": True, "id": str(res.inserted_id)}
-
-
-@router.delete("/admin/utm-links/{lid}")
-async def utm_links_delete(lid: str, staff=Depends(get_current_staff)):
-    db = await _get_db()
-    await db.utm_links.delete_one({"_id": _oid(lid)})
-    return {"ok": True}
-
-
 # ---------- Content calendar: hari libur nasional ----------
 
 ID_HOLIDAYS_2026 = [

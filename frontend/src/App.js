@@ -82,7 +82,6 @@ const AdminOwnerDashboard = lazy(() => import("./pages/portal/admin/AdminOwnerDa
 const AdminStatusPage   = lazy(() => import("./pages/portal/admin/AdminStatusPage"));
 const AdminMediaLibrary = lazy(() => import("./pages/portal/admin/AdminMediaLibrary"));
 const AdminContentCalendar = lazy(() => import("./pages/portal/admin/AdminContentCalendar"));
-const AdminUTMBuilder   = lazy(() => import("./pages/portal/admin/AdminUTMBuilder"));
 const PublicStatusPage  = lazy(() => import("./pages/PublicStatusPage"));
 
 // Admin (mocked/business chunk)
@@ -199,7 +198,6 @@ function App() {
                   <Route path="status-page" element={<AdminStatusPage />} />
                   <Route path="media-library" element={<AdminMediaLibrary />} />
                   <Route path="content-calendar" element={<AdminContentCalendar />} />
-                  <Route path="utm-builder" element={<AdminUTMBuilder />} />
                   <Route path="form-builder" element={<AdminFormBuilder />} />
                   <Route path="branding" element={<AdminBranding />} />
                   <Route path="site-content" element={<AdminSiteContent />} />
