@@ -82,6 +82,7 @@ const ADMIN_NAV_GROUPS = [
     // is nav grouping only, so RBAC enforcement still lives in App.js.
     label: "Network Operations",
     items: [
+      { key: "ops",          to: "/portal/admin/ops",           label: "Ops Overview",  icon: LayoutDashboard, testid: "nav-ops",        roles: ["admin", "support"] },
       { key: "monitoring",   to: "/portal/admin/monitoring",   label: "Monitoring", icon: Activity,     testid: "nav-monitoring",   roles: ["admin", "support"] },
       { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
       { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
