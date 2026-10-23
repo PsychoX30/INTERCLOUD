@@ -410,6 +410,25 @@ async def _maybe_auto_block(db, ip: str):
         "created_at": now_dt.isoformat(),
         "read": False,
     })
+    # Normalized audit record: the IPS decision leaves an auditable trail
+    # even if email/Telegram dispatch fails.
+    # Scope the extra enumeration query to the block path only (rare: it runs
+    # once the threshold is crossed), and measure how many distinct accounts
+    # this IP sprayed so password-spraying is scored, not just raw volume.
+    # distinct_ips is 1 by construction — we are scoring a single source IP.
+    try:
+        sprayed = await db.login_attempts.distinct(
+            "email", {"ip": ip, "success": False, "created_at": {"$gte": window_iso}})
+        distinct_emails = len([e for e in sprayed if e]) or 1
+    except Exception:
+        distinct_emails = 1
+    threat = compute_threat_score(
+        failures=fails, distinct_ips=1, distinct_emails=distinct_emails,
+        threshold=int(s["fail_threshold"]))
+    await _log_security_event(
+        db, event="ip_auto_blocked", ip=ip, action="login",
+        success=False, reason="auto_block_threshold",
+        score=threat["score"], level=threat["level"])
     # Fire-and-forget alerts - never let a mail/Telegram outage break /auth/login
     try:
         import asyncio as _asyncio
@@ -502,10 +521,41 @@ async def _is_ip_blocked(db, ip: str) -> bool:
     return False
 
 
+async def _log_security_event(db, *, event: str, ip: str, action: str,
+                              success: bool, reason: str,
+                              score: int | None = None, level: str | None = None,
+                              email: str | None = None) -> None:
+    """Append a normalized, auditable security event.
+
+    Best-effort — must never raise into the auth path. Failures are logged
+    at WARNING level and swallowed.
+    """
+    try:
+        await db.security_events.insert_one({
+            "event": event,
+            "ip": ip,
+            "action": action,
+            "success": bool(success),
+            "reason": reason,
+            "score": score,
+            "level": level,
+            "email": email,
+            "created_at": _now(),
+            # ``at`` is a real BSON Date so the TTL index on security_events
+            # actually expires documents. A TTL on the ISO-string created_at
+            # would silently never fire (same trap as ddos_samples).
+            "at": datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        logging.getLogger("portal.security").warning(
+            "[security] event_log failed for %s: %s", event, e)
+
+
 from portal.security import (
     limiter as _rl_limiter,
     AUTH_LOGIN_LIMIT, AUTH_REGISTER_LIMIT,
     AUTH_FORGOT_LIMIT, AUTH_RESET_LIMIT, PUBLIC_STATUS_LIMIT,
+    compute_threat_score,
 )
 
 

@@ -146,6 +146,24 @@ async def startup_seed():
         await db.blocked_ips.create_index("ip", unique=True)
         await db.blocked_ips.create_index("expires_at")
         await db.security_notifications.create_index("created_at")
+        # login_attempts: per-IP + window count for the IPS auto-block check
+        # (the single-field "ip" index above cannot serve an ip + range scan).
+        await db.login_attempts.create_index([("ip", 1), ("created_at", -1)])
+        # security_events: normalized IPS decision trail, written by the
+        # auto-block path and the unauthenticated auth guards.
+        #   - created_at (ISO string) backs the newest-first feed → plain index.
+        #   - the TTL is declared on ``at``, a real BSON Date, because a TTL on
+        #     the ISO-string created_at would silently never expire anything —
+        #     the same trap documented on ddos_samples above. Two indexes on
+        #     created_at (plain + TTL) would also raise IndexOptionsConflict and
+        #     abort the rest of this startup block.
+        await db.security_events.create_index([("created_at", -1)])
+        await db.security_events.create_index([("ip", 1), ("created_at", -1)])
+        await db.security_events.create_index("at", expireAfterSeconds=180 * 86400)
+        # block_events: reserved for the Phase-2 flow-ingestion correlator
+        # (block/unblock lifecycle timeline). No writers yet — index first so
+        # the collection is query-ready when the correlator lands.
+        await db.block_events.create_index([("created_at", -1)])
         # ---- Hot-path compound indexes (Phase-1 performance) -----------
         # Client dashboard: services/invoices/orders scoped to a user
         await db.services.create_index([("user_id", 1), ("status", 1)])

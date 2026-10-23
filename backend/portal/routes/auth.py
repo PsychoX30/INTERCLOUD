@@ -120,6 +120,11 @@ async def login_2fa(payload: dict, request: Request):
     from portal.security import _client_ip as _rl_client_ip
     db = await _get_db()
     ip = _rl_client_ip(request)
+    # Same auto-block gate as /auth/login: 2FA is the second half of the same
+    # credential exchange, so a blocked IP must not be able to keep guessing
+    # TOTP / recovery codes here.
+    if await _is_ip_blocked(db, ip):
+        raise HTTPException(status_code=429, detail="IP temporarily blocked due to repeated failures")
     ua = request.headers.get("user-agent", "")
     try:
         uid = _tf.decode_mfa_token(payload.get("mfa_token", ""))
@@ -282,9 +287,13 @@ async def register(payload: m.RegisterIn, request: Request):
     """
     db = await _get_db()
     from portal import integrations_v2 as _iv2
+    from portal.security import _client_ip as _rl_client_ip
+    ip = _rl_client_ip(request)
+    if await _is_ip_blocked(db, ip):
+        raise HTTPException(status_code=429, detail="IP temporarily blocked due to repeated failures")
     await _iv2.enforce_recaptcha(
         db, payload.recaptcha_token, "register",
-        request.client.host if request.client else None,
+        ip,
     )
     email = payload.email.lower().strip()
 
@@ -459,9 +468,13 @@ async def auth_forgot_password(payload: m.ForgotPasswordIn, request: Request):
     """
     db = await _get_db()
     from portal import integrations_v2 as _iv2
+    from portal.security import _client_ip as _rl_client_ip
+    ip = _rl_client_ip(request)
+    if await _is_ip_blocked(db, ip):
+        raise HTTPException(status_code=429, detail="IP temporarily blocked due to repeated failures")
     await _iv2.enforce_recaptcha(
         db, payload.recaptcha_token, "forgot",
-        request.client.host if request.client else None,
+        ip,
     )
     email = payload.email.lower().strip()
     u = await db.users.find_one({"email": email})
@@ -492,6 +505,11 @@ async def auth_forgot_password(payload: m.ForgotPasswordIn, request: Request):
 @_rl_limiter.limit(AUTH_RESET_LIMIT)
 async def auth_reset_password(payload: m.ResetPasswordIn, request: Request):
     db = await _get_db()
+    from portal.security import _client_ip as _rl_client_ip
+    # A blocked IP must not be able to keep guessing reset tokens either —
+    # the emailed link proves mailbox access, not IP reputation.
+    if await _is_ip_blocked(db, _rl_client_ip(request)):
+        raise HTTPException(status_code=429, detail="IP temporarily blocked due to repeated failures")
     token_hash = hashlib.sha256(payload.token.encode()).hexdigest()
     row = await db.password_resets.find_one({"token_hash": token_hash, "used": False})
     if not row:

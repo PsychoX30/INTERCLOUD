@@ -264,6 +264,46 @@ async def blocked_ips_add(payload: dict, admin=Depends(get_current_admin)):
     return {"ok": True, "ip": ip}
 
 
+# ---------- Security events (normalized IPS decision trail) ----------
+@router.get("/admin/security/events")
+async def security_events_list(
+    admin=Depends(get_current_admin),
+    limit: int = 100,
+    event: str = "",
+    ip: str = "",
+    level: str = "",
+):
+    """Read-only feed of normalized security events.
+
+    Written by the unauthenticated auth guards and the IPS auto-block path, so
+    a blocking decision always leaves an auditable record even when the email /
+    Telegram dispatch fails. Newest first, bounded by `limit`; the collection
+    is TTL-pruned server-side so it cannot grow without bound.
+    """
+    db = await _get_db()
+    limit = max(1, min(limit, 500))
+    q: dict = {}
+    if event:
+        q["event"] = event
+    if ip:
+        q["ip"] = ip
+    if level:
+        q["level"] = level
+    docs = await db.security_events.find(q).sort("created_at", -1).to_list(limit)
+    return [{
+        "id": str(d.get("_id", "")),
+        "event": d.get("event", ""),
+        "ip": d.get("ip", ""),
+        "action": d.get("action", ""),
+        "success": bool(d.get("success")),
+        "reason": d.get("reason", ""),
+        "score": d.get("score"),
+        "level": d.get("level"),
+        "email": d.get("email"),
+        "created_at": d.get("created_at", ""),
+    } for d in docs]
+
+
 @router.get("/admin/security/notifications")
 async def security_notifications_list(admin=Depends(get_current_admin), limit: int = 50):
     db = await _get_db()

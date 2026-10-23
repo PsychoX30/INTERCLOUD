@@ -162,3 +162,50 @@ async def log_csp_report(body: bytes) -> None:
     except Exception:
         data = {"raw": (body or b"")[:400].decode(errors="replace")}
     logging.getLogger("portal.csp").warning(f"[csp-violation] {data}")
+
+
+# ============================================================
+# Threat scoring — pure, deterministic, testable anomaly detector
+# ============================================================
+def compute_threat_score(*, failures: int, distinct_ips: int,
+                         distinct_emails: int, threshold: int) -> dict:
+    """Score an IP's failed-login pattern on 0..100 and map to a level.
+
+    Three independent signals, each clamped to 0..1, combined so that volume
+    (the strongest and most objective signal) can reach 100 on its own while
+    the other two only add on top:
+
+      - volume:        failure count vs the configured auto-block threshold.
+      - enumeration:   password spraying — many accounts from one source IP.
+      - distribution:  distributed brute force — one account from many IPs.
+
+    Reaching the block threshold is therefore decisive by itself: volume
+    saturates at 1.0 there, so the score hits 100 without needing a special
+    case. The total is capped at 100 so no combination leaves the range.
+
+    level: score >= 70 → "high", >= 40 → "medium", else "low".
+
+    Pure function: no DB, no network, no clock. Safe to unit-test and to run
+    anywhere in the login path.
+    """
+    def _clamp(x: float) -> float:
+        return max(0.0, min(1.0, x))
+
+    # Volume saturates at the block threshold (see docstring).
+    volume = _clamp(float(failures) / float(threshold)) if threshold > 0 else 0.0
+    # Password spraying: one source IP touching many distinct accounts.
+    # Saturates at 6 distinct accounts — diminishing returns beyond that.
+    enumeration = _clamp((distinct_emails - 1) / 5.0) if distinct_emails > 1 else 0.0
+    # Distributed brute force: one account probed from many source IPs.
+    distribution = _clamp((distinct_ips - 1) / 5.0) if distinct_ips > 1 else 0.0
+
+    raw = 100.0 * (volume + 0.3 * enumeration + 0.15 * distribution)
+    score = int(min(100, round(raw)))
+    level = "high" if score >= 70 else "medium" if score >= 40 else "low"
+    return {
+        "score": score,
+        "level": level,
+        "volume": round(volume, 3),
+        "enumeration": round(enumeration, 3),
+        "distribution": round(distribution, 3),
+    }
