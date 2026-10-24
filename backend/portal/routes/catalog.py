@@ -333,6 +333,9 @@ def _fb_serialize(d: dict) -> dict:
         "success_message": d.get("success_message", "Terima kasih, kami akan segera menghubungi Anda."),
         "fields": d.get("fields", []), "active": d.get("active", True),
         "submissions": d.get("submissions", 0),
+        "status": d.get("status", "draft"),
+        "version": d.get("version", 1),
+        "share_id": d.get("share_id", ""),
         "created_at": _iso(d.get("created_at", "")), "updated_at": _iso(d.get("updated_at", "")),
     }
 
@@ -354,6 +357,36 @@ def _fb_clean_fields(fields) -> list:
         })
     out.sort(key=lambda x: x["order"])
     return out
+
+# ---------- Form v2 helpers ----------
+_FB_STATUSES = {"draft", "published"}
+
+def _fb_public_shape(d: dict) -> dict:
+    """Minimal shape for public form rendering - no internal counters."""
+    return {
+        "id": str(d["_id"]),
+        "name": d.get("name", ""),
+        "slug": d.get("slug", ""),
+        "share_id": d.get("share_id", ""),
+        "title": d.get("title", ""),
+        "description": d.get("description", ""),
+        "submit_label": d.get("submit_label", "Kirim"),
+        "success_message": d.get("success_message", "Terima kasih, kami akan segera menghubungi Anda."),
+        "fields": d.get("fields", []),
+        "active": d.get("active", True),
+        "version": d.get("version", 1),
+        "status": d.get("status", "draft"),
+    }
+
+def _csv_safe(v) -> str:
+    """Prefix formula-injection triggers so Excel/Sheets treat as plain text."""
+    if v is None:
+        return ""
+    sv = str(v)
+    if sv and sv[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + sv
+    return sv
+
 
 
 @router.get("/admin/form-builder")
@@ -384,6 +417,7 @@ async def form_builder_create(payload: dict, staff=Depends(get_current_staff)):
             {"key": "message", "label": "Pesan", "type": "textarea", "required": False},
         ]),
         "active": bool(payload.get("active", True)), "submissions": 0,
+        "status": "draft", "version": 1, "share_id": "",
         "created_at": _now(), "updated_at": _now(),
     }
     r = await db.form_configs.insert_one(doc)
@@ -397,6 +431,9 @@ async def form_builder_update(fid: str, payload: dict, staff=Depends(get_current
     d = await db.form_configs.find_one({"_id": _oid(fid)})
     if not d:
         raise HTTPException(status_code=404, detail="Form not found")
+    # Only allow edits on draft; published forms require new draft
+    if d.get("status") == "published":
+        raise HTTPException(status_code=409, detail="Form sudah dipublikasikan. Buat draft baru untuk mengedit.")
     upd = {"updated_at": _now()}
     for k in ("name", "title", "description", "submit_label", "success_message"):
         if k in payload:
@@ -409,6 +446,42 @@ async def form_builder_update(fid: str, payload: dict, staff=Depends(get_current
     d = await db.form_configs.find_one({"_id": d["_id"]})
     return _fb_serialize(d)
 
+@router.put("/admin/form-builder/{fid}/publish")
+async def form_builder_publish(fid: str, staff=Depends(get_current_staff)):
+    """Publish draft -> published, bump version, generate share_id if first publish."""
+    db = await _get_db()
+    d = await db.form_configs.find_one({"_id": _oid(fid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form not found")
+    if d.get("status") == "published":
+        raise HTTPException(status_code=409, detail="Form sudah dipublikasikan")
+    new_version = d.get("version", 1) + 1
+    share_id = d.get("share_id") or secrets.token_urlsafe(24)
+    await db.form_configs.update_one(
+        {"_id": d["_id"]},
+        {"$set": {"status": "published", "version": new_version, "share_id": share_id, "updated_at": _now()}}
+    )
+    d = await db.form_configs.find_one({"_id": d["_id"]})
+    return _fb_serialize(d)
+
+
+@router.put("/admin/form-builder/{fid}/draft")
+async def form_builder_new_draft(fid: str, staff=Depends(get_current_staff)):
+    """Create a new draft from a published form (copy for editing)."""
+    db = await _get_db()
+    d = await db.form_configs.find_one({"_id": _oid(fid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form not found")
+    if d.get("status") != "published":
+        raise HTTPException(status_code=400, detail="Hanya form published yang bisa dibuat draft baru")
+    new_version = d.get("version", 1) + 1
+    await db.form_configs.update_one(
+        {"_id": d["_id"]},
+        {"$set": {"status": "draft", "version": new_version, "updated_at": _now()}}
+    )
+    d = await db.form_configs.find_one({"_id": d["_id"]})
+    return _fb_serialize(d)
+
 
 @router.delete("/admin/form-builder/{fid}")
 async def form_builder_delete(fid: str, staff=Depends(get_current_staff)):
@@ -417,23 +490,26 @@ async def form_builder_delete(fid: str, staff=Depends(get_current_staff)):
     return {"ok": True}
 
 
-@router.get("/portal-public/forms/{slug}")
-async def public_form_config(slug: str):
-    """Konfigurasi form publik untuk dirender di landing page."""
+@router.get("/portal-public/forms/{identifier}")
+async def public_form_config(identifier: str):
+    """Konfigurasi form publik - accepts slug OR share_id. Only serves published."""
     db = await _get_db()
-    d = await db.form_configs.find_one({"slug": slug, "active": True})
+    # Try slug first, then share_id
+    d = await db.form_configs.find_one({"slug": identifier, "active": True, "status": "published"})
+    if not d:
+        d = await db.form_configs.find_one({"share_id": identifier, "active": True, "status": "published"})
     if not d:
         raise HTTPException(status_code=404, detail="Form tidak ditemukan atau nonaktif")
-    out = _fb_serialize(d)
-    out.pop("submissions", None)
-    return out
+    return _fb_public_shape(d)
 
 
-@router.post("/portal-public/forms/{slug}/submit")
-async def public_form_submit(slug: str, payload: dict, request: Request):
+@router.post("/portal-public/forms/{identifier}/submit")
+async def public_form_submit(identifier: str, payload: dict, request: Request):
     """Terima kiriman form dinamis: validasi server-side per field, simpan sebagai lead + CRM prospect."""
     db = await _get_db()
-    d = await db.form_configs.find_one({"slug": slug, "active": True})
+    d = await db.form_configs.find_one({"slug": identifier, "active": True, "status": "published"})
+    if not d:
+        d = await db.form_configs.find_one({"share_id": identifier, "active": True, "status": "published"})
     if not d:
         raise HTTPException(status_code=404, detail="Form tidak ditemukan atau nonaktif")
     remote_ip = request.client.host if request.client else None
@@ -485,6 +561,14 @@ async def public_form_submit(slug: str, payload: dict, request: Request):
         "crm_id": crm_id, "ip": remote_ip, "created_at": _now(),
     }
     r = await db.leads.insert_one(lead)
+    # Also store in form_submissions for export
+    await db.form_submissions.insert_one({
+        "form_id": d["_id"], "form_slug": slug, "form_name": d.get("name", ""),
+        "form_version": d.get("version", 1), "values": values,
+        "email": email, "name": name, "phone": str(values.get("phone", "")),
+        "company": str(values.get("company", "")), "ip": remote_ip,
+        "created_at": _now(),
+    })
     await db.form_configs.update_one({"_id": d["_id"]}, {"$inc": {"submissions": 1}})
     return {"ok": True, "lead_id": str(r.inserted_id),
             "message": d.get("success_message", "Terima kasih!")}
@@ -497,6 +581,64 @@ async def admin_list_leads(status: Optional[str] = None, staff=Depends(get_curre
     q = {"status": status} if status else {}
     docs = await db.leads.find(q).sort("created_at", -1).to_list(1000)
     return [_serialize_lead(d) for d in docs]
+
+@router.get("/admin/form-builder/{fid}/export")
+async def form_builder_export(fid: str, status: Optional[str] = None, staff=Depends(get_current_staff)):
+    """Export form submissions as CSV with formula-injection protection."""
+    from fastapi.responses import StreamingResponse
+    import csv
+    import io
+
+    db = await _get_db()
+    d = await db.form_configs.find_one({"_id": _oid(fid)})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form not found")
+
+    q = {"form_id": d["_id"]}
+    if status:
+        q["status"] = status  # Note: form_submissions doesn't have status field yet, ignore for now
+
+    cursor = db.form_submissions.find(q).sort("created_at", -1)
+
+    # Build headers: fixed + dynamic field labels
+    fixed_headers = ["submitted_at", "name", "email", "phone", "company", "ip"]
+    field_labels = [f.get("label", f.get("key", "")) for f in d.get("fields", [])]
+    headers = fixed_headers + field_labels
+
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        # Write BOM for UTF-8 Excel compatibility
+        yield "﻿"
+        writer.writerow([_csv_safe(h) for h in headers])
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+
+        async for sub in cursor:
+            row = [
+                _csv_safe(sub.get("created_at", "")),
+                _csv_safe(sub.get("name", "")),
+                _csv_safe(sub.get("email", "")),
+                _csv_safe(sub.get("phone", "")),
+                _csv_safe(sub.get("company", "")),
+                _csv_safe(sub.get("ip", "")),
+            ]
+            # Dynamic fields
+            vals = sub.get("values", {})
+            for f in d.get("fields", []):
+                row.append(_csv_safe(vals.get(f.get("key", ""), "")))
+            writer.writerow(row)
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
+    filename = f"form-{d.get('slug', 'export')}-{d.get('version', 1)}.csv"
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 @router.put("/admin/leads/{lid}/status")

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, Card, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass, Loading, EmptyState } from "../ui";
-import { Plus, Trash2, ArrowUp, ArrowDown, Eye, ExternalLink, Save, FormInput } from "lucide-react";
+import { Plus, Trash2, ArrowUp, ArrowDown, Eye, ExternalLink, Save, FormInput, Copy, Download, Send } from "lucide-react";
 import { toast } from "sonner";
 
 const FIELD_TYPES = [
@@ -26,6 +26,30 @@ const AdminFormBuilder = () => {
     if (!window.confirm(`Hapus form "${f.name}"?`)) return;
     await api.delete(`/admin/form-builder/${f.id}`); load();
   };
+  const publish = async (f) => {
+    if (!window.confirm(`Publikasikan "${f.name}"?`)) return;
+    await api.put(`/admin/form-builder/${f.id}/publish`);
+    toast.success("Form dipublikasikan"); load();
+  };
+  const newDraft = async (f) => {
+    if (!window.confirm(`Buat draft baru dari "${f.name}"?`)) return;
+    await api.put(`/admin/form-builder/${f.id}/draft`);
+    toast.success("Draft baru dibuat"); load();
+  };
+  const exportCsv = async (f) => {
+    const res = await api.get(`/admin/form-builder/${f.id}/export`, { responseType: "blob" });
+    const url = window.URL.createObjectURL(new Blob([res.data]));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `form-${f.slug}-v${f.version || 1}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+  const copyShare = (shareId) => {
+    navigator.clipboard.writeText(`${window.location.origin}/form/${shareId}`);
+    toast.success("Link share disalin");
+  };
 
   if (rows === null) return <Loading />;
   return (
@@ -38,15 +62,24 @@ const AdminFormBuilder = () => {
           <Card key={f.id} className="p-5" data-testid={`fb-card-${f.slug}`}>
             <div className="flex items-start justify-between gap-2">
               <div>
-                <div className="font-extrabold text-[#0a2350]">{f.name}</div>
+                <div className="font-extrabold text-[#0a2350]">{f.name} <span className="font-mono text-xs text-[#f5b120] ml-2">v{f.version || 1}</span></div>
                 <div className="text-xs text-slate-500 font-mono">/form/{f.slug}</div>
+                {f.share_id && <div className="text-xs text-slate-500 font-mono">share: {f.share_id}</div>}
               </div>
               <StatusBadge status={f.active ? "active" : "inactive"} />
             </div>
-            <div className="mt-3 text-xs text-slate-500">{f.fields.length} field · {f.submissions} kiriman</div>
+            <div className="mt-3 text-xs text-slate-500">{f.fields.length} field · {f.submissions} kiriman · {f.status || "draft"}</div>
             <div className="mt-4 flex gap-2 flex-wrap">
-              <button className={btnSecondary} onClick={() => setEditing(f)} data-testid={`fb-edit-${f.slug}`}><FormInput className="h-4 w-4" /> Edit</button>
+              <button className={btnSecondary} onClick={() => setEditing(f)} data-testid={`fb-edit-${f.slug}`} disabled={f.status === "published"}><FormInput className="h-4 w-4" /> {f.status === "published" ? "Lihat (read‑only)" : "Edit"}</button>
               <a className={btnSecondary} href={`/form/${f.slug}`} target="_blank" rel="noreferrer" data-testid={`fb-open-${f.slug}`}><ExternalLink className="h-4 w-4" /> Buka</a>
+              {f.status === "draft" && <button className={btnPrimary} onClick={() => publish(f)} data-testid={`fb-publish-${f.slug}`}><Send className="h-4 w-4" /> Publikasikan</button>}
+              {f.status === "published" && (
+                <>
+                  <button className={btnSecondary} onClick={() => exportCsv(f)} data-testid={`fb-export-${f.slug}`}><Download className="h-4 w-4" /> Export CSV</button>
+                  <button className={btnSecondary} onClick={() => copyShare(f.share_id)} data-testid={`fb-copyshare-${f.slug}`}><Copy className="h-4 w-4" /> Salin link</button>
+                  <button className={btnSecondary} onClick={() => newDraft(f)} data-testid={`fb-newdraft-${f.slug}`}>Draft baru</button>
+                </>
+              )}
               <button className={`${btnSecondary} text-red-600`} onClick={() => del(f)} data-testid={`fb-del-${f.slug}`}><Trash2 className="h-4 w-4" /></button>
             </div>
           </Card>
@@ -60,6 +93,7 @@ const AdminFormBuilder = () => {
 const FormEditor = ({ form, onClose }) => {
   const [f, setF] = useState(form);
   const [busy, setBusy] = useState(false);
+  const readonly = f.status === "published";
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setField = (i, k, v) => setF((p) => {
     const fields = [...p.fields]; fields[i] = { ...fields[i], [k]: v }; return { ...p, fields };
@@ -87,49 +121,49 @@ const FormEditor = ({ form, onClose }) => {
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-5xl bg-white rounded-3xl overflow-hidden max-h-[92vh] flex flex-col" data-testid="fb-editor">
         <div className="p-5 bg-[#0a2350] text-white flex items-center justify-between">
-          <div className="font-extrabold">{f.name} <span className="font-mono text-xs text-[#f5b120] ml-2">/form/{f.slug}</span></div>
+          <div className="font-extrabold">{f.name} <span className="font-mono text-xs text-[#f5b120] ml-2">/form/{f.slug} v{f.version || 1}</span></div>
           <label className="flex items-center gap-2 text-xs">
-            <input type="checkbox" checked={f.active} onChange={(e) => set("active", e.target.checked)} data-testid="fb-active-toggle" /> Aktif
+            <input type="checkbox" checked={f.active} onChange={(e) => set("active", e.target.checked)} disabled={readonly} data-testid="fb-active-toggle" /> Aktif
           </label>
         </div>
         <div className="flex-1 overflow-y-auto grid lg:grid-cols-2 gap-0">
           <div className="p-5 border-r border-slate-100 space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <label><div className={labelClass}>Judul form</div>
-                <input value={f.title} onChange={(e) => set("title", e.target.value)} className={inputClass} data-testid="fb-title" /></label>
+                <input value={f.title} onChange={(e) => set("title", e.target.value)} className={inputClass} disabled={readonly} data-testid="fb-title" /></label>
               <label><div className={labelClass}>Label tombol</div>
-                <input value={f.submit_label} onChange={(e) => set("submit_label", e.target.value)} className={inputClass} /></label>
+                <input value={f.submit_label} onChange={(e) => set("submit_label", e.target.value)} className={inputClass} disabled={readonly} /></label>
             </div>
             <label className="block"><div className={labelClass}>Deskripsi</div>
-              <input value={f.description} onChange={(e) => set("description", e.target.value)} className={inputClass} /></label>
+              <input value={f.description} onChange={(e) => set("description", e.target.value)} className={inputClass} disabled={readonly} /></label>
             <label className="block"><div className={labelClass}>Pesan sukses</div>
-              <input value={f.success_message} onChange={(e) => set("success_message", e.target.value)} className={inputClass} /></label>
+              <input value={f.success_message} onChange={(e) => set("success_message", e.target.value)} className={inputClass} disabled={readonly} /></label>
             <div className="flex items-center justify-between">
               <div className="text-sm font-extrabold text-[#0a2350]">Fields</div>
-              <button className={btnSecondary} onClick={addField} data-testid="fb-add-field"><Plus className="h-4 w-4" /> Tambah field</button>
+              {!readonly && <button className={btnSecondary} onClick={addField} data-testid="fb-add-field"><Plus className="h-4 w-4" /> Tambah field</button>}
             </div>
             <div className="space-y-3">
               {f.fields.map((fl, i) => (
                 <div key={i} className="rounded-2xl border border-slate-200 p-3" data-testid={`fb-field-${i}`}>
                   <div className="flex items-center gap-2">
-                    <input value={fl.label} onChange={(e) => setField(i, "label", e.target.value)} className={`${inputClass} h-8 text-sm font-semibold`} />
-                    <button onClick={() => move(i, -1)} className="text-slate-400 hover:text-[#0a2350]" title="Naik" data-testid={`fb-up-${i}`}><ArrowUp className="h-4 w-4" /></button>
-                    <button onClick={() => move(i, 1)} className="text-slate-400 hover:text-[#0a2350]" title="Turun" data-testid={`fb-down-${i}`}><ArrowDown className="h-4 w-4" /></button>
-                    <button onClick={() => delField(i)} className="text-slate-400 hover:text-red-600" title="Hapus" data-testid={`fb-delfield-${i}`}><Trash2 className="h-4 w-4" /></button>
+                    <input value={fl.label} onChange={(e) => setField(i, "label", e.target.value)} className={`${inputClass} h-8 text-sm font-semibold`} disabled={readonly} />
+                    {!readonly && <button onClick={() => move(i, -1)} className="text-slate-400 hover:text-[#0a2350]" title="Naik" data-testid={`fb-up-${i}`}><ArrowUp className="h-4 w-4" /></button>}
+                    {!readonly && <button onClick={() => move(i, 1)} className="text-slate-400 hover:text-[#0a2350]" title="Turun" data-testid={`fb-down-${i}`}><ArrowDown className="h-4 w-4" /></button>}
+                    {!readonly && <button onClick={() => delField(i)} className="text-slate-400 hover:text-red-600" title="Hapus" data-testid={`fb-delfield-${i}`}><Trash2 className="h-4 w-4" /></button>}
                   </div>
                   <div className="mt-2 grid grid-cols-3 gap-2">
-                    <select value={fl.type} onChange={(e) => setField(i, "type", e.target.value)} className={`${inputClass} h-8 text-xs`}>
+                    <select value={fl.type} onChange={(e) => setField(i, "type", e.target.value)} className={`${inputClass} h-8 text-xs`} disabled={readonly}>
                       {FIELD_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                     </select>
-                    <input value={fl.key} onChange={(e) => setField(i, "key", e.target.value)} className={`${inputClass} h-8 text-xs font-mono`} placeholder="key" />
+                    <input value={fl.key} onChange={(e) => setField(i, "key", e.target.value)} className={`${inputClass} h-8 text-xs font-mono`} placeholder="key" disabled={readonly} />
                     <label className="flex items-center gap-1.5 text-xs text-slate-600">
-                      <input type="checkbox" checked={fl.required} onChange={(e) => setField(i, "required", e.target.checked)} /> Wajib
+                      <input type="checkbox" checked={fl.required} onChange={(e) => setField(i, "required", e.target.checked)} disabled={readonly} /> Wajib
                     </label>
                   </div>
-                  <input value={fl.placeholder} onChange={(e) => setField(i, "placeholder", e.target.value)} className={`${inputClass} h-8 text-xs mt-2`} placeholder="Placeholder (opsional)" />
+                  <input value={fl.placeholder} onChange={(e) => setField(i, "placeholder", e.target.value)} className={`${inputClass} h-8 text-xs mt-2`} placeholder="Placeholder (opsional)" disabled={readonly} />
                   {fl.type === "select" && (
                     <input value={(fl.options || []).join(", ")} onChange={(e) => setField(i, "options", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-                      className={`${inputClass} h-8 text-xs mt-2`} placeholder="Opsi dipisah koma: A, B, C" />
+                      className={`${inputClass} h-8 text-xs mt-2`} placeholder="Opsi dipisah koma: A, B, C" disabled={readonly} />
                   )}
                 </div>
               ))}
@@ -158,7 +192,7 @@ const FormEditor = ({ form, onClose }) => {
         </div>
         <div className="p-4 border-t border-slate-100 flex justify-end gap-2">
           <button className={btnSecondary} onClick={onClose}>Batal</button>
-          <button className={btnPrimary} onClick={save} disabled={busy} data-testid="fb-save"><Save className="h-4 w-4" /> Simpan form</button>
+          {!readonly && <button className={btnPrimary} onClick={save} disabled={busy} data-testid="fb-save"><Save className="h-4 w-4" /> Simpan form</button>}
         </div>
       </div>
     </div>

@@ -7,7 +7,7 @@ import { CheckCircle2, Loader2 } from "lucide-react";
 const API = `${process.env.REACT_APP_BACKEND_URL}/api/portal`;
 
 export default function PublicForm() {
-  const { slug } = useParams();
+  const { slug: identifier } = useParams();
   const [cfg, setCfg] = useState(null);
   const [err, setErr] = useState("");
   const [values, setValues] = useState({});
@@ -16,20 +16,26 @@ export default function PublicForm() {
   const [done, setDone] = useState("");
 
   useEffect(() => {
-    axios.get(`${API}/portal-public/forms/${slug}`)
+    axios.get(`${API}/portal-public/forms/${identifier}`)
       .then((r) => setCfg(r.data))
       .catch(() => setErr("Form tidak ditemukan atau sudah nonaktif."));
-  }, [slug]);
+  }, [identifier]);
 
-  const set = (k, v) => { setValues((p) => ({ ...p, [k]: v })); setFieldErrs((p) => ({ ...p, [k]: null })); };
+  const set = (k, v) => {
+    setValues((p) => ({ ...p, [k]: v }));
+    setFieldErrs((p) => ({ ...p, [k]: null }));
+  };
 
   const validate = () => {
     const es = {};
     for (const f of cfg.fields) {
       const v = values[f.key];
-      if (f.required && (v === undefined || v === "" || v === false)) es[f.key] = `${f.label} wajib diisi`;
-      else if (v && f.type === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) es[f.key] = "Format email tidak valid";
-      else if (v && f.type === "phone" && !/^[0-9+()\-\s]{7,20}$/.test(v)) es[f.key] = "Format nomor telepon tidak valid";
+      if (f.required && (v === undefined || v === "" || v === false))
+        es[f.key] = `${f.label} wajib diisi`;
+      else if (v && f.type === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v))
+        es[f.key] = "Format email tidak valid";
+      else if (v && f.type === "phone" && !/^[0-9+()\-\s]{7,20}$/.test(v))
+        es[f.key] = "Format nomor telepon tidak valid";
     }
     setFieldErrs(es);
     return Object.keys(es).length === 0;
@@ -41,7 +47,8 @@ export default function PublicForm() {
     setBusy(true); setErr("");
     try {
       const recaptcha_token = await getRecaptchaToken("lead").catch(() => null);
-      const r = await axios.post(`${API}/portal-public/forms/${slug}/submit`, { ...values, recaptcha_token });
+      const r = await axios.post(`${API}/portal-public/forms/${identifier}/submit`,
+        { ...values, recaptcha_token });
       setDone(r.data.message);
     } catch (er) {
       const d = er?.response?.data?.detail;

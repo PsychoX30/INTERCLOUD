@@ -230,6 +230,8 @@ async def startup_seed():
         await db.monitoring_checks.create_index([("created_at", 1)])
         await db.monitoring_checks.create_index([("enabled", 1), ("created_at", 1)])
         await db.monitoring_probes.create_index([("check_id", 1), ("at", -1)])
+        # Form submissions for CSV export
+        await db.form_submissions.create_index([("form_id", 1), ("created_at", -1)])
         # Probe samples were unbounded (104k docs and climbing since Aug 13).
         # ``at`` is a BSON Date here, so the TTL actually applies.
         #
