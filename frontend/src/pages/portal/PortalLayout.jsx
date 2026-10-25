@@ -10,6 +10,7 @@ import {
   Bell, BookOpen, TrendingUp,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
+import ChatWidget from "../../components/ChatWidget";
 import { api } from "../../portal/api";
 
 const CLIENT_NAV = [
@@ -116,6 +117,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "audit_log",     to: "/portal/admin/audit-log",     label: "Audit Log",      icon: History,        testid: "nav-audit-log",     roles: ["admin"] },
       { key: "branding",      to: "/portal/admin/branding",      label: "Branding",       icon: ImageIcon,      testid: "nav-branding",      roles: ["admin"] },
       { key: "site_content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
+      { key: "chat", to: "/portal/admin/chat", label: "Live Chat", icon: MessageSquare, testid: "nav-chat", roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },
       { key: "status_page",   to: "/portal/admin/status-page",   label: "Public Status Page", icon: Globe,        testid: "nav-status-page",   roles: ["admin"] },
     ],
@@ -305,8 +307,10 @@ const PortalLayout = ({ variant = "client" }) => {
                       ))}
                     </div>
                   )}
-                </div>
+                        </>
+</div>
               );
+        </>
             })
           ) : (
             CLIENT_NAV.map((it) => <NavItem key={it.to} item={it} onClick={() => setOpen(false)} />)

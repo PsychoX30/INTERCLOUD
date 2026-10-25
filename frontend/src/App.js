@@ -61,6 +61,8 @@ const AdminSecurity     = lazy(() => import("./pages/portal/admin/AdminSecurity"
 const AdminBranding     = lazy(() => import("./pages/portal/admin/AdminBranding"));
 const AdminSiteContent  = lazy(() => import("./pages/portal/admin/AdminSiteContent"));
 const AdminBackup       = lazy(() => import("./pages/portal/admin/AdminBackup"));
+const AdminChat        = lazy(() => import("./pages/portal/admin/AdminChat"));
+const AdminJitsi       = lazy(() => import("./pages/portal/admin/AdminJitsi"));
 const AdminDomains      = lazy(() => import("./pages/portal/admin/AdminDomains"));
 const AdminSSL          = lazy(() => import("./pages/portal/admin/AdminSSL"));
 const AdminMail         = lazy(() => import("./pages/portal/admin/AdminMail"));
@@ -204,6 +206,8 @@ function App() {
                   <Route path="branding" element={<AdminBranding />} />
                   <Route path="site-content" element={<AdminSiteContent />} />
                   <Route path="backup" element={<AdminBackup />} />
+                  <Route path="chat" element={<RequireAuth role={["admin"]}><AdminChat /></RequireAuth>} />
+                  <Route path="jitsi" element={<RequireAuth role={["admin"]}><AdminJitsi /></RequireAuth>} />
                   <Route path="domains" element={<AdminDomains />} />
                   <Route path="ssl" element={<AdminSSL />} />
                   <Route path="real-integrations" element={<Navigate to="/portal/admin/integrations" replace />} />
