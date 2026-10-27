@@ -7,10 +7,11 @@ import {
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
   History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
-  Bell, BookOpen, TrendingUp,
+  Bell, BookOpen, TrendingUp, MessageSquare, Video,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import ChatWidget from "../../components/ChatWidget";
+import JitsiWidget from "../../components/JitsiWidget";
 import { api } from "../../portal/api";
 
 const CLIENT_NAV = [
@@ -118,6 +119,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "branding",      to: "/portal/admin/branding",      label: "Branding",       icon: ImageIcon,      testid: "nav-branding",      roles: ["admin"] },
       { key: "site_content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
       { key: "chat", to: "/portal/admin/chat", label: "Live Chat", icon: MessageSquare, testid: "nav-chat", roles: ["admin"] },
+      { key: "jitsi", to: "/portal/admin/jitsi", label: "Jitsi Meet", icon: Video, testid: "nav-jitsi", roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },
       { key: "status_page",   to: "/portal/admin/status-page",   label: "Public Status Page", icon: Globe,        testid: "nav-status-page",   roles: ["admin"] },
     ],
@@ -251,6 +253,9 @@ const PortalLayout = ({ variant = "client" }) => {
 
   return (
     <div className="min-h-screen bg-slate-50 text-[#0a2350] ic-font flex flex-col">
+      {/* JitsiWidget hanya untuk admin: room dibuka tanpa JWT, tidak boleh tampil di portal klien */}
+      {isAdmin && <JitsiWidget />}
+      <ChatWidget />
       {impersonating && !isAdmin && (
         <div className="sticky top-0 z-[60] bg-indigo-700 text-white px-4 py-2 flex items-center justify-center gap-3 text-sm" data-testid="impersonation-banner">
           <span>Mode impersonasi: Anda melihat portal sebagai <b>{localStorage.getItem("ic_impersonating")}</b></span>
@@ -307,10 +312,8 @@ const PortalLayout = ({ variant = "client" }) => {
                       ))}
                     </div>
                   )}
-                        </>
-</div>
+                </div>
               );
-        </>
             })
           ) : (
             CLIENT_NAV.map((it) => <NavItem key={it.to} item={it} onClick={() => setOpen(false)} />)

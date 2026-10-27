@@ -1,28 +1,32 @@
 import React, { useEffect, useState } from "react";
 import { Save, Loader2 } from "lucide-react";
-import { api } from "../../../../portal/api";
+import { api } from "../../../portal/api";
 
 export default function AdminJitsi() {
   const [cfg, setCfg] = useState({
     enabled: false,
     domain: "meet.intercloud-digital.com",
-    room_prefix: "intercloud",
+    default_room_prefix: "intercloud",
     jwt_secret: "",
   });
+  const [secretSet, setSecretSet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
   useEffect(() => {
     api.get("/jitsi/config").then(({ data }) => {
-      setCfg({ ...cfg, ...data });
-    });
+      // jwt_secret TIDAK pernah dikirim server; hanya flag jwt_secret_set.
+      setSecretSet(!!data.jwt_secret_set);
+      setCfg((prev) => ({ ...prev, ...data, jwt_secret: "" }));
+    }).catch(() => { /* keep defaults */ });
   }, []);
 
   const save = async () => {
     setBusy(true); setMsg(null);
     try {
       const { data } = await api.post("/admin/jitsi/config", cfg);
-      setCfg(data);
+      setSecretSet(!!data.jwt_secret_set);
+      setCfg((prev) => ({ ...prev, ...data, jwt_secret: "" }));
       setMsg({ kind: "ok", text: "Jitsi config saved – widget now " + (data.enabled ? "ACTIVE" : "INACTIVE") });
     } catch (e) {
       setMsg({ kind: "error", text: e?.response?.data?.detail || e.message });
@@ -60,8 +64,8 @@ export default function AdminJitsi() {
         <div>
           <label className="block text-sm font-medium text-[#0a2350] mb-1">Room prefix</label>
           <input
-            value={cfg.room_prefix}
-            onChange={e => setCfg({ ...cfg, room_prefix: e.target.value })}
+            value={cfg.default_room_prefix}
+            onChange={e => setCfg({ ...cfg, default_room_prefix: e.target.value })}
             placeholder="intercloud"
             className="w-full px-4 py-2 rounded-xl border border-slate-300 focus:border-[#f5b120] focus:ring-1 focus:ring-[#f5b120] outline-none"
           />
@@ -72,11 +76,13 @@ export default function AdminJitsi() {
           <input
             value={cfg.jwt_secret}
             onChange={e => setCfg({ ...cfg, jwt_secret: e.target.value })}
-            placeholder="rahasia-jwt-opsional"
+            placeholder={secretSet ? "•••••••• (sudah tersimpan)" : "belum ada secret"}
+            autoComplete="new-password"
             className="w-full px-4 py-2 rounded-xl border border-slate-300 focus:border-[#f5b120] focus:ring-1 focus:ring-[#f5b120] outline-none"
           />
           <p className="mt-2 text-slate-500 text-xs">
-            Biarkan kosong untuk tidak mengganti secret yang sudah ada.
+            Secret tidak pernah dikirim balik oleh server. Biarkan kosong untuk mempertahankan
+            secret yang sudah tersimpan; isi untuk menggantinya.
           </p>
         </div>
       </div>
