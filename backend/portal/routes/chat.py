@@ -31,5 +31,5 @@ async def chat_config_get():
 async def chat_config_set(payload: ChatConfigIn, admin=Depends(get_current_admin)):
     """Admin only – simpan config."""
     db = await _get_db()
-    await _set_setting_value(db, "chat_config", payload.dict())
+    await _set_setting_value(db, "chat_config", payload.model_dump())
     return await _get_setting_value(db, "chat_config", CHAT_DEFAULTS)
