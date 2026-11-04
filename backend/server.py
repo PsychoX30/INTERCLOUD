@@ -281,6 +281,24 @@ async def startup_seed():
         await db.media_assets.create_index([("tags", 1)])
         # Content calendar
         await db.content_calendar.create_index([("scheduled_at", 1)])
+        # Jitsi meeting registry (portal/jitsi_meetings.py).
+        # `active_slug` adalah klaim partial-unique: slug tetap direservasi
+        # selama rapat hidup, dan `end_meeting` melepasnya ($unset) sehingga
+        # nama rapat bisa dipakai ulang. Unique index biasa pada `slug` akan
+        # memblokir pemakaian ulang selamanya -- Mongo tidak punya "unique
+        # kecuali ended", dan `$ne` ilegal di partialFilterExpression.
+        # `$type: "string"` dipakai (bukan `$exists`) supaya dokumen tanpa
+        # field ini tidak pernah ikut terindeks.
+        await db.jitsi_meetings.create_index(
+            "active_slug", unique=True,
+            partialFilterExpression={"active_slug": {"$type": "string"}},
+        )
+        # Jalur lookup undangan: sha256(invite_key) -> meeting. Unique supaya
+        # tabrakan tidak pernah menyelesaikan ke room yang salah.
+        await db.jitsi_meetings.create_index("invite_key_hash", unique=True)
+        # Daftar admin + jadwal landing: filter status, urut waktu mulai.
+        await db.jitsi_meetings.create_index([("status", 1), ("starts_at", -1)])
+        await db.jitsi_meetings.create_index([("starts_at", -1)])
         # Seed atomic number counters from existing data so concurrent
         # first-writes can never collide with legacy numbers.
         for coll, prefix in (("invoices", "INV"), ("tickets", "TCK"),

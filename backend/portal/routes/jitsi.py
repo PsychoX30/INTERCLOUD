@@ -1,7 +1,25 @@
-"""Jitsi Meet configuration (public read, admin write)."""
-from fastapi import APIRouter, Depends
+"""Jitsi Meet configuration (public read, admin write) + meeting registry."""
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
+from pymongo.errors import DuplicateKeyError
+
+from ..audit import log_audit
 from ..auth import get_current_admin
+from ..jitsi_meetings import (
+    DEFAULT_DURATION_MIN,
+    JitsiConfigError,
+    admin_projection,
+    can_join,
+    create_meeting,
+    end_meeting,
+    find_by_invite,
+    join_url,
+    list_meetings,
+    meeting_state,
+    mint_token,
+    public_projection,
+    room_name,
+)
 from .shared import _get_db, _get_setting_value, _set_setting_value
 
 router = APIRouter()
@@ -100,3 +118,156 @@ async def jitsi_config_set(payload: JitsiConfigIn, admin=Depends(get_current_adm
     }
     await _set_setting_value(db, "jitsi_config", stored)
     return _public_jitsi(stored)
+
+
+# --------------------------------------------------------------------------- #
+# Registry rapat + penerbit token undangan.
+#
+# Endpoint config di atas TIDAK disentuh: tests/test_jitsi_contract.py menjaga
+# jitsi_config_get (publik, tanpa Depends(admin)) dan jitsi_config_set (admin),
+# termasuk perilaku "secret kosong = PERTAHANKAN".
+# --------------------------------------------------------------------------- #
+
+# Landing join ada di apex; Meet sendiri di meet.intercloud-digital.com.
+PORTAL_BASE = "https://intercloud-digital.com/portal"
+MEET_JOIN_BASE = "https://intercloud-digital.com/meet"
+
+
+class MeetingCreateIn(BaseModel):
+    title: str
+    slug: str | None = None
+    starts_at: str | None = None
+    duration_min: int = DEFAULT_DURATION_MIN
+    lobby: bool = True
+
+    @field_validator("title")
+    @classmethod
+    def _title_required(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("title must not be blank")
+        return v[:120]
+
+
+def _invite_url(slug: str, key: str) -> str:
+    return f"{MEET_JOIN_BASE}/{slug}?k={key}"
+
+
+@router.post("/admin/jitsi/meetings")
+async def jitsi_meeting_create(payload: MeetingCreateIn, admin=Depends(get_current_admin)):
+    """Buat rapat. `invite_key` plaintext dikembalikan HANYA di respons ini."""
+    db = await _get_db()
+    try:
+        doc = await create_meeting(
+            db,
+            title=payload.title,
+            created_by=admin.get("email", ""),
+            starts_at=payload.starts_at,
+            duration_min=payload.duration_min,
+            slug=payload.slug,
+            lobby=payload.lobby,
+        )
+    except ValueError as exc:
+        # slug tidak lolos kontrak / di luar rentang.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DuplicateKeyError as exc:
+        # `Weekly-Team` dan `weekly-team` bertabrakan setelah normalisasi
+        # lowercase -> ini konflik, bukan kesalahan server.
+        raise HTTPException(status_code=409, detail="slug sudah dipakai") from exc
+
+    out = admin_projection(doc)
+    out["invite_key"] = doc["invite_key"]
+    out["invite_url"] = _invite_url(doc["slug"], doc["invite_key"])
+    await log_audit(
+        db,
+        actor=admin,
+        action="jitsi.meeting_create",
+        category="system",
+        target_type="jitsi_meeting",
+        target_id=out["id"],
+        target_label=doc["slug"],
+        after={"slug": doc["slug"], "starts_at": doc["starts_at"]},
+    )
+    return out
+
+
+@router.get("/admin/jitsi/meetings")
+async def jitsi_meetings_admin(
+    include_ended: bool = False, limit: int = 100, admin=Depends(get_current_admin)
+):
+    """Daftar rapat untuk panel admin.
+
+    Wajib lewat `admin_projection`: `list_meetings` mengembalikan dokumen apa
+    adanya, termasuk `invite_key_hash` yang tidak boleh keluar.
+    """
+    db = await _get_db()
+    rows = await list_meetings(db, include_ended=include_ended, limit=limit)
+    return {"items": [admin_projection(r) for r in rows]}
+
+
+@router.post("/admin/jitsi/meetings/{meeting_id}/end")
+async def jitsi_meeting_end(meeting_id: str, admin=Depends(get_current_admin)):
+    """Akhiri rapat: status `ended` + rotate `invite_key` (tautan lama mati)."""
+    db = await _get_db()
+    if not await end_meeting(db, meeting_id, admin.get("email", "")):
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    await log_audit(
+        db,
+        actor=admin,
+        action="jitsi.meeting_end",
+        category="system",
+        target_type="jitsi_meeting",
+        target_id=meeting_id,
+        severity="warning",
+    )
+    return {"ended": True}
+
+
+@router.get("/jitsi/meetings")
+async def jitsi_meetings_public():
+    """Daftar rapat untuk landing page — tanpa slug, tanpa invite key.
+
+    Kalau slug ikut keluar, siapa pun bisa membuka /Intercloud-<slug> tanpa
+    undangan dan seluruh mekanisme invite jadi hiasan.
+    """
+    db = await _get_db()
+    rows = await list_meetings(db, limit=50)
+    return {"items": [public_projection(r) for r in rows]}
+
+
+@router.get("/jitsi/join")
+async def jitsi_join(
+    k: str = Query("", max_length=256),
+    # 256 = penjaga DoS saja. Batas yang mengikat peserta adalah pemotongan
+    # 64 karakter di mint_token(); angka itu sengaja TIDAK diduplikasi di
+    # layer ini supaya tidak ada dua aturan yang saling menimpa tanpa suara.
+    name: str = Query("", max_length=256),
+):
+    """Tukar `invite_key` menjadi token HS256 berumur pendek.
+
+    Pengunjung di sini SUDAH memegang key yang sah, jadi mengembalikan room
+    dan slug bukan kebocoran — itu justru tujuan undangan.
+    """
+    db = await _get_db()
+    meeting = await find_by_invite(db, k)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Undangan tidak valid atau sudah dicabut")
+    if not can_join(meeting):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Rapat tidak dapat diikuti (status: {meeting_state(meeting)})",
+        )
+    try:
+        token = mint_token(meeting, display_name=name)
+    except JitsiConfigError as exc:
+        # Secret belum dipasang / terlalu pendek. 503, bukan 500: ini kondisi
+        # konfigurasi yang belum siap, bukan bug.
+        raise HTTPException(status_code=503, detail="Jitsi belum siap menerima undangan") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {
+        "room": room_name(meeting["slug"]),
+        "slug": meeting["slug"],
+        "token": token,
+        "url": join_url(meeting["slug"], token),
+    }
