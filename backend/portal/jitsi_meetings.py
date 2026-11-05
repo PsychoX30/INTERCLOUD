@@ -367,5 +367,42 @@ async def end_meeting(db, meeting_id, ended_by: str, now: datetime | None = None
     return getattr(result, "matched_count", 0) == 1
 
 
+async def rotate_invite(db, meeting_id):
+    """Putar ``invite_key`` tanpa mengubah status/lifecycle rapat.
+
+    Kembalikan ``(key_plaintext, slug)`` sekali lagi, atau ``None`` kalau id
+    tidak dikenal atau rapat sudah diakhiri. Tautan lama langsung mati karena
+    hash diganti.
+
+    **Tidak** menyentuh ``active_slug`` -- itu hanya tugas ``end_meeting``.
+    Rapat yang masih hidup TETAP memegang klaim slug-nya.
+    """
+    from bson import ObjectId
+
+    try:
+        oid = ObjectId(str(meeting_id))
+    except Exception:
+        return None
+    doc = await db[COLL].find_one({"_id": oid})
+    if not doc:
+        return None
+    if (doc.get("status") or "") == "ended":
+        # Rapat sudah diakhiri admin: tidak boleh "dihidupkan" lewat rotasi
+        # undangan. Konsisten dengan `end` (matched_count -> 404).
+        return None
+    key, key_hash = new_invite_key()
+    # Filter status tetap di `update_one` demi atomisitas di Mongo nyata.
+    # (FakeCollection hanya mencocokkan `_id`, jadi keputusan 404 TIDAK boleh
+    # bergantung pada filter ini -- pre-read di atas yang memutuskan.)
+    result = await db[COLL].update_one(
+        {"_id": oid, "status": {"$ne": "ended"}},
+        {"$set": {"invite_key_hash": key_hash}},
+    )
+    if getattr(result, "matched_count", 0) != 1:
+        return None
+    return key, doc.get("slug", "")
+
+
+
 def join_url(slug: str, token: str) -> str:
     return f"https://{DOMAIN}/{room_name(slug)}#jitsi_meeting_token={token}"

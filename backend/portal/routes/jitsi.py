@@ -19,6 +19,7 @@ from ..jitsi_meetings import (
     mint_token,
     public_projection,
     room_name,
+    rotate_invite,
 )
 from .shared import _get_db, _get_setting_value, _set_setting_value
 
@@ -221,6 +222,31 @@ async def jitsi_meeting_end(meeting_id: str, admin=Depends(get_current_admin)):
         severity="warning",
     )
     return {"ended": True}
+
+
+
+@router.post("/admin/jitsi/meetings/{meeting_id}/rotate-invite")
+async def jitsi_meeting_rotate_invite(meeting_id: str, admin=Depends(get_current_admin)):
+    """Terbitkan invite_key BARU untuk rapat yang masih aktif.
+
+    Tautan lama langsung mati. Rapat yang sudah `ended` -> 404, konsisten
+    dengan `end`. Status rapat tidak berubah.
+    """
+    db = await _get_db()
+    rotated = await rotate_invite(db, meeting_id)
+    if not rotated:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    key, slug = rotated
+    await log_audit(
+        db,
+        actor=admin,
+        action="jitsi.meeting_invite_rotate",
+        category="system",
+        target_type="jitsi_meeting",
+        target_id=meeting_id,
+        severity="warning",
+    )
+    return {"invite_key": key, "invite_url": _invite_url(slug, key)}
 
 
 @router.get("/jitsi/meetings")

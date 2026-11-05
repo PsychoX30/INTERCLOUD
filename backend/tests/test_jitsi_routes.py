@@ -386,3 +386,71 @@ async def test_create_and_end_write_audit_rows(client, db):
 async def test_failed_create_writes_no_audit_row(client, db):
     assert (await client.post(CREATE, json={"title": "  "})).status_code == 422
     assert db.audit_logs.rows == []
+
+
+# --------------------------------------------------------------------------- #
+# rotate-invite (Fase 3): plaintext sekali lagi, hash-only, slug dipertahankan
+# --------------------------------------------------------------------------- #
+ROTATE = "/api/portal/admin/jitsi/meetings/{id}/rotate-invite"
+
+
+async def test_rotate_invite_kills_old_key_and_issues_new_one(client, db):
+    created = (await _create(client, slug="weekly-team")).json()
+    old_key = created["invite_key"]
+    old_hash = jm.hash_invite(old_key)
+    assert (await client.get(JOIN, params={"k": old_key})).status_code == 200
+
+    resp = await client.post(ROTATE.format(id=created["id"]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    new_key = data["invite_key"]
+    assert new_key and new_key != old_key
+    assert "invite_key_hash" not in data
+    assert data["invite_url"].endswith(f"weekly-team?k={new_key}")
+
+    # Kunci lama mati; kunci baru hidup.
+    assert (await client.get(JOIN, params={"k": old_key})).status_code == 404
+    assert (await client.get(JOIN, params={"k": new_key})).status_code == 200
+
+    rows = db[jm.COLL].rows
+    hashes = {r.get("invite_key_hash") for r in rows}
+    assert old_hash not in hashes
+    assert jm.hash_invite(new_key) in hashes
+    # Plaintext tidak pernah tersimpan sebagai nilai mana pun.
+    for r in rows:
+        for v in r.values():
+            assert v != old_key and v != new_key
+
+
+async def test_rotate_preserves_active_slug_and_status(client, db):
+    created = (await _create(client, slug="weekly-team")).json()
+    await client.post(ROTATE.format(id=created["id"]))
+    row = next(r for r in db[jm.COLL].rows if str(r["_id"]) == created["id"])
+    assert row.get("status") == "scheduled"
+    assert row.get("active_slug") == "weekly-team"  # TIDAK di-unset
+
+
+async def test_rotate_slug_still_claimed_while_active(client):
+    created = (await _create(client, slug="weekly-team")).json()
+    await client.post(ROTATE.format(id=created["id"]))
+    again = await _create(client, slug="weekly-team")
+    assert again.status_code == 409, again.text
+
+
+async def test_rotate_after_end_is_404(client):
+    created = (await _create(client, slug="weekly-team")).json()
+    await client.post(f"{CREATE}/{created['id']}/end")
+    resp = await client.post(ROTATE.format(id=created["id"]))
+    assert resp.status_code == 404, resp.text
+
+
+async def test_rotate_unknown_id_is_404(client):
+    assert (await client.post(ROTATE.format(id=ObjectId()))).status_code == 404
+    assert (await client.post(ROTATE.format(id="not-an-objectid"))).status_code == 404
+
+
+async def test_rotate_writes_audit_row(client, db):
+    created = (await _create(client, slug="weekly-team")).json()
+    await client.post(ROTATE.format(id=created["id"]))
+    actions = [r.get("action") for r in db.audit_logs.rows]
+    assert actions.count("jitsi.meeting_invite_rotate") == 1
