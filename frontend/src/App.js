@@ -52,6 +52,7 @@ const AdminInvoices     = lazy(() => import("./pages/portal/admin/AdminInvoices"
 const AdminFormBuilder  = lazy(() => import("./pages/portal/admin/AdminFormBuilder"));
 const PublicForm        = lazy(() => import("./pages/PublicForm"));
 const PublicPayInvoice  = lazy(() => import("./pages/PublicPayInvoice"));
+const MeetJoin          = lazy(() => import("./pages/MeetJoin"));
 const AdminInvoiceDetail = lazy(() => import("./pages/portal/admin/AdminInvoiceDetail"));
 const AdminQuotations   = lazy(() => import("./pages/portal/admin/AdminQuotations"));
 const AdminTickets      = lazy(() => import("./pages/portal/admin/AdminTickets"));
@@ -128,6 +129,7 @@ function App() {
                 <Route path="/status" element={<PublicStatusPage />} />
                 <Route path="/form/:slug" element={<PublicForm />} />
                 <Route path="/pay/:token" element={<PublicPayInvoice />} />
+                <Route path="/meet/:slug" element={<MeetJoin />} />
 
                 {/* Public shared folder (no auth) */}
                 <Route path="/documents/shared/:token" element={<SharedFolderPage />} />
