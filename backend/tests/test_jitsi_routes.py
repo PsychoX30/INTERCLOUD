@@ -230,11 +230,13 @@ async def test_join_valid_key_mints_hs256_token(client):
     assert claims["room"] == "Intercloud-weekly-team"
     assert claims["context"]["user"] == {"name": "Anang", "moderator": False}
 
-    # Token dikirim di FRAGMEN, bukan query string: fragmen tidak ikut terkirim
-    # ke server dan tidak masuk access log.
+    # Token dikirim di FRAGMEN sebagai "jwt", bukan query string: fragmen tidak
+    # ikut terkirim ke server dan tidak masuk access log. Nama param "jwt"
+    # adalah yang benar-benar dibaca klien (W7() di app.bundle.min.js);
+    # "jitsi_meeting_token" tidak dikenal klien (0 kemunculan).
     assert data["url"] == (
         "https://meet.intercloud-digital.com/Intercloud-weekly-team"
-        f"#jitsi_meeting_token={data['token']}"
+        f"#jwt={data['token']}"
     )
 
 

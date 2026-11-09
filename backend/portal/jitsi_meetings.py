@@ -405,4 +405,9 @@ async def rotate_invite(db, meeting_id):
 
 
 def join_url(slug: str, token: str) -> str:
-    return f"https://{DOMAIN}/{room_name(slug)}#jitsi_meeting_token={token}"
+    # Klien jitsi-meet membaca token lewat hash "#jwt=" (W7(): hash dulu, lalu
+    # search) -- app.bundle.min.js, string "jitsi_meeting_token" TIDAK dikenal
+    # (0 kemunculan). Token HARUS mentah tanpa kutip: konstruktor URL SSO di
+    # bundle memakai JSON.stringify(o) yang menambah kutip dan membuat HS256
+    # gagal. Hash, bukan query: tidak masuk access log nginx / Referer.
+    return f"https://{DOMAIN}/{room_name(slug)}#jwt={token}"

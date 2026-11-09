@@ -253,5 +253,15 @@ def test_room_name_is_namespaced():
 
 
 def test_join_url_contains_token_in_hash():
+    """Klien jitsi-meet membaca token dari hash "#jwt=" (W7: hash dulu, lalu
+    search). "jitsi_meeting_token" tidak dikenal app.bundle.min.js (0 hit)."""
     url = jm.join_url("weekly-team", "abc.jwt")
-    assert url == "https://meet.intercloud-digital.com/Intercloud-weekly-team#jitsi_meeting_token=abc.jwt"
+    assert url == "https://meet.intercloud-digital.com/Intercloud-weekly-team#jwt=abc.jwt"
+
+
+def test_join_url_token_is_raw_not_quoted():
+    """Konstruktor URL SSO di bundle memakai JSON.stringify(o) sehingga nilai
+    dibungkus kutip; HS256 atas nilai berkutip akan gagal. Token wajib mentah."""
+    url = jm.join_url("weekly-team", "abc.jwt")
+    assert '"' not in url
+    assert url.endswith("#jwt=abc.jwt")
