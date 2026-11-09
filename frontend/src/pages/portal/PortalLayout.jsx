@@ -11,7 +11,6 @@ import {
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import ChatWidget from "../../components/ChatWidget";
-import JitsiWidget from "../../components/JitsiWidget";
 import { api } from "../../portal/api";
 
 const CLIENT_NAV = [
@@ -253,8 +252,9 @@ const PortalLayout = ({ variant = "client" }) => {
 
   return (
     <div className="min-h-screen bg-slate-50 text-[#0a2350] ic-font flex flex-col">
-      {/* JitsiWidget hanya untuk admin: room dibuka tanpa JWT, tidak boleh tampil di portal klien */}
-      {isAdmin && <JitsiWidget />}
+      {/* Room Jitsi hanya lewat registry (AdminJitsi -> /admin/jitsi/meetings -> /meet/:slug).
+          Widget instant-room dihapus: ia membuat room `<prefix>-<uuid>` tanpa baris registry,
+          tanpa invite_key, tanpa jalur end/rotate, dan ditolak begitu enforcement token aktif. */}
       <ChatWidget />
       {impersonating && !isAdmin && (
         <div className="sticky top-0 z-[60] bg-indigo-700 text-white px-4 py-2 flex items-center justify-center gap-3 text-sm" data-testid="impersonation-banner">
