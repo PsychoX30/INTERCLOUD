@@ -112,3 +112,21 @@ credentials.json
 
 # Stempel build dihasilkan scripts/stamp_version.py saat build -- jangan di-commit.
 backend/.version.json
+
+# Artefak lokal server produksi (bukan bagian kode).
+#
+# `.ssh` di worktree ini adalah symlink ke /var/lib/intercloud/.ssh -- tempat
+# deploy key GitHub benar-benar disimpan. Alasannya: user `intercloud` punya
+# home di /opt/intercloud-portal (lihat /etc/passwd), dan ssh membaca config
+# dari home passwd itu, BUKAN dari $HOME. Selama kuncinya ditaruh langsung di
+# sini, `git checkout`/pembersihan worktree bisa menghancurkannya.
+#
+# .ssh sengaja diabaikan supaya `git status` bersih dan `git clean -fdx`
+# tidak menyentuhnya.
+/.ssh
+/.local-junk/
+/.lesshst
+/.npm/
+/backend/uploads/
+/backend/*.bak.*
+

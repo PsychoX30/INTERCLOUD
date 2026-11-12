@@ -163,6 +163,17 @@ main() {
     fi
 
     log "Fetching origin/$BRANCH"
+    # Deploy key lives at /var/lib/intercloud/.ssh and is reachable only through
+    # the ~/.ssh symlink in this worktree (ssh reads the passwd home, not $HOME).
+    # Re-link defensively: a `git clean -fdx` or manual tidy can delete it, and
+    # then every fetch fails with "Permission denied (publickey)".
+    if [[ ! -e "$APP_DIR/.ssh/.ssh" && ! -f "$APP_DIR/.ssh/config" ]]; then
+        if [[ -d /var/lib/intercloud/.ssh ]]; then
+            log "Restoring .ssh symlink -> /var/lib/intercloud/.ssh"
+            rm -rf "$APP_DIR/.ssh"
+            ln -s /var/lib/intercloud/.ssh "$APP_DIR/.ssh"
+        fi
+    fi
     git fetch --all --prune
 
     git checkout "$BRANCH"
