@@ -28,6 +28,7 @@
 #       cannot access the root-owned socket) — the source is deployed but the
 #       backend is still running the previous process.  Restart it manually as
 #       root/support before declaring the deploy complete.
+#   6 = deploy key missing (see DEPLOY_KEY_DIR).
 #   On failure NOTHING has been dropped: the backup archive is written before
 #   any git/rebuild step.
 #
@@ -36,6 +37,10 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/intercloud}"
 BRANCH="${REPO_BRANCH:-main}"
+# Where the GitHub deploy key actually lives. Deliberately OUTSIDE APP_DIR: the
+# service user's passwd home is APP_DIR itself, so ssh looks for ~/.ssh there,
+# but anything under APP_DIR is disposable git working-tree space.
+DEPLOY_KEY_DIR="${DEPLOY_KEY_DIR:-/var/lib/intercloud/.ssh}"
 
 log() { echo -e "==> $*"; }
 
@@ -163,16 +168,25 @@ main() {
     fi
 
     log "Fetching origin/$BRANCH"
-    # Deploy key lives at /var/lib/intercloud/.ssh and is reachable only through
-    # the ~/.ssh symlink in this worktree (ssh reads the passwd home, not $HOME).
-    # Re-link defensively: a `git clean -fdx` or manual tidy can delete it, and
-    # then every fetch fails with "Permission denied (publickey)".
-    if [[ ! -e "$APP_DIR/.ssh/.ssh" && ! -f "$APP_DIR/.ssh/config" ]]; then
-        if [[ -d /var/lib/intercloud/.ssh ]]; then
-            log "Restoring .ssh symlink -> /var/lib/intercloud/.ssh"
-            rm -rf "$APP_DIR/.ssh"
-            ln -s /var/lib/intercloud/.ssh "$APP_DIR/.ssh"
-        fi
+    # Deploy key lives at /var/lib/intercloud/.ssh. It is reachable only through
+    # the ~/.ssh symlink in this worktree, because ssh reads the config from the
+    # passwd home (/opt/intercloud-portal) and NOT from $HOME.
+    #
+    # Defensive re-link. `git clean -fdx` deletes ignored files by design, so
+    # .gitignore alone cannot protect the symlink; if it goes, every fetch dies
+    # with "Permission denied (publickey)" and the deploy looks like an SSH
+    # breakage rather than a missing link.
+    restore_deploy_key_link() {
+        [[ -f "$APP_DIR/.ssh/config" ]] && return 0
+        [[ -d "$DEPLOY_KEY_DIR" ]] || return 1
+        log "Restoring .ssh symlink -> $DEPLOY_KEY_DIR"
+        rm -rf "$APP_DIR/.ssh"
+        ln -s "$DEPLOY_KEY_DIR" "$APP_DIR/.ssh"
+    }
+    if ! restore_deploy_key_link; then
+        echo "!! Deploy key missing: $DEPLOY_KEY_DIR not found."
+        echo "!! Restore it from /var/backups/intercloud-ssh-*/ before retrying."
+        exit 6
     fi
     git fetch --all --prune
 
