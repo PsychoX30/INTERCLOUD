@@ -877,6 +877,14 @@ async def system_version(admin=Depends(get_current_admin)):
     branch = await _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     subject= await _run(["git", "log", "-1", "--pretty=%s"])
     date   = await _run(["git", "log", "-1", "--pretty=%cI"])
+
+    # Versi semantik + stempel build. Dibaca dari artefak yang dibekukan saat
+    # build (``backend/.version.json``) supaya nomor build mengidentifikasi
+    # KODE YANG JALAN, bukan momen endpoint ini dipanggil. Kalau file itu belum
+    # ada (deploy lama / build tidak lewat build_frontend.sh), kita hitung
+    # ulang dari VERSION agar field-nya tidak pernah kosong.
+    version_info = await _version_metadata(repo_root)
+
     return {
         "sha": sha or None,
         "short": short or None,
@@ -884,7 +892,47 @@ async def system_version(admin=Depends(get_current_admin)):
         "subject": subject or None,
         "date": date or None,
         "repo_root": repo_root,
+        **version_info,
     }
+
+
+async def _version_metadata(repo_root: str) -> dict:
+    """Versi aplikasi: ``{"version", "build", "label", "version_sha"}``.
+
+    Selalu mengembalikan keempat kunci (nilai ``None`` kalau tidak tersedia)
+    supaya klien bisa memperlakukan field ini sebagai kontrak tetap.
+    """
+    import json as _json, os as _os
+
+    out = {"version": None, "build": None, "label": None, "version_sha": None}
+
+    stamp = _os.path.join(repo_root, "backend", ".version.json")
+    try:
+        with open(stamp, encoding="utf-8") as fh:
+            data = _json.load(fh)
+        out["version"] = data.get("version")
+        out["build"] = data.get("build")
+        out["label"] = data.get("label")
+        out["version_sha"] = data.get("sha")
+        if out["version"]:
+            return out
+    except (OSError, ValueError):
+        pass
+
+    # Fallback: hitung dari VERSION tanpa menulis apa pun.
+    try:
+        version = open(_os.path.join(repo_root, "VERSION"), encoding="utf-8").read().strip()
+    except OSError:
+        return out
+    if not version:
+        return out
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    wib = _dt.now(_tz(_td(hours=7)))
+    build = wib.strftime("%d%m%Y%H%M")
+    out["version"] = version
+    out["build"] = build
+    out["label"] = f"V{version} build({build})"
+    return out
 
 
 # ---------- System update (background job + status polling) ----------

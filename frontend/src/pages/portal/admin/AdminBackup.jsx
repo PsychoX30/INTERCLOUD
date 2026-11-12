@@ -178,6 +178,13 @@ const AdminBackup = () => {
             {version && (
               <div className="mt-3 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs font-mono flex items-center gap-2 flex-wrap"
                    data-testid="admin-update-version">
+                {version.label && (
+                  <>
+                    <span className="px-2 py-0.5 rounded bg-[#0a2350] text-white font-bold"
+                          data-testid="admin-version-label">{version.label}</span>
+                    <span className="text-slate-300">·</span>
+                  </>
+                )}
                 <span className="inline-flex items-center gap-1 text-slate-500"><GitBranch className="h-3.5 w-3.5" /> {version.branch || "?"}</span>
                 <span className="text-slate-300">·</span>
                 <span className="text-[#0a2350] font-bold">@ {version.short || version.sha?.slice(0, 7) || "unknown"}</span>

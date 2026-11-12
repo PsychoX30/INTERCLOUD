@@ -64,12 +64,11 @@ post_pull() {
     install_python_deps
 
     log "Installing frontend deps + building production bundle"
-    cd "$APP_DIR/frontend"
-    # package-lock.json is the canonical lockfile. Using Yarn without a
-    # yarn.lock resolves a different dependency tree and has broken production
-    # builds (AJV/ajv-keywords incompatibility).
-    npm ci --legacy-peer-deps
-    npm run build
+    # build_frontend.sh membekukan VERSION ke frontend/src/version.json dan
+    # backend/.version.json SEBELUM build, lalu memverifikasi bahwa index.html
+    # menunjuk bundle yang benar-benar ada. Memanggil npm run build langsung
+    # akan menghasilkan bundle tanpa label versi.
+    bash "$APP_DIR/scripts/build_frontend.sh"
     cd "$APP_DIR"
 
     log "Restarting backend via supervisor"
