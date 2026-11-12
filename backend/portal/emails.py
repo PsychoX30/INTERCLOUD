@@ -140,6 +140,33 @@ DEFAULT_TEMPLATES: list[dict] = [
         "is_system": True,
     },
     {
+        "event_key": "order_cancelled",
+        "name": "Order cancelled - payment window expired",
+        "subject": "Order dibatalkan - {{order.product_name}} (#{{order.id_short}})",
+        "body_html": (
+            "<p>Halo <b>{{user.name}}</b>,</p>"
+            "<p>Order berikut dibatalkan otomatis karena belum dibayar dalam "
+            "<b>14 hari</b> sejak dibuat.</p>"
+            "<table style='width:100%;border-collapse:collapse;margin:16px 0;background:#f8fafc;border-radius:10px;overflow:hidden'>"
+            "  <tr><td style='padding:10px 14px;color:#64748b;font-size:12px;width:40%'>Referensi</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>#{{order.id_short}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Layanan</td><td style='padding:10px 14px;font-weight:700;color:#0a2350'>{{order.product_name}}</td></tr>"
+            "  <tr style='border-top:1px solid #e2e8f0'><td style='padding:10px 14px;color:#64748b;font-size:12px'>Status</td><td style='padding:10px 14px;font-weight:700;color:#b91c1c'>Dibatalkan</td></tr>"
+            "</table>"
+            "<p>Invoice terkait juga dibatalkan, jadi tidak ada tagihan yang perlu dibayar.</p>"
+            "<p>Masih berminat? Anda bisa membuat order baru kapan saja dari portal.</p>"
+            "<p style='margin:22px 0'>"
+            "  <a href='{{portal.login_url}}' style='display:inline-block;padding:12px 26px;background:#0a2350;color:#fff;text-decoration:none;border-radius:8px;font-weight:700'>Buat order baru &rarr;</a>"
+            "</p>"
+            "<p>Kalau ini keliru atau Anda butuh bantuan, balas email ini atau hubungi "
+            "<a href='mailto:sales@intercloud-digital.com'>sales@intercloud-digital.com</a>.</p>"
+            "<p style='margin-top:24px'>Salam,<br><b>Tim INTERCLOUD</b></p>"
+        ),
+        "offset_days": None,
+        "send_time": None,
+        "is_active": True,
+        "is_system": True,
+    },
+    {
         "event_key": "invoice_generated",
         "name": "Invoice issued - instant (D-14 baseline)",
         "subject": "Invoice {{invoice.number}} - {{invoice.total_fmt}} (due {{invoice.due_date}})",
@@ -926,6 +953,11 @@ _SCHEDULED_EVENTS = {
     "service_suspension": 8,
 }
 
+# The one event with a side-effect and a catch-up window. Kept separate from the
+# reminder offsets, which must stay exact or the client is dunned every day.
+_TERMINAL_EVENT = "service_suspension"
+_TERMINAL_OFFSET = _SCHEDULED_EVENTS[_TERMINAL_EVENT]
+
 
 async def _sent_today(db, invoice_id: str, event_key: str) -> bool:
     today = datetime.now(timezone.utc).date().isoformat()
@@ -969,10 +1001,21 @@ async def _run_invoice_reminder_sweep_inner(db, *, now: Optional[datetime] = Non
             continue
         delta_days = (today - due_dt).days     # negative → before due; positive → past due
         for event_key, offset in _SCHEDULED_EVENTS.items():
-            if delta_days != offset:
+            # Reminder events fire on their exact day only (otherwise the client
+            # would be dunned every single day). The terminal event is the
+            # exception: it must fire on its day *or any day after*, so a missed
+            # tick (restart, lease contention, host down) self-heals on the next
+            # sweep instead of skipping suspension forever.
+            if event_key == _TERMINAL_EVENT:
+                if delta_days < offset:
+                    continue
+            elif delta_days != offset:
                 continue
             iid = str(inv["_id"])
             if await _sent_today(db, iid, event_key):
+                continue
+            # Already actioned this invoice once — do not re-notify or re-suspend.
+            if event_key == _TERMINAL_EVENT and inv.get("suspended_for_invoice"):
                 continue
             user = await db.users.find_one({"_id": inv["user_id"]})
             if not user:
@@ -988,14 +1031,88 @@ async def _run_invoice_reminder_sweep_inner(db, *, now: Optional[datetime] = Non
             if res.get("status") in ("sent", "skipped"):
                 fired[event_key] += 1
             # Service suspension side-effect
-            if event_key == "service_suspension":
-                await db.services.update_many(
-                    {"user_id": user["_id"], "status": "active"},
-                    {"$set": {"status": "suspended", "suspended_at": now.isoformat(),
-                              "suspended_reason": f"invoice {inv.get('number','')} overdue >8d"}},
+            if event_key == _TERMINAL_EVENT:
+                n = await _suspend_for_invoice(db, inv, user, now=now)
+                suspended += n
+                # Mark the invoice *after* the side-effect so a crash between
+                # the two leaves the invoice actionable on the next sweep.
+                await db.invoices.update_one(
+                    {"_id": inv["_id"]},
+                    {"$set": {"suspended_for_invoice": now.isoformat(),
+                              "suspended_services": n}},
                 )
-                suspended += 1
     return {"date": today.isoformat(), "fired": fired, "services_suspended": suspended}
+
+
+async def _suspend_for_invoice(db, inv: dict, user: dict, *, now: datetime) -> int:
+    """Suspend this invoice's services for non-payment. Returns how many.
+
+    Scoping rules that keep this from doing damage:
+
+    * If the invoice names a service (``service_id``), only that service.
+      Otherwise every *active* service the user still owns.
+    * Never touch services already ``suspended``/``terminated``/``pending``.
+    * Never touch a service an operator suspended by hand
+      (``suspended_manual``) — that flag is the manual override.
+    * Write an audit row and a client-visible notification per service, so the
+      suspension is explainable after the fact instead of a silent status flip.
+    """
+    query = {"user_id": user["_id"], "status": "active"}
+    svc_id = inv.get("service_id")
+    if svc_id:
+        query["_id"] = svc_id
+
+    targets = [s async for s in db.services.find(query)]
+    targets = [s for s in targets if not s.get("suspended_manual")]
+    if not targets:
+        return 0
+
+    reason = (
+        f"Invoice {inv.get('number', '')} belum dibayar "
+        f"{_TERMINAL_OFFSET} hari setelah jatuh tempo"
+    )
+    ids = [s["_id"] for s in targets]
+    await db.services.update_many(
+        {"_id": {"$in": ids}},
+        {"$set": {
+            "status": "suspended",
+            "suspended_at": now.isoformat(),
+            "suspended_reason": reason,
+            "suspended_by": "system:invoice_overdue",
+        }},
+    )
+
+    for svc in targets:
+        try:
+            await db.audit_logs.insert_one({
+                "action": "service.auto_suspend",
+                "actor": "system",
+                "service_id": svc["_id"],
+                "invoice_id": inv["_id"],
+                "invoice_number": inv.get("number", ""),
+                "reason": reason,
+                "created_at": now.isoformat(),
+            })
+        except Exception:
+            pass
+        try:
+            await db.notifications.insert_one({
+                "user_id": user["_id"],
+                "type": "service_suspended",
+                "title": "Layanan ditangguhkan",
+                "message": (
+                    f"Layanan {svc.get('name', '')} ditangguhkan karena "
+                    f"{reason}. Layanan aktif kembali otomatis setelah "
+                    f"pembayaran diverifikasi."
+                ),
+                "service_id": str(svc["_id"]),
+                "invoice_id": str(inv["_id"]),
+                "read": False,
+                "created_at": now.isoformat(),
+            })
+        except Exception:
+            pass
+    return len(targets)
 
 
 # ============================================================
@@ -1367,6 +1484,111 @@ async def run_domain_expiry_sweep(db, *, now: Optional[datetime] = None) -> dict
                 fired[key] += 1
     return {"date": today.isoformat(), "fired": fired,
             "marked_expiring": marked_expiring, "marked_expired": marked_expired}
+
+
+# ============================================================
+# Order expiry - cancel `pending_payment` orders past their pay window
+# ============================================================
+# Harus sama dengan `ORDER_PAYMENT_WINDOW_DAYS` di routes/orders.py. Di-duplikasi
+# dengan sengaja: routes/orders.py meng-import emails, jadi import balik akan
+# melingkar. Kalau salah satu diubah, ubah keduanya.
+ORDER_PAYMENT_WINDOW_DAYS = 14
+
+
+async def run_order_expiry_sweep(db, *, now: Optional[datetime] = None) -> dict:
+    """Batalkan order `pending_payment` yang lewat `expires_at`.
+
+    Aturan yang menjaga ini tidak merusak data:
+
+    * **Hanya order yang punya `expires_at`.** Order lama (sebelum field ini
+      ada) sengaja dilewati — sesuai permintaan "khusus order baru", supaya
+      deploy pertama tidak membatalkan puluhan order historis sekaligus.
+    * **Hanya `pending_payment`.** Order yang sudah dibayar/provisioning/aktif
+      tidak pernah disentuh.
+    * **Invoice hanya dibatalkan bila masih `unpaid`/`overdue`.** Invoice yang
+      sudah `paid` tidak boleh di-cancel diam-diam.
+    * Idempotent: order yang sudah `cancelled` keluar dari query, jadi sweeps
+      berikutnya tidak mengulang.
+    """
+    now = now or datetime.now(timezone.utc)
+    cancelled = 0
+    invoices_cancelled = 0
+    notified = 0
+
+    cursor = db.orders.find({
+        "status": "pending_payment",
+        "expires_at": {"$nin": [None, ""]},
+    })
+    async for order in cursor:
+        try:
+            expires = datetime.fromisoformat(str(order["expires_at"]).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires > now:
+            continue
+
+        res = await db.orders.update_one(
+            {"_id": order["_id"], "status": "pending_payment"},
+            {"$set": {
+                "status": "cancelled",
+                "cancelled_at": now.isoformat(),
+                "cancelled_reason": "payment_window_expired",
+            },
+             "$push": {"provision_log": {
+                 "at": now.isoformat(),
+                 "step": "order_cancelled",
+                 "message": f"Dibatalkan otomatis: belum dibayar dalam "
+                            f"{ORDER_PAYMENT_WINDOW_DAYS} hari.",
+             }}},
+        )
+        # matched 0 → another worker already cancelled it; skip side-effects.
+        if res.modified_count != 1:
+            continue
+        cancelled += 1
+
+        inv_id = order.get("invoice_id")
+        if inv_id:
+            upd = await db.invoices.update_many(
+                {"_id": inv_id, "status": {"$in": ["unpaid", "overdue"]}},
+                {"$set": {"status": "cancelled", "cancelled_at": now.isoformat(),
+                          "cancelled_reason": "order_expired"}},
+            )
+            invoices_cancelled += upd.modified_count
+
+        user = await db.users.find_one({"_id": order["user_id"]})
+        if not user:
+            continue
+        try:
+            await db.notifications.insert_one({
+                "user_id": order["user_id"],
+                "type": "order_cancelled",
+                "title": "Order dibatalkan",
+                "message": (
+                    f"Order {order.get('product_name', '')} dibatalkan otomatis "
+                    f"karena belum dibayar dalam {ORDER_PAYMENT_WINDOW_DAYS} hari. "
+                    f"Silakan buat order baru bila masih berminat."
+                ),
+                "order_id": str(order["_id"]),
+                "read": False,
+                "created_at": now.isoformat(),
+            })
+            notified += 1
+        except Exception:
+            pass
+        try:
+            ctx = build_context(user=user, order=order)
+            await send_via_template(
+                db, event_key="order_cancelled", to_email=user["email"], ctx=ctx,
+                order_id=str(order["_id"]), user_id=str(user["_id"]),
+            )
+        except Exception:
+            # Email gagal tidak boleh membatalkan pembatalan yang sudah terjadi.
+            pass
+
+    return {"cancelled": cancelled, "invoices_cancelled": invoices_cancelled,
+            "notified": notified}
 
 
 # ============================================================
@@ -2543,6 +2765,17 @@ def start_scheduler(db):
         "date",
         run_date=datetime.now(timezone.utc) + timedelta(seconds=40),
         id="job:domain:startup",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Order expiry - hourly at :25. Cancels `pending_payment` orders whose
+    # `expires_at` has passed (14 days). Runs off-peak from the invoice sweep
+    # (:05) so a stuck invoice sweep cannot delay a cancellation.
+    sched.add_job(
+        _leased("order_expiry", lambda: run_order_expiry_sweep(db)),
+        CronTrigger(minute=25),
+        id="job:order_expiry",
         max_instances=1,
         coalesce=True,
     )

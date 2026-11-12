@@ -129,8 +129,14 @@ async def jitsi_config_set(payload: JitsiConfigIn, admin=Depends(get_current_adm
 # termasuk perilaku "secret kosong = PERTAHANKAN".
 # --------------------------------------------------------------------------- #
 
-# Landing join ada di apex; Meet sendiri di meet.intercloud-digital.com.
+# Meet sendiri di meet.intercloud-digital.com. Link undangan yang dibagikan
+# admin HARUS menunjuk ke host itu, bukan ke apex: apex /meet/:slug hanyalah
+# halaman React yang menukar ?k= jadi JWT lalu redirect, dan mengharapkan
+# penerima mendarat di situ membuat link terlihat seperti halaman portal.
+# Join langsung ke Meet dengan ?jwt= di hash tetap bekerja, dan /meet/:slug di
+# apex dipertahankan sebagai redirector untuk tautan lama yang sudah tersebar.
 PORTAL_BASE = "https://intercloud-digital.com/portal"
+MEET_BASE = "https://meet.intercloud-digital.com"
 MEET_JOIN_BASE = "https://intercloud-digital.com/meet"
 
 
@@ -151,6 +157,17 @@ class MeetingCreateIn(BaseModel):
 
 
 def _invite_url(slug: str, key: str) -> str:
+    """Undangan yang dibagikan.
+
+    Tetap di apex `/meet/:slug?k=` — dan itu memang disengaja. Hanya halaman
+    React di apex yang menukar ``?k=`` menjadi JWT lewat ``/api/portal/jitsi/join``;
+    host Meet tidak memproses ``?k=`` sama sekali (tidak ada handler, dan
+    ``branding/index.html`` hanya punya form nama room). Menaruh ``?k=`` di
+    host Meet menghasilkan tautan mati yang membuka Meet tanpa token.
+
+    Jadi tautan berbagi = gerbang undangan di apex; Meet sendiri hanya dibuka
+    setelah token ditukar. Lihat ``jitsi_meetings.join_url`` untuk hop kedua.
+    """
     return f"{MEET_JOIN_BASE}/{slug}?k={key}"
 
 

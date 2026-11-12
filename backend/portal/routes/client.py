@@ -9,7 +9,7 @@ import secrets
 import re
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 from datetime import datetime, timezone, timedelta
@@ -62,9 +62,22 @@ async def client_dashboard(user=Depends(get_current_user)):
 
 
 @router.get("/client/services")
-async def client_services(user=Depends(get_current_user)):
+async def client_services(
+    user=Depends(get_current_user),
+    include_terminated: bool = Query(False),
+):
+    """List the caller's services.
+
+    Terminated services are excluded by default: they are history, and showing
+    them made the Traffic Report list dead services as if they still existed.
+    Callers that legitimately need the archive (My Services) pass
+    ``?include_terminated=1``.
+    """
     db = await _get_db()
-    docs = await db.services.find({"user_id": ObjectId(user["id"])}).sort("created_at", -1).to_list(500)
+    query: dict = {"user_id": ObjectId(user["id"])}
+    if not include_terminated:
+        query["status"] = {"$ne": "terminated"}
+    docs = await db.services.find(query).sort("created_at", -1).to_list(500)
     result = []
     for d in docs:
         result.append({

@@ -923,7 +923,9 @@ const ClientServices = () => {
   const [active, setActive] = useState(null);
 
   useEffect(() => {
-    api.get("/client/services")
+    // include_terminated=1: this page is the service archive, so terminated
+    // services must stay visible here even though the default list hides them.
+    api.get("/client/services", { params: { include_terminated: 1 } })
       .then((r) => setRows(r.data))
       .catch((e) => {
         setRows([]);

@@ -32,6 +32,11 @@ from .users import _paginate  # noqa: E402
 
 router = APIRouter()
 
+# Jendela pembayaran order. Order `pending_payment` yang tidak dibayar dalam
+# rentang ini dibatalkan oleh `job:order_expiry` (lihat emails.py), bersama
+# invoice-nya yang masih unpaid/overdue.
+ORDER_PAYMENT_WINDOW_DAYS = 14
+
 
 @router.post("/client/orders")
 async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
@@ -82,6 +87,11 @@ async def create_order(payload: m.OrderIn, user=Depends(get_current_user)):
         "service_id": None,
         "provision_log": [{"at": _now(), "step": "order_created", "message": "Order placed by client."}],
         "created_at": _now(),
+        # Batas bayar order. Job `job:order_expiry` membatalkan order (dan
+        # invoice-nya) setelah lewat. Hanya order yang dibuat SETELAH field ini
+        # ada yang punya expires_at; order lama sengaja tidak di-backfill
+        # supaya tidak tiba-tiba dibatalkan massal saat job pertama jalan.
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=ORDER_PAYMENT_WINDOW_DAYS)).isoformat(),
     }
     r = await db.orders.insert_one(doc)
     doc["_id"] = r.inserted_id

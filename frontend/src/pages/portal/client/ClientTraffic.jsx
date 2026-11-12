@@ -9,6 +9,8 @@ const ClientTraffic = () => {
   const [data, setData] = useState(null);
 
   useEffect(() => {
+    // Default list already excludes terminated services — a dead service has no
+    // traffic to report, and listing it here is what made this page look stale.
     api.get("/client/services").then((r) => {
       setServices(r.data);
       if (r.data.length > 0) setSelected(r.data[0].id);
