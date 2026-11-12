@@ -7,10 +7,9 @@ import {
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
   History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
-  Bell, BookOpen, TrendingUp, MessageSquare, Video,
+  Bell, BookOpen, TrendingUp, Video,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
-import ChatWidget from "../../components/ChatWidget";
 import { api } from "../../portal/api";
 
 const CLIENT_NAV = [
@@ -117,7 +116,6 @@ const ADMIN_NAV_GROUPS = [
       { key: "audit_log",     to: "/portal/admin/audit-log",     label: "Audit Log",      icon: History,        testid: "nav-audit-log",     roles: ["admin"] },
       { key: "branding",      to: "/portal/admin/branding",      label: "Branding",       icon: ImageIcon,      testid: "nav-branding",      roles: ["admin"] },
       { key: "site_content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
-      { key: "chat", to: "/portal/admin/chat", label: "Live Chat", icon: MessageSquare, testid: "nav-chat", roles: ["admin"] },
       { key: "jitsi", to: "/portal/admin/jitsi", label: "Jitsi Meet", icon: Video, testid: "nav-jitsi", roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },
       { key: "status_page",   to: "/portal/admin/status-page",   label: "Public Status Page", icon: Globe,        testid: "nav-status-page",   roles: ["admin"] },
@@ -255,7 +253,6 @@ const PortalLayout = ({ variant = "client" }) => {
       {/* Room Jitsi hanya lewat registry (AdminJitsi -> /admin/jitsi/meetings -> /meet/:slug).
           Widget instant-room dihapus: ia membuat room `<prefix>-<uuid>` tanpa baris registry,
           tanpa invite_key, tanpa jalur end/rotate, dan ditolak begitu enforcement token aktif. */}
-      <ChatWidget />
       {impersonating && !isAdmin && (
         <div className="sticky top-0 z-[60] bg-indigo-700 text-white px-4 py-2 flex items-center justify-center gap-3 text-sm" data-testid="impersonation-banner">
           <span>Mode impersonasi: Anda melihat portal sebagai <b>{localStorage.getItem("ic_impersonating")}</b></span>
