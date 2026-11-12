@@ -1,5 +1,8 @@
 """Jitsi Meet configuration (public read, admin write) + meeting registry."""
-from fastapi import APIRouter, Depends, HTTPException, Query
+import html
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, field_validator
 from pymongo.errors import DuplicateKeyError
 
@@ -13,6 +16,7 @@ from ..jitsi_meetings import (
     create_meeting,
     end_meeting,
     find_by_invite,
+    find_by_room_name,
     join_url,
     list_meetings,
     meeting_state,
@@ -311,6 +315,137 @@ async def jitsi_join(
     return {
         "room": room_name(meeting["slug"]),
         "slug": meeting["slug"],
+        "token": token,
+        "url": join_url(meeting["slug"], token),
+    }
+
+
+_ROOM_AUTH_REFUSAL_HTML = """<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Rapat tidak ditemukan | INTERCLOUD Meet</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; min-height: 100vh; display: flex; align-items: center;
+    justify-content: center; padding: 24px;
+    background: #0B1220; color: #E6EDF7;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }}
+  .card {{
+    width: 100%; max-width: 460px; padding: 40px 32px; text-align: center;
+    background: #111C2E; border: 1px solid #1E2E45; border-radius: 16px;
+  }}
+  .mark {{
+    width: 56px; height: 56px; margin: 0 auto 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(239, 68, 68, .12); border: 1px solid rgba(239, 68, 68, .35);
+    font-size: 26px; color: #F87171; font-weight: 700;
+  }}
+  h1 {{ margin: 0 0 12px; font-size: 21px; font-weight: 650; letter-spacing: -.2px; }}
+  p {{ margin: 0 0 10px; font-size: 14.5px; line-height: 1.6; color: #93A4BC; }}
+  .hint {{ margin-top: 22px; padding-top: 20px; border-top: 1px solid #1E2E45; font-size: 13px; }}
+  .hint b {{ color: #C7D5E8; font-weight: 600; }}
+  a {{ color: #60A5FA; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark">!</div>
+    <h1>Tautan rapat tidak dikenali</h1>
+    <p>Ruangan <code>{room}</code> tidak terdaftar di portal INTERCLOUD,
+       atau sudah berakhir.</p>
+    <p class="hint">Rapat hanya bisa diikuti lewat <b>tautan undangan</b>
+       yang diterbitkan portal. Hubungi penyelenggara rapat untuk
+       mendapatkan tautan yang benar, atau <a href="https://intercloud-digital.com">kembali ke portal</a>.</p>
+  </div>
+</body>
+</html>"""
+
+
+def _wants_html(request: Request) -> bool:
+    """Apakah pemanggil ini browser (butuh halaman) atau klien API (butuh JSON)?"""
+    # Browser navigasi selalu mengirim Accept berisi text/html. Jitsi sendiri
+    # tidak memakai fetch untuk tokenAuthUrl — ia melakukan window.location.href,
+    # sehingga selalu datang sebagai navigasi dokumen.
+    return "text/html" in (request.headers.get("accept") or "").lower()
+
+
+@router.get("/jitsi/room-exists")
+async def jitsi_room_exists(room: str = Query("", max_length=128)):
+    """Probe ringan untuk nginx: apakah /<room> ini milik portal?
+
+    Dipakai oleh ``auth_request`` nginx sebelum menyajikan index.html Jitsi.
+    Tanpa ini, pengunjung melihat UI konferensi penuh lebih dulu dan baru
+    ditolak setelah menekan Join — membingungkan dan menyesatkan.
+
+    Status 403, BUKAN 404: ``auth_request`` hanya menerima 2xx/401/403. Balasan
+    404 membuat nginx menganggap modulnya error dan mengirim 500 ke pengunjung.
+    """
+    db = await _get_db()
+    meeting = await find_by_room_name(db, room)
+    if not meeting or not can_join(meeting):
+        raise HTTPException(status_code=403, detail="Rapat tidak ditemukan")
+    return Response(status_code=204)
+
+
+@router.get("/jitsi/room-auth")
+async def jitsi_room_auth(
+    request: Request,
+    room: str = Query("", max_length=128),
+    name: str = Query("", max_length=256),
+):
+    """Penjaga `tokenAuthUrl`: room ini milik portal, atau bukan.
+
+    Dipasang sebagai ``tokenAuthUrl`` di config.js, jadi browser memanggilnya
+    SETIAP kali seseorang membuka /<room>. Inilah lapisan yang menghentikan
+    orang mengetik slug karangan seperti ``/tes``: room yang tidak terdaftar
+    tidak akan pernah mendapat token, sehingga Prosody menolaknya.
+
+    Sengaja TIDAK membocorkan apakah slug tertentu ada — jawaban untuk room
+    tak dikenal seragam, dan tidak ada pembedaan antara "tidak terdaftar"
+    dengan "sudah berakhir".
+    """
+    db = await _get_db()
+    meeting = await find_by_room_name(db, room)
+
+    if not meeting:
+        # 404 + payload seragam. Jangan bedakan "tidak ada" dari "sudah
+        # berakhir" di sini; keduanya harus terlihat sama dari luar.
+        if _wants_html(request):
+            # `room` disisipkan sebagai teks, jadi harus di-escape: ini satu-
+            # satunya nilai yang berasal dari address bar pengunjung.
+            return HTMLResponse(
+                _ROOM_AUTH_REFUSAL_HTML.format(room=html.escape(room[:64] or "?")),
+                status_code=404,
+            )
+        raise HTTPException(status_code=404, detail="Rapat tidak ditemukan")
+
+    if not can_join(meeting):
+        if _wants_html(request):
+            return HTMLResponse(
+                _ROOM_AUTH_REFUSAL_HTML.format(room=html.escape(room[:64] or "?")),
+                status_code=404,
+            )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Rapat tidak dapat diikuti (status: {meeting_state(meeting)})",
+        )
+
+    try:
+        token = mint_token(meeting, display_name=name)
+    except JitsiConfigError as exc:
+        raise HTTPException(status_code=503, detail="Jitsi belum siap") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    return {
+        "room": room_name(meeting["slug"]),
         "token": token,
         "url": join_url(meeting["slug"], token),
     }

@@ -333,6 +333,28 @@ async def find_by_invite(db, key: str) -> dict | None:
     )
 
 
+async def find_by_room_name(db, room: str) -> dict | None:
+    """Cari rapat dari nama room (``Intercloud-<slug>``) atau slug mentah.
+
+    Dipakai oleh tokenAuthUrl: browser datang membawa nama room dari address
+    bar, dan kita harus memutuskan apakah room itu benar-benar milik portal.
+
+    Room yang TIDAK terdaftar mengembalikan None — itulah yang membuat slug
+    karangan seperti ``/tes`` tidak bisa dipakai masuk.
+    """
+    if not room or not isinstance(room, str):
+        return None
+    name = room.strip()
+    prefix = "Intercloud-"
+    if name.lower().startswith(prefix.lower()):
+        name = name[len(prefix):]
+    try:
+        slug = validate_slug(name.lower())
+    except ValueError:
+        return None
+    return await db[COLL].find_one({"slug": slug, "status": {"$ne": "ended"}})
+
+
 async def list_meetings(db, *, include_ended: bool = False, limit: int = 100) -> list[dict]:
     query: dict = {} if include_ended else {"status": {"$ne": "ended"}}
     cursor = db[COLL].find(query).sort("starts_at", -1).limit(max(1, min(500, limit)))
