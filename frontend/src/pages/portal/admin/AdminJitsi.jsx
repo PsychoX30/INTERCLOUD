@@ -38,6 +38,7 @@ export default function AdminJitsi() {
 
   const [form, setForm] = useState({
     title: "",
+    host_name: "",
     slug: "",
     starts_at: "",
     duration_min: 60,
@@ -47,8 +48,8 @@ export default function AdminJitsi() {
 
   // Tautan plaintext hanya keluar SEKALI (create / rotate). Tanpa panel ini,
   // tombolnya tidak ada gunanya -- begitu notifikasi hilang, tautan lenyap.
-  const [invite, setInvite] = useState(null); // { url, slug, source }
-  const [copied, setCopied] = useState(false);
+  const [invite, setInvite] = useState(null); // { url, text, slug, source }
+  const [copied, setCopied] = useState(""); // "" | "link" | "text"
 
   const loadMeetings = useCallback(async () => {
     setLoading(true);
@@ -108,15 +109,21 @@ export default function AdminJitsi() {
         duration_min: Number(form.duration_min) || 60,
         lobby: !!form.lobby,
       };
+      if (form.host_name.trim()) payload.host_name = form.host_name.trim();
       if (form.slug.trim()) payload.slug = form.slug.trim();
       if (form.starts_at) {
         // datetime-local -> ISO UTC supaya backend tidak menebak zona waktu.
         payload.starts_at = new Date(form.starts_at).toISOString();
       }
       const { data } = await api.post("/admin/jitsi/meetings", payload);
-      setInvite({ url: data.invite_url, slug: data.slug, source: "create" });
-      setCopied(false);
-      setForm({ title: "", slug: "", starts_at: "", duration_min: 60, lobby: true });
+      setInvite({
+        url: data.invite_url,
+        text: data.invite_text,
+        slug: data.slug,
+        source: "create",
+      });
+      setCopied("");
+      setForm({ title: "", host_name: "", slug: "", starts_at: "", duration_min: 60, lobby: true });
       await loadMeetings();
     } catch (e) {
       setMsg({ kind: "error", text: formatApiError(e) });
@@ -129,8 +136,13 @@ export default function AdminJitsi() {
     setMsg(null);
     try {
       const { data } = await api.post(`/admin/jitsi/meetings/${row.id}/rotate-invite`);
-      setInvite({ url: data.invite_url, slug: row.slug, source: "rotate" });
-      setCopied(false);
+      setInvite({
+        url: data.invite_url,
+        text: data.invite_text,
+        slug: row.slug,
+        source: "rotate",
+      });
+      setCopied("");
       await loadMeetings();
     } catch (e) {
       setMsg({ kind: "error", text: formatApiError(e) });
@@ -150,16 +162,56 @@ export default function AdminJitsi() {
     }
   };
 
-  const copyInvite = async () => {
-    if (!invite?.url) return;
+  // Clipboard API bisa ditolak (permission, iframe, context tidak aman).
+  // Kalau `writeText` gagal kita TIDAK boleh diam: sebelumnya tombol hanya
+  // berubah sebentar lalu kembali, tanpa jejak apa pun, dan user menyimpulkan
+  // tombolnya rusak. Sekarang ada fallback `execCommand('copy')` lewat textarea
+  // sementara, lalu pesan yang menetap kalau keduanya gagal.
+  const copyToClipboard = async (value, which) => {
+    if (!value) return;
+    let ok = false;
     try {
-      await navigator.clipboard.writeText(invite.url);
-      setCopied(true);
+      await navigator.clipboard.writeText(value);
+      ok = true;
     } catch {
-      setCopied(false);
-      setMsg({ kind: "error", text: "Gagal menyalin — salin manual dari kotak di atas." });
+      ok = legacyCopy(value);
+    }
+    if (ok) {
+      setCopied(which);
+      setMsg({ kind: "ok", text: which === "text" ? "Undangan disalin." : "Tautan disalin." });
+      window.setTimeout(() => setCopied(""), 2000);
+    } else {
+      setCopied("");
+      setMsg({
+        kind: "error",
+        text: "Browser memblokir clipboard. Salin manual dari kotak di atas (pilih semua, Ctrl+C).",
+      });
     }
   };
+
+  const legacyCopy = (value) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      // Posisi di luar layar tapi tetap fokusable; `display:none` membuat
+      // select() gagal di sebagian browser.
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const copyInvite = () => copyToClipboard(invite?.url, "link");
+  const copyInviteText = () => copyToClipboard(invite?.text, "text");
 
   return (
     <div className="p-6 max-w-4xl mx-auto" data-testid="admin-jitsi-page">
@@ -190,6 +242,21 @@ export default function AdminJitsi() {
               className={inputCls}
               data-testid="jitsi-title"
             />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-sm font-medium text-[#0a2350] mb-1">
+              Pembuat Meeting
+            </label>
+            <input
+              value={form.host_name}
+              onChange={(e) => setForm({ ...form, host_name: e.target.value })}
+              placeholder="Nama yang tampil di undangan, mis. Budi Santoso"
+              className={inputCls}
+              data-testid="jitsi-host-name"
+            />
+            <p className="mt-1 text-slate-500 text-xs">
+              Kosongkan untuk memakai email akun Anda.
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-[#0a2350] mb-1">Slug (opsional)</label>
@@ -248,22 +315,48 @@ export default function AdminJitsi() {
       {invite && (
         <section className="border border-[#f5b120] bg-amber-50/60 rounded-2xl p-5 mb-6" data-testid="jitsi-invite">
           <h2 className="font-bold text-[#0a2350] mb-1">
-            Tautan undangan ({invite.source === "rotate" ? "baru" : "dibuat"})
+            Undangan rapat ({invite.source === "rotate" ? "baru" : "dibuat"})
           </h2>
           <p className="text-slate-600 text-xs mb-3">
             Tautan ini hanya ditampilkan sekali. Salin sekarang — setelah ditutup, gunakan
-            &ldquo;Salin undangan&rdquo; untuk membuat tautan baru (tautan ini langsung mati).
+            &ldquo;Undangan baru&rdquo; untuk menerbitkan tautan lain (tautan ini langsung mati).
           </p>
+
+          <div className="flex flex-wrap gap-2 mb-3">
+            <button
+              onClick={copyInviteText}
+              className="px-4 py-2 rounded-lg bg-[#f5b120] text-[#0a2350] font-semibold hover:brightness-95 inline-flex items-center gap-2"
+              data-testid="jitsi-copy-invitation"
+            >
+              <Copy className="h-4 w-4" /> {copied === "text" ? "Undangan tersalin" : "Salin undangan"}
+            </button>
+            <button
+              onClick={copyInvite}
+              className="px-4 py-2 rounded-lg border border-[#0a2350] text-[#0a2350] font-semibold hover:bg-white inline-flex items-center gap-2"
+              data-testid="jitsi-copy"
+            >
+              <Copy className="h-4 w-4" /> {copied === "link" ? "Tautan tersalin" : "Salin tautan saja"}
+            </button>
+          </div>
+
+          <label className="block text-xs font-semibold text-[#0a2350] mb-1">
+            Teks undangan
+          </label>
+          <textarea
+            readOnly
+            value={invite.text || ""}
+            rows={14}
+            onFocus={(e) => e.target.select()}
+            className="w-full text-xs font-mono bg-white border border-slate-200 rounded-lg p-3 leading-relaxed"
+            data-testid="jitsi-invite-text"
+          />
+
+          <label className="block text-xs font-semibold text-[#0a2350] mb-1 mt-3">
+            Tautan undangan
+          </label>
           <code className="block text-xs break-all bg-white border border-slate-200 rounded-lg p-3">
             {invite.url}
           </code>
-          <button
-            onClick={copyInvite}
-            className="mt-3 px-4 py-2 rounded-lg bg-[#f5b120] text-[#0a2350] font-semibold hover:brightness-95 inline-flex items-center gap-2"
-            data-testid="jitsi-copy"
-          >
-            <Copy className="h-4 w-4" /> {copied ? "Tersalin" : "Salin"}
-          </button>
         </section>
       )}
 
@@ -320,9 +413,10 @@ export default function AdminJitsi() {
                   <button
                     onClick={() => rotate(r)}
                     className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold hover:bg-slate-50 inline-flex items-center gap-1"
-                    title="Buat tautan undangan baru; tautan lama langsung mati"
+                    title="Terbitkan undangan baru; tautan lama langsung mati"
+                    data-testid={`jitsi-rotate-${r.slug}`}
                   >
-                    <Copy className="h-3.5 w-3.5" /> Salin undangan
+                    <RefreshCw className="h-3.5 w-3.5" /> Undangan baru
                   </button>
                 )}
                 {r.state !== "ended" && (

@@ -3,15 +3,18 @@ import html
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
+from bson import ObjectId
 from pydantic import BaseModel, field_validator
 from pymongo.errors import DuplicateKeyError
 
 from ..audit import log_audit
 from ..auth import get_current_admin
 from ..jitsi_meetings import (
+    COLL,
     DEFAULT_DURATION_MIN,
     JitsiConfigError,
     admin_projection,
+    build_invitation_text,
     can_join,
     create_meeting,
     end_meeting,
@@ -150,6 +153,9 @@ class MeetingCreateIn(BaseModel):
     starts_at: str | None = None
     duration_min: int = DEFAULT_DURATION_MIN
     lobby: bool = True
+    # Nama pembuat rapat yang tampil di badan undangan. Opsional; kalau kosong
+    # undangan memakai `created_by` (email admin) supaya tidak pernah blank.
+    host_name: str | None = None
 
     @field_validator("title")
     @classmethod
@@ -158,6 +164,13 @@ class MeetingCreateIn(BaseModel):
         if not v:
             raise ValueError("title must not be blank")
         return v[:120]
+
+    @field_validator("host_name")
+    @classmethod
+    def _host_name_clean(cls, v):
+        if v is None:
+            return None
+        return (v or "").strip()[:80]
 
 
 def _invite_url(slug: str, key: str) -> str:
@@ -175,6 +188,25 @@ def _invite_url(slug: str, key: str) -> str:
     return f"{MEET_JOIN_BASE}/{slug}?k={key}"
 
 
+def _invitation_text(meeting: dict, invite_url: str) -> str:
+    """Badan undangan siap-kirim untuk disalin admin."""
+    return build_invitation_text(
+        host_name=meeting.get("host_name") or meeting.get("created_by") or "",
+        title=meeting.get("title", ""),
+        starts_at=meeting.get("starts_at"),
+        duration_min=meeting.get("duration_min", DEFAULT_DURATION_MIN),
+        url=invite_url,
+    )
+
+
+def _is_oid(value) -> bool:
+    try:
+        ObjectId(str(value))
+        return True
+    except Exception:
+        return False
+
+
 @router.post("/admin/jitsi/meetings")
 async def jitsi_meeting_create(payload: MeetingCreateIn, admin=Depends(get_current_admin)):
     """Buat rapat. `invite_key` plaintext dikembalikan HANYA di respons ini."""
@@ -188,6 +220,7 @@ async def jitsi_meeting_create(payload: MeetingCreateIn, admin=Depends(get_curre
             duration_min=payload.duration_min,
             slug=payload.slug,
             lobby=payload.lobby,
+            host_name=payload.host_name,
         )
     except ValueError as exc:
         # slug tidak lolos kontrak / di luar rentang.
@@ -200,6 +233,7 @@ async def jitsi_meeting_create(payload: MeetingCreateIn, admin=Depends(get_curre
     out = admin_projection(doc)
     out["invite_key"] = doc["invite_key"]
     out["invite_url"] = _invite_url(doc["slug"], doc["invite_key"])
+    out["invite_text"] = _invitation_text(doc, out["invite_url"])
     await log_audit(
         db,
         actor=admin,
@@ -267,7 +301,15 @@ async def jitsi_meeting_rotate_invite(meeting_id: str, admin=Depends(get_current
         target_id=meeting_id,
         severity="warning",
     )
-    return {"invite_key": key, "invite_url": _invite_url(slug, key)}
+    invite_url = _invite_url(slug, key)
+    listing = await db[COLL].find_one({"_id": ObjectId(meeting_id)}) if _is_oid(meeting_id) else None
+    return {
+        "invite_key": key,
+        "invite_url": invite_url,
+        # Teks undangan harus ikut di sini: setelah rotasi, tautan lama mati,
+        # jadi admin butuh badan undangan baru untuk dikirim ulang.
+        "invite_text": _invitation_text(listing, invite_url) if listing else "",
+    }
 
 
 @router.get("/jitsi/meetings")

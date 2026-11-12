@@ -269,6 +269,7 @@ def admin_projection(meeting: dict, now: datetime | None = None) -> dict:
         "status": meeting.get("status", "scheduled"),
         "state": meeting_state(meeting, now),
         "created_by": meeting.get("created_by", ""),
+        "host_name": meeting.get("host_name") or meeting.get("created_by", ""),
         "created_at": _iso(meeting.get("created_at")),
         "ended_at": _iso(meeting.get("ended_at")),
         "ended_by": meeting.get("ended_by") or "",
@@ -289,6 +290,7 @@ async def create_meeting(
     duration_min=DEFAULT_DURATION_MIN,
     slug: str | None = None,
     lobby: bool = True,
+    host_name: str | None = None,
     now: datetime | None = None,
 ) -> dict:
     """Buat rapat. ``invite_key`` plaintext dikembalikan HANYA di sini."""
@@ -314,6 +316,10 @@ async def create_meeting(
         "invite_key_hash": key_hash,
         "status": "scheduled",
         "created_by": created_by,
+        # Nama yang tampil di badan undangan. Disimpan terpisah dari
+        # `created_by` supaya undangan bisa mencantumkan "Budi Santoso"
+        # walaupun akun admin-nya `support@...`.
+        "host_name": (host_name or "").strip()[:80] or created_by,
         "created_at": now.isoformat(),
         "ended_at": None,
         "ended_by": None,
@@ -433,3 +439,86 @@ def join_url(slug: str, token: str) -> str:
     # bundle memakai JSON.stringify(o) yang menambah kutip dan membuat HS256
     # gagal. Hash, bukan query: tidak masuk access log nginx / Referer.
     return f"https://{DOMAIN}/{room_name(slug)}#jwt={token}"
+
+
+# --------------------------------------------------------------------------- #
+# teks undangan siap-kirim
+#
+# Admin menyalin blok ini utuh (WhatsApp/email), bukan hanya URL. Formatnya
+# disepakati dengan pemilik produk; jangan diubah tanpa persetujuan karena
+# orang sudah terbiasa dengan susunannya.
+# --------------------------------------------------------------------------- #
+_BULAN_ID = (
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+)
+_HARI_ID = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+
+
+def format_waktu_id(dt: datetime) -> str:
+    """``Senin, 12 November 2026 pukul 14.00 WIB``.
+
+    Selalu dikonversi ke WIB (UTC+7) lalu dilabeli WIB. Mencetak zona server
+    (UTC) akan membuat penerima datang 7 jam lebih awal.
+    """
+    from datetime import timedelta as _td, timezone as _tz
+
+    wib = dt.astimezone(_tz(_td(hours=7))) if dt.tzinfo else dt.replace(
+        tzinfo=_tz(_td(hours=7))
+    )
+    return (
+        f"{_HARI_ID[wib.weekday()]}, {wib.day} {_BULAN_ID[wib.month - 1]} "
+        f"{wib.year} pukul {wib.hour:02d}.{wib.minute:02d} WIB"
+    )
+
+
+def format_durasi_id(minutes) -> str:
+    """``90 menit`` / ``1 jam 30 menit`` / ``2 jam``."""
+    try:
+        total = int(minutes)
+    except (TypeError, ValueError):
+        total = DEFAULT_DURATION_MIN
+    jam, menit = divmod(max(0, total), 60)
+    if jam and menit:
+        return f"{jam} jam {menit} menit"
+    if jam:
+        return f"{jam} jam"
+    return f"{menit} menit"
+
+
+def build_invitation_text(
+    *,
+    host_name: str,
+    title: str,
+    starts_at,
+    duration_min,
+    url: str,
+) -> str:
+    """Badan undangan yang disalin admin.
+
+    ``starts_at`` boleh datetime / ISO string / None. Kalau tidak ada jadwal,
+    baris Time diisi penanda supaya admin sadar jadwalnya belum diisi alih-alih
+    mencetak string kosong yang terlihat seperti bug.
+    """
+    starts = _parse(starts_at)
+    waktu = format_waktu_id(starts) if starts else "(belum dijadwalkan)"
+    host = (host_name or "").strip() or "Admin INTERCLOUD"
+    topik = (title or "").strip() or "Rapat Online"
+
+    return (
+        "Halo,\n"
+        "PT Intercloud Digital Inovasi Mengundang anda kedalam rapat secara online "
+        "melalui tautan berikut,\n"
+        "\n"
+        f"Pembuat Meeting: {host}\n"
+        f"Topic: {topik}\n"
+        f"Time: {waktu}\n"
+        f"Estimasi Durasi: {format_durasi_id(duration_min)}\n"
+        "\n"
+        f"Meeting Link: {url}\n"
+        "\n"
+        "Atas Perhatian anda kami ucapkan terima kasih,\n"
+        "\n"
+        "Best Regards,\n"
+        "PT Intercloud Digital Inovasi"
+    )
