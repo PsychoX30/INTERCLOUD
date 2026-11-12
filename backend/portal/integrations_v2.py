@@ -1076,19 +1076,24 @@ class GoFlow2Client:
 
     _PROTO_MAP = {"TCP": "tcp", "UDP": "udp", "ICMP": "icmp", "ICMPv6": "icmpv6"}
 
-    def __init__(self, flow_path: str):
-        self.flow_path = flow_path
-        self._offset = 0  # byte offset for incremental reads
-    def _compute_rates(self, record: dict, fallback_duration_s: float = 30.0) -> tuple[int, int, int, int, int]:
-        """Return (packets, tx_packets, bps, tx_bps, pps).
+    def _compute_rates(self, record: dict, fallback_duration_s: float = 30.0) -> tuple[int, int, int, int, float]:
+        """Return (packets, tx_packets, bps, tx_bps, pps) for one record.
 
-        NetFlow records can be instantaneous snapshots: RouterOS commonly
-        emits equal start/end timestamps and sampling_rate=0.  In that case
-        using a fake one-second duration inflates rates.  Use the collector
-        polling interval for such records instead.  The packet count is kept
-        separately from PPS because the detector needs a rate, not a count.
+        RouterOS exports ``packets``/``bytes`` as **counters for the flow
+        interval**, not rates, and sends ``sampling_rate: 0`` (meaning "no
+        sampling").  Dividing a 1-packet record by a 21-second batch span
+        truncates to ``int(0.046) == 0``, which made every goflow2-derived
+        PPS reading zero and blinded the detector completely.
+
+        The fix: keep PPS as a *float* and never let the batch window shrink
+        a single flow to nothing.  Per-record rates remain an estimate —
+        ``poll()`` computes the authoritative totals from the whole batch —
+        but they are no longer silently zero.
         """
-        rate = int(record.get("sampling_rate") or 1)
+        sampling = record.get("sampling_rate")
+        rate = int(sampling) if sampling else 1
+        if rate < 1:
+            rate = 1
         pkts = int(record.get("packets") or 0) * rate
         byts = int(record.get("bytes") or 0) * rate
 
@@ -1099,8 +1104,10 @@ class GoFlow2Client:
         if duration_s <= 0:
             duration_s = max(1.0, float(fallback_duration_s or 30.0))
 
-        pps = int(pkts / duration_s)
-        bps = int(byts * 8 / duration_s)
+        # RouterOS "active timeout" flows cover a real interval; a one-packet
+        # flow over 21 s is 0.05 pps, which is correct but useless after int().
+        pps = pkts / duration_s
+        bps = byts * 8 / duration_s
         return pkts, 0, bps, 0, pps  # tx columns zero — unidirectional
 
     def _normalize(self, record: dict, fallback_duration_s: float = 30.0) -> dict:
@@ -1108,17 +1115,37 @@ class GoFlow2Client:
         rx_pkts, tx_pkts, rx_rate, tx_rate, pps = self._compute_rates(record, fallback_duration_s)
         proto_raw = str(record.get("proto") or "").upper()
         proto = self._PROTO_MAP.get(proto_raw, proto_raw.lower())
+        try:
+            tcp_flags = int(record.get("tcp_flags") or 0)
+        except (TypeError, ValueError):
+            tcp_flags = 0
+        try:
+            src_port = int(record.get("src_port") or 0)
+        except (TypeError, ValueError):
+            src_port = 0
+        try:
+            dst_port = int(record.get("dst_port") or 0)
+        except (TypeError, ValueError):
+            dst_port = 0
         return {
             "src_address": record.get("src_addr") or "",
             "dst_address": record.get("dst_addr") or "",
             "protocol": proto,
-            "src_port": str(record.get("src_port") or ""),
-            "dst_port": str(record.get("dst_port") or ""),
+            "src_port": str(src_port),
+            "dst_port": str(dst_port),
             "rx_rate": rx_rate,
             "tx_rate": tx_rate,
             "rx_packets": rx_pkts,
             "tx_packets": tx_pkts,
+            "rate_bytes": int(record.get("bytes") or 0) * (
+                int(record.get("sampling_rate") or 0) or 1),
             "pps": pps,
+            # Carried through so attack classification can tell a SYN flood
+            # from a legitimate handshake; RouterOS exports flags but the
+            # normaliser used to drop them.
+            "tcp_flags": tcp_flags,
+            "in_if": int(record.get("in_if") or 0),
+            "out_if": int(record.get("out_if") or 0),
             "sampler_address": record.get("sampler_address") or "",
         }
 
@@ -1127,25 +1154,51 @@ class GoFlow2Client:
     # under this, but it prevents a memory explosion if the file is large
     # (e.g. first poll after deploy against a stale multi-hundred-MB file,
     # or after collector downtime with accumulated backlog).
-    MAX_LINES_PER_POLL = 50_000
+    # Production measures ~2,300 flows/s, so 200k lines is ~87 s of traffic:
+    # enough for a 60 s sweep without dropping a whole interval.
+    MAX_LINES_PER_POLL = 200_000
+
+    # A collector that has written nothing for this long is not idle, it is
+    # broken (or the router stopped exporting).  Callers surface it in the UI.
+    STALE_AFTER_S = 300
+
+    def __init__(self, flow_path: str):
+        self.flow_path = flow_path
+        self._offset = 0  # byte offset for incremental reads
+        self._batch_seq = 0
+        self._last_poll_mono = 0.0
 
     def poll(self) -> dict:
         """Read new flow lines since last poll. Returns torch-compatible dict."""
         import os as _os
+        import time as _time
 
         if not _os.path.exists(self.flow_path):
-            return {"ok": False, "error": f"Flow file not found: {self.flow_path}", "rows": []}
+            return {"ok": False, "error": f"Flow file not found: {self.flow_path}",
+                    "rows": [], "stale": True}
 
         try:
             size = _os.path.getsize(self.flow_path)
+            mtime = _os.path.getmtime(self.flow_path)
         except OSError as e:
-            return {"ok": False, "error": f"Cannot stat flow file: {e}", "rows": []}
+            return {"ok": False, "error": f"Cannot stat flow file: {e}",
+                    "rows": [], "stale": True}
+
+        # A collector that silently stops writing is indistinguishable from
+        # "no traffic" unless we look at the file clock.  The production
+        # outage on 2026-08-23 looked healthy for 81 days because poll()
+        # returned ok=True on an unchanged file.  Surface it instead.
+        age_s = _time.time() - mtime
+        stale = age_s > self.STALE_AFTER_S
 
         if size <= self._offset:
-            # File hasn't grown (or was truncated)
             if size < self._offset:
                 self._offset = 0  # file was rotated/truncated, reset
-            return {"ok": True, "flow_count": 0, "rows": []}
+                self._batch_seq = 0
+            return {"ok": True, "flow_count": 0, "rows": [], "stale": stale,
+                    "file_age_s": round(age_s, 1), "file_size": size,
+                    "message": (f"collector silent for {age_s/60:.1f} min"
+                                if stale else "no new flows since last poll")}
 
         # Read at most MAX_LINES_PER_POLL lines since the last poll.  Note
         # readlines() takes a *size hint in bytes*, so we iterate manually to
@@ -1175,29 +1228,67 @@ class GoFlow2Client:
                 continue  # skip malformed lines
             records.append(record)
 
-        # RouterOS often exports instantaneous records whose start and end
-        # timestamps are equal.  Their packet/byte fields are counts, not
-        # one-second rates.  Use the observed batch span as the denominator
-        # instead of treating every such record as one second.  This also
-        # makes a first poll over an accumulated backlog conservative rather
-        # than producing a restart-triggered traffic spike.
+        # RouterOS exports *counters* per flow interval, not rates.  The
+        # authoritative rate for the poll is total packets over the actual
+        # wall-clock span covered by the batch — never a per-record division
+        # by a 20-second window (packets=1 / 21s truncates to 0 pps and the
+        # detector sees a quiet network during an active flood).
+        #
+        # ``time_received_ns`` is when the collector accepted the datagram;
+        # ``time_flow_*`` is the router's own interval and can be stale or
+        # (on RouterOS) equal for instantaneous records.  Prefer the
+        # received clock, fall back to the flow clock.
         observed_ns = [
             int(r.get("time_received_ns") or r.get("time_flow_start_ns") or 0)
             for r in records
         ]
         observed_ns = [ts for ts in observed_ns if ts > 0]
-        batch_duration_s = (
-            (max(observed_ns) - min(observed_ns)) / 1_000_000_000
-            if len(observed_ns) > 1 else 30.0
-        )
-        batch_duration_s = max(1.0, batch_duration_s)
-        rows = [self._normalize(record, batch_duration_s) for record in records]
+        if len(observed_ns) > 1:
+            batch_duration_s = (max(observed_ns) - min(observed_ns)) / 1_000_000_000
+        else:
+            batch_duration_s = 0.0
+        # A single-record batch, or one where every record shares a
+        # timestamp, carries no interval information.  Fall back to the
+        # measured time between polls, and only then to a nominal window.
+        if batch_duration_s < 0.05:
+            now_mono = _time.monotonic()
+            if self._last_poll_mono > 0:
+                batch_duration_s = max(0.05, now_mono - self._last_poll_mono)
+            else:
+                batch_duration_s = 30.0
+        self._last_poll_mono = _time.monotonic()
+        self._batch_seq += 1
+
+        rows: list[dict] = []
+        total_packets = 0.0
+        total_bytes = 0.0
+        for record in records:
+            row = self._normalize(record, batch_duration_s)
+            total_packets += float(row.get("rx_packets") or 0)
+            total_bytes += float(row.get("rate_bytes") or 0)
+            rows.append(row)
+
+        # Every row is stamped with the SAME absolute rate context so
+        # downstream aggregation can compare a target's share against the
+        # batch instead of inventing per-record numbers.
+        batch_pps = total_packets / batch_duration_s
+        batch_bps = total_bytes * 8 / batch_duration_s
+        for row in rows:
+            row["batch_duration_s"] = round(batch_duration_s, 3)
+            row["batch_pps"] = round(batch_pps, 2)
+            row["batch_bps"] = round(batch_bps, 2)
+            row["batch_seq"] = self._batch_seq
 
         return {
             "ok": True,
             "flow_count": len(rows),
-            "total_rx_rate": sum(r["rx_rate"] for r in rows),
-            "total_tx_rate": sum(r["tx_rate"] for r in rows),
+            "batch_duration_s": round(batch_duration_s, 3),
+            "batch_pps": round(batch_pps, 2),
+            "batch_bps": round(batch_bps, 2),
+            "stale": stale,
+            "file_age_s": round(age_s, 1),
+            "total_rx_rate": batch_bps,
+            "total_tx_rate": 0,
             "rows": rows,
         }
 

@@ -1595,17 +1595,30 @@ async def run_order_expiry_sweep(db, *, now: Optional[datetime] = None) -> dict:
 # NOC - DDoS threshold evaluation + incident detection
 # ============================================================
 def _ddos_attack_type(flow: dict) -> str:
-    proto = (flow.get("protocol") or "").lower()
-    port = str(flow.get("src_port") or flow.get("dst_port") or "")
-    if port == "53":
-        return "DNS Amplification"
-    if port in ("80", "443"):
-        return "HTTP Flood"
-    if proto == "udp":
-        return "UDP Flood"
-    if proto in ("tcp", "tcp-syn"):
-        return "SYN Flood"
-    return "Traffic Anomaly"
+    """Legacy shim — delegates to the evidence-based classifier.
+
+    Kept because notification code and older tests import it.  The old
+    implementation tested ``src_port`` first, so every legitimate DNS
+    reply (source :53) was reported as a "DNS Amplification", and TCP
+    floods were all labelled SYN because ``tcp_flags`` was never parsed.
+    """
+    from .ddos_engine import FlowRate, classify_attack_type
+    try:
+        rate = FlowRate(
+            src_ip=(flow.get("src_address") or "").split("/")[0],
+            dst_ip=(flow.get("dst_address") or "").split("/")[0],
+            protocol=str(flow.get("protocol") or ""),
+            src_port=int(flow.get("src_port") or 0),
+            dst_port=int(flow.get("dst_port") or 0),
+            tcp_flags=int(flow.get("tcp_flags") or 0),
+            pps=float(flow.get("pps") or 0),
+            bps=float(flow.get("rx_rate") or 0) + float(flow.get("tx_rate") or 0),
+            packets=float(flow.get("rx_packets") or 0),
+            bytes_=float(flow.get("rate_bytes") or 0),
+        )
+    except (TypeError, ValueError):
+        return "Traffic Anomaly"
+    return classify_attack_type(rate)
 
 
 def _ddos_direction(src: str, dst: str, prefixes: list[str]) -> str | None:
@@ -1738,12 +1751,21 @@ async def run_ddos_detection_sweep(db) -> dict:
     flows: list[dict] = []
     sampled_devices = 0
     goflow_used = False
+    # Wall-clock span that the goflow2 records cover.  Required to turn
+    # per-record counters into a real throughput: a flow of one packet is
+    # 1/20 pps over a 20-second batch, not "0 pps", and 175 such flows
+    # together are a real load that a per-record peak cannot express.
+    flow_window_s = 0.0
     # Primary source: GoFlow2 NetFlow/IPFIX collector (if deployed).
     try:
         gf = await _get_goflow2_client(db)
         if gf is not None:
             gf_result = await _a.get_event_loop().run_in_executor(None, gf.poll)
             if gf_result.get("ok"):
+                flow_window_s = float(gf_result.get("batch_duration_s") or 0)
+                if gf_result.get("stale"):
+                    log.warning("[ddos] goflow2 collector stale: file_age_s=%s",
+                                gf_result.get("file_age_s"))
                 for flow in gf_result.get("rows", []):
                     item = dict(flow)
                     item["device"] = "goflow2"
@@ -1752,7 +1774,8 @@ async def run_ddos_detection_sweep(db) -> dict:
                     flows.append(item)
                 if gf_result.get("rows"):
                     goflow_used = True
-                    log.info("[ddos] goflow2 poll: %d flows", len(gf_result["rows"]))
+                    log.info("[ddos] goflow2 poll: %d flows over %.1fs",
+                             len(gf_result["rows"]), flow_window_s)
     except Exception:
         log.exception("[ddos] goflow2 poll failed; falling back to torch")
 
@@ -1801,65 +1824,146 @@ async def run_ddos_detection_sweep(db) -> dict:
 
     opened = blackholed = resolved = 0
     breached_keys: set[tuple[str, str]] = set()
-    # A rule can specify several protected prefixes. Invalid entries are
-    # ignored safely; Pydantic validates new writes, but old Mongo rows exist.
+    suppressed: list[dict] = []
+
+    # Convert every source (goflow2 rows and Torch rows share the same dict
+    # shape) into absolute per-second rates once, then let the pure engine do
+    # the aggregation.  Summing per-flow PPS here is what produced the
+    # impossible "17,007,965 pps" incident: hundreds of records describing
+    # the same burst were added together instead of measured as a peak.
+    from .ddos_engine import (
+        FlowRate, aggregate_targets, evaluate_target, DetectionConfig,
+        severity_from_ratio,
+    )
+
+    rate_rows: list[FlowRate] = []
+    for flow in flows:
+        try:
+            src_ip = (flow.get("src_address") or "").split("/")[0]
+            dst_ip = (flow.get("dst_address") or "").split("/")[0]
+            packets = (float(flow.get("rx_packets") or 0)
+                       + float(flow.get("tx_packets") or 0))
+            bytes_ = float(flow.get("rate_bytes") or 0)
+            # Torch rows already carry rates (rx_rate is bit/s over its own
+            # sampling interval).  goflow2 rows carry *counters*, so their
+            # rate must be derived from the batch span — using the stored
+            # ``pps`` here would reintroduce the truncated-per-record bug.
+            bps = float(flow.get("rx_rate") or 0) + float(flow.get("tx_rate") or 0)
+            if not bps and flow_window_s > 0:
+                bps = bytes_ * 8 / flow_window_s
+            pps = float(flow.get("pps") or 0)
+            if not pps and flow_window_s > 0:
+                pps = packets / flow_window_s
+            rate_rows.append(FlowRate(
+                src_ip=src_ip, dst_ip=dst_ip,
+                protocol=str(flow.get("protocol") or ""),
+                src_port=int(flow.get("src_port") or 0),
+                dst_port=int(flow.get("dst_port") or 0),
+                tcp_flags=int(flow.get("tcp_flags") or 0),
+                pps=pps, bps=bps,
+                packets=packets,
+                bytes_=bytes_,
+                device=str(flow.get("device") or ""),
+                in_if=int(flow.get("in_if") or 0),
+                out_if=int(flow.get("out_if") or 0),
+            ))
+        except (TypeError, ValueError):
+            continue
+
     for rule in rules:
         prefixes = rule.get("scope_prefixes") or ["157.20.32.0/24"]
         direction_policy = rule.get("direction") or "inbound"
-        aggregates: dict[tuple[str, str], dict] = {}
-        for flow in flows:
-            fields = _ddos_flow_fields(flow)
-            direction = _ddos_direction(fields["src_ip"], fields["dst_ip"], prefixes)
-            if direction not in ("inbound", "outbound"):
+        metric = "pps" if rule.get("metric", "pps") == "pps" else "bps"
+
+        buckets = aggregate_targets(rate_rows, prefixes, window_s=flow_window_s)
+
+        config = DetectionConfig(
+            threshold_pps=float(rule.get("threshold") or 0) if metric == "pps" else 0.0,
+            threshold_bps=float(rule.get("threshold") or 0) if metric == "bps" else 0.0,
+            metric=metric,
+            baseline_multiplier=float(rule.get("baseline_multiplier") or 3.0),
+            min_zscore=float(rule.get("min_zscore") or 6.0),
+        )
+
+        for (direction, target), stats in buckets.items():
+            # Interior traffic (our host attacking our host) has no
+            # internet-facing remedy; record it but never auto-mitigate.
+            if direction == "internal":
                 continue
             if direction_policy not in ("any", direction):
                 continue
-            target = _ddos_target(fields["src_ip"], fields["dst_ip"], direction)
-            key = (direction, target)
-            agg = aggregates.setdefault(key, {"bps": 0, "pps": 0, "flow": flow,
-                                               "fields": fields, "device": flow["device"],
-                                               "device_doc": flow["device_doc"]})
-            agg["bps"] += int(flow.get("rx_rate", 0) or 0) + int(flow.get("tx_rate", 0) or 0)
-            # GoFlow2 packet fields are counts.  Its explicit ``pps`` is
-            # normalized over the flow/batch duration.  Torch packet fields
-            # are already rates and remain the compatibility fallback.
-            if flow.get("pps") is not None:
-                agg["pps"] += int(flow.get("pps") or 0)
-            else:
-                agg["pps"] += (int(flow.get("rx_packets", 0) or 0)
-                               + int(flow.get("tx_packets", 0) or 0))
 
-        for (direction, target), agg in aggregates.items():
-            # ``at`` MUST be a BSON Date.  A TTL index silently ignores ISO
-            # strings, so storing a string made the collection unbounded (3.5M
-            # docs) and every window query a full COLLSCAN costing ~2s of
-            # mongod CPU, every 10s, forever.
+            key = (direction, target)
+            # Store the TARGET's real throughput, not the busiest single
+            # record.  `int(peak_pps)` wrote pps=0 for every customer whose
+            # traffic was spread over many one-packet flows — the UI then
+            # showed "0 pps" for a live link, and the baseline median was
+            # poisoned to zero.
+            rate_pps = stats.rate_pps
+            rate_bps = stats.rate_bps
+            sample_value = rate_bps if metric == "bps" else rate_pps
             sample = {"at": now, "key": f"{direction}:{target}",
                       "direction": direction, "target": target,
-                      "bps": agg["bps"], "pps": agg["pps"]}
+                      # Floats, not ints: rounding a 0.39 pps target to 0
+                      # makes a live link indistinguishable from a dead one,
+                      # and the baseline median inherits the truncation.
+                      "bps": round(rate_bps, 2), "pps": round(rate_pps, 3),
+                      "peak_pps": round(stats.peak_pps, 2),
+                      "peak_bps": round(stats.peak_bps, 2),
+                      "packets": int(stats.total_packets),
+                      "bytes": int(stats.total_bytes),
+                      "window_s": round(flow_window_s, 3),
+                      "flows": stats.flow_count,
+                      "device": (stats.representative.device
+                                 if stats.representative else ""),
+                      "rule_id": str(rule["_id"])}
             await db.ddos_samples.insert_one(sample)
             try:
                 cutoff = now - timedelta(seconds=int(rule.get("window_s") or 300))
-                history = await db.ddos_samples.find({
-                    "key": sample["key"], "at": {"$gte": cutoff}}).to_list(100)
+                history_docs = await db.ddos_samples.find({
+                    "key": sample["key"], "at": {"$gte": cutoff,
+                                                 "$lt": sample["at"]}}
+                ).sort("at", -1).to_list(200)
             except Exception:
-                history = [sample]
-            metric = "pps" if rule.get("metric", "pps") == "pps" else "bps"
-            values = [float(h.get(metric) or 0) for h in history]
-            value = sum(values) / len(values) if values else 0
-            threshold = float(rule.get("threshold") or 0)
-            if threshold <= 0 or value <= threshold:
+                history_docs = []
+            # Oldest-first for the baseline computation.
+            history = [float(h.get(metric) or 0) for h in reversed(history_docs)]
+
+            verdict = evaluate_target(stats, history, config)
+            if not verdict.breaching:
+                # Keep the reason for the UI so an operator can see WHY a
+                # spike was not called an attack — the old engine simply
+                # skipped silently, which looked like the detector was dead.
+                if sample_value > 0:
+                    suppressed.append({
+                        "target": target, "direction": direction,
+                        "value": round(sample_value), "metric": metric,
+                        "threshold": verdict.threshold,
+                        "baseline": round(verdict.baseline),
+                        "reason": verdict.reason})
                 continue
+
+            value = verdict.metric_value
+            threshold = verdict.threshold
+            direction = verdict.direction
+            attack_type = verdict.attack_type
+            severity = verdict.severity
+            fields = {
+                "src_ip": (stats.representative.src_ip if stats.representative else ""),
+                "dst_ip": (stats.representative.dst_ip if stats.representative else ""),
+                "protocol": (stats.representative.protocol if stats.representative else ""),
+                "src_port": str(stats.representative.src_port if stats.representative else ""),
+                "dst_port": str(stats.representative.dst_port if stats.representative else ""),
+            }
+
+            bgp_config = None
+            action = rule.get("action", "alert")
             breached_keys.add((direction, target))
             existing = await db.ddos_incidents.find_one({
                 "target": target, "direction": direction,
                 "rule_id": str(rule["_id"]),
                 "status": {"$in": ["active", "mitigated"]}})
-            fields = agg["fields"]
-            attack_type = _ddos_attack_type(agg["flow"])
-            severity = _ddos_severity(value / threshold)
-            action = rule.get("action", "alert")
-            bgp_config = None
+
             if action == "alert_bgp_blackhole":
                 try:
                     bgp_config = await db.bgp_blackhole_configs.find_one({"enabled": True})
@@ -1871,13 +1975,16 @@ async def run_ddos_detection_sweep(db) -> dict:
                     and bgp_config.get("bgp_community")
                 )
                 from .ddos_guard import select_mitigation_strategy
-                # Direction is forwarded so the selector can refuse outbound
-                # auto-mitigation explicitly. Destination-based RTBH cannot stop
-                # an internal source from sending (forwarding keys on
-                # destination); that needs provider-side uRPF/S-RTBH.
+                # Outbound source RTBH is what the operator asked for: drop
+                # the internal host that is attacking the internet.  It needs
+                # two explicit opt-ins (rule flag + verified uRPF), because
+                # BGP forwards on destination and an upstream announcement
+                # alone does not stop egress.
                 strategy = select_mitigation_strategy(
                     severity, attack_type, prefixes, upstream_ready,
-                    direction=direction)
+                    direction=direction,
+                    outbound_rtbh_enabled=bool(rule.get("outbound_rtbh_enabled")),
+                    uRPF_verified=bool(rule.get("urpf_verified")))
                 mitigation_type = "none" if strategy == "alert" else strategy
             elif bool(rule.get("auto_blackhole")) or action == "alert_blackhole":
                 mitigation_type = "local_blackhole"
@@ -1886,8 +1993,15 @@ async def run_ddos_detection_sweep(db) -> dict:
             incident_data = {"src_ip": fields["src_ip"], "dst_ip": fields["dst_ip"],
                              "protocol": fields["protocol"], "src_port": fields["src_port"],
                              "dst_port": fields["dst_port"], "direction": direction,
-                             "pps": int(agg["pps"]), "bps": int(agg["bps"]),
-                             "severity": severity, "mitigation_type": mitigation_type,
+                             "pps": round(rate_pps, 3), "bps": round(rate_bps, 2),
+                             "peak_pps": round(stats.peak_pps, 2),
+                             "attack_type": attack_type,
+                             "severity": severity,
+                             "ratio": round(verdict.ratio, 2) if verdict.ratio != float("inf") else None,
+                             "baseline": round(verdict.baseline),
+                             "zscore": round(verdict.zscore, 1),
+                             "flows_observed": stats.flow_count,
+                             "mitigation_type": mitigation_type,
                              "bgp_blackhole_config_id": (
                                  str(bgp_config["_id"])
                                  if mitigation_type == "bgp_rtbh" and bgp_config else None),
@@ -2039,7 +2153,10 @@ async def run_ddos_detection_sweep(db) -> dict:
 
     return {"at": now_iso, "devices_sampled": sampled_devices,
             "targets_seen": len(breached_keys), "incidents_opened": opened,
-            "auto_blackholed": blackholed, "auto_resolved": resolved}
+            "auto_blackholed": blackholed, "auto_resolved": resolved,
+            "flows_evaluated": len(rate_rows),
+            "suppressed": sorted(suppressed, key=lambda s: s["value"],
+                                 reverse=True)[:15]}
 
 
 async def dispatch_ddos_notifications(db, incident: dict) -> list:

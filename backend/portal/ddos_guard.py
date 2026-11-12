@@ -155,9 +155,17 @@ VOLUMETRIC_ATTACK_TYPES: set[str] = {
     "ICMP Flood",
     "NTP Amplification",
     "SSDP Amplification",
+    "SNMP Amplification",
+    "LDAP Amplification",
+    "mDNS Amplification",
+    "Memcached Amplification",
+    "Chargen Amplification",
+    "QOTD Amplification",
 }
 
-MITIGATION_STRATEGIES: set[str] = {"alert", "local_blackhole", "bgp_rtbh"}
+MITIGATION_STRATEGIES: set[str] = {"alert", "local_blackhole", "bgp_rtbh",
+                                   "source_rtbh"}
+
 
 
 def select_mitigation_strategy(
@@ -166,31 +174,61 @@ def select_mitigation_strategy(
     scope_prefixes: list[str],
     upstream_peer_available: bool,
     direction: str = "inbound",
+    *,
+    outbound_rtbh_enabled: bool = False,
+    uRPF_verified: bool = False,
 ) -> str:
     """Return the best automated mitigation strategy for an incident.
 
-    Selection rules:
-      - No scope prefixes → alert only (don't act on unknown targets).
-      - Severity medium or low → alert only.
-      - Critical or high + volumetric attack → local_blackhole only.
-        Automatic BGP RTBH is deliberately disabled until an operator has
-        verified the upstream-specific community, RouterOS version/syntax, an
-        existing non-destructive output-filter policy, and rollback behaviour.
-        A routing filter chain defaults to reject on RouterOS; auto-attaching a
-        one-rule RTBH chain could withdraw every other announced prefix.
-      - Critical or high + **non-volumetric** attack (HTTP/SYN flood, unknown):
-        never auto-blackhole an inbound target. Blackholing the victim's own
-        address disconnects the customer without addressing the cause — L7 and
-        SYN floods need rate-limiting/WAF/edge controls, not a route drop.
+    The two directions are not symmetric, and treating them as one is how
+    a detector becomes a customer-outage generator.
 
-    ``direction`` defaults to ``inbound`` so existing callers keep the safe
-    behaviour unless they explicitly pass a direction.
+    **Inbound** — victim is our customer, attack arrives from outside.
+      A destination RTBH on the victim's /32 removes that customer from the
+      internet.  That is the right answer *only* for a volumetric flood where
+      the alternative is the whole uplink collapsing.  For a SYN or HTTP
+      flood the victim's link is fine; dropping their route disconnects them
+      and fixes nothing.  Automatic BGP RTBH additionally stays manual
+      because an upstream community, RouterOS syntax and a non-destructive
+      output-filter policy must be verified per provider — a filter chain on
+      RouterOS defaults to reject, so auto-attaching one can withdraw every
+      other announced prefix.
+
+    **Outbound** — our host is attacking the internet.
+      Here RTBH is the correct remedy: the offending host is the *source*,
+      so blackholing its /32 cannot harm any other customer.  The obstacle is
+      protocol, not policy.  BGP forwarding keys on the destination, so
+      advertising a customer /32 upstream does not by itself stop traffic the
+      host already emits.  It works only when the provider enforces **uRPF**
+      (or sells S-RTBH / source-based blackholing) and discards traffic from
+      the dropped prefix.  A local blackhole route on our own border router
+      has the same blind spot for traffic that bypasses us.
+
+      Hence two independent opt-ins are required: ``outbound_rtbh_enabled``
+      on the rule, and ``uRPF_verified`` for the provider capability.  With
+      only the first, a critical flood still gets a local drop route — it is
+      reversible, it stops everything transiting our router, and doing
+      nothing is worse.  Everything below critical only alerts, because a
+      local drop route against an unverified provider is a guess and this
+      engine does not guess with customer traffic.
+
+    ``direction`` defaults to ``inbound`` so existing callers keep the
+    previous safe behaviour unless they pass a direction explicitly.
     """
     if not scope_prefixes:
         return "alert"
 
     if severity in ("low", "medium"):
         return "alert"
+
+    if direction == "outbound":
+        if severity not in ("critical", "high"):
+            return "alert"
+        if not outbound_rtbh_enabled:
+            return "alert"
+        if uRPF_verified:
+            return "bgp_rtbh" if upstream_peer_available else "local_blackhole"
+        return "local_blackhole" if severity == "critical" else "alert"
 
     if severity in ("critical", "high") and attack_type in VOLUMETRIC_ATTACK_TYPES:
         # Do not let a mere DB flag turn a detector into a BGP policy editor.
@@ -199,7 +237,7 @@ def select_mitigation_strategy(
         return "local_blackhole"
 
     # Critical/high non-volumetric (e.g. HTTP/SYN flood) or unknown type.
-    # Outbound source RTBH requires provider-side uRPF/S-RTBH capability;
-    # merely announcing the internal source /32 does not stop egress. Until
-    # that capability is explicitly modeled and verified, fail closed.
+    # Blackholing the victim's own address disconnects the customer without
+    # addressing the cause; L7 and SYN floods need rate-limiting/WAF/edge
+    # controls, not a route drop.
     return "alert"
