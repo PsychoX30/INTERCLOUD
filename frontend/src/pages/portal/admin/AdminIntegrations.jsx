@@ -5,7 +5,7 @@ import {
 } from "../ui";
 import {
   Save, Zap, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp,
-  Server, Router, CreditCard, Mail, Inbox, HardDrive, Globe, ShieldCheck, Send, Globe2,
+  Server, Router, CreditCard, Mail, Inbox, Globe, ShieldCheck, Send, Globe2,
 } from "lucide-react";
 import { ProxmoxServersCard } from "./ProxmoxServersCard";
 import { WhmServersCard } from "./WhmServersCard";
@@ -18,7 +18,7 @@ const PROVIDER_ICON = {
   proxmox: Server, mikrotik: Router,
   midtrans: CreditCard, xendit: CreditCard, duitku: CreditCard,
   smtp: Mail, imap: Inbox,
-  cpanel: Globe, plesk: HardDrive,
+  cpanel: Globe,
   rna: Globe2,
   recaptcha: ShieldCheck,
 };
@@ -66,7 +66,7 @@ const AdminIntegrations = () => {
     <div>
       <PageHeader
         title="Integrations"
-        subtitle="Every third-party credential in one place - virtualization (Proxmox), network (MikroTik), domain registrar (RNA.id/RDASH), hosting provisioning (cPanel / Plesk), payment gateways, and email (SMTP outbound + IMAP inbound). Paste credentials, hit Test, then Save."
+        subtitle="Every third-party credential in one place - virtualization (Proxmox), network (MikroTik), domain registrar (RNA.id/RDASH), hosting provisioning (cPanel / WHM), payment gateways, and email (SMTP outbound + IMAP inbound). Paste credentials, hit Test, then Save."
       />
 
       <div className="mb-5 grid sm:grid-cols-3 gap-3">

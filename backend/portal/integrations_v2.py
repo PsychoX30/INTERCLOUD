@@ -2231,35 +2231,6 @@ INTEGRATION_SCHEMA = {
             {"key": "ssl_verify", "label": "Verify SSL", "type": "checkbox", "default": True},
         ],
     },
-    "plesk": {
-        "label": "Plesk",
-        "category": "provisioning",
-        "description": "Auto-provision Plesk hosting subscriptions via XML-API.",
-        "credentials": [
-            {"key": "host", "label": "Plesk host (https://…:8443)", "type": "text", "required": True},
-            {"key": "username", "label": "Username", "type": "text", "required": True},
-            {"key": "password", "label": "Password", "type": "password", "required": True},
-        ],
-        "options": [
-            {"key": "default_plan", "label": "Default subscription plan", "type": "text"},
-            {"key": "ssl_verify", "label": "Verify SSL", "type": "checkbox", "default": True},
-        ],
-    },
-    "directadmin": {
-        "label": "DirectAdmin",
-        "category": "provisioning",
-        "description": "Auto-provision DirectAdmin hosting accounts via legacy API.",
-        "credentials": [
-            {"key": "host", "label": "DirectAdmin host (https://…:2222)", "type": "text", "required": True},
-            {"key": "username", "label": "Admin/Reseller username", "type": "text", "required": True},
-            {"key": "api_token", "label": "Login key / API token", "type": "password", "required": True},
-        ],
-        "options": [
-            {"key": "default_package", "label": "Default hosting package", "type": "text", "default": "default"},
-            {"key": "default_ip", "label": "Shared IP (optional)", "type": "text"},
-            {"key": "ssl_verify", "label": "Verify SSL", "type": "checkbox", "default": True},
-        ],
-    },
     "midtrans": {
         "label": "Midtrans (Snap)",
         "category": "payment",

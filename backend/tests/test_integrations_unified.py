@@ -24,7 +24,7 @@ class TestUnifiedSchema:
         keys = set(r.json().keys())
         # Duitku-only policy: midtrans/xendit hidden unless the
         # enable_extra_payment_gateways flag is on (default off).
-        expected = {"proxmox", "mikrotik", "cpanel", "plesk",
+        expected = {"proxmox", "mikrotik", "cpanel",
                     "duitku", "smtp", "imap"}
         assert expected.issubset(keys), f"missing providers: {expected - keys}"
         assert not ({"midtrans", "xendit"} & keys), \
@@ -36,7 +36,6 @@ class TestUnifiedSchema:
         assert schema["proxmox"]["category"] == "virtualization"
         assert schema["mikrotik"]["category"] == "network"
         assert schema["cpanel"]["category"] == "provisioning"
-        assert schema["plesk"]["category"] == "provisioning"
         assert schema["duitku"]["category"] == "payment"
         assert schema["smtp"]["category"] == "mail"
         assert schema["imap"]["category"] == "mail"
@@ -118,24 +117,6 @@ class TestCpanelPleskValidation:
         requests.put(f"{API}/admin/integrations-v2/cpanel",
                      headers=_h(admin_token),
                      json={"enabled": False, "credentials": {}, "options": {}})
-
-    def test_plesk_test_with_password(self, admin_token):
-        requests.put(f"{API}/admin/integrations-v2/plesk",
-                     headers=_h(admin_token),
-                     json={"enabled": True,
-                           "credentials": {"host": "https://plesk.example.com:8443",
-                                           "username": "admin", "password": "pw"},
-                           "options": {}})
-        r = requests.post(f"{API}/admin/integrations-v2/plesk/test",
-                          headers=_h(admin_token))
-        assert r.status_code == 200
-        # Kredensial lengkap → lolos validasi (bukan error "Missing credentials").
-        # Koneksi live ke host dummy boleh gagal, yang penting bukan gagal validasi.
-        assert "Missing credentials" not in r.json().get("message", "")
-        requests.put(f"{API}/admin/integrations-v2/plesk",
-                     headers=_h(admin_token),
-                     json={"enabled": False, "credentials": {}, "options": {}})
-
 
 class TestSMTPTest:
     def test_smtp_test_now_wired(self, admin_token):

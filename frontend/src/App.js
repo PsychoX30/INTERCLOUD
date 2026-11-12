@@ -89,6 +89,7 @@ const PublicStatusPage  = lazy(() => import("./pages/PublicStatusPage"));
 
 // Admin (mocked/business chunk)
 const AdminProvisioning  = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminProvisioning })));
+const AdminVirtualization = lazy(() => import("./pages/portal/admin/AdminVirtualization").then(m => ({ default: m.AdminVirtualization })));
 const AdminDCIM          = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminDCIM })));
 const AdminCRM           = lazy(() => import("./pages/portal/admin/AdminBusiness").then(m => ({ default: m.AdminCRM })));
 const AdminProjects      = lazy(() => import("./pages/portal/admin/AdminBusiness").then(m => ({ default: m.AdminProjects })));
@@ -182,6 +183,7 @@ function App() {
                   <Route path="email" element={<AdminEmails />} />
                   <Route path="articles" element={<AdminArticles />} />
                   <Route path="provisioning" element={<AdminProvisioning />} />
+                  <Route path="virtualization" element={<AdminVirtualization />} />
                   <Route path="mikrotik" element={<AdminMikrotik />} />
                   <Route path="dcim" element={<AdminDCIM />} />
                   <Route path="diagnostics" element={<AdminDiagnostics />} />

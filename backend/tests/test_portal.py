@@ -307,7 +307,7 @@ class TestIntegrations:
         keys = {m["key"] for m in modules}
         # Duitku-only policy: xendit/midtrans stay hidden unless the
         # settings flag `enable_extra_payment_gateways` is turned on.
-        expected = {"cpanel","plesk","proxmox","mikrotik","duitku","smtp","whois","blacklist"}
+        expected = {"cpanel","proxmox","mikrotik","duitku","smtp","whois","blacklist"}
         assert expected.issubset(keys), f"missing {expected - keys}"
         assert not ({"xendit", "midtrans"} & keys), "extra gateways must stay hidden by default"
         # every module has fields

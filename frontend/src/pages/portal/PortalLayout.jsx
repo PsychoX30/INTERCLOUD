@@ -3,6 +3,7 @@ import { NavLink, Outlet, Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, ServerCog, Receipt, LifeBuoy, ShoppingCart, Activity,
   Users, Package, FileText, Wallet, Plug, HardDrive, Network, TerminalSquare,
+  Server,
   Send, Puzzle, Cloud, Menu, X, ChevronDown, ChevronRight, LogOut, ExternalLink,
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
@@ -71,6 +72,7 @@ const ADMIN_NAV_GROUPS = [
     label: "Operations",
     items: [
       { key: "provisioning", to: "/portal/admin/provisioning", label: "Provisioning", icon: Cloud,          testid: "nav-provisioning", roles: ["admin", "support"] },
+      { key: "virtualization", to: "/portal/admin/virtualization", label: "Virtualization", icon: Server,     testid: "nav-virtualization", roles: ["admin", "support"] },
       { key: "dcim",         to: "/portal/admin/dcim",         label: "DCIM & IPAM",  icon: HardDrive,      testid: "nav-dcim",         roles: ["admin", "support"] },
       { key: "domains",      to: "/portal/admin/domains",      label: "Domain Management", icon: Globe2, testid: "nav-admin-domains", roles: ["admin", "support"] },
       { key: "ssl",          to: "/portal/admin/ssl",          label: "SSL Orders", icon: ShieldCheck,   testid: "nav-admin-ssl", roles: ["admin", "support"] },
