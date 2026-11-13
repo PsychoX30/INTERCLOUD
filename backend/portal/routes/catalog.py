@@ -322,7 +322,51 @@ async def public_submit_lead(payload: m.LeadIn, request: Request):
 
 # ---------- Lead Form Builder ----------
 
-_FB_FIELD_TYPES = {"text", "email", "phone", "textarea", "select", "checkbox", "number"}
+# Field kinds accepted by the builder. Derived from the HeyForm taxonomy but
+# limited to what this portal can validate + render without extra storage.
+#   section  - layout heading only, never stored, never validated
+#   multiselect - list of choices (checkbox group)
+#   radio    - single choice rendered as radios (vs `select` dropdown)
+#   rating   - integer 1..max, default max=5
+_FB_FIELD_TYPES = {
+    "text", "email", "phone", "textarea", "number", "url",
+    "date", "time", "select", "radio", "multiselect",
+    "checkbox", "rating", "section",
+}
+# Kinds that carry no answer and are excluded from stored values + CSV columns.
+_FB_LAYOUT_TYPES = {"section"}
+_FB_CHOICE_TYPES = {"select", "radio", "multiselect"}
+_FB_MAX_FIELDS = 60
+_FB_MAX_OPTIONS = 100
+_WEEKDAYS = None  # placeholder to keep module namespace stable
+
+
+def _fb_coerce_choice_list(raw) -> list:
+    if isinstance(raw, (list, tuple)):
+        items = raw
+    elif raw is None:
+        items = []
+    else:
+        items = str(raw).split(",")
+    out, seen = [], set()
+    for o in items:
+        s = str(o).strip()
+        if not s or s.lower() in seen:
+            continue
+        seen.add(s.lower())
+        out.append(s)
+        if len(out) >= _FB_MAX_OPTIONS:
+            break
+    return out
+
+
+def _fb_int_or_none(v):
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _fb_serialize(d: dict) -> dict:
@@ -336,26 +380,70 @@ def _fb_serialize(d: dict) -> dict:
         "status": d.get("status", "draft"),
         "version": d.get("version", 1),
         "share_id": d.get("share_id", ""),
+        "closed": bool(d.get("closed")),
+        "closed_message": d.get("closed_message", "Form ini sudah ditutup."),
+        "submission_cap": d.get("submission_cap"),
+        "expires_at": d.get("expires_at") or "",
         "created_at": _iso(d.get("created_at", "")), "updated_at": _iso(d.get("updated_at", "")),
     }
 
 
 def _fb_clean_fields(fields) -> list:
-    out = []
+    """Normalize and validate builder field definitions.
+
+    Preserves the original contract (key/label/type/required/placeholder/
+    options/order) and adds the layout + validation metadata the richer field
+    kinds need: ``help``, ``min``/``max``, ``rating_max``, ``default``.
+    """
+    if not isinstance(fields, (list, tuple)):
+        raise HTTPException(status_code=400, detail="fields harus berupa list")
+    if len(fields) > _FB_MAX_FIELDS:
+        raise HTTPException(status_code=400, detail=f"Maksimum {_FB_MAX_FIELDS} field per form")
+    out, seen_keys = [], set()
     for i, f in enumerate(fields or []):
+        if not isinstance(f, dict):
+            raise HTTPException(status_code=400, detail=f"Field #{i + 1} bukan objek")
         ftype = str(f.get("type", "text")).lower()
         if ftype not in _FB_FIELD_TYPES:
             raise HTTPException(status_code=400, detail=f"Tipe field tidak dikenal: {ftype}")
-        key = re.sub(r"[^a-z0-9_]+", "_", str(f.get("key") or f.get("label", f"field_{i}")).lower()).strip("_")
+        raw_key = str(f.get("key") or f.get("label") or f"field_{i + 1}")
+        key = re.sub(r"[^a-z0-9_]+", "_", raw_key.lower()).strip("_")[:64]
         if not key:
             raise HTTPException(status_code=400, detail="Field key kosong")
+        # Layout blocks do not store answers, so they may share a key.
+        if ftype not in _FB_LAYOUT_TYPES:
+            if key in seen_keys:
+                raise HTTPException(status_code=400, detail=f"Key field duplikat: {key}")
+            seen_keys.add(key)
+        options = _fb_coerce_choice_list(f.get("options")) if ftype in _FB_CHOICE_TYPES else []
+        if ftype in _FB_CHOICE_TYPES and not options:
+            raise HTTPException(status_code=400,
+                                detail=f"Field '{f.get('label', key)}' ({ftype}) butuh minimal 1 pilihan")
+        default = f.get("default")
+        if ftype == "checkbox":
+            default = bool(default)
+        elif ftype == "multiselect":
+            dv = default if isinstance(default, list) else []
+            default = [str(x) for x in dv if str(x) in options]
+        elif ftype in ("select", "radio"):
+            default = str(default) if default and str(default) in options else ""
+        else:
+            default = "" if default is None else str(default)
         out.append({
-            "key": key, "label": str(f.get("label", key)), "type": ftype,
-            "required": bool(f.get("required")), "placeholder": str(f.get("placeholder", "")),
-            "options": [str(o) for o in (f.get("options") or [])],
-            "order": int(f.get("order", i)),
+            "key": key, "label": str(f.get("label", key))[:200], "type": ftype,
+            "required": bool(f.get("required")),
+            "placeholder": str(f.get("placeholder", ""))[:300],
+            "help": str(f.get("help", ""))[:500],
+            "options": options,
+            "order": _fb_int_or_none(f.get("order")) if f.get("order") is not None else i,
+            "min": _fb_int_or_none(f.get("min")),
+            "max": _fb_int_or_none(f.get("max")),
+            "rating_max": min(10, max(3, _fb_int_or_none(f.get("rating_max")) or 5)),
+            "default": default,
         })
-    out.sort(key=lambda x: x["order"])
+    out.sort(key=lambda x: x.get("order") if x.get("order") is not None else 0)
+    for idx, f in enumerate(out):
+        f["order"] = idx
     return out
 
 # ---------- Form v2 helpers ----------
@@ -376,16 +464,207 @@ def _fb_public_shape(d: dict) -> dict:
         "active": d.get("active", True),
         "version": d.get("version", 1),
         "status": d.get("status", "draft"),
+        "closed": bool(d.get("closed")),
+        "closed_message": d.get("closed_message", "Form ini sudah ditutup."),
     }
 
-def _csv_safe(v) -> str:
+
+def _fb_public_block_reason(d: dict) -> str:
+    """Return an Indonesian reason when a published form must stop accepting.
+
+    Empty string means the form is open. Checked on both the public config
+    fetch (so the page can render the closed state) and on submit (so a client
+    that cached the form cannot bypass the cap).
+    """
+    if d.get("closed"):
+        return d.get("closed_message") or "Form ini sudah ditutup."
+    cap = d.get("submission_cap")
+    if cap and int(d.get("submissions", 0) or 0) >= int(cap):
+        return "Kuota kiriman untuk form ini sudah terpenuhi."
+    expires_at = d.get("expires_at")
+    if expires_at:
+        try:
+            dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > dt:
+                return "Form ini sudah melewati batas waktu pengisian."
+        except (TypeError, ValueError):
+            pass
+    return ""
+
+def _fb_csv_safe(v) -> str:
     """Prefix formula-injection triggers so Excel/Sheets treat as plain text."""
     if v is None:
         return ""
-    sv = str(v)
+    if isinstance(v, (list, tuple)):
+        sv = "; ".join(str(x) for x in v)
+    elif isinstance(v, bool):
+        sv = "Ya" if v else "Tidak"
+    else:
+        sv = str(v)
     if sv and sv[0] in ("=", "+", "-", "@", "\t", "\r"):
         return "'" + sv
     return sv
+
+
+def _fb_validate_submission(fields: list, payload: dict) -> tuple[dict, dict]:
+    """Validate one submission against the form's field definitions.
+
+    Returns ``(values, errors)``. Layout fields (section) are skipped entirely.
+    Accepted keys are derived from the definition, so unknown keys in the
+    payload are silently dropped instead of being persisted.
+    """
+    values, errors = {}, {}
+    for f in fields or []:
+        ftype = f.get("type", "text")
+        key = f.get("key")
+        if not key or ftype in _FB_LAYOUT_TYPES:
+            continue
+        label = f.get("label") or key
+        raw = payload.get(key)
+
+        if ftype == "checkbox":
+            val = bool(raw)
+            if f.get("required") and not val:
+                errors[key] = f"{label} wajib dicentang"
+                continue
+            values[key] = val
+            continue
+
+        if ftype == "multiselect":
+            picked = raw if isinstance(raw, (list, tuple)) else ([] if raw in (None, "") else [raw])
+            picked = [str(x) for x in picked]
+            allowed = f.get("options") or []
+            bad = [x for x in picked if x not in allowed]
+            if bad:
+                errors[key] = "Pilihan tidak valid"
+                continue
+            if f.get("required") and not picked:
+                errors[key] = f"{label} wajib diisi"
+                continue
+            values[key] = picked
+            continue
+
+        val = ("" if raw is None else str(raw)).strip()
+
+        if val == "":
+            if f.get("required"):
+                errors[key] = f"{label} wajib diisi"
+            else:
+                values[key] = "" if ftype != "rating" else None
+            continue
+
+        if len(val) > 5000:
+            errors[key] = "Jawaban terlalu panjang (maksimum 5000 karakter)"
+            continue
+
+        if ftype == "email":
+            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$", val):
+                errors[key] = "Format email tidak valid"
+                continue
+        elif ftype == "phone":
+            if not re.match(r"^[0-9+()\-\s]{7,20}$", val):
+                errors[key] = "Format nomor telepon tidak valid"
+                continue
+        elif ftype == "number":
+            try:
+                num = float(val)
+            except ValueError:
+                errors[key] = "Harus berupa angka"
+                continue
+            if f.get("min") is not None and num < f["min"]:
+                errors[key] = f"Nilai minimum {f['min']}"
+                continue
+            if f.get("max") is not None and num > f["max"]:
+                errors[key] = f"Nilai maksimum {f['max']}"
+                continue
+        elif ftype == "rating":
+            try:
+                num = int(float(val))
+            except ValueError:
+                errors[key] = "Rating harus berupa angka"
+                continue
+            top = int(f.get("rating_max") or 5)
+            if num < 1 or num > top:
+                errors[key] = f"Rating harus antara 1 dan {top}"
+                continue
+            values[key] = num
+            continue
+        elif ftype == "url":
+            if not re.match(r"^https?://[^\s.]+\.[^\s]+$", val, re.I):
+                errors[key] = "URL harus diawali http:// atau https://"
+                continue
+        elif ftype == "date":
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", val):
+                errors[key] = "Format tanggal harus YYYY-MM-DD"
+                continue
+            try:
+                datetime.strptime(val, "%Y-%m-%d")
+            except ValueError:
+                errors[key] = "Tanggal tidak valid"
+                continue
+        elif ftype == "time":
+            if not re.match(r"^\d{2}:\d{2}(:\d{2})?$", val):
+                errors[key] = "Format jam harus HH:MM"
+                continue
+        elif ftype in _FB_CHOICE_TYPES:
+            if f.get("options") and val not in f["options"]:
+                errors[key] = "Pilihan tidak valid"
+                continue
+        elif ftype in ("text", "textarea"):
+            if f.get("max") is not None and len(val) > int(f["max"]):
+                errors[key] = f"Maksimum {f['max']} karakter"
+                continue
+        values[key] = val
+    return values, errors
+
+
+def _fb_columns(doc: dict) -> list:
+    """Column metadata for the submissions table, derived from the definition."""
+    cols = [{"key": "__created_at", "label": "Waktu kirim", "type": "datetime"}]
+    for f in doc.get("fields", []):
+        if f.get("type") in _FB_LAYOUT_TYPES:
+            continue
+        cols.append({"key": f.get("key", ""), "label": f.get("label", f.get("key", "")),
+                     "type": f.get("type", "text"), "options": f.get("options") or []})
+    return cols
+
+
+def _fb_row(sub: dict, doc: dict) -> dict:
+    vals = sub.get("values") or {}
+    cells = {"__created_at": _iso(sub.get("created_at", ""))}
+    for f in doc.get("fields", []):
+        if f.get("type") in _FB_LAYOUT_TYPES:
+            continue
+        k = f.get("key", "")
+        v = vals.get(k, "")
+        cells[k] = v if isinstance(v, (list, bool, int, float)) or v is None else str(v)
+    return {
+        "id": str(sub.get("_id", "")),
+        "created_at": _iso(sub.get("created_at", "")),
+        "name": sub.get("name", ""),
+        "email": sub.get("email", ""),
+        "phone": sub.get("phone", ""),
+        "ip": sub.get("ip", ""),
+        "values": cells,
+    }
+
+
+async def _fb_load_or_404(db, fid: str) -> dict:
+    try:
+        oid = _oid(fid)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Form not found")
+    d = await db.form_configs.find_one({"_id": oid})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form not found")
+    return d
+
+
+def _csv_safe(v) -> str:
+    """Backwards-compatible alias kept for test_form_csv.py."""
+    return _fb_csv_safe(v)
 
 
 
@@ -418,6 +697,9 @@ async def form_builder_create(payload: dict, staff=Depends(get_current_staff)):
         ]),
         "active": bool(payload.get("active", True)), "submissions": 0,
         "status": "draft", "version": 1, "share_id": "",
+        "closed": False, "closed_message": "Form ini sudah ditutup.",
+        "submission_cap": _fb_int_or_none(payload.get("submission_cap")),
+        "expires_at": str(payload.get("expires_at") or "")[:40] or None,
         "created_at": _now(), "updated_at": _now(),
     }
     r = await db.form_configs.insert_one(doc)
@@ -435,11 +717,18 @@ async def form_builder_update(fid: str, payload: dict, staff=Depends(get_current
     if d.get("status") == "published":
         raise HTTPException(status_code=409, detail="Form sudah dipublikasikan. Buat draft baru untuk mengedit.")
     upd = {"updated_at": _now()}
-    for k in ("name", "title", "description", "submit_label", "success_message"):
+    for k in ("name", "title", "description", "submit_label", "success_message", "closed_message"):
         if k in payload:
-            upd[k] = str(payload[k])
+            upd[k] = str(payload[k])[:2000]
     if "active" in payload:
         upd["active"] = bool(payload["active"])
+    if "closed" in payload:
+        upd["closed"] = bool(payload["closed"])
+    if "submission_cap" in payload:
+        cap = _fb_int_or_none(payload.get("submission_cap"))
+        upd["submission_cap"] = None if cap is None or cap <= 0 else min(cap, 1_000_000)
+    if "expires_at" in payload:
+        upd["expires_at"] = str(payload.get("expires_at") or "")[:40] or None
     if "fields" in payload:
         upd["fields"] = _fb_clean_fields(payload["fields"])
     await db.form_configs.update_one({"_id": d["_id"]}, {"$set": upd})
@@ -486,8 +775,69 @@ async def form_builder_new_draft(fid: str, staff=Depends(get_current_staff)):
 @router.delete("/admin/form-builder/{fid}")
 async def form_builder_delete(fid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
-    await db.form_configs.delete_one({"_id": _oid(fid)})
-    return {"ok": True}
+    oid = _oid(fid)
+    d = await db.form_configs.find_one({"_id": oid})
+    if not d:
+        raise HTTPException(status_code=404, detail="Form not found")
+    # Cascade: orphaned submissions would otherwise stay in the collection
+    # forever and keep inflating the /submissions index.
+    removed = await db.form_submissions.delete_many({"form_id": oid})
+    await db.form_configs.delete_one({"_id": oid})
+    return {"ok": True, "submissions_deleted": removed.deleted_count}
+
+
+@router.put("/admin/form-builder/{fid}/close")
+async def form_builder_toggle_close(fid: str, payload: dict = None, staff=Depends(get_current_staff)):
+    """Open/close a published form and adjust its submission cap.
+
+    Closing keeps the data (unlike delete) and flips the public endpoint to a
+    friendly ``closed`` response, matching how Google Forms stops accepting
+    answers without discarding responses.
+    """
+    db = await _get_db()
+    d = await _fb_load_or_404(db, fid)
+    payload = payload or {}
+    upd = {"updated_at": _now()}
+    if "closed" in payload:
+        upd["closed"] = bool(payload["closed"])
+    elif not any(k in payload for k in ("submission_cap", "expires_at", "closed_message")):
+        # Bare call = pure toggle. A call that only adjusts the cap/expiry must
+        # not silently close a form the operator still wants open.
+        upd["closed"] = not bool(d.get("closed"))
+    if "submission_cap" in payload:
+        cap = _fb_int_or_none(payload.get("submission_cap"))
+        upd["submission_cap"] = None if cap is None or cap <= 0 else min(cap, 1_000_000)
+    if "expires_at" in payload:
+        raw = payload.get("expires_at")
+        upd["expires_at"] = None if not raw else str(raw)[:40]
+    if "closed_message" in payload:
+        upd["closed_message"] = str(payload["closed_message"])[:1000]
+    await db.form_configs.update_one({"_id": d["_id"]}, {"$set": upd})
+    d = await db.form_configs.find_one({"_id": d["_id"]})
+    return _fb_serialize(d)
+
+
+@router.get("/admin/form-builder/{fid}/detail")
+async def form_builder_detail(fid: str, staff=Depends(get_current_staff)):
+    """Single form incl. share URL + live submission stats for the detail page."""
+    db = await _get_db()
+    d = await _fb_load_or_404(db, fid)
+    total = await db.form_submissions.count_documents({"form_id": d["_id"]})
+    with_email = await db.form_submissions.count_documents(
+        {"form_id": d["_id"], "email": {"$nin": ["", None]}})
+    last = await db.form_submissions.find_one({"form_id": d["_id"]},
+                                              sort=[("created_at", -1)])
+    out = _fb_serialize(d)
+    out["stats"] = {
+        "total": total,
+        "with_email": with_email,
+        "without_email": max(0, total - with_email),
+        "last_submission_at": _iso(last.get("created_at", "")) if last else "",
+        "cap": d.get("submission_cap"),
+        "closed": bool(d.get("closed")),
+        "expires_at": d.get("expires_at") or "",
+    }
+    return out
 
 
 @router.get("/portal-public/forms/{identifier}")
@@ -500,7 +850,11 @@ async def public_form_config(identifier: str):
         d = await db.form_configs.find_one({"share_id": identifier, "active": True, "status": "published"})
     if not d:
         raise HTTPException(status_code=404, detail="Form tidak ditemukan atau nonaktif")
-    return _fb_public_shape(d)
+    out = _fb_public_shape(d)
+    # Closed/expired/capped forms still render, but the renderer must not show
+    # an input the server will reject.
+    out["closed_reason"] = _fb_public_block_reason(d)
+    return out
 
 
 @router.post("/portal-public/forms/{identifier}/submit")
@@ -512,30 +866,12 @@ async def public_form_submit(identifier: str, payload: dict, request: Request):
         d = await db.form_configs.find_one({"share_id": identifier, "active": True, "status": "published"})
     if not d:
         raise HTTPException(status_code=404, detail="Form tidak ditemukan atau nonaktif")
+    block = _fb_public_block_reason(d)
+    if block:
+        raise HTTPException(status_code=410, detail=block)
     remote_ip = request.client.host if request.client else None
     await iv2.enforce_recaptcha(db, payload.get("recaptcha_token"), "lead", remote_ip)
-    values, errors = {}, {}
-    for f in d.get("fields", []):
-        raw = payload.get(f["key"])
-        val = ("" if raw is None else str(raw)).strip() if f["type"] != "checkbox" else bool(raw)
-        if f["required"] and (val == "" or val is False):
-            errors[f["key"]] = f"{f['label']} wajib diisi"
-            continue
-        if val == "" or val is None:
-            values[f["key"]] = val
-            continue
-        if f["type"] == "email" and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(val)):
-            errors[f["key"]] = "Format email tidak valid"
-        elif f["type"] == "phone" and not re.match(r"^[0-9+()\-\s]{7,20}$", str(val)):
-            errors[f["key"]] = "Format nomor telepon tidak valid"
-        elif f["type"] == "number":
-            try:
-                float(val)
-            except ValueError:
-                errors[f["key"]] = "Harus berupa angka"
-        elif f["type"] == "select" and f.get("options") and val not in f["options"]:
-            errors[f["key"]] = "Pilihan tidak valid"
-        values[f["key"]] = val
+    values, errors = _fb_validate_submission(d.get("fields", []), payload)
     if errors:
         raise HTTPException(status_code=422, detail={"errors": errors})
     email = str(values.get("email", "")).lower()
@@ -553,6 +889,10 @@ async def public_form_submit(identifier: str, payload: dict, request: Request):
                 "created_at": _now(), "updated_at": _now(),
             })
             crm_id = r.inserted_id
+    # ``slug`` used to be read here without ever being bound - every submit
+    # raised NameError and returned 500. Bind it from the form document that
+    # was already resolved above.
+    slug = d.get("slug", "")
     lead = {
         "name": name, "email": email, "phone": str(values.get("phone", "")),
         "company": str(values.get("company", "")), "need": d.get("name", ""),
@@ -561,17 +901,85 @@ async def public_form_submit(identifier: str, payload: dict, request: Request):
         "crm_id": crm_id, "ip": remote_ip, "created_at": _now(),
     }
     r = await db.leads.insert_one(lead)
-    # Also store in form_submissions for export
+    # Also store in form_submissions so every form has its own queryable dataset.
+    # Request metadata is best-effort: headers are optional so the route stays
+    # callable from tests and internal callers without a full Starlette Request.
+    _hdrs = getattr(request, "headers", None) or {}
     await db.form_submissions.insert_one({
         "form_id": d["_id"], "form_slug": slug, "form_name": d.get("name", ""),
         "form_version": d.get("version", 1), "values": values,
         "email": email, "name": name, "phone": str(values.get("phone", "")),
         "company": str(values.get("company", "")), "ip": remote_ip,
+        "user_agent": str(_hdrs.get("user-agent") or "")[:400],
+        "referer": str(_hdrs.get("referer") or "")[:500],
+        "lead_id": r.inserted_id, "crm_id": crm_id,
         "created_at": _now(),
     })
     await db.form_configs.update_one({"_id": d["_id"]}, {"$inc": {"submissions": 1}})
     return {"ok": True, "lead_id": str(r.inserted_id),
             "message": d.get("success_message", "Terima kasih!")}
+
+
+@router.get("/admin/form-builder/{fid}/submissions")
+async def form_builder_submissions(fid: str, skip: int = 0, limit: int = 25,
+                                   q: Optional[str] = None, status: Optional[str] = None,
+                                   staff=Depends(get_current_staff)):
+    """Paged submissions for one form, shaped as table columns + rows.
+
+    ``q`` does a case-insensitive substring match across the stored identity
+    fields and every string answer, so the table is searchable without a
+    per-form index.
+    """
+    db = await _get_db()
+    d = await _fb_load_or_404(db, fid)
+    skip, limit = _pagination_params(skip, limit)
+
+    query = {"form_id": d["_id"]}
+    if status == "with_email":
+        query["email"] = {"$nin": ["", None]}
+    elif status == "without_email":
+        query["email"] = {"$in": ["", None]}
+    if q and str(q).strip():
+        needle = re.escape(str(q).strip()[:100])
+        rx = {"$regex": needle, "$options": "i"}
+        ors = [{"name": rx}, {"email": rx}, {"phone": rx}, {"company": rx}, {"ip": rx}]
+        for f in d.get("fields", []):
+            if f.get("type") in _FB_LAYOUT_TYPES:
+                continue
+            ors.append({f"values.{f.get('key', '')}": rx})
+        query["$or"] = ors
+
+    total = await db.form_submissions.count_documents(query)
+    cursor = db.form_submissions.find(query).sort("created_at", -1)
+    cursor = cursor.skip(skip)
+    if limit:
+        cursor = cursor.limit(limit)
+    docs = await cursor.to_list(limit or 1000)
+    return {
+        "form": {"id": str(d["_id"]), "name": d.get("name", ""), "slug": d.get("slug", ""),
+                 "status": d.get("status", "draft"), "version": d.get("version", 1)},
+        "columns": _fb_columns(d),
+        "rows": [_fb_row(s, d) for s in docs],
+        "total": total, "skip": skip,
+        "limit": 0 if limit is None else limit,
+    }
+
+
+@router.delete("/admin/form-builder/{fid}/submissions/{sid}")
+async def form_builder_delete_submission(fid: str, sid: str, staff=Depends(get_current_staff)):
+    """Delete one submission (spam cleanup) and resync the form counter."""
+    db = await _get_db()
+    d = await _fb_load_or_404(db, fid)
+    try:
+        soid = _oid(sid)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    r = await db.form_submissions.delete_one({"_id": soid, "form_id": d["_id"]})
+    if not r.deleted_count:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    remaining = await db.form_submissions.count_documents({"form_id": d["_id"]})
+    await db.form_configs.update_one({"_id": d["_id"]}, {"$set": {"submissions": remaining}})
+    return {"ok": True, "submissions": remaining}
 
 
 @router.get("/admin/leads")
@@ -583,57 +991,69 @@ async def admin_list_leads(status: Optional[str] = None, staff=Depends(get_curre
     return [_serialize_lead(d) for d in docs]
 
 @router.get("/admin/form-builder/{fid}/export")
-async def form_builder_export(fid: str, status: Optional[str] = None, staff=Depends(get_current_staff)):
-    """Export form submissions as CSV with formula-injection protection."""
+async def form_builder_export(fid: str, status: Optional[str] = None,
+                              q: Optional[str] = None, staff=Depends(get_current_staff)):
+    """Export form submissions as CSV with formula-injection protection.
+
+    Columns mirror the form definition exactly (layout blocks excluded), so the
+    CSV, the on-screen table and the public form never drift apart.
+    """
     from fastapi.responses import StreamingResponse
     import csv
     import io
 
     db = await _get_db()
-    d = await db.form_configs.find_one({"_id": _oid(fid)})
-    if not d:
-        raise HTTPException(status_code=404, detail="Form not found")
+    d = await _fb_load_or_404(db, fid)
 
-    q = {"form_id": d["_id"]}
-    if status:
-        q["status"] = status  # Note: form_submissions doesn't have status field yet, ignore for now
+    query = {"form_id": d["_id"]}
+    if status == "with_email":
+        query["email"] = {"$nin": ["", None]}
+    elif status == "without_email":
+        query["email"] = {"$in": ["", None]}
+    if q and str(q).strip():
+        needle = re.escape(str(q).strip()[:100])
+        rx = {"$regex": needle, "$options": "i"}
+        ors = [{"name": rx}, {"email": rx}, {"phone": rx}, {"company": rx}, {"ip": rx}]
+        for f in d.get("fields", []):
+            if f.get("type") in _FB_LAYOUT_TYPES:
+                continue
+            ors.append({f"values.{f.get('key', '')}": rx})
+        query["$or"] = ors
 
-    cursor = db.form_submissions.find(q).sort("created_at", -1)
+    cursor = db.form_submissions.find(query).sort("created_at", -1)
 
-    # Build headers: fixed + dynamic field labels
-    fixed_headers = ["submitted_at", "name", "email", "phone", "company", "ip"]
-    field_labels = [f.get("label", f.get("key", "")) for f in d.get("fields", [])]
-    headers = fixed_headers + field_labels
+    # Fixed identity columns + one column per answerable field.
+    headers = ["submitted_at", "name", "email", "phone", "ip"]
+    flds = [f for f in d.get("fields", []) if f.get("type") not in _FB_LAYOUT_TYPES]
+    headers += [f.get("label", f.get("key", "")) for f in flds]
 
     async def generate():
         output = io.StringIO()
         writer = csv.writer(output)
-        # Write BOM for UTF-8 Excel compatibility
-        yield "﻿"
-        writer.writerow([_csv_safe(h) for h in headers])
+        # BOM keeps Excel from mangling UTF-8 (Indonesian names/accents).
+        yield "\ufeff"
+        writer.writerow([_fb_csv_safe(h) for h in headers])
         yield output.getvalue()
         output.seek(0)
         output.truncate(0)
 
         async for sub in cursor:
+            vals = sub.get("values") or {}
             row = [
-                _csv_safe(sub.get("created_at", "")),
-                _csv_safe(sub.get("name", "")),
-                _csv_safe(sub.get("email", "")),
-                _csv_safe(sub.get("phone", "")),
-                _csv_safe(sub.get("company", "")),
-                _csv_safe(sub.get("ip", "")),
+                _fb_csv_safe(sub.get("created_at", "")),
+                _fb_csv_safe(sub.get("name", "")),
+                _fb_csv_safe(sub.get("email", "")),
+                _fb_csv_safe(sub.get("phone", "")),
+                _fb_csv_safe(sub.get("ip", "")),
             ]
-            # Dynamic fields
-            vals = sub.get("values", {})
-            for f in d.get("fields", []):
-                row.append(_csv_safe(vals.get(f.get("key", ""), "")))
+            for f in flds:
+                row.append(_fb_csv_safe(vals.get(f.get("key", ""), "")))
             writer.writerow(row)
             yield output.getvalue()
             output.seek(0)
             output.truncate(0)
 
-    filename = f"form-{d.get('slug', 'export')}-{d.get('version', 1)}.csv"
+    filename = f"form-{d.get('slug', 'export')}-v{d.get('version', 1)}.csv"
     return StreamingResponse(
         generate(),
         media_type="text/csv; charset=utf-8",
