@@ -1661,8 +1661,20 @@ def _resolve_mitigation_device(rule: dict, devices: list[dict]) -> dict | None:
     The telemetry source (GoFlow2 collector, or a MikroTik polled via Torch)
     is not necessarily reachable on the MikroTik API port, and must never be
     conflated with the device that actually executes the blackhole route.
-    A rule may pin an explicit ``mitigation_device_id``; otherwise this falls
-    back to RO.BGP, matching today's manual-blackhole behavior.
+
+    Selection order:
+      1. ``mitigation_device_id`` pinned on the rule — an explicit operator
+         decision, never overridden.
+      2. a device declaring ``collection_role`` of ``enforcer`` or ``both``,
+         highest ``priority`` first.  This is what makes a growing fleet safe:
+         new routers join by declaring their role, not by being "first in the
+         list".
+      3. the legacy RO.BGP deployment for installs that have not been migrated.
+
+    Returning ``None`` is a valid, safe answer.  The previous fallback was
+    ``next(iter(devices), None)`` — an arbitrary router.  Once a second device
+    exists that is a silent mis-enforcement: a block may land on a router that
+    does not carry the traffic, while the incident reports success.
     """
     selected = rule.get("mitigation_device_id")
     if selected:
@@ -1670,9 +1682,29 @@ def _resolve_mitigation_device(rule: dict, devices: list[dict]) -> dict | None:
         if device:
             return device
         log.warning("[ddos] configured mitigation device not found: %s", selected)
-    return next((d for d in devices
-                 if d.get("name") == "RO.BGP" or d.get("host") == "157.20.32.254"),
-                next(iter(devices), None))
+
+    def _priority(device: dict) -> int:
+        try:
+            return int(device.get("priority") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    enforcers = [d for d in devices
+                 if str(d.get("collection_role") or "").lower() in ("enforcer", "both")
+                 and d.get("block_enabled") is not False]
+    if enforcers:
+        enforcers.sort(key=lambda d: (-_priority(d),
+                                      str(d.get("host") or ""),
+                                      str(d.get("name") or "")))
+        return enforcers[0]
+
+    legacy = next((d for d in devices
+                   if d.get("name") == "RO.BGP" or d.get("host") == "157.20.32.254"),
+                  None)
+    if legacy:
+        return legacy
+    log.warning("[ddos] no enforcer device declared; refusing to pick an arbitrary router")
+    return None
 
 
 def _ddos_flow_fields(flow: dict) -> dict:
@@ -1739,6 +1771,9 @@ async def run_ddos_detection_sweep(db) -> dict:
     import asyncio as _a
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
+    # Sweep bucket: the scheduler ticks every 10 seconds, so truncating to a
+    # 10-second boundary gives every worker running the same tick the same id.
+    sweep_bucket = int(now.timestamp()) // 10 * 10
     rules = await db.ddos_threshold_rules.find({"enabled": True}).to_list(100)
     if not rules:
         return {"at": now_iso, "skipped": "no enabled rules"}
@@ -2001,7 +2036,18 @@ async def run_ddos_detection_sweep(db) -> dict:
                           "device": (stats.representative.device
                                      if stats.representative else ""),
                           }
-                await db.ddos_samples.insert_one(sample)
+                # Deterministic _id keyed on (sample, sweep bucket).
+                #
+                # Two uvicorn workers each run their own APScheduler and their
+                # own lease object, so a tick can be executed twice: the lease
+                # serialises the *decision* but not the write, and a race at
+                # release time let both workers persist 225 identical rows per
+                # second. An upsert on a computed id makes the duplicate
+                # physically impossible instead of merely unlikely — Mongo's
+                # unique _id is the only arbiter two processes cannot race.
+                await db.ddos_samples.update_one(
+                    {"_id": f"{sample_key}@{sweep_bucket}"},
+                    {"$set": sample}, upsert=True)
             # Baseline from the batch-read history, cut to this rule's own
             # window. The sample just written is excluded by the `< now`
             # bound the batch read already applied, same as before.
@@ -2261,10 +2307,26 @@ async def run_ddos_detection_sweep(db) -> dict:
                 "device": inc.get("device", ""), "ok": False,
                 "detail": str(result)[:300], "at": now_iso})
 
+    outbound_summary = {}
+    try:
+        from . import outbound_sweep as _outbound
+        scope: list[str] = []
+        for rule in rules:
+            for p in (rule.get("scope_prefixes") or []):
+                if p not in scope:
+                    scope.append(p)
+        outbound_summary = await _outbound.run_outbound_sweep(
+            db, rate_rows, flow_window_s, devices, scope,
+            authoritative=rates_authoritative)
+    except Exception:  # noqa: BLE001
+        log.exception("[ddos] outbound sweep failed")
+        outbound_summary = {"error": "outbound sweep failed; see logs"}
+
     return {"at": now_iso, "devices_sampled": sampled_devices,
             "targets_seen": len(breached_keys), "incidents_opened": opened,
             "auto_blackholed": blackholed, "auto_resolved": resolved,
             "flows_evaluated": len(rate_rows),
+            "outbound": outbound_summary,
             "suppressed": sorted(suppressed, key=lambda s: s["value"],
                                  reverse=True)[:15]}
 

@@ -209,6 +209,14 @@ async def startup_seed():
         # after 7d so the collection stays bounded (it had grown to 3.5M docs).
         await db.ddos_samples.create_index([("key", 1), ("at", -1)])
         await db.ddos_samples.create_index("at", expireAfterSeconds=7 * 86400)
+        # Outbound abuse: shadow decisions are read newest-first per target and
+        # expire on the same 7-day horizon as flow samples. The TTL is what keeps
+        # a shadow run from growing without bound while nobody is reviewing it.
+        await db.ddos_outbound_shadow.create_index([("target", 1), ("at", -1)])
+        await db.ddos_outbound_shadow.create_index([("would_block", 1), ("at", -1)])
+        await db.ddos_outbound_shadow.create_index("at", expireAfterSeconds=7 * 86400)
+        await db.ddos_outbound_state.create_index("updated_at")
+        await db.ddos_detection_overrides.create_index("target")
         # Email queue / templates
         await db.email_queue.create_index([("status", 1), ("scheduled_at", 1)])
         # Audit logs: list newest-first + filter by actor

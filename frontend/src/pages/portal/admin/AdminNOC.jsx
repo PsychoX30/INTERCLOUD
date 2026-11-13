@@ -11,6 +11,7 @@ import { NotifChannels } from "./NotifChannels";
 import { BlackholeLog } from "./BlackholeLog";
 import { BGPBlackholeConfig } from "./BGPBlackholeConfig";
 import { DDoSWhitelist } from "./DDoSWhitelist";
+import { OutboundAbuse } from "./OutboundAbuse";
 import { TablePager } from "./TablePager";
 import { SamplingBadge, SamplingAlert, useSamplingHealth } from "./SamplingHealth";
 
@@ -121,6 +122,8 @@ const AdminNOC = () => {
           </div>
 
           <DDoSPanel devices={devices} />
+
+          <OutboundAbuse />
 
           <ThresholdRules />
 
