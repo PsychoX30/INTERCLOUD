@@ -8,7 +8,7 @@ import {
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
   History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
-  Bell, BookOpen, TrendingUp, Video,
+  Bell, BookOpen, TrendingUp, Video, ShieldAlert,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import { api } from "../../portal/api";
@@ -84,6 +84,7 @@ const ADMIN_NAV_GROUPS = [
     // is nav grouping only, so RBAC enforcement still lives in App.js.
     label: "Network Operations",
     items: [
+      { key: "operations_center", to: "/portal/admin/operations-center", label: "Operations Center", icon: LayoutDashboard, testid: "nav-operations-center", roles: ["admin", "support", "finance", "sales"] },
       { key: "ops",          to: "/portal/admin/ops",           label: "Ops Overview",  icon: LayoutDashboard, testid: "nav-ops",        roles: ["admin", "support"] },
       { key: "monitoring",   to: "/portal/admin/monitoring",   label: "Monitoring", icon: Activity,     testid: "nav-monitoring",   roles: ["admin", "support"] },
       { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
@@ -121,6 +122,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "jitsi", to: "/portal/admin/jitsi", label: "Jitsi Meet", icon: Video, testid: "nav-jitsi", roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },
       { key: "status_page",   to: "/portal/admin/status-page",   label: "Public Status Page", icon: Globe,        testid: "nav-status-page",   roles: ["admin"] },
+      { key: "cve_tracker",   to: "/portal/admin/cve-tracker",   label: "CVE Tracker",        icon: ShieldAlert,  testid: "nav-cve-tracker",   roles: ["admin", "support"] },
     ],
   },
 ];

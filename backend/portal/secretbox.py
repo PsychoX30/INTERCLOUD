@@ -60,6 +60,14 @@ def dec_value(value):
         logger.warning("Gagal dekripsi secret at-rest (kunci berubah?) - nilai dikosongkan; "
                        "isi ulang kredensial di Admin > Integrations")
         return ""
+    except RuntimeError:
+        # No key configured at all. Returning "" would hand the caller a
+        # silently empty password; raising here would crash a scheduler tick on
+        # a bad deploy. Log loudly and return "" so the caller reports a
+        # connection failure it can attribute to credentials, not to the router.
+        logger.error("Tidak ada SETTINGS_ENC_KEY/JWT_SECRET — secret terenkripsi "
+                     "tidak bisa dibaca; isi kredensial ulang setelah kunci diset")
+        return ""
 
 
 def encrypt_credentials(creds):
@@ -79,7 +87,8 @@ decrypt_config = decrypt_credentials
 
 async def migrate_at_rest(db) -> dict:
     """Enkripsi in-place data plaintext lama. Idempotent (dipanggil tiap startup)."""
-    changed = {"integration_settings": 0, "proxmox_servers": 0, "integrations": 0}
+    changed = {"integration_settings": 0, "proxmox_servers": 0, "integrations": 0,
+               "mikrotik_devices": 0}
     async for d in db.integration_settings.find({}):
         creds = d.get("credentials")
         if isinstance(creds, dict) and any(
@@ -104,4 +113,15 @@ async def migrate_at_rest(db) -> dict:
             if upd:
                 await db.integrations.update_one({"_id": d["_id"]}, {"$set": upd})
                 changed["integrations"] += 1
+    # MikroTik router passwords carry the highest blast radius of anything in
+    # this database: they are the credential an enforcement loop uses to write
+    # firewall rules. They were stored in plaintext because device management
+    # predates secretbox. Device operations decrypt in MikrotikClient.__init__,
+    # so migrating here is invisible to every caller.
+    async for d in db.mikrotik_devices.find({}):
+        raw = d.get("password")
+        if isinstance(raw, str) and raw and not is_encrypted(raw):
+            await db.mikrotik_devices.update_one(
+                {"_id": d["_id"]}, {"$set": {"password": enc_value(raw)}})
+            changed["mikrotik_devices"] += 1
     return changed

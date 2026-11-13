@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../../../portal/api";
 import { PageHeader, Card, Loading, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import {
   Router, Server, Wifi, Activity, ShieldAlert, HardDrive, RotateCcw, Search,
   Plus, Trash2, PlayCircle, Loader2, CheckCircle2, XCircle, RefreshCw, AlertTriangle, Edit,
+  X,
 } from "lucide-react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -293,6 +294,13 @@ const LookingGlassTab = ({ deviceId }) => {
 };
 
 // ---------------------------------------------- Blackhole tab
+//
+// Daftar blackhole adalah daftar tindakan destruktif: menghapus baris yang
+// salah memutus pelanggan. Versi lama tidak punya penanda baris, tidak ada
+// kursor pointer, tidak ada pencarian, dan konfirmasi hanya menyebut ID
+// route internal (".*1A") yang tidak bisa dicocokkan mata dengan prefix.
+// Sekarang: pencarian lokal, checkbox multi-pilih, sorot baris, dan
+// konfirmasi yang menyebut prefix sebenarnya.
 const BlackholeTab = ({ deviceId }) => {
   const [rows, setRows] = useState(null);
   const [prefix, setPrefix] = useState("");
@@ -300,15 +308,24 @@ const BlackholeTab = ({ deviceId }) => {
   const [appliedFilter, setAppliedFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState([]);
+  const [confirming, setConfirming] = useState(null); // { ids, labels }
+  const [removing, setRemoving] = useState(false);
+
   const load = async (f = appliedFilter) => {
     const parts = [];
     if (deviceId) parts.push(`device_id=${deviceId}`);
     if (f) parts.push(`prefix_filter=${encodeURIComponent(f)}`);
     const q = parts.length ? `?${parts.join("&")}` : "";
-    try { const { data } = await api.get(`/admin/mikrotik/blackhole${q}`); setRows(data); }
+    try { const { data } = await api.get(`/admin/mikrotik/blackhole${q}`); setRows(data || []); }
     catch { setRows([]); }
   };
-  useEffect(() => { load(""); /* eslint-disable-line */ }, [deviceId]);
+  useEffect(() => {
+    load("");
+    setSelected([]);
+    /* eslint-disable-line */
+  }, [deviceId]);
   const applyFilter = (e) => { e.preventDefault(); setAppliedFilter(filter); load(filter); };
   const clearFilter = () => { setFilter(""); setAppliedFilter(""); load(""); };
   const add = async (e) => {
@@ -320,31 +337,73 @@ const BlackholeTab = ({ deviceId }) => {
     } catch (e) { setMsg(e?.response?.data?.detail || e.message); }
     finally { setBusy(false); }
   };
-  const del = async (id) => {
-    if (!window.confirm(`Remove blackhole route ${id}?`)) return;
-    const q = deviceId ? `?device_id=${deviceId}` : "";
-    await api.delete(`/admin/mikrotik/blackhole/${encodeURIComponent(id)}${q}`);
-    load();
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = rows || [];
+    if (!q) return list;
+    return list.filter((r) =>
+      String(r["dst-address"] || "").toLowerCase().includes(q)
+      || String(r.comment || "").toLowerCase().includes(q)
+      || String(r[".id"] || "").toLowerCase().includes(q));
+  }, [rows, query]);
+
+  const allVisibleSelected = visible.length > 0 && visible.every((r) => selected.includes(r[".id"]));
+  const toggle = (id) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const toggleAll = () => {
+    if (allVisibleSelected) {
+      const vis = new Set(visible.map((r) => r[".id"]));
+      setSelected((s) => s.filter((x) => !vis.has(x)));
+    } else {
+      setSelected((s) => [...new Set([...s, ...visible.map((r) => r[".id"])])]);
+    }
   };
+
+  const askRemove = (ids) => {
+    const labels = ids.map((id) => (rows || []).find((r) => r[".id"] === id)?.["dst-address"] || id);
+    setConfirming({ ids, labels });
+  };
+
+  const doRemove = async () => {
+    if (!confirming) return;
+    setRemoving(true);
+    const q = deviceId ? `?device_id=${deviceId}` : "";
+    const failed = [];
+    for (const id of confirming.ids) {
+      try {
+        await api.delete(`/admin/mikrotik/blackhole/${encodeURIComponent(id)}${q}`);
+      } catch (e) {
+        failed.push(`${id}: ${e?.response?.data?.detail || e.message}`);
+      }
+    }
+    setRemoving(false);
+    setConfirming(null);
+    setSelected([]);
+    if (failed.length) setMsg(`${failed.length} gagal dihapus -> ${failed[0]}`);
+    await load();
+  };
+
   return (
     <div>
       <Card className="p-5 mb-4">
-        <form onSubmit={add} className="flex items-end gap-3" data-testid="mt-bh-form">
-          <label className="flex-1">
+        <form onSubmit={add} className="flex flex-wrap items-end gap-3" data-testid="mt-bh-form">
+          <label className="flex-1 min-w-[240px]">
             <div className={labelClass}>Prefix to blackhole (e.g. 203.0.113.42/32)</div>
-            <input required value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="203.0.113.42/32" className={`${inputClass} font-mono`} data-testid="mt-bh-prefix" />
+            <input required value={prefix} onChange={(e) => setPrefix(e.target.value)}
+                   placeholder="203.0.113.42/32" className={`${inputClass} font-mono`}
+                   data-testid="mt-bh-prefix" />
           </label>
           <button className={btnPrimary} disabled={busy} data-testid="mt-bh-submit">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldAlert className="h-4 w-4" />} Announce blackhole
           </button>
         </form>
-        {msg && <div className="mt-3 text-sm text-red-700">{msg}</div>}
+        {msg && <div className="mt-3 text-sm text-red-700" data-testid="mt-bh-msg">{msg}</div>}
       </Card>
 
       <Card className="p-4 mb-4">
-        <form onSubmit={applyFilter} className="flex items-end gap-3" data-testid="mt-bh-filter-form">
-          <label className="flex-1">
-            <div className={labelClass}>Filter by parent prefix (only show blackhole routes inside this network)</div>
+        <form onSubmit={applyFilter} className="flex flex-wrap items-end gap-3" data-testid="mt-bh-filter-form">
+          <label className="flex-1 min-w-[240px]">
+            <div className={labelClass}>Server-side filter: only routes inside this parent prefix</div>
             <input value={filter} onChange={(e) => setFilter(e.target.value)}
                    placeholder="e.g. 157.20.32.0/24" className={`${inputClass} font-mono`}
                    data-testid="mt-bh-filter-input" />
@@ -359,37 +418,150 @@ const BlackholeTab = ({ deviceId }) => {
           )}
         </form>
         <div className="mt-2 text-[11px] text-slate-500">
-          Skip a full-BGP-table dump - the query already filters server-side to <span className="font-mono">?blackhole=yes</span>. Add a parent CIDR to narrow further.
+          The query already filters server-side to <span className="font-mono">?blackhole=yes</span>, so no full BGP table dump. Narrow further with a parent CIDR.
           {appliedFilter && <span className="ml-2 text-[#0a2350] font-bold">Active filter: <span className="font-mono">{appliedFilter}</span></span>}
         </div>
       </Card>
 
-      <Card className="p-0 overflow-hidden">
-        <div className="px-4 py-2 border-b border-slate-100 bg-slate-50 text-xs font-bold uppercase tracking-widest text-[#0a2350]">Active blackhole routes {appliedFilter && <span className="text-slate-400 font-normal normal-case">- filtered by {appliedFilter}</span>}</div>
+      <Card className="p-0 overflow-hidden" data-testid="mt-bh-table-card">
+        <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs font-bold uppercase tracking-widest text-[#0a2350]">
+            Active blackhole routes
+            {rows && <span className="ml-2 text-slate-400 font-normal normal-case">({visible.length} of {rows.length})</span>}
+            {appliedFilter && <span className="ml-1 text-slate-400 font-normal normal-case">- filtered by {appliedFilter}</span>}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Cari prefix / komentar…"
+                className="pl-8 pr-7 py-1.5 text-xs rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-[#f5b120] w-56"
+                data-testid="mt-bh-search"
+              />
+              {query && (
+                <button type="button" onClick={() => setQuery("")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                        aria-label="Bersihkan pencarian">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <button type="button" onClick={() => load()} className={btnSecondary} data-testid="mt-bh-reload"
+                    title="Muat ulang daftar dari router">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+            {selected.length > 0 && (
+              <button type="button" onClick={() => askRemove(selected)}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg px-3 py-1.5"
+                      data-testid="mt-bh-remove-selected">
+                <Trash2 className="h-3.5 w-3.5" /> Hapus {selected.length} terpilih
+              </button>
+            )}
+          </div>
+        </div>
         {!rows && <div className="p-6 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin inline mr-2" /> Loading…</div>}
         {rows && (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-              <tr><th className="px-4 py-3 text-left">Prefix</th><th className="px-4 py-3 text-left">Distance</th><th className="px-4 py-3 text-left">Comment</th><th className="px-4 py-3"></th></tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400" data-testid="mt-bh-empty">No blackhole routes {appliedFilter ? "inside this prefix." : "on this device."}</td></tr>}
-              {rows.map((r) => (
-                <tr key={r[".id"]} className="border-t border-slate-100" data-testid={`mt-bh-row-${r[".id"]}`}>
-                  <td className="px-4 py-2 font-mono text-xs font-bold">{r["dst-address"]}</td>
-                  <td className="px-4 py-2">{r.distance}</td>
-                  <td className="px-4 py-2 text-xs text-slate-600">{r.comment || "-"}</td>
-                  <td className="px-4 py-2 text-right">
-                    <button onClick={() => del(r[".id"])} className="text-xs text-red-600 hover:text-red-800" data-testid={`mt-bh-del-${r[".id"]}`}>
-                      <Trash2 className="h-3 w-3 inline" /> Remove
-                    </button>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                <tr>
+                  <th className="px-3 py-3 w-10">
+                    <input type="checkbox" checked={allVisibleSelected} onChange={toggleAll}
+                           className="accent-[#f5b120] cursor-pointer"
+                           aria-label="Pilih semua baris yang tampil"
+                           data-testid="mt-bh-select-all" />
+                  </th>
+                  <th className="px-2 py-3 text-left">Prefix</th>
+                  <th className="px-2 py-3 text-left">Distance</th>
+                  <th className="px-2 py-3 text-left">Comment</th>
+                  <th className="px-2 py-3 text-left">Route ID</th>
+                  <th className="px-2 py-3"></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visible.length === 0 && (
+                  <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400" data-testid="mt-bh-empty">
+                    {rows.length === 0
+                      ? <>No blackhole routes {appliedFilter ? "inside this prefix." : "on this device."}</>
+                      : <>Tidak ada baris cocok dengan &quot;{query}&quot;.</>}
+                  </td></tr>
+                )}
+                {visible.map((r) => {
+                  const id = r[".id"];
+                  const checked = selected.includes(id);
+                  return (
+                    <tr key={id}
+                        onClick={() => toggle(id)}
+                        className={`border-t border-slate-100 cursor-pointer transition-colors ${checked ? "bg-amber-50" : "hover:bg-slate-50"}`}
+                        data-testid={`mt-bh-row-${id}`}>
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={checked} onChange={() => toggle(id)}
+                               className="accent-[#f5b120] cursor-pointer"
+                               aria-label={`Pilih ${r["dst-address"]}`}
+                               data-testid={`mt-bh-check-${id}`} />
+                      </td>
+                      <td className="px-2 py-2 font-mono text-xs font-bold text-[#0a2350]">{r["dst-address"]}</td>
+                      <td className="px-2 py-2 text-xs">{r.distance ?? "-"}</td>
+                      <td className="px-2 py-2 text-xs text-slate-600 max-w-[220px] truncate" title={r.comment}>
+                        {r.comment || "-"}
+                      </td>
+                      <td className="px-2 py-2 font-mono text-[10px] text-slate-400">{id}</td>
+                      <td className="px-2 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => askRemove([id])}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-800 rounded px-2 py-1 hover:bg-red-50 focus-visible:ring-2 focus-visible:ring-red-400"
+                                data-testid={`mt-bh-del-${id}`}
+                                title={`Hapus route ${r["dst-address"]}`}>
+                          <Trash2 className="h-3 w-3" /> Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
+
+      {confirming && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+             role="dialog" aria-modal="true" data-testid="mt-bh-confirm">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="h-5 w-5 text-red-600" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-extrabold text-[#0a2350]">
+                  Hapus {confirming.ids.length} blackhole route?
+                </div>
+                <p className="text-xs text-slate-600 mt-1">
+                  Tindakan ini langsung berlaku di router dan tidak bisa dibatalkan.
+                </p>
+                <div className="mt-2 max-h-32 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
+                  {confirming.labels.map((l) => (
+                    <div key={l} className="font-mono text-[11px] text-slate-800">{l}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className={btnSecondary} onClick={() => setConfirming(null)}
+                      disabled={removing} data-testid="mt-bh-confirm-cancel">
+                Batal
+              </button>
+              <button type="button" onClick={doRemove} disabled={removing}
+                      className="inline-flex items-center gap-1.5 text-sm font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-60 rounded-lg px-4 py-2"
+                      data-testid="mt-bh-confirm-ok">
+                {removing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                {removing ? "Menghapus…" : `Hapus ${confirming.ids.length}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

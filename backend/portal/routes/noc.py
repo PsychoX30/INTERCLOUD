@@ -81,6 +81,31 @@ async def _get_mikrotik_device(db, device_id: str | None):
     return {"_id": None, "name": "default", **(s.get("credentials") or {})}
 
 
+# Roles a device can hold for outbound enforcement. "none" is the default so a
+# router added before this feature existed never silently becomes an enforcer.
+_DEVICE_ROLES = ("none", "exporter", "enforcer", "both")
+
+
+def _validated_role(value) -> str:
+    role = str(value or "none").strip().lower()
+    return role if role in _DEVICE_ROLES else "none"
+
+
+def _validated_priority(value) -> int:
+    try:
+        return max(0, min(1000, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _validated_sites(value) -> list[str]:
+    if isinstance(value, str):
+        value = [v for v in value.split(",")]
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v or "").strip()][:50]
+
+
 def _serialize_device(d: dict) -> dict:
     return {
         "id": str(d["_id"]) if d.get("_id") else None,
@@ -92,6 +117,13 @@ def _serialize_device(d: dict) -> dict:
         "main_interface": d.get("main_interface", ""),
         "site": d.get("site", ""),
         "notes": d.get("notes", ""),
+        # --- fleet role (outbound enforcement) ---
+        # "none" is the safe default: a device added before this feature existed
+        # must not start accepting automated blocks just because it exists.
+        "collection_role": d.get("collection_role") or "none",
+        "block_enabled": bool(d.get("block_enabled", True)),
+        "priority": int(d.get("priority") or 0),
+        "sites": d.get("sites") if isinstance(d.get("sites"), list) else [],
         "created_at": d.get("created_at"),
     }
 
@@ -122,11 +154,17 @@ async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin
         "host": (payload.get("host") or "").strip(),
         "port": int(payload.get("port") or 8728),
         "username": (payload.get("username") or "").strip(),
-        "password": payload.get("password") or "",
+        # Encrypted at rest from the first write. Rows created before this
+        # existed are migrated by secretbox.migrate_at_rest on startup.
+        "password": _sb_enc(payload.get("password") or ""),
         "use_tls": bool(payload.get("use_tls", False)),
         "main_interface": (payload.get("main_interface") or "").strip(),
         "site": payload.get("site") or "",
         "notes": payload.get("notes") or "",
+        "collection_role": _validated_role(payload.get("collection_role")),
+        "block_enabled": bool(payload.get("block_enabled", True)),
+        "priority": _validated_priority(payload.get("priority")),
+        "sites": _validated_sites(payload.get("sites")),
         "created_at": _now(),
     }
     if not doc["host"] or not doc["username"]:
@@ -139,12 +177,25 @@ async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin
 @router.put("/admin/mikrotik/devices/{did}")
 async def mikrotik_devices_update(did: str, payload: dict, admin=Depends(get_current_admin)):
     db = await _get_db()
-    allowed = {"name", "host", "port", "username", "password", "use_tls", "main_interface", "site", "notes"}
+    allowed = {"name", "host", "port", "username", "password", "use_tls",
+               "main_interface", "site", "notes", "collection_role",
+               "block_enabled", "priority", "sites"}
     upd = {k: v for k, v in (payload or {}).items() if k in allowed}
     if "port" in upd: upd["port"] = int(upd["port"] or 8728)
     if "use_tls" in upd: upd["use_tls"] = bool(upd["use_tls"])
-    if "password" in upd and not upd["password"]:
-        upd.pop("password")  # don't blank out password when field is empty
+    if "password" in upd:
+        if upd["password"]:
+            upd["password"] = _sb_enc(upd["password"])
+        else:
+            upd.pop("password")  # don't blank out password when field is empty
+    if "collection_role" in upd:
+        upd["collection_role"] = _validated_role(upd["collection_role"])
+    if "block_enabled" in upd:
+        upd["block_enabled"] = bool(upd["block_enabled"])
+    if "priority" in upd:
+        upd["priority"] = _validated_priority(upd["priority"])
+    if "sites" in upd:
+        upd["sites"] = _validated_sites(upd["sites"])
     r = await db.mikrotik_devices.update_one({"_id": _oid(did)}, {"$set": upd})
     if not r.matched_count:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -320,75 +371,186 @@ async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100, skip: int
 
 @router.get("/admin/noc/netflow/sankey")
 async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
+                             minutes: int = 5,
                              admin=Depends(require_roles("admin", "support"))):
-    """Data agregat arus trafik (torch MikroTik live) untuk Diagram Sankey.
+    """Data agregat arus trafik untuk Diagram Sankey.
 
-    - Menggabungkan perangkat `mikrotik_devices` DAN integrasi MikroTik legacy
-      dari menu Integrations (dulu perangkat legacy tidak pernah di-sampling).
-    - Interface: pakai `main_interface` perangkat bila di-set; kalau kosong,
-      pilih otomatis 2 interface running tersibuk (dulu hardcoded ether1).
+    Sumber utama adalah collector **goflow2** (NetFlow/IPFIX dari MikroTik),
+    yang menulis setiap flow ke ``/var/log/goflow2/flows.json`` secara
+    real-time.  Versi sebelumnya membangun diagram dari ``/tool/torch``,
+    yang menjalankan sampling 2 detik *per interface* secara berurutan:
+    dua perangkat x dua interface = 8-15 detik menunggu, dan hasilnya hanya
+    cuplikan sesaat.  Itu sumber keluhan "sampling masih perlu waktu lama".
+    Torch kini hanya fallback ketika collector tidak tersedia.
+
+    ``minutes`` membatasi jendela historis yang dibaca dari sampel yang
+    sudah dipersist ke ``flow_samples``, supaya diagram tetap terisi ketika
+    permintaan datang sesaat setelah rotasi file.
     """
     db = await _get_db()
     limit = max(3, min(limit, 50))
+    minutes = max(1, min(minutes, 60))
     import asyncio as _a
     loop = _a.get_event_loop()
-    if device_id:
-        devices = [await _get_mikrotik_device(db, None if device_id == "legacy" else device_id)]
-    else:
-        devices = await db.mikrotik_devices.find({}).to_list(50)
-        legacy = await iv2.get_settings(db, "mikrotik")
-        if legacy and legacy.get("enabled") and (legacy.get("credentials") or {}).get("host"):
-            devices.append({"_id": None, "name": "Legacy (Integrations)",
-                            **(legacy.get("credentials") or {})})
-    agg: dict = {}
-    sampled = 0
+
+    # ---- 1. Sumber utama: goflow2 collector (real-time, tanpa delay) ------
+    flows: list = []
     sampled_interfaces: list = []
     errors: list = []
-    for d in devices:
-        if not d:
-            continue
-        name = d.get("name") or d.get("host") or "device"
-        client = iv2.MikrotikClient(d)
-        iface_cfg = (d.get("main_interface") or d.get("interface") or "").strip()
-        if iface_cfg:
-            ifaces = [iface_cfg]
+    source = "none"
+    stale = False
+    file_age_s = None
+    batch_pps = batch_bps = 0.0
+    window_s = 0.0
+    try:
+        from .. import emails as _em
+        gf = await _em._get_goflow2_client(db)
+        if gf is not None:
+            # peek(), not poll(): the detection sweep owns the file cursor
+            # because it is the only consumer whose rates feed decisions.
+            # Both calling poll() meant whichever ran second saw zero new
+            # lines, so this view silently fell back to Torch while the sweep
+            # intermittently received a drained backlog and computed an
+            # inflated rate from it.
+            res = await loop.run_in_executor(None, gf.peek)
+            if res.get("ok"):
+                stale = bool(res.get("stale"))
+                file_age_s = res.get("file_age_s")
+                batch_pps = float(res.get("batch_pps") or 0)
+                batch_bps = float(res.get("batch_bps") or 0)
+                window_s = float(res.get("batch_duration_s") or 0)
+                if device_id:
+                    devices = [await _get_mikrotik_device(db, None if device_id == "legacy" else device_id)]
+                    wanted = {(d.get("host") or "") for d in devices if d}
+                    rows_in = [r for r in (res.get("rows") or [])
+                               if (r.get("sampler_address") or "") in wanted]
+                else:
+                    rows_in = res.get("rows") or []
+                if rows_in:
+                    source = "goflow2"
+                    # Top flows by throughput, aggregated by (src, dst) pair.
+                    agg: dict = {}
+                    for f in rows_in:
+                        src = (f.get("src_address") or "").split("/")[0]
+                        dst = (f.get("dst_address") or "").split("/")[0]
+                        if not src or not dst or src == dst:
+                            continue
+                        # Per-record bps is an estimate; re-derive from the
+                        # batch so the diagram shows the same totals the
+                        # detector sees.
+                        per_pkt = (float(f.get("rate_bytes") or 0)
+                                   / float(f.get("rx_packets") or 1))
+                        rate = float(f.get("rx_packets") or 0) * per_pkt * 8
+                        if window_s > 0:
+                            rate = rate / window_s
+                        agg[(src, dst)] = agg.get((src, dst), 0.0) + rate
+                    flows = [{"src": k[0], "dst": k[1], "bps": int(v),
+                              "gbps": round(v / 1e9, 3)}
+                             for k, v in agg.items() if v > 0]
+                    flows.sort(key=lambda x: x["bps"], reverse=True)
+                    flows = flows[:limit]
+                    samplers = sorted({(f.get("sampler_address") or "collector")
+                                       for f in rows_in})
+                    sampled_interfaces = [f"flow:{s}" for s in samplers]
+            else:
+                errors.append({"device": "goflow2", "interface": "-",
+                               "error": str(res.get("error") or "poll gagal")[:160]})
+    except Exception as exc:  # noqa: BLE001 - surface, never swallow into a blank chart
+        errors.append({"device": "goflow2", "interface": "-", "error": str(exc)[:160]})
+
+    # ---- 2. Pelengkap: sampel historis bila collector sedang kosong ------
+    if not flows and source == "none":
+        try:
+            since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            docs = await db.flow_samples.find({"at": {"$gte": since}}).sort("at", -1).to_list(5000)
+            if docs:
+                source = "history"
+                agg = {}
+                for doc in docs:
+                    k = (doc.get("src"), doc.get("dst"))
+                    if not k[0] or not k[1]:
+                        continue
+                    agg[k] = agg.get(k, 0.0) + float(doc.get("bps") or 0)
+                n = max(1, len({d.get("at") for d in docs}))
+                flows = [{"src": k[0], "dst": k[1], "bps": int(v / n),
+                          "gbps": round(v / n / 1e9, 3)}
+                         for k, v in agg.items() if v > 0]
+                flows.sort(key=lambda x: x["bps"], reverse=True)
+                flows = flows[:limit]
+                window_s = minutes * 60
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"device": "history", "interface": "-", "error": str(exc)[:160]})
+
+    # ---- 3. Fallback terakhir: Torch (lambat, hanya kalau 1 & 2 kosong) --
+    if not flows and source == "none":
+        if device_id:
+            devices = [await _get_mikrotik_device(db, None if device_id == "legacy" else device_id)]
         else:
-            rows = await loop.run_in_executor(None, client.list_interfaces)
-            running = [r for r in rows
-                       if str(r.get("running", "")).lower() in ("true", "yes")
-                       and str(r.get("disabled", "")).lower() not in ("true", "yes")]
-            running.sort(key=lambda r: int(r.get("rx-byte") or 0) + int(r.get("tx-byte") or 0),
-                         reverse=True)
-            ifaces = [r.get("name") for r in running if r.get("name")][:2] or ["ether1"]
-            if not rows:
-                errors.append({"device": name, "interface": "-",
-                               "error": "Tidak bisa membaca daftar interface (cek host/kredensial API)"})
-        dev_ok = False
-        for iface in ifaces:
-            try:
-                res = await loop.run_in_executor(
-                    None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
-            except Exception as e:
-                errors.append({"device": name, "interface": iface, "error": str(e)[:160]})
+            devices = await db.mikrotik_devices.find({}).to_list(50)
+            legacy = await iv2.get_settings(db, "mikrotik")
+            if legacy and legacy.get("enabled") and (legacy.get("credentials") or {}).get("host"):
+                devices.append({"_id": None, "name": "Legacy (Integrations)",
+                                **(legacy.get("credentials") or {})})
+        agg: dict = {}
+        sampled = 0
+        for d in devices:
+            if not d:
                 continue
-            if not res.get("ok"):
-                errors.append({"device": name, "interface": iface,
-                               "error": str(res.get("error") or "torch gagal")[:160]})
-                continue
-            dev_ok = True
-            sampled_interfaces.append(f"{name}/{iface}")
-            for f in res.get("rows", []):
-                src = (f.get("src_address") or "").split("/")[0]
-                dst = (f.get("dst_address") or "").split("/")[0]
-                if not src or not dst or src == dst:
+            name = d.get("name") or d.get("host") or "device"
+            client = iv2.MikrotikClient(d)
+            iface_cfg = (d.get("main_interface") or d.get("interface") or "").strip()
+            if iface_cfg:
+                ifaces = [iface_cfg]
+            else:
+                try:
+                    rows = await loop.run_in_executor(None, client.list_interfaces)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append({"device": name, "interface": "-", "error": str(exc)[:160]})
                     continue
-                agg[(src, dst)] = agg.get((src, dst), 0) + f.get("rx_rate", 0) + f.get("tx_rate", 0)
-        if dev_ok:
-            sampled += 1
-    flows = sorted(({"src": k[0], "dst": k[1], "bps": int(v), "gbps": round(v / 1e9, 3)}
-                    for k, v in agg.items() if v > 0),
-                   key=lambda x: x["bps"], reverse=True)[:limit]
-    return {"live": sampled > 0, "devices_sampled": sampled,
+                running = [r for r in rows
+                           if str(r.get("running", "")).lower() in ("true", "yes")
+                           and str(r.get("disabled", "")).lower() not in ("true", "yes")]
+                running.sort(key=lambda r: int(r.get("rx-byte") or 0) + int(r.get("tx-byte") or 0),
+                             reverse=True)
+                ifaces = [r.get("name") for r in running if r.get("name")][:2] or ["ether1"]
+                if not rows:
+                    errors.append({"device": name, "interface": "-",
+                                   "error": "Tidak bisa membaca daftar interface (cek host/kredensial API)"})
+            dev_ok = False
+            for iface in ifaces:
+                try:
+                    res = await loop.run_in_executor(
+                        None, lambda c=client, i=iface: c.torch(interface=i, duration=2))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append({"device": name, "interface": iface, "error": str(exc)[:160]})
+                    continue
+                if not res.get("ok"):
+                    errors.append({"device": name, "interface": iface,
+                                   "error": str(res.get("error") or "torch gagal")[:160]})
+                    continue
+                dev_ok = True
+                sampled_interfaces.append(f"{name}/{iface}")
+                for f in res.get("rows", []):
+                    src = (f.get("src_address") or "").split("/")[0]
+                    dst = (f.get("dst_address") or "").split("/")[0]
+                    if not src or not dst or src == dst:
+                        continue
+                    agg[(src, dst)] = agg.get((src, dst), 0) + f.get("rx_rate", 0) + f.get("tx_rate", 0)
+            if dev_ok:
+                sampled += 1
+        if agg:
+            source = "torch"
+            flows = sorted(({"src": k[0], "dst": k[1], "bps": int(v), "gbps": round(v / 1e9, 3)}
+                            for k, v in agg.items() if v > 0),
+                           key=lambda x: x["bps"], reverse=True)[:limit]
+
+    total_bps = sum(f["bps"] for f in flows)
+    return {"live": bool(flows), "source": source, "stale": stale,
+            "file_age_s": file_age_s,
+            "window_s": round(window_s, 2),
+            "batch_pps": round(batch_pps, 1), "batch_bps": round(batch_bps, 1),
+            "total_bps": total_bps,
+            "devices_sampled": len(sampled_interfaces),
             "interfaces": sampled_interfaces, "errors": errors[:10],
             "flows": flows, "sampled_at": _now()}
 

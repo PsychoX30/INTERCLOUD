@@ -11,7 +11,9 @@ import { NotifChannels } from "./NotifChannels";
 import { BlackholeLog } from "./BlackholeLog";
 import { BGPBlackholeConfig } from "./BGPBlackholeConfig";
 import { DDoSWhitelist } from "./DDoSWhitelist";
+import { OutboundAbuse } from "./OutboundAbuse";
 import { TablePager } from "./TablePager";
+import { SamplingBadge, SamplingAlert, useSamplingHealth } from "./SamplingHealth";
 
 const AdminNOC = () => {
   const [devices, setDevices] = useState([]);
@@ -24,6 +26,10 @@ const AdminNOC = () => {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
+  // Flow-sampling health is the precondition for every DDoS verdict on this
+  // page. Surfaced in the header so "no attacks detected" is never shown
+  // without the operator knowing whether the collector was even alive.
+  const sampling = useSamplingHealth(30000);
 
   const load = useCallback(async () => {
     try {
@@ -68,6 +74,7 @@ const AdminNOC = () => {
         subtitle="Proactive MikroTik reachability monitoring. Probes run every 5 minutes on the background scheduler. Transitions (up ↔ down) fire email alerts to configured recipients."
         actions={
           <div className="flex items-center gap-2">
+            <SamplingBadge payload={sampling.payload} testid="noc-sampling-badge" />
             <button className={btnSecondary} onClick={load} data-testid="noc-refresh"><RefreshCw className="h-4 w-4" /> Refresh</button>
             <button className={btnPrimary} onClick={runNow} disabled={polling} data-testid="noc-run-now">
               {polling ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
@@ -76,6 +83,8 @@ const AdminNOC = () => {
           </div>
         }
       />
+
+      <SamplingAlert health={sampling} context="DDoS detection and the Sankey view" />
 
       {/* KPI grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -113,6 +122,8 @@ const AdminNOC = () => {
           </div>
 
           <DDoSPanel devices={devices} />
+
+          <OutboundAbuse />
 
           <ThresholdRules />
 
