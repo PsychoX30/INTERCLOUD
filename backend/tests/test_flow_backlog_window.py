@@ -62,6 +62,41 @@ def test_cold_poll_is_not_authoritative():
         assert all(row["batch_authoritative"] is False for row in result["rows"])
 
 
+def test_one_record_missing_the_arrival_clock_cannot_mix_two_clocks():
+    """Two clock fields in one batch must never be subtracted from each other.
+
+    On production (2026-11-13) `time_received_ns` trails `time_flow_start_ns`
+    by 7,732 s.  Picking the stamp per record meant a single row without the
+    arrival clock fell back to the flow clock and stretched the batch span to
+    hours, dividing a real burst by 27,000 s and hiding it.  The field is now
+    chosen for the whole batch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "flows.json")
+        client = GoFlow2Client(path)
+        _write_records(path, [_rec("1.1.1.1", "157.20.32.10", 10, 1000, 1_000_000_000)])
+        client.poll()
+        time.sleep(0.2)
+
+        base_ns = 2_000_000_000
+        rows = [_rec("2.2.2.2", "157.20.32.10", 100, 10000,
+                     base_ns + i * 250_000_000)
+                for i in range(10)]
+        # Same traffic, but this record never got the arrival clock. Its flow
+        # clock is 7,732 s behind, exactly like the production skew.
+        rows[0].pop("time_received_ns")
+        rows[0]["time_flow_start_ns"] = base_ns - 7_732_000_000_000
+        rows[0]["time_flow_end_ns"] = base_ns - 7_732_000_000_000
+        _write_records(path, rows)
+
+        result = client.poll()
+        assert result["batch_duration_s"] < 60.0, (
+            "mixed clocks stretched the window to %s s" % result["batch_duration_s"]
+        )
+        assert result["batch_duration_s"] >= 2.0, result
+        assert result["authoritative"] is True, result
+
+
 def test_burst_flush_does_not_inflate_rate():
     """A burst of records sharing a tight stamp spread must not divide by 4s.
 

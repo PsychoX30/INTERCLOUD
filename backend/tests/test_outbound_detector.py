@@ -109,17 +109,67 @@ def test_syn_flood_fires_all_shape_signals():
     assert signals["S4_no_return"] is True
 
 
-def test_instant_safety_net_bypasses_confirmation():
-    """A 150 kpps SYN volley blocks on its first window, not on the third."""
+def test_instant_safety_net_needs_two_windows_by_default():
+    """A 150 kpps SYN volley used to block on its first window.
+
+    One window can still be an artefact (the router flushing buffered
+    counters), so the default now confirms twice; the delay costs ~10 s at a
+    rate no legitimate host here sends.
+    """
     cfg = od.merge_config({"instant_critical_pps": 100_000})
     flows = [_flow("103.28.14.60", f"45.0.{i % 250}.{i % 200 + 1}",
                    packets=30_000, bytes_=60, tcp_flags=od.TCP_SYN)
              for i in range(40)]
     metrics = od.measure("103.28.14.60", flows, window_s=10)
     tracker = od.OutboundTracker()
-    scores = tracker.update([od.score_window(metrics, cfg)], cfg)
-    assert scores[0].instant is True
+    first = tracker.update([od.score_window(metrics, cfg)], cfg)[0]
+    assert first.instant is True
+    assert first.would_block is False
+    assert "1/2" in first.reason
+    second = tracker.update([od.score_window(metrics, cfg)], cfg)[0]
+    assert second.would_block is True
+    assert "bypasses confirmation" in second.reason
+
+
+def test_instant_safety_net_can_still_fire_on_one_window():
+    cfg = od.merge_config({"instant_critical_pps": 100_000,
+                           "instant_confirm_windows": 1})
+    flows = [_flow("103.28.14.60", f"45.0.{i % 250}.{i % 200 + 1}",
+                   packets=30_000, bytes_=60, tcp_flags=od.TCP_SYN)
+             for i in range(40)]
+    metrics = od.measure("103.28.14.60", flows, window_s=10)
+    scores = od.OutboundTracker().update([od.score_window(metrics, cfg)], cfg)
     assert scores[0].would_block is True
+
+
+def test_non_authoritative_window_is_never_scored():
+    """A clamped poll must not reach the scorer, let alone the router.
+
+    The gate exists because a sub-second span turns a handful of packets into
+    an arbitrary rate, and a clamped window still carries a non-zero
+    ``window_s`` that would look trustworthy to a caller that only checked
+    ``window_s > 0``. Scoring such a window would let the absolute safety net
+    trip on arithmetic rather than on traffic.
+    """
+    import asyncio
+    from portal import outbound_sweep as sweep
+
+    class _Cfg:
+        async def find_one(self, *a, **k):
+            return {"mode": "enforce", "enabled": True}
+
+    class _DB:
+        ddos_detection_config = _Cfg()
+
+    class _Poison:
+        def __iter__(self):
+            raise AssertionError("flows must not be read for a bad window")
+
+    sweep.invalidate_config_cache()
+    out = asyncio.run(sweep.run_outbound_sweep(
+        _DB(), _Poison(), 1.0, [], ["157.20.32.0/24"], authoritative=False))
+    assert out.get("scored") is None
+    assert "non-authoritative" in out.get("skipped", "")
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +278,189 @@ def test_priority_breaks_ties_deterministically():
                _device("B", "10.0.0.3", sites=["Cyber 1 - Metta"], priority=5)]
     order = og.resolve_enforcers("103.28.14.9", devices, PREFIXES)
     assert [c.device["name"] for c in order] == ["B", "A"]
+
+
+# ---------------------------------------------------------------------------
+# Drop-rule placement: a rule that cannot fire is not a block
+# ---------------------------------------------------------------------------
+class _FakeFilter:
+    """Enough of ``/ip/firewall/filter`` to exercise ordering."""
+
+    def __init__(self, rows, move_ok=True):
+        self.rows = [dict(r) for r in rows]
+        self.move_ok = move_ok
+        self._n = 0
+
+    def __iter__(self):
+        return iter([dict(r) for r in self.rows])
+
+    def _ids(self):
+        return [r[".id"] for r in self.rows]
+
+    def add(self, **params):
+        params = dict(params)
+        self._n += 1
+        row = {".id": f"*{900 + self._n}"}
+        anchor = params.pop("place-before", None)
+        row.update(params)
+        if anchor:
+            self.rows.insert(self._ids().index(anchor), row)
+        else:
+            self.rows.append(row)
+        return row[".id"]
+
+    def __call__(self, cmd, **kwargs):
+        assert cmd == "move", cmd
+        if not self.move_ok:
+            raise RuntimeError("no such command prefix")
+        row = next(r for r in self.rows if r[".id"] == kwargs[".id"])
+        self.rows.remove(row)
+        self.rows.insert(self._ids().index(kwargs["destination"]), row)
+        return iter(())
+
+
+class _FakeApi:
+    def __init__(self, rows, move_ok=True):
+        self.filter = _FakeFilter(rows, move_ok)
+
+    def path(self, *parts):
+        assert parts == ("ip", "firewall", "filter"), parts
+        return self.filter
+
+
+def _forward(rows):
+    return [(str(r.get("chain")), str(r.get("action"))) for r in rows
+            if str(r.get("chain") or "") == "forward"]
+
+
+def test_drop_rule_is_inserted_above_an_existing_forward_accept():
+    """An accept rule already in the chain must never sit above the drop."""
+    api = _FakeApi([
+        {".id": "*1", "chain": "input", "action": "drop", "protocol": "icmp"},
+        {".id": "*2", "chain": "forward", "action": "accept",
+         "connection-state": "established,related"},
+    ])
+    result = og.ensure_drop_rule(api)
+    assert result["ok"] is True and result["created"] is True
+    assert result["position"] == 0
+    assert _forward(api.filter.rows)[0] == ("forward", "drop")
+
+
+def test_drop_rule_that_drifted_down_is_moved_back_up():
+    api = _FakeApi([
+        {".id": "*1", "chain": "forward", "action": "accept"},
+        {".id": "*2", "chain": "forward", "src-address-list": og.SRCBLOCK_LIST,
+         "action": "drop"},
+    ])
+    result = og.ensure_drop_rule(api)
+    assert result["ok"] is True and result["created"] is False
+    assert result["moved"] is True and result["position"] == 0
+    assert _forward(api.filter.rows)[0] == ("forward", "drop")
+
+
+def test_shadowed_drop_rule_is_reported_as_a_failure():
+    """RouterOS without ``move`` must not be reported as a working block."""
+    api = _FakeApi([
+        {".id": "*1", "chain": "forward", "action": "accept"},
+        {".id": "*2", "chain": "forward", "src-address-list": og.SRCBLOCK_LIST,
+         "action": "drop"},
+    ], move_ok=False)
+    result = og.ensure_drop_rule(api)
+    assert result["ok"] is False
+    assert result["position"] == 1
+    assert "shadow" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Block lifecycle against a librouteros-v4-shaped fake
+# ---------------------------------------------------------------------------
+class _Table:
+    """A RouterOS menu: iterate to print, ``add(**p)``, ``remove(*ids)``."""
+
+    def __init__(self):
+        self.rows = []
+        self._n = 0
+
+    def __iter__(self):
+        return iter([dict(r) for r in self.rows])
+
+    def add(self, **params):
+        params = dict(params)
+        self._n += 1
+        row = {".id": f"*{self._n:03d}"}
+        anchor = params.pop("place-before", None)
+        row.update(params)
+        if anchor:
+            self.rows.insert([r[".id"] for r in self.rows].index(anchor), row)
+        else:
+            self.rows.append(row)
+        return row[".id"]
+
+    def remove(self, *ids):
+        # v4 semantics: ids are positional.  ``.id=`` as a keyword argument is
+        # a TypeError, which is exactly the bug this guards against.
+        wanted = set(ids)
+        self.rows = [r for r in self.rows if r[".id"] not in wanted]
+
+    def __call__(self, cmd, **kwargs):
+        raise AssertionError(f"unexpected command {cmd} {kwargs}")
+
+
+class _FakeRouter:
+    def __init__(self):
+        self.filter = _Table()
+        self.address_list = _Table()
+
+    def path(self, *parts):
+        if parts == ("ip", "firewall", "filter"):
+            return self.filter
+        if parts == ("ip", "firewall", "address-list"):
+            return self.address_list
+        raise AssertionError(parts)
+
+
+class _Session:
+    def __init__(self, api):
+        self.api = api
+
+    def __enter__(self):
+        return self.api
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeClient:
+    def __init__(self):
+        self.api = _FakeRouter()
+
+    def session(self):
+        return _Session(self.api)
+
+
+def test_block_round_trip_writes_reads_and_lifts():
+    client = _FakeClient()
+    first = og.apply_block(client, "203.0.113.9", hours=0.5, incident_id="t1")
+    assert first["ok"] is True and first["verified"] is True
+    assert first["timeout"] == "30m" and first["rule_position"] == 0
+    assert len(client.api.address_list.rows) == 1
+
+    # Re-blocking the same IP must replace, not duplicate, the entry.
+    second = og.apply_block(client, "203.0.113.9", hours=6, incident_id="t2")
+    assert second["ok"] is True and second["timeout"] == "360m"
+    assert len(client.api.address_list.rows) == 1
+    assert second["rule_created"] is False
+
+    lifted = og.remove_block(client, "203.0.113.9")
+    assert lifted["ok"] is True and lifted["removed"] == 1
+    assert client.api.address_list.rows == []
+    # The rule is infrastructure, not a block: it must survive the lift.
+    assert _forward(client.api.filter.rows) == [("forward", "drop")]
+
+
+def test_permanent_block_is_written_without_a_timeout():
+    client = _FakeClient()
+    result = og.apply_block(client, "203.0.113.9", hours=-1, incident_id="perm")
+    assert result["ok"] is True
+    assert result["timeout"] == ""
+    assert "timeout" not in client.api.address_list.rows[0]

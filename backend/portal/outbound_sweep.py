@@ -193,7 +193,8 @@ async def _bump_state(db, target: str, *, consecutive: int, score: int,
 
 
 async def persist_scores(db, scores: list[detect.Score], cfg: dict,
-                         now: datetime, *, direction: str = "outbound") -> dict:
+                         now: datetime, *, direction: str = "outbound",
+                         authoritative: bool = True) -> dict:
     """Record the window for review, then advance the persistence counter.
 
     Writes are batched with ``insert_many`` on purpose: the previous sweep
@@ -219,6 +220,7 @@ async def persist_scores(db, scores: list[detect.Score], cfg: dict,
             "direction": direction,
             "mode": cfg.get("mode"),
             "key": f"{direction}:{score.target}",
+            "authoritative": bool(authoritative),
         })
         docs.append(doc)
     if docs:
@@ -357,12 +359,26 @@ def _oid(value: str):
 
 
 async def run_outbound_sweep(db, rate_rows, window_s: float,
-                             devices: list[dict], prefixes: list[dict]) -> dict:
+                             devices: list[dict], prefixes: list[dict],
+                             *, authoritative: bool = True) -> dict:
     """Full outbound pass for one window.  Safe in any mode.
 
     Returns a summary the caller merges into the sweep result so the NOC screen
     can show "evaluated 12 sources, 0 would block" even when nothing happened —
     silence is what made the old detector look dead.
+
+    ``authoritative`` comes from the collector, not from this function.  The
+    collector derives the window and knows when it cannot vouch for it: a poll
+    whose usable span stays under one second (two sweeps back to back, a cold
+    start, or a nearly drained cursor) divides a handful of packets by tens of
+    milliseconds and invents a rate.  That verdict is accepted here instead of
+    being recomputed from ``window_s > 0``, because a clamped window has a
+    non-zero value that would otherwise look trustworthy.
+
+    Being authoritative is necessary, not sufficient: the packet counters are
+    accumulated by the router's flow cache (``active-flow-timeout`` 30 min,
+    4k entries), so a flush can land stale counters in a window that is
+    otherwise well formed.  That is what ``instant_confirm_windows`` covers.
     """
     cfg = await load_config(db)
     if not cfg.get("enabled"):
@@ -371,6 +387,9 @@ async def run_outbound_sweep(db, rate_rows, window_s: float,
         # Without a window, packets cannot become a rate and every score would
         # be a guess. Report it instead of scoring against a zero.
         return {"enabled": True, "skipped": "no authoritative flow window"}
+    if not authoritative:
+        return {"enabled": True, "skipped": "non-authoritative flow window",
+                "authoritative": False, "mode": cfg.get("mode")}
 
     buckets = outbound_candidates(rate_rows, prefixes)
     if not buckets:
@@ -381,7 +400,8 @@ async def run_outbound_sweep(db, rate_rows, window_s: float,
     now = datetime.now(timezone.utc)
     scores = evaluate_window(buckets, float(window_s), cfg, overrides,
                              replies=reply_counts(rate_rows, prefixes))
-    summary = await persist_scores(db, scores, cfg, now)
+    summary = await persist_scores(db, scores, cfg, now,
+                                   authoritative=authoritative)
     summary["mode"] = cfg.get("mode")
     summary["candidates"] = len(buckets)
 

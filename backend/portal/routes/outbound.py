@@ -237,6 +237,10 @@ async def outbound_shadow(limit: int = 100, only_block: bool = False,
         "target": r.get("target"),
         "score": r.get("score"),
         "would_block": bool(r.get("would_block")),
+        "instant": bool(r.get("instant")),
+        # Rows written before this field existed have no value; the UI shows
+        # "unknown" rather than pretending they were trustworthy.
+        "authoritative": r.get("authoritative"),
         "reason": r.get("reason"),
         "signals": r.get("signals") or {},
         "metrics": r.get("metrics") or {},

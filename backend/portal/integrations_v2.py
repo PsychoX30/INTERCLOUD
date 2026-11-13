@@ -1403,10 +1403,16 @@ class GoFlow2Client:
         # rather than given an invented rate.
         now_mono = _time.monotonic()
         record_span_s = 0.0
-        observed_ns = [
-            int(r.get("time_received_ns") or r.get("time_flow_start_ns") or 0)
-            for r in records
-        ]
+        # One clock for the whole batch, chosen by field rather than per record.
+        # Measured on production 2026-11-13, `time_received_ns` and
+        # `time_flow_start_ns` differ by 7,732 s (7.7 h) on this router.  A
+        # per-record fallback would then mix two clocks in one batch and
+        # report a span of hours, dividing a real burst by 27,000 s and
+        # hiding the flood instead of scoring it.  Preferring the arrival
+        # clock for every record keeps `max - min` inside one timeline.
+        observed_ns = [int(r.get("time_received_ns") or 0) for r in records]
+        if not any(observed_ns):
+            observed_ns = [int(r.get("time_flow_start_ns") or 0) for r in records]
         observed_ns = [ts for ts in observed_ns if ts > 0]
         if len(observed_ns) > 1:
             record_span_s = (max(observed_ns) - min(observed_ns)) / 1_000_000_000

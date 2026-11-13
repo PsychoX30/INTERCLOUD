@@ -80,6 +80,24 @@ DEFAULT_CONFIG: dict = {
     # --- absolute safety net ---
     "instant_critical_pps": 100_000,
     "instant_critical_syn_ratio": 0.80,
+    # How many consecutive windows the safety net must see before it blocks.
+    # 1 means "block on the first window". The default is 2.
+    #
+    # The rate a window carries is ``packets / span``, where ``packets`` is a
+    # counter the router's flow cache accumulated — its ``active-flow-timeout``
+    # is 30 minutes and the cache holds 4k entries, so a cache eviction or a
+    # buffered flush can write counters that describe traffic older than the
+    # window they land in. The inflated rate then looks perfectly ordinary
+    # (measured 2026-11-13: one source, 139,405 pps over a 10.3 s window,
+    # 1,062 flows to 249 destinations), and a one-window safety net would cut
+    # the customer off on that single, unverifiable sample. Two consecutive
+    # windows cost ~10 s at a rate no legitimate host here sends, and require
+    # the rate to survive an independent counter batch.
+    #
+    # The collector's own ``authoritative`` verdict already blocks the
+    # degenerate polls (span < 1 s). This counter covers the remaining case:
+    # a window wide enough to look credible while its counters are not.
+    "instant_confirm_windows": 2,
     # --- repeat-offender ladder (hours; -1 = permanent until lifted manually) ---
     "penalty_ladder_hours": [0.5, 6, 24, -1],
     "penalty_memory_days": [7, 30],
@@ -400,6 +418,7 @@ class OutboundTracker:
 
     def __init__(self, *, max_targets: int = 5000):
         self._consecutive: dict[str, int] = {}
+        self._instant: dict[str, int] = {}
         self._max = max(100, int(max_targets))
 
     def update(self, scores: list[Score], cfg: dict) -> list[Score]:
@@ -412,6 +431,22 @@ class OutboundTracker:
                 continue
             self._consecutive[score.target] = (
                 self._consecutive.get(score.target, 0) + 1)
+
+        # The safety net has its own counter: it must not inherit the shape
+        # confirmation (it exists to skip it) and it must not be trusted on a
+        # single window either (see `instant_confirm_windows`).
+        confirm_instant = max(1, int(cfg.get("instant_confirm_windows")
+                                     or DEFAULT_CONFIG["instant_confirm_windows"]))
+        for score in scores:
+            if score.signals.get("gated"):
+                self._instant.pop(score.target, None)
+            elif score.instant:
+                self._instant[score.target] = (
+                    self._instant.get(score.target, 0) + 1)
+            else:
+                self._instant.pop(score.target, None)
+        for target in [t for t in self._instant if t not in seen]:
+            self._instant.pop(target, None)
 
         # A target absent from this window loses one window of credit.  Decrement
         # rather than delete: a sampler that misses one window must not reset a
@@ -432,8 +467,14 @@ class OutboundTracker:
             else:
                 score.signals["S5_persistence"] = False
             if score.instant:
-                score.would_block = True
-                score.reason = (score.reason + " — bypasses confirmation")
+                hits = self._instant.get(score.target, 0)
+                if hits >= confirm_instant:
+                    score.would_block = True
+                    score.reason = (score.reason + " — bypasses confirmation")
+                else:
+                    score.would_block = False
+                    score.reason = ("safety net %d/%d window(s) — not yet"
+                                    % (hits, confirm_instant))
                 continue
             shape_signals = sum(1 for k in ("S1_syn_flood", "S2_dst_fanout",
                                             "S3_small_packets", "S4_no_return")

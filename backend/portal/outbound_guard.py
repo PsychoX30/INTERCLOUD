@@ -187,32 +187,97 @@ def validate_target(target_ip: str) -> tuple[Optional[str], Optional[str]]:
 # ---------------------------------------------------------------------------
 # Router operations
 # ---------------------------------------------------------------------------
+def _is_drop_rule(row: dict) -> bool:
+    return (str(row.get("chain") or "") == RULE_CHAIN
+            and str(row.get("src-address-list") or "") == SRCBLOCK_LIST
+            and str(row.get("action") or "") == "drop")
+
+
+def _forward_position(rows: list[dict], rule_id: str) -> int:
+    """Index of ``rule_id`` among ``forward`` rules only, ``-1`` when absent.
+
+    Position is counted inside the chain, not inside the whole filter table: an
+    ``input`` rule above it is irrelevant to forwarded traffic.
+    """
+    position = -1
+    for row in rows:
+        if str(row.get("chain") or "") != RULE_CHAIN:
+            continue
+        position += 1
+        if str(row.get(".id") or "") == rule_id:
+            return position
+    return -1
+
+
+def _move_before(api, rule_id: str, anchor_id: str) -> bool:
+    """Move ``rule_id`` above ``anchor_id``.  Best effort, never raises."""
+    try:
+        tuple(api.path("ip", "firewall", "filter")(
+            "move", **{".id": rule_id, "destination": anchor_id}))
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("[outbound] move %s before %s failed: %s", rule_id, anchor_id, e)
+        return False
+
+
 def ensure_drop_rule(api) -> dict:
     """Make sure exactly one ``forward`` drop rule consumes SRCBLOCK_LIST.
 
-    Idempotent: an existing rule is reused, not duplicated.  The rule is added
-    at position 0 (``place-before`` is avoided because it needs a valid rule
-    id) so it cannot be shadowed by an earlier accept.
+    Idempotent: an existing rule is reused, never duplicated.
+
+    The rule has to be the *first* rule of the ``forward`` chain.  A drop that
+    sits after ``accept established,related`` or after a fasttrack rule never
+    sees the packets it is meant to drop, so the block would be reported as
+    applied while the customer's flood keeps leaving the network.  This router
+    currently has an empty forward chain, but the same code runs on every
+    device added later, so the position is enforced and then verified:
+
+    * new rule -> added with ``place-before`` the current first forward rule,
+    * existing rule that drifted down -> moved back up,
+    * still not first -> ``ok=False`` (a rule that cannot fire is not a block).
     """
     rows = list(api.path("ip", "firewall", "filter"))
-    for row in rows:
-        if (str(row.get("chain") or "") == RULE_CHAIN
-                and str(row.get("src-address-list") or "") == SRCBLOCK_LIST
-                and str(row.get("action") or "") == "drop"):
-            return {"ok": True, "created": False, "id": row.get(".id")}
-    api.path("ip", "firewall", "filter").add(
-        chain=RULE_CHAIN,
-        **{"src-address-list": SRCBLOCK_LIST},
-        action="drop",
-        comment=RULE_COMMENT,
-    )
-    rows = list(api.path("ip", "firewall", "filter"))
-    for row in rows:
-        if (str(row.get("chain") or "") == RULE_CHAIN
-                and str(row.get("src-address-list") or "") == SRCBLOCK_LIST
-                and str(row.get("action") or "") == "drop"):
-            return {"ok": True, "created": True, "id": row.get(".id")}
-    return {"ok": False, "error": "drop rule was added but is not visible in /ip/firewall/filter"}
+    existing = next((r for r in rows if _is_drop_rule(r)), None)
+    created = False
+    moved = False
+
+    if existing is None:
+        anchor = next((r for r in rows
+                       if str(r.get("chain") or "") == RULE_CHAIN), None)
+        params = {
+            "chain": RULE_CHAIN,
+            "src-address-list": SRCBLOCK_LIST,
+            "action": "drop",
+            "comment": RULE_COMMENT,
+        }
+        if anchor and anchor.get(".id"):
+            params["place-before"] = anchor[".id"]
+        api.path("ip", "firewall", "filter").add(**params)
+        created = True
+        rows = list(api.path("ip", "firewall", "filter"))
+        existing = next((r for r in rows if _is_drop_rule(r)), None)
+        if existing is None:
+            return {"ok": False,
+                    "error": "drop rule was added but is not visible in /ip/firewall/filter"}
+
+    rule_id = str(existing.get(".id") or "")
+    position = _forward_position(rows, rule_id)
+    if position > 0:
+        anchor = next((r for r in rows
+                       if str(r.get("chain") or "") == RULE_CHAIN
+                       and str(r.get(".id") or "") != rule_id), None)
+        if anchor is not None:
+            moved = _move_before(api, rule_id, str(anchor.get(".id")))
+            rows = list(api.path("ip", "firewall", "filter"))
+            position = _forward_position(rows, rule_id)
+
+    if position != 0:
+        return {"ok": False, "id": rule_id, "created": created, "moved": moved,
+                "position": position,
+                "error": "drop rule is not the first forward-chain rule; an "
+                         "earlier accept/fasttrack would shadow it"}
+    return {"ok": True, "created": created, "moved": moved, "id": rule_id,
+            "position": 0}
 
 
 def list_blocks(api) -> list[dict]:
@@ -246,8 +311,11 @@ def apply_block(client, target_ip: str, *, hours: float, incident_id: str) -> di
             existing = [b for b in list_blocks(api)
                         if str(b.get("address") or "") == normalised]
             if existing:
+                # librouteros 4 takes ids positionally: ``remove(**{".id": x})``
+                # raises TypeError and the old block would survive every
+                # re-block attempt.
                 api.path("ip", "firewall", "address-list").remove(
-                    **{".id": existing[0][".id"]})
+                    existing[0][".id"])
 
             params = {"list": SRCBLOCK_LIST, "address": normalised, "comment": comment}
             if timeout is not None:
@@ -266,6 +334,7 @@ def apply_block(client, target_ip: str, *, hours: float, incident_id: str) -> di
                 "timeout": entry.get("timeout") or "",
                 "rule_id": rule.get("id"),
                 "rule_created": bool(rule.get("created")),
+                "rule_position": rule.get("position"),
                 "comment": comment,
             }
     except Exception as e:  # noqa: BLE001
@@ -283,8 +352,7 @@ def remove_block(client, target_ip: str) -> dict:
             entries = [b for b in list_blocks(api)
                        if str(b.get("address") or "") == normalised]
             for entry in entries:
-                api.path("ip", "firewall", "address-list").remove(
-                    **{".id": entry[".id"]})
+                api.path("ip", "firewall", "address-list").remove(entry[".id"])
             left = [b for b in list_blocks(api)
                     if str(b.get("address") or "") == normalised]
             return {"ok": not left, "removed": len(entries) - len(left),

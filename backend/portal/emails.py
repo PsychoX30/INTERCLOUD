@@ -2316,7 +2316,8 @@ async def run_ddos_detection_sweep(db) -> dict:
                 if p not in scope:
                     scope.append(p)
         outbound_summary = await _outbound.run_outbound_sweep(
-            db, rate_rows, flow_window_s, devices, scope)
+            db, rate_rows, flow_window_s, devices, scope,
+            authoritative=rates_authoritative)
     except Exception:  # noqa: BLE001
         log.exception("[ddos] outbound sweep failed")
         outbound_summary = {"error": "outbound sweep failed; see logs"}

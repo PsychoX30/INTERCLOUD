@@ -30,7 +30,8 @@ const GROUPS = [
     title: "Aturan keputusan",
     hint: "Kapan skor berubah menjadi blokir. Naikkan bila masih ada false positive.",
     fields: ["min_score_to_block", "min_signals_to_block", "confirm_windows",
-             "instant_critical_pps", "instant_critical_syn_ratio"],
+             "instant_critical_pps", "instant_critical_syn_ratio",
+             "instant_confirm_windows"],
   },
   {
     key: "penalty",
@@ -58,6 +59,7 @@ const LABELS = {
   confirm_windows: "Window berturut-turut",
   instant_critical_pps: "Pps kritis (blokir langsung)",
   instant_critical_syn_ratio: "Porsi SYN kritis",
+  instant_confirm_windows: "Konfirmasi safety net (window)",
   penalty_ladder_hours: "Tangga hukuman (jam)",
   penalty_memory_days: "Memori pelanggaran (hari)",
 };
@@ -545,6 +547,7 @@ export const OutboundAbuse = () => {
                   <th className="py-2 pr-3">Skor</th>
                   <th className="py-2 pr-3">Sinyal</th>
                   <th className="py-2 pr-3">Pps</th>
+                  <th className="py-2 pr-3">Window</th>
                   <th className="py-2 pr-3">SYN</th>
                   <th className="py-2 pr-3">Kecil</th>
                   <th className="py-2 pr-3">Tujuan</th>
@@ -579,6 +582,17 @@ export const OutboundAbuse = () => {
                           </div>
                         </td>
                         <td className="py-2 pr-3 tabular-nums">{fmtNum(m.pps)}</td>
+                        <td className="py-2 pr-3 tabular-nums text-[12px]">
+                          {m.window_s != null ? `${Number(m.window_s).toFixed(1)}s` : "-"}
+                          {row.authoritative === false && (
+                            <span
+                              className="ml-1 px-1 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-800 text-[9px] font-bold uppercase"
+                              title="Window tidak otoritatif: rasio di baris ini bisa lebih tinggi dari trafik sebenarnya"
+                            >
+                              ?
+                            </span>
+                          )}
+                        </td>
                         <td className="py-2 pr-3 tabular-nums">{m.syn_share != null ? `${(Number(m.syn_share) * 100).toFixed(0)}%` : "-"}</td>
                         <td className="py-2 pr-3 tabular-nums">{m.small_share != null ? `${(Number(m.small_share) * 100).toFixed(0)}%` : "-"}</td>
                         <td className="py-2 pr-3 tabular-nums">{m.dst_diversity ?? "-"}</td>
@@ -591,7 +605,7 @@ export const OutboundAbuse = () => {
                       {open && (
                         <tr className="bg-slate-50">
                           <td />
-                          <td colSpan={9} className="py-2 pr-3">
+                          <td colSpan={10} className="py-2 pr-3">
                             <div className="text-[12px] text-slate-600 font-mono break-all">
                               {(row.reason || "-")}
                             </div>
