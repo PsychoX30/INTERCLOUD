@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   RefreshCw, Database, AlertTriangle, CheckCircle2, Loader2, Play,
-  RotateCcw, ExternalLink, Clock,
+  RotateCcw, ExternalLink, Clock, FileText, Search,
 } from "lucide-react";
 import { api, formatApiError } from "../../../portal/api";
 
@@ -32,6 +32,15 @@ const AdminCveTracker = () => {
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState("");
+
+  // CVE -> article picker. Publishing used to mean copying a CVE by hand into
+  // the article editor; the references are long enough that transcriptions rot.
+  const [pickQ, setPickQ] = useState("");
+  const [pickSev, setPickSev] = useState("");
+  const [picks, setPicks] = useState(null);
+  const [pickLoading, setPickLoading] = useState(false);
+  const [publishBusy, setPublishBusy] = useState("");
+  const [published, setPublished] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -74,6 +83,37 @@ const AdminCveTracker = () => {
   const progress = state && state.total_available
     ? Math.min(100, Math.round((state.cursor / state.total_available) * 100))
     : 0;
+
+  const searchCves = useCallback(async () => {
+    setPickLoading(true);
+    try {
+      const params = { limit: 20 };
+      if (pickQ.trim()) params.q = pickQ.trim();
+      if (pickSev) params.severity = pickSev;
+      const r = await api.get("/public/cve", { params });
+      setPicks(r.data.items || []);
+    } catch (e) {
+      setErr(formatApiError(e));
+      setPicks([]);
+    } finally { setPickLoading(false); }
+  }, [pickQ, pickSev]);
+
+  const publishAsArticle = async (cveId, status) => {
+    setPublishBusy(cveId);
+    setPublished(null);
+    setErr("");
+    try {
+      const r = await api.post(`/admin/cve/${cveId}/publish-article`, { status });
+      setPublished(r.data);
+      setMsg(
+        r.data.action === "created"
+          ? `${cveId} dijadikan artikel (${status}). Buka di menu Artikel untuk menyunting.`
+          : `Artikel untuk ${cveId} diperbarui (${status}).`
+      );
+    } catch (e) {
+      setErr(formatApiError(e));
+    } finally { setPublishBusy(""); }
+  };
 
   return (
     <div className="p-4 md:p-6" data-testid="admin-cve-tracker">
@@ -174,6 +214,129 @@ const AdminCveTracker = () => {
               <span className="font-semibold text-[#0a2350]">{state?.bootstrap_done ? "selesai" : "berjalan"}</span>
             </div>
           </div>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5">
+          <div className="text-sm font-extrabold text-[#0a2350] flex items-center gap-2">
+            <FileText className="h-4 w-4 text-[#f5b120]" /> Jadikan CVE sebagai artikel
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            Ambil CVE dari indeks, lalu terbitkan sebagai artikel blog dalam satu klik. Ringkasan,
+            skor, produk terdampak, dan tautan referensi disusun otomatis dari data NVD.
+            Menerbitkan ulang CVE yang sama akan memperbarui artikel lama, bukan membuat duplikat.
+          </p>
+
+          <div className="mt-4 flex flex-wrap items-end gap-2">
+            <div className="min-w-[220px] flex-1">
+              <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1">
+                Cari CVE
+              </label>
+              <input
+                value={pickQ}
+                onChange={(e) => setPickQ(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") searchCves(); }}
+                placeholder="CVE-2026-… atau kata kunci produk"
+                className="w-full h-10 rounded-lg border border-slate-300 px-3 text-sm"
+                data-testid="cve-pick-query"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1">
+                Keparahan
+              </label>
+              <select
+                value={pickSev}
+                onChange={(e) => setPickSev(e.target.value)}
+                className="h-10 rounded-lg border border-slate-300 px-3 text-sm"
+                data-testid="cve-pick-severity"
+              >
+                <option value="">Semua</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </div>
+            <button
+              onClick={searchCves}
+              disabled={pickLoading}
+              className="inline-flex items-center gap-2 h-10 px-4 rounded-lg bg-[#0a2350] text-white text-sm font-bold hover:bg-[#f5b120] hover:text-[#0a2350] disabled:opacity-60"
+              data-testid="cve-pick-search"
+            >
+              {pickLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              Cari
+            </button>
+          </div>
+
+          {picks && picks.length === 0 && (
+            <div className="mt-4 text-sm text-slate-500" data-testid="cve-pick-empty">
+              Tidak ada CVE yang cocok.
+            </div>
+          )}
+
+          {picks && picks.length > 0 && (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[10px] uppercase tracking-widest text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3">CVE</th>
+                    <th className="py-2 pr-3">Keparahan</th>
+                    <th className="py-2 pr-3">Skor</th>
+                    <th className="py-2 pr-3">Terbit</th>
+                    <th className="py-2">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {picks.map((c) => (
+                    <tr key={c.cve_id} className="border-b border-slate-100 last:border-0">
+                      <td className="py-2 pr-3 font-mono font-semibold text-[#0a2350]">{c.cve_id}</td>
+                      <td className="py-2 pr-3">
+                        <span className="text-[11px] font-bold uppercase">{c.severity}</span>
+                      </td>
+                      <td className="py-2 pr-3 tabular-nums">{c.cvss_score ?? "—"}</td>
+                      <td className="py-2 pr-3 text-[12px] text-slate-500">
+                        {c.published ? String(c.published).slice(0, 10) : "—"}
+                      </td>
+                      <td className="py-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => publishAsArticle(c.cve_id, "draft")}
+                            disabled={publishBusy === c.cve_id}
+                            className="inline-flex items-center gap-1 text-[12px] font-bold text-slate-700 border border-slate-300 rounded-lg px-2.5 py-1.5 hover:border-[#f5b120] disabled:opacity-50"
+                            data-testid={`cve-publish-draft-${c.cve_id}`}
+                          >
+                            {publishBusy === c.cve_id
+                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              : <FileText className="h-3.5 w-3.5" />} Draft
+                          </button>
+                          <button
+                            onClick={() => publishAsArticle(c.cve_id, "published")}
+                            disabled={publishBusy === c.cve_id}
+                            className="inline-flex items-center gap-1 text-[12px] font-bold text-white bg-[#0a2350] rounded-lg px-2.5 py-1.5 hover:bg-[#f5b120] hover:text-[#0a2350] disabled:opacity-50"
+                            data-testid={`cve-publish-live-${c.cve_id}`}
+                          >
+                            Terbitkan
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {published && (
+            <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" data-testid="cve-publish-result">
+              <div className="font-bold">{published.title}</div>
+              <div className="mt-1 text-[12px]">
+                status: <b>{published.status}</b> · aksi: {published.action} ·{" "}
+                <a href={published.url} target="_blank" rel="noreferrer" className="underline">
+                  lihat artikel <ExternalLink className="inline h-3 w-3" />
+                </a>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600 leading-relaxed">

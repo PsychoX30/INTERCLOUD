@@ -232,6 +232,7 @@ def _serialize_article(d: dict, *, include_body: bool = True) -> dict:
         "og_image_url": d.get("og_image_url", ""),
         "is_featured": bool(d.get("is_featured", False)),
         "view_count": int(d.get("view_count", 0)),
+        "cve_id": d.get("cve_id", ""),
         "created_at": _iso(d.get("created_at", "")),
         "updated_at": _iso(d.get("updated_at", "")),
     }
