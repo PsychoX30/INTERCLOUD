@@ -3131,6 +3131,35 @@ def start_scheduler(db):
         coalesce=True,
     )
 
+    # CVE tracker sync - every 2 hours at :10 (NVD-aligned cadence). Each run
+    # advances the cursor by at most MAX_PAGES_PER_RUN pages so a slow NVD day
+    # can never hold the event loop or the lease for long.
+    async def _cve_sync():
+        from .cve_tracker import run_cve_sync
+        res = await run_cve_sync(db)
+        if res.get("error"):
+            log.warning("[cve-sync] batch error: %s", res["error"])
+        elif res.get("written"):
+            log.info("[cve-sync] +%s CVE documents (stored=%s)",
+                     res["written"], res.get("stored_total"))
+        return res
+
+    sched.add_job(
+        _leased("cve_sync", _cve_sync, ttl_seconds=1800),
+        CronTrigger(hour="*/2", minute=10),
+        id="job:cve_sync",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        _leased("cve_sync", _cve_sync, ttl_seconds=1800),
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
+        id="job:cve_sync:startup",
+        max_instances=1,
+        coalesce=True,
+    )
+
     sched.start()
     _scheduler = sched
     log.info("[email-scheduler] started (hourly reminder + renewal sweeps + NOC 5-min probes)")

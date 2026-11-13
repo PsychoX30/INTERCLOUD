@@ -85,8 +85,11 @@ const AdminSLA          = lazy(() => import("./pages/portal/admin/AdminSLA"));
 const AdminOwnerDashboard = lazy(() => import("./pages/portal/admin/AdminOwnerDashboard"));
 const AdminStatusPage   = lazy(() => import("./pages/portal/admin/AdminStatusPage"));
 const AdminMediaLibrary = lazy(() => import("./pages/portal/admin/AdminMediaLibrary"));
+const AdminCveTracker   = lazy(() => import("./pages/portal/admin/AdminCveTracker"));
 const AdminContentCalendar = lazy(() => import("./pages/portal/admin/AdminContentCalendar"));
 const PublicStatusPage  = lazy(() => import("./pages/PublicStatusPage"));
+const CveTracker        = lazy(() => import("./pages/CveTracker"));
+const CveDetail         = lazy(() => import("./pages/CveDetail"));
 
 // Admin (mocked/business chunk)
 const AdminProvisioning  = lazy(() => import("./pages/portal/admin/AdminMockedScreens").then(m => ({ default: m.AdminProvisioning })));
@@ -142,6 +145,8 @@ function App() {
                 <Route path="/legal/aup" element={<AcceptableUsePolicy />} />
                 <Route path="/legal/sla" element={<ServiceLevelAgreement />} />
                 <Route path="/status" element={<PublicStatusPage />} />
+                <Route path="/cve" element={<CveTracker />} />
+                <Route path="/cve/:cveId" element={<CveDetail />} />
                 <Route path="/form/:slug" element={<PublicForm />} />
                 <Route path="/pay/:token" element={<PublicPayInvoice />} />
                 <Route path="/meet/:slug" element={<MeetJoin />} />
@@ -220,6 +225,7 @@ function App() {
                   <Route path="sla" element={<AdminSLA />} />
                   <Route path="owner" element={<AdminOwnerDashboard />} />
                   <Route path="status-page" element={<AdminStatusPage />} />
+                  <Route path="cve-tracker" element={<AdminCveTracker />} />
                   <Route path="media-library" element={<AdminMediaLibrary />} />
                   <Route path="content-calendar" element={<AdminContentCalendar />} />
                   <Route path="form-builder" element={<AdminFormBuilder />} />

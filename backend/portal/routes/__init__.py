@@ -5,7 +5,8 @@ from . import (auth, client, orders, tickets, admin_core, users, catalog,
                billing, finance, lifecycle, integrations, business, business_overhaul,
                staff_directory, dcim,
                provision, cms, documents, domains, ssl, noc, security, email_admin,
-               transactions, sla, monitoring, graphs, network_map, ops, jitsi)
+               transactions, sla, monitoring, graphs, network_map, ops, jitsi,
+               cve)
 from .shared import _ip_in_whitelist  # noqa: F401 (test compat)
 
 router = APIRouter(prefix="/api/portal")
@@ -39,3 +40,4 @@ router.include_router(graphs.router)
 router.include_router(network_map.router)
 router.include_router(ops.router)
 router.include_router(jitsi.router)
+router.include_router(cve.router)

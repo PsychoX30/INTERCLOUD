@@ -539,6 +539,38 @@ async def sitemap_xml(request: Request):
     except Exception as e:
         logging.getLogger("portal.sitemap").warning(f"sitemap articles fetch failed: {e}")
 
+    # CVE Intelligence Hub - static routes plus the 500 newest tracked CVEs.
+    for path, prio, freq in (("cve", "0.8", "hourly"),):
+        urls.append(
+            "  <url>\n"
+            f"    <loc>{origin}/{path}</loc>\n"
+            f"    <lastmod>{now_iso}</lastmod>\n"
+            f"    <changefreq>{freq}</changefreq>\n"
+            f"    <priority>{prio}</priority>\n"
+            "  </url>"
+        )
+    try:
+        import portal.cve_tracker as _ct
+        cur = db[_ct.COLLECTION].find({"published": {"$ne": None}},
+                                      {"cve_id": 1, "last_modified": 1}
+                                      ).sort("published", -1).limit(500)
+        async for row in cur:
+            cid = row.get("cve_id")
+            if not cid:
+                continue
+            lm = row.get("last_modified") or row.get("published")
+            lm = lm.strftime("%Y-%m-%d") if hasattr(lm, "strftime") else now_iso
+            urls.append(
+                "  <url>\n"
+                f"    <loc>{origin}/cve/{cid}</loc>\n"
+                f"    <lastmod>{lm}</lastmod>\n"
+                "    <changefreq>weekly</changefreq>\n"
+                "    <priority>0.4</priority>\n"
+                "  </url>"
+            )
+    except Exception as e:
+        logging.getLogger("portal.sitemap").warning(f"sitemap CVE fetch failed: {e}")
+
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'

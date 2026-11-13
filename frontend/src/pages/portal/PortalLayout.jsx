@@ -8,7 +8,7 @@ import {
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
   History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
-  Bell, BookOpen, TrendingUp, Video,
+  Bell, BookOpen, TrendingUp, Video, ShieldAlert,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import { api } from "../../portal/api";
@@ -122,6 +122,7 @@ const ADMIN_NAV_GROUPS = [
       { key: "jitsi", to: "/portal/admin/jitsi", label: "Jitsi Meet", icon: Video, testid: "nav-jitsi", roles: ["admin"] },
       { key: "backup",        to: "/portal/admin/backup",        label: "Backup & Restore", icon: DatabaseBackup, testid: "nav-backup",     roles: ["admin"] },
       { key: "status_page",   to: "/portal/admin/status-page",   label: "Public Status Page", icon: Globe,        testid: "nav-status-page",   roles: ["admin"] },
+      { key: "cve_tracker",   to: "/portal/admin/cve-tracker",   label: "CVE Tracker",        icon: ShieldAlert,  testid: "nav-cve-tracker",   roles: ["admin", "support"] },
     ],
   },
 ];
