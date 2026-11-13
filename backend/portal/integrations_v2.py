@@ -18,12 +18,15 @@ import hmac
 import ipaddress
 import json
 import re
+import threading
 import time
 from typing import Any, Dict, Optional
 
 import httpx
 
 from . import secretbox
+
+from contextlib import contextmanager
 
 
 # ============================================================
@@ -1147,6 +1150,11 @@ class GoFlow2Client:
             "in_if": int(record.get("in_if") or 0),
             "out_if": int(record.get("out_if") or 0),
             "sampler_address": record.get("sampler_address") or "",
+            # Carried through so a rolling-window consumer can drop records it
+            # has already counted. peek() re-reads an overlapping tail on every
+            # call; without a watermark those overlaps double-count.
+            "time_received_ns": int(record.get("time_received_ns")
+                                    or record.get("time_flow_start_ns") or 0),
         }
 
     # Production writes ~4.3 MB/s (~4,400 flows/s, ~987 B/record) and logrotate
@@ -1400,10 +1408,16 @@ class GoFlow2Client:
         # rather than given an invented rate.
         now_mono = _time.monotonic()
         record_span_s = 0.0
-        observed_ns = [
-            int(r.get("time_received_ns") or r.get("time_flow_start_ns") or 0)
-            for r in records
-        ]
+        # One clock for the whole batch, chosen by field rather than per record.
+        # Measured on production 2026-11-13, `time_received_ns` and
+        # `time_flow_start_ns` differ by 7,732 s (7.7 h) on this router.  A
+        # per-record fallback would then mix two clocks in one batch and
+        # report a span of hours, dividing a real burst by 27,000 s and
+        # hiding the flood instead of scoring it.  Preferring the arrival
+        # clock for every record keeps `max - min` inside one timeline.
+        observed_ns = [int(r.get("time_received_ns") or 0) for r in records]
+        if not any(observed_ns):
+            observed_ns = [int(r.get("time_flow_start_ns") or 0) for r in records]
         observed_ns = [ts for ts in observed_ns if ts > 0]
         if len(observed_ns) > 1:
             record_span_s = (max(observed_ns) - min(observed_ns)) / 1_000_000_000
@@ -1506,6 +1520,48 @@ class GoFlow2Client:
         }
 
 
+# RouterOS refuses the 7th concurrent API session per user with
+# "too many concurrent logins". Production hit it with only three call sites
+# because each command opened and closed its own session, so a DDoS sweep and a
+# device probe could overlap six deep. A per-host permit keeps us under the cap
+# without serialising unrelated devices.
+_LOGIN_LIMIT_PER_HOST = 3
+_HOST_PERMITS: dict[str, "threading.BoundedSemaphore"] = {}
+_HOST_PERMITS_LOCK = threading.Lock()
+LOGIN_LIMIT_HINT = "too many concurrent logins"
+
+
+def _host_permit(host: str) -> "threading.BoundedSemaphore":
+    with _HOST_PERMITS_LOCK:
+        sem = _HOST_PERMITS.get(host)
+        if sem is None:
+            sem = threading.BoundedSemaphore(_LOGIN_LIMIT_PER_HOST)
+            _HOST_PERMITS[host] = sem
+        return sem
+
+
+def _guarded_connect(client: "MikrotikClient", *, attempts: int = 3, base_delay: float = 0.4):
+    """Connect while respecting the per-host session budget, with backoff.
+
+    The retry exists because the router's cap is a *shared* resource: even a
+    perfectly behaved caller loses the race when an operator opens Winbox and
+    the probe sweep fires together. Retrying briefly converts a transient
+    rejection into a two-second delay instead of a failed block.
+    """
+    permit = _host_permit(str(client.host or ""))
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        with permit:
+            try:
+                return client._connect()
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if LOGIN_LIMIT_HINT not in str(exc).lower():
+                    raise
+        time.sleep(base_delay * (2 ** attempt))
+    raise last_error if last_error else RuntimeError("connect failed")
+
+
 class MikrotikClient:
     """Wraps librouteros for BGP/interface/traffic reads.
 
@@ -1530,13 +1586,18 @@ class MikrotikClient:
         self.host = c.get("host")
         self.port = int(c.get("port") or 8728)
         self.username = c.get("username")
-        self.password = c.get("password")
+        # Device passwords are encrypted at rest (secretbox, prefix `enc:v1:`).
+        # Decrypting here — instead of in every route and sweep — keeps a single
+        # choke point: a caller that forgets would otherwise send the ciphertext
+        # to the router and get an opaque "invalid user name or password".
+        self.password = secretbox.dec_value(c.get("password"))
         self.use_tls = bool(c.get("use_tls", False))
         # RouterOS major version (6 or 7) — None until read from the device.
         # Routing-filter / blackhole syntax differs between the two; guessing
         # is how the old code produced commands the router rejected.
         stored = c.get("ros_major")
         self._ros_major = int(stored) if stored else None
+        self._session_api = None
 
     def _ros_major_required(self) -> int | None:
         """Return the device's RouterOS major, refusing when unknown."""
@@ -1550,6 +1611,11 @@ class MikrotikClient:
         RouterOS ≥6.43. On older devices - or when the user configured a
         "plain" account - the handshake fails. We try token first, then fall
         back to `plain` so both worlds work without extra configuration.
+
+        Each call opens a *new* API session.  RouterOS caps concurrent sessions
+        per user (6 by default) and answers the 7th with
+        ``too many concurrent logins``, so callers that need several commands
+        must use :meth:`session` instead of calling this per command.
         """
         import librouteros
         from librouteros.login import plain, token
@@ -1569,6 +1635,33 @@ class MikrotikClient:
             return librouteros.connect(**base, login_method=token)
         except Exception:
             return librouteros.connect(**base, login_method=plain)
+
+    @contextmanager
+    def session(self):
+        """One login, many commands, one disconnect.
+
+        The enforcement path needs to add a rule, add an address-list entry and
+        then re-read both to prove they landed.  Doing that with ``_connect()``
+        per step burned three of the six available sessions per block; under a
+        sweep plus a device probe that is exactly how production started
+        rejecting logins.
+
+        Yields the connected API handle.  Closing is guaranteed, and a handle
+        that failed mid-way is closed but never reused.
+        """
+        if self._session_api is not None:
+            yield self._session_api
+            return
+        api = _guarded_connect(self)
+        try:
+            self._session_api = api
+            yield api
+        finally:
+            self._session_api = None
+            try:
+                api.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def test_connection(self) -> dict:
         try:

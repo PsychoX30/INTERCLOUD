@@ -62,6 +62,41 @@ def test_cold_poll_is_not_authoritative():
         assert all(row["batch_authoritative"] is False for row in result["rows"])
 
 
+def test_one_record_missing_the_arrival_clock_cannot_mix_two_clocks():
+    """Two clock fields in one batch must never be subtracted from each other.
+
+    On production (2026-11-13) `time_received_ns` trails `time_flow_start_ns`
+    by 7,732 s.  Picking the stamp per record meant a single row without the
+    arrival clock fell back to the flow clock and stretched the batch span to
+    hours, dividing a real burst by 27,000 s and hiding it.  The field is now
+    chosen for the whole batch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "flows.json")
+        client = GoFlow2Client(path)
+        _write_records(path, [_rec("1.1.1.1", "157.20.32.10", 10, 1000, 1_000_000_000)])
+        client.poll()
+        time.sleep(0.2)
+
+        base_ns = 2_000_000_000
+        rows = [_rec("2.2.2.2", "157.20.32.10", 100, 10000,
+                     base_ns + i * 250_000_000)
+                for i in range(10)]
+        # Same traffic, but this record never got the arrival clock. Its flow
+        # clock is 7,732 s behind, exactly like the production skew.
+        rows[0].pop("time_received_ns")
+        rows[0]["time_flow_start_ns"] = base_ns - 7_732_000_000_000
+        rows[0]["time_flow_end_ns"] = base_ns - 7_732_000_000_000
+        _write_records(path, rows)
+
+        result = client.poll()
+        assert result["batch_duration_s"] < 60.0, (
+            "mixed clocks stretched the window to %s s" % result["batch_duration_s"]
+        )
+        assert result["batch_duration_s"] >= 2.0, result
+        assert result["authoritative"] is True, result
+
+
 def test_burst_flush_does_not_inflate_rate():
     """A burst of records sharing a tight stamp spread must not divide by 4s.
 
@@ -147,17 +182,21 @@ def test_packets_per_record_matches_raw_flow_reality():
                    for i in range(100)]
         _write_records(path, records)
         result = client.poll()
-        assert result["authoritative"] is True
-        total = 100 * 240
-        # The poll interval (~0.3s) exceeds the 100ns record stamp spread, so
-        # the interval wins and every packet is attributed to it.
-        expected = round(total / result["batch_duration_s"], 2)
-        # tolerance: batch_duration_s is returned rounded to 3dp while
-        # batch_pps uses the unrounded value, so a sub-0.1% gap is expected.
-        assert abs(result["batch_pps"] - expected) <= expected * 0.01, (
-            "batch_pps %s != %s" % (result["batch_pps"], expected))
-        # And the resulting rate must be a plausible small number, not the
-        # hundreds-of-thousands pps fabrication that opened the false incident.
+
+        # This batch is the exact shape that fabricated a 1,022,898 pps sample:
+        # 100 records of 240 packets each, all stamped within 100 ns of one
+        # another. Neither clock provides a usable span — the 100 ns stamp
+        # spread is compression artefact, and the 0.3 s wait is below the
+        # authoritative floor — so the poll must be flagged, not trusted.
+        assert result["authoritative"] is False, result
+        assert result["sub_span_floor_applied"] > 0
+
+        # The clamp still bounds the rate: 24,000 packets over the 1 s floor.
+        assert result["batch_duration_s"] >= GoFlow2Client.MIN_AUTHORITATIVE_SPAN_S
+        assert result["batch_pps"] <= 24_000, (
+            "240-packet records cannot yield %s pps" % result["batch_pps"])
+        # And emphatically not the hundreds-of-thousands fabrication that
+        # opened the false incident.
         assert result["batch_pps"] < 500_000, (
             "240-packet records cannot yield %s pps" % result["batch_pps"])
 
@@ -172,6 +211,121 @@ def test_no_division_by_zero_when_single_record():
         assert result["batch_pps"] == 0.0
         # A single-record cold poll still yields the row for topology purposes.
         assert len(result["rows"]) == 1
+
+
+def test_peek_does_not_consume_the_poll_cursor():
+    """The display path must not steal the detection sweep's records.
+
+    Sharing one cursor made whichever consumer polled second receive zero
+    rows: the Sankey view silently fell back to Torch, and the sweep
+    intermittently computed a rate over a drained backlog.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "flows.json")
+        client = GoFlow2Client(path)
+        _write_records(path, [_rec("1.1.1.1", "157.20.32.10", 10, 1000, 1_000_000_000)])
+
+        first = client.peek()
+        assert first["ok"], first
+        assert len(first["rows"]) == 1
+
+        # Peeking again returns the same record: the cursor did not move.
+        second = client.peek()
+        assert len(second["rows"]) == 1
+
+        # And poll() still sees the record, proving peek left the offset alone.
+        polled = client.poll()
+        assert polled["ok"], polled
+        assert len(polled["rows"]) == 1
+
+        # A second poll has nothing left: the sweep consumed it.
+        empty = client.poll()
+        assert empty["ok"]
+        assert len(empty.get("rows") or []) == 0
+
+
+def test_peek_never_reports_a_sub_second_span():
+    """A dense tail can span milliseconds; the displayed rate must not.
+
+    A 0.8 s span turned a routine burst into a 206,787 pps reading, which is
+    close enough to the 300,000 pps alert threshold to be misread.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "flows.json")
+        client = GoFlow2Client(path)
+        base_ns = 5_000_000_000
+        _write_records(path, [
+            _rec("1.1.1.1", "157.20.32.10", 100, 100_000, base_ns + i * 1_000_000)
+            for i in range(50)
+        ])
+        result = client.peek()
+        assert result["ok"], result
+        assert result["batch_duration_s"] >= 2.0, (
+            "span collapsed to %s s" % result["batch_duration_s"])
+        assert result["min_span_applied"] is True
+        # 5000 packets over >=2s cannot be 200k pps.
+        assert result["batch_pps"] < 10_000, (
+            "sub-second span produced %s pps" % result["batch_pps"])
+
+
+def test_poll_below_min_span_is_not_authoritative():
+    """A nearly-drained cursor must not manufacture a rate.
+
+    Two polls a few milliseconds apart (the scheduler woke, read 8 new records,
+    returned) divide a handful of packets by a near-zero interval. That is the
+    same error class as the fabricated 1,022,898 pps sample: a tiny numerator
+    over a tiny span. Such a poll is labelled non-authoritative so no threshold
+    decision can trust it, while its rows still carry topology.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "flows.json")
+        client = GoFlow2Client(path)
+        base_ns = 7_000_000_000
+        _write_records(path, [_rec("1.1.1.1", "157.20.32.10", 4, 400, base_ns)])
+
+        # Warm the interval clock so the second poll measures a real gap.
+        client.poll()
+
+        # Append a burst and poll immediately: the measured interval is tiny.
+        _write_records(path, [
+            _rec("2.2.2.2", "157.20.32.11", 8, 800, base_ns + 1_000_000)
+            for _ in range(3)
+        ])
+        second = client.poll()
+
+        assert second["ok"], second
+        assert second["flow_count"] == 3
+        # The floor clamped the span, so the payload is flagged, not trusted.
+        assert second["batch_duration_s"] >= GoFlow2Client.MIN_AUTHORITATIVE_SPAN_S
+        assert second["authoritative"] is False, (
+            "a sub-span poll claimed authority: %s" % second)
+        assert all(r["batch_authoritative"] is False for r in second["rows"])
+        # 24 packets over a clamped >=1 s span can never look like a flood.
+        assert second["batch_pps"] <= 240, (
+            "sub-span poll produced %s pps" % second["batch_pps"])
+
+
+def test_poll_over_min_span_stays_authoritative():
+    """The floor must not silently demote normal production polls."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "flows.json")
+        client = GoFlow2Client(path)
+        base_ns = 9_000_000_000
+        _write_records(path, [_rec("1.1.1.1", "157.20.32.10", 10, 1000, base_ns)])
+        client.poll()
+
+        # Records spread over 5 s of receive stamps widen the span past the
+        # floor (backlog guard), which is the normal healthy path.
+        _write_records(path, [
+            _rec("2.2.2.2", "157.20.32.11", 10, 1000, base_ns + i * 1_000_000_000)
+            for i in range(5)
+        ])
+        second = client.poll()
+
+        assert second["ok"], second
+        assert second["batch_duration_s"] >= 4.0, second["batch_duration_s"]
+        assert second["authoritative"] is True, second
+        assert second["sub_span_floor_applied"] == 0.0
 
 
 if __name__ == "__main__":

@@ -64,15 +64,22 @@ const buildSankey = (flows) => {
     }
     return indexes.get(key);
   };
+  // `value` is only the ribbon thickness. Recharts reserves a few pixels per
+  // link, so a handful of tiny links (sub-kbps background) would each claim
+  // the same minimum and swallow the canvas, squeezing the real flows to a
+  // hairline. Normalise against the largest link and give every ribbon a
+  // visible floor instead of deriving it from raw bps.
+  const peak = Math.max(...valid.map((f) => Number(f.bps) || 0), 1);
   const links = valid.map((f) => {
     const srcInternal = classify(f.src) === "internal";
     const dstInternal = classify(f.dst) === "internal";
     const kind = srcInternal && dstInternal ? "internal" : srcInternal ? "outbound" : "inbound";
+    const bps = f.bps ?? (f.gbps || 0) * 1e9;
     return {
       source: idx("source", f.src),
       target: idx("destination", f.dst),
-      value: Math.max((f.bps ?? (f.gbps || 0) * 1e9) / 1e3, 0.001),
-      bps: f.bps ?? (f.gbps || 0) * 1e9,
+      value: Math.max((bps / peak) * 100, 1),
+      bps,
       color: FLOW_COLORS[kind],
       kind,
     };
@@ -135,7 +142,6 @@ export const NetflowSankey = ({ refreshMs = 30000 }) => {
   const totalBps = payload?.total_bps || flows.reduce((a, f) => a + (f.bps || 0), 0);
   const data = useMemo(() => buildSankey(flows), [flows]);
   const hasChart = data.nodes.length >= 2 && data.links.length >= 1;
-
   const sourceLabel = {
     goflow2: "NetFlow (goflow2)",
     history: "riwayat tersimpan",
@@ -191,6 +197,17 @@ export const NetflowSankey = ({ refreshMs = 30000 }) => {
                 {fmtBps(totalBps)}
               </span>
             )}
+            {payload?.coverage?.total_links > 0 && (
+              <span
+                className="inline-flex items-center gap-1 text-slate-500"
+                title={`${payload.coverage.kept_links} dari ${payload.coverage.total_links} tautan ditampilkan, mencakup ${(payload.coverage.top_share * 100).toFixed(1)}% throughput`}
+                data-testid="sankey-coverage"
+              >
+                <Network className="h-3 w-3" />
+                {payload.coverage.kept_links}/{payload.coverage.total_links} tautan
+                ({(payload.coverage.top_share * 100).toFixed(0)}%)
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -214,7 +231,7 @@ export const NetflowSankey = ({ refreshMs = 30000 }) => {
           </button>
         </div>
       </div>
-      <div className="p-4" style={{ height: 380 }}>
+      <div className="p-4" style={{ height: Math.max(380, 40 + data.nodes.length * 26) }}>
         {loading && !payload ? (
           <div className="h-full flex items-center justify-center text-sm text-slate-400" data-testid="sankey-loading">
             Membaca flow collector…
@@ -248,7 +265,7 @@ export const NetflowSankey = ({ refreshMs = 30000 }) => {
             <Sankey
               data={data}
               node={<SankeyNode />}
-              nodePadding={22}
+              nodePadding={Math.max(8, Math.min(18, Math.floor(300 / Math.max(1, data.nodes.length))))}
               margin={{ top: 8, right: 180, bottom: 8, left: 8 }}
               link={(props) => (
                 <path

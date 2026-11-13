@@ -81,6 +81,31 @@ async def _get_mikrotik_device(db, device_id: str | None):
     return {"_id": None, "name": "default", **(s.get("credentials") or {})}
 
 
+# Roles a device can hold for outbound enforcement. "none" is the default so a
+# router added before this feature existed never silently becomes an enforcer.
+_DEVICE_ROLES = ("none", "exporter", "enforcer", "both")
+
+
+def _validated_role(value) -> str:
+    role = str(value or "none").strip().lower()
+    return role if role in _DEVICE_ROLES else "none"
+
+
+def _validated_priority(value) -> int:
+    try:
+        return max(0, min(1000, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _validated_sites(value) -> list[str]:
+    if isinstance(value, str):
+        value = [v for v in value.split(",")]
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v or "").strip()][:50]
+
+
 def _serialize_device(d: dict) -> dict:
     return {
         "id": str(d["_id"]) if d.get("_id") else None,
@@ -92,6 +117,13 @@ def _serialize_device(d: dict) -> dict:
         "main_interface": d.get("main_interface", ""),
         "site": d.get("site", ""),
         "notes": d.get("notes", ""),
+        # --- fleet role (outbound enforcement) ---
+        # "none" is the safe default: a device added before this feature existed
+        # must not start accepting automated blocks just because it exists.
+        "collection_role": d.get("collection_role") or "none",
+        "block_enabled": bool(d.get("block_enabled", True)),
+        "priority": int(d.get("priority") or 0),
+        "sites": d.get("sites") if isinstance(d.get("sites"), list) else [],
         "created_at": d.get("created_at"),
     }
 
@@ -122,11 +154,17 @@ async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin
         "host": (payload.get("host") or "").strip(),
         "port": int(payload.get("port") or 8728),
         "username": (payload.get("username") or "").strip(),
-        "password": payload.get("password") or "",
+        # Encrypted at rest from the first write. Rows created before this
+        # existed are migrated by secretbox.migrate_at_rest on startup.
+        "password": _sb_enc(payload.get("password") or ""),
         "use_tls": bool(payload.get("use_tls", False)),
         "main_interface": (payload.get("main_interface") or "").strip(),
         "site": payload.get("site") or "",
         "notes": payload.get("notes") or "",
+        "collection_role": _validated_role(payload.get("collection_role")),
+        "block_enabled": bool(payload.get("block_enabled", True)),
+        "priority": _validated_priority(payload.get("priority")),
+        "sites": _validated_sites(payload.get("sites")),
         "created_at": _now(),
     }
     if not doc["host"] or not doc["username"]:
@@ -139,12 +177,25 @@ async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin
 @router.put("/admin/mikrotik/devices/{did}")
 async def mikrotik_devices_update(did: str, payload: dict, admin=Depends(get_current_admin)):
     db = await _get_db()
-    allowed = {"name", "host", "port", "username", "password", "use_tls", "main_interface", "site", "notes"}
+    allowed = {"name", "host", "port", "username", "password", "use_tls",
+               "main_interface", "site", "notes", "collection_role",
+               "block_enabled", "priority", "sites"}
     upd = {k: v for k, v in (payload or {}).items() if k in allowed}
     if "port" in upd: upd["port"] = int(upd["port"] or 8728)
     if "use_tls" in upd: upd["use_tls"] = bool(upd["use_tls"])
-    if "password" in upd and not upd["password"]:
-        upd.pop("password")  # don't blank out password when field is empty
+    if "password" in upd:
+        if upd["password"]:
+            upd["password"] = _sb_enc(upd["password"])
+        else:
+            upd.pop("password")  # don't blank out password when field is empty
+    if "collection_role" in upd:
+        upd["collection_role"] = _validated_role(upd["collection_role"])
+    if "block_enabled" in upd:
+        upd["block_enabled"] = bool(upd["block_enabled"])
+    if "priority" in upd:
+        upd["priority"] = _validated_priority(upd["priority"])
+    if "sites" in upd:
+        upd["sites"] = _validated_sites(upd["sites"])
     r = await db.mikrotik_devices.update_one({"_id": _oid(did)}, {"$set": upd})
     if not r.matched_count:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -318,6 +369,123 @@ async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100, skip: int
     return items
 
 
+# ---------- Netflow Sankey: rolling accumulator ----------
+#
+# The Sankey view must look the same across two refreshes a few seconds apart.
+# Measured on production: the top-12 (src,dst) set of two consecutive peeks
+# overlapped by only 1-3 of 12.  That is why the diagram appears to lose links.
+#
+# Buckets are keyed by the wall-clock window the records fall into, so an
+# overlapping tail is counted once.  Each record is divided by its own flow
+# duration (NetFlow exports start/end stamps), never by the batch span: a flow
+# alive for 30 minutes is not a 5-second burst.
+_SANKEY_ACC: dict = {}          # bucket_ts -> {(src, dst): bps}
+_SANKEY_BUCKET_S = 10.0         # one bucket per collector tick
+# Measured on production: a single 10 s snapshot of 4,624 distinct IP pairs
+# ranked top-12 overlaps the previous snapshot by only 1.5 of 12 links, because
+# 12 links out of thousands is a random sample. Accumulating 30 s raises that
+# to 8.75/12, and a real attack still dominates (a 30 Gbps burst for 10 s
+# averages 2.5 Gbps over 120 s — far above the few-Mbps background). This is
+# the difference between "diagram lost its lines" and a stable topology view.
+_SANKEY_KEEP_BUCKETS = 12       # 12 x 10 s = 120 s
+_SANKEY_LAST_NS = 0             # watermark: ignore records already counted
+
+# NOTE: eviction must be by bucket COUNT, never by wall clock. This router's
+# export timestamps sit ~7.7 h away from the server's clock (documented in
+# MEMORY.md), so "drop buckets older than now-120 s" deleted every bucket on
+# arrival and the accumulator never warmed past one or two ticks.
+
+
+def _flow_bps(rec: dict) -> float:
+    """Bits per second for one flow, from the flow's own duration.
+
+    Accepts both shapes: a raw goflow2 record (``bytes``/``packets`` plus
+    ``time_flow_*``) and a row already normalised by ``GoFlow2Client``
+    (``rate_bytes`` is already sampling-corrected).  Reading only ``bytes``
+    silently produced zero — every link was dropped and the diagram went blank.
+    """
+    byts = rec.get("rate_bytes")
+    if byts is None:
+        rate = int(rec.get("sampling_rate") or 0) or 1
+        byts = float(rec.get("bytes") or 0) * rate
+    byts = float(byts or 0)
+    if byts <= 0:
+        return 0.0
+    start_ns = int(rec.get("time_flow_start_ns") or 0)
+    end_ns = int(rec.get("time_flow_end_ns") or 0)
+    span = ((end_ns - start_ns) / 1e9) if (start_ns and end_ns and end_ns > start_ns) else 0.0
+    if span <= 0:
+        # RouterOS active-timeout flows can outlive a short batch; without a
+        # duration the honest answer is the collector's own 30 s default.
+        span = 30.0
+    return byts * 8 / span
+
+
+def _rolling_top_links(rows: list, limit: int, now: Optional[float] = None) -> tuple[list, dict]:
+    """Fold a peeked batch into the rolling accumulator; return top links."""
+    global _SANKEY_LAST_NS
+    import time as _time
+
+    now = _time.time() if now is None else now
+    newest = _SANKEY_LAST_NS
+    fresh: dict = {}
+    seen = 0
+    for rec in rows:
+        src = (rec.get("src_address") or "").split("/")[0]
+        dst = (rec.get("dst_address") or "").split("/")[0]
+        if not src or not dst or src == dst:
+            continue
+        ts_ns = int(rec.get("time_received_ns") or 0)
+        # peek() re-reads an overlapping tail, so anything at or below the
+        # watermark was already accumulated on a previous call.
+        if ts_ns and ts_ns <= _SANKEY_LAST_NS:
+            continue
+        if ts_ns > newest:
+            newest = ts_ns
+        bps = _flow_bps(rec)
+        if bps <= 0:
+            continue
+        bucket = round((ts_ns / 1e9 if ts_ns else now) / _SANKEY_BUCKET_S) * _SANKEY_BUCKET_S
+        fresh.setdefault(bucket, {})
+        fresh[bucket][(src, dst)] = fresh[bucket].get((src, dst), 0.0) + bps
+        seen += 1
+
+    _SANKEY_LAST_NS = newest or _SANKEY_LAST_NS
+    for bucket, links in fresh.items():
+        acc = _SANKEY_ACC.setdefault(bucket, {})
+        for k, v in links.items():
+            acc[k] = acc.get(k, 0.0) + v
+
+    # Evict by COUNT, not by wall clock — export timestamps and server time can
+    # disagree by hours on this router, so a clock-based cutoff empties the
+    # accumulator on every call.
+    while len(_SANKEY_ACC) > _SANKEY_KEEP_BUCKETS:
+        oldest = min(_SANKEY_ACC)
+        _SANKEY_ACC.pop(oldest, None)
+
+    # Average across the buckets actually held, so a link present in many
+    # recent buckets outranks one that appeared in a single spike.
+    nb = max(1, len(_SANKEY_ACC))
+    agg: dict = {}
+    for links in _SANKEY_ACC.values():
+        for k, v in links.items():
+            agg[k] = agg.get(k, 0.0) + v
+    ranked = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)
+    total = sum(v for _, v in ranked) or 0.0
+    out = [{"src": k[0], "dst": k[1], "bps": int(v / nb),
+            "gbps": round(v / nb / 1e9, 3)}
+           for k, v in ranked[:limit] if v > 0]
+    top_sum = sum(v for _, v in ranked[:limit]) or 0.0
+    coverage = {
+        "buckets": nb,
+        "kept_links": len(out),
+        "total_links": len(ranked),
+        "top_share": round(top_sum / total, 4) if total else 0.0,
+        "rows_folded": seen,
+    }
+    return out, coverage
+
+
 @router.get("/admin/noc/netflow/sankey")
 async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
                              minutes: int = 5,
@@ -335,6 +503,22 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
     ``minutes`` membatasi jendela historis yang dibaca dari sampel yang
     sudah dipersist ke ``flow_samples``, supaya diagram tetap terisi ketika
     permintaan datang sesaat setelah rotasi file.
+
+    Kenapa ada akumulator (:data:`_SANKEY_ACC`) dan bukan satu snapshot:
+
+    ``peek()`` mengembalikan ekor file yang bergerak.  Dua pemanggilan
+    berurutan menghasilkan himpunan (src,dst) yang **berbeda** — diukur di
+    produksi, irisan top-12 antara dua jendela hanya 1-3 dari 12.  Diagram
+    jadi terlihat kehilangan garis setiap refresh, padahal trafiknya tetap.
+    Selain itu bobot pita lama memakai ``rate_bytes / rx_packets`` sebagai
+    pengali, padahal keduanya berasal dari field yang sama sehingga saling
+    meniadakan; yang tersisa hanyalah ``8 / window_s`` yang mencampur rentang
+    hidup flow (bisa 30 menit) dengan lebar batch (5 detik).
+
+    Akumulator menyimpan beberapa bucket waktu terakhir, masing-masing
+    dihitung dengan durasi flow-nya sendiri, lalu dirata-rata.  Bucket
+    bertanda waktu juga membuat ekor yang tumpang tindih tidak dihitung dua
+    kali, dan peringkat tautan berhenti berkedip.
     """
     db = await _get_db()
     limit = max(3, min(limit, 50))
@@ -351,6 +535,7 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
     file_age_s = None
     batch_pps = batch_bps = 0.0
     window_s = 0.0
+    coverage = None
     try:
         from .. import emails as _em
         gf = await _em._get_goflow2_client(db)
@@ -377,27 +562,7 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
                     rows_in = res.get("rows") or []
                 if rows_in:
                     source = "goflow2"
-                    # Top flows by throughput, aggregated by (src, dst) pair.
-                    agg: dict = {}
-                    for f in rows_in:
-                        src = (f.get("src_address") or "").split("/")[0]
-                        dst = (f.get("dst_address") or "").split("/")[0]
-                        if not src or not dst or src == dst:
-                            continue
-                        # Per-record bps is an estimate; re-derive from the
-                        # batch so the diagram shows the same totals the
-                        # detector sees.
-                        per_pkt = (float(f.get("rate_bytes") or 0)
-                                   / float(f.get("rx_packets") or 1))
-                        rate = float(f.get("rx_packets") or 0) * per_pkt * 8
-                        if window_s > 0:
-                            rate = rate / window_s
-                        agg[(src, dst)] = agg.get((src, dst), 0.0) + rate
-                    flows = [{"src": k[0], "dst": k[1], "bps": int(v),
-                              "gbps": round(v / 1e9, 3)}
-                             for k, v in agg.items() if v > 0]
-                    flows.sort(key=lambda x: x["bps"], reverse=True)
-                    flows = flows[:limit]
+                    flows, coverage = _rolling_top_links(rows_in, limit)
                     samplers = sorted({(f.get("sampler_address") or "collector")
                                        for f in rows_in})
                     sampled_interfaces = [f"flow:{s}" for s in samplers]
@@ -499,6 +664,7 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
             "window_s": round(window_s, 2),
             "batch_pps": round(batch_pps, 1), "batch_bps": round(batch_bps, 1),
             "total_bps": total_bps,
+            "coverage": coverage,
             "devices_sampled": len(sampled_interfaces),
             "interfaces": sampled_interfaces, "errors": errors[:10],
             "flows": flows, "sampled_at": _now()}
