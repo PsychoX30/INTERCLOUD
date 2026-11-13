@@ -1756,6 +1756,14 @@ async def run_ddos_detection_sweep(db) -> dict:
     # 1/20 pps over a 20-second batch, not "0 pps", and 175 such flows
     # together are a real load that a per-record peak cannot express.
     flow_window_s = 0.0
+    # The collector also decides whether a rate is trustworthy: a poll whose
+    # span was clamped up from a degenerate interval returns
+    # ``authoritative=False`` even though its window is now non-zero. Recomputing
+    # authority from ``window_s > 0`` would discard that verdict and let a
+    # clamped 1 %-second poll be treated as a measurement, which is exactly how
+    # a fabricated rate reaches a threshold. Trust the collector's flag, and
+    # only fall back to the window test when it did not supply one.
+    poll_authoritative: bool | None = None
     # Primary source: GoFlow2 NetFlow/IPFIX collector (if deployed).
     try:
         gf = await _get_goflow2_client(db)
@@ -1763,6 +1771,8 @@ async def run_ddos_detection_sweep(db) -> dict:
             gf_result = await _a.get_event_loop().run_in_executor(None, gf.poll)
             if gf_result.get("ok"):
                 flow_window_s = float(gf_result.get("batch_duration_s") or 0)
+                if "authoritative" in gf_result:
+                    poll_authoritative = bool(gf_result.get("authoritative"))
                 if gf_result.get("stale"):
                     log.warning("[ddos] goflow2 collector stale: file_age_s=%s",
                                 gf_result.get("file_age_s"))
@@ -1870,12 +1880,73 @@ async def run_ddos_detection_sweep(db) -> dict:
         except (TypeError, ValueError):
             continue
 
+    # Aggregate ONCE, not once per rule.
+    #
+    # The target buckets depend on `scope_prefixes`, which currently matches
+    # across every rule, so aggregating inside the rule loop produced the same
+    # bucket set three times and wrote three identical sample documents per
+    # (direction, target) per sweep. That is where 1.49M sample rows came from
+    # for 256 targets — a 3x write amplification plus a per-rule baseline that
+    # each rule then read back, mostly reading its own duplicates.
+    #
+    # Aggregation is now keyed by the prefix set so a rule with a distinct
+    # scope still gets its own view, but identical scopes are computed once.
+    buckets_by_scope: dict[tuple, dict] = {}
+
+    def _buckets_for(scope_prefixes):
+        scope_key = tuple(scope_prefixes)
+        cached = buckets_by_scope.get(scope_key)
+        if cached is None:
+            cached = aggregate_targets(rate_rows, list(scope_prefixes),
+                                       window_s=flow_window_s)
+            buckets_by_scope[scope_key] = cached
+        return cached
+
+    # A sample's identity is the sweep, the direction and the target.  Track
+    # what has already been persisted so three alert rules describing the same
+    # traffic cannot inflate the collection.
+    written_keys: set[str] = set()
+
+    # A zero window means the poll could not establish an interval (cold start
+    # or a drained backlog). For goflow2 counters that makes pps meaningless,
+    # but it must never disable detection: Torch reports per-record rates
+    # directly and needs no window at all, and goflow2 rows still carry
+    # ``peak_pps`` as a fallback. So the flag gates the *quality label* on the
+    # sample, not whether the sweep runs.
+    rates_authoritative = (poll_authoritative if poll_authoritative is not None
+                           else flow_window_s > 0)
+
+    # Baselines are read ONCE per target, not once per (target, rule).
+    #
+    # The previous shape queried a 200-row history slice inside the
+    # per-target-per-rule loop: 225 targets x 3 phase rules = 675 queries.
+    # Measured cost is ~41 ms per query on this database, so the sweep held
+    # the shared event loop for seconds. That lateness is what let the
+    # collector file accumulate between sweeps, which is what the backlog
+    # guard then had to widen `window_s` for.
+    #
+    # All three phase rules share one prefix scope, so they were also reading
+    # identical history three times over. One batch read over the widest rule
+    # window serves every rule; the per-rule cutoff is applied below.
+    max_window_s = max([int(r.get("window_s") or 300) for r in rules] or [300])
+    history_cutoff = now - timedelta(seconds=max_window_s)
+    history_by_key: dict[str, list[dict]] = {}
+    try:
+        async for doc in db.ddos_samples.find(
+                {"at": {"$gte": history_cutoff, "$lt": now}}):
+            history_by_key.setdefault(doc.get("key") or "", []).append(doc)
+        for docs in history_by_key.values():
+            docs.sort(key=lambda d: d.get("at") or 0)
+    except Exception:
+        history_by_key = {}
+    history_ready = True
+
     for rule in rules:
         prefixes = rule.get("scope_prefixes") or ["157.20.32.0/24"]
         direction_policy = rule.get("direction") or "inbound"
         metric = "pps" if rule.get("metric", "pps") == "pps" else "bps"
 
-        buckets = aggregate_targets(rate_rows, prefixes, window_s=flow_window_s)
+        buckets = _buckets_for(prefixes)
 
         config = DetectionConfig(
             threshold_pps=float(rule.get("threshold") or 0) if metric == "pps" else 0.0,
@@ -1902,32 +1973,71 @@ async def run_ddos_detection_sweep(db) -> dict:
             rate_pps = stats.rate_pps
             rate_bps = stats.rate_bps
             sample_value = rate_bps if metric == "bps" else rate_pps
-            sample = {"at": now, "key": f"{direction}:{target}",
-                      "direction": direction, "target": target,
-                      # Floats, not ints: rounding a 0.39 pps target to 0
-                      # makes a live link indistinguishable from a dead one,
-                      # and the baseline median inherits the truncation.
-                      "bps": round(rate_bps, 2), "pps": round(rate_pps, 3),
-                      "peak_pps": round(stats.peak_pps, 2),
-                      "peak_bps": round(stats.peak_bps, 2),
-                      "packets": int(stats.total_packets),
-                      "bytes": int(stats.total_bytes),
-                      "window_s": round(flow_window_s, 3),
-                      "flows": stats.flow_count,
-                      "device": (stats.representative.device
-                                 if stats.representative else ""),
-                      "rule_id": str(rule["_id"])}
-            await db.ddos_samples.insert_one(sample)
-            try:
-                cutoff = now - timedelta(seconds=int(rule.get("window_s") or 300))
-                history_docs = await db.ddos_samples.find({
-                    "key": sample["key"], "at": {"$gte": cutoff,
-                                                 "$lt": sample["at"]}}
-                ).sort("at", -1).to_list(200)
-            except Exception:
-                history_docs = []
-            # Oldest-first for the baseline computation.
-            history = [float(h.get(metric) or 0) for h in reversed(history_docs)]
+            sample_key = f"{direction}:{target}"
+            # One sample per (sweep, direction, target) regardless of how many
+            # alert rules match the same traffic — the phase rules share a
+            # prefix scope, so the old per-rule insert wrote each target three
+            # times and inflated the collection to 1.49M rows.
+            #
+            # The sample is always written: it is the position evidence an
+            # operator needs even when the rate is not authoritative. The
+            # `rates_authoritative` flag travels with it instead of deciding
+            # whether the row exists.
+            if sample_key not in written_keys:
+                written_keys.add(sample_key)
+                sample = {"at": now, "key": sample_key,
+                          "direction": direction, "target": target,
+                          # Floats, not ints: rounding a 0.39 pps target to 0
+                          # makes a live link indistinguishable from a dead one,
+                          # and the baseline median inherits the truncation.
+                          "bps": round(rate_bps, 2), "pps": round(rate_pps, 3),
+                          "peak_pps": round(stats.peak_pps, 2),
+                          "peak_bps": round(stats.peak_bps, 2),
+                          "packets": int(stats.total_packets),
+                          "bytes": int(stats.total_bytes),
+                          "window_s": round(flow_window_s, 3),
+                          "rates_authoritative": rates_authoritative,
+                          "flows": stats.flow_count,
+                          "device": (stats.representative.device
+                                     if stats.representative else ""),
+                          }
+                await db.ddos_samples.insert_one(sample)
+            # Baseline from the batch-read history, cut to this rule's own
+            # window. The sample just written is excluded by the `< now`
+            # bound the batch read already applied, same as before.
+            rule_cutoff = now - timedelta(
+                seconds=int(rule.get("window_s") or 300))
+            # Mongo returns naive UTC datetimes while `now` is timezone-aware;
+            # strip the tzinfo once for comparison instead of per row.
+            rule_cutoff_naive = rule_cutoff.replace(tzinfo=None)
+            now_naive = now.replace(tzinfo=None)
+            if history_ready:
+                docs_for_key = history_by_key.get(sample_key) or []
+
+                def _in_window(h):
+                    at = h.get("at")
+                    if not isinstance(at, datetime):
+                        return False
+                    if at.tzinfo is not None:
+                        at = at.replace(tzinfo=None)
+                    return rule_cutoff_naive <= at < now_naive
+
+                history = [float(h.get(metric) or 0)
+                           for h in docs_for_key
+                           if _in_window(h)][-200:]
+            else:
+                # Fallback: the batch read failed, pay per-target cost rather
+                # than silently evaluating against an empty baseline (which
+                # would make every first breach look like a 99-sigma event).
+                try:
+                    history_docs = await db.ddos_samples.find({
+                        "key": sample_key, "at": {"$gte": rule_cutoff,
+                                                  "$lt": now}}
+                    ).sort("at", -1).to_list(200)
+                except Exception:
+                    history_docs = []
+                history = [float(h.get(metric) or 0)
+                           for h in reversed(history_docs)]
 
             verdict = evaluate_target(stats, history, config)
             if not verdict.breaching:

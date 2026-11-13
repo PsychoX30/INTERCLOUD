@@ -1149,24 +1149,133 @@ class GoFlow2Client:
             "sampler_address": record.get("sampler_address") or "",
         }
 
-    # Safety cap: never parse more than this many lines in a single poll.
-    # A 5-minute sweep interval with ~hundreds of flows/sec still stays well
-    # under this, but it prevents a memory explosion if the file is large
-    # (e.g. first poll after deploy against a stale multi-hundred-MB file,
-    # or after collector downtime with accumulated backlog).
-    # Production measures ~2,300 flows/s, so 200k lines is ~87 s of traffic:
-    # enough for a 60 s sweep without dropping a whole interval.
-    MAX_LINES_PER_POLL = 200_000
+    # Production writes ~4.3 MB/s (~4,400 flows/s, ~987 B/record) and logrotate
+    # truncates the live file on a timer, so a sweeper that reads only one
+    # capped batch per tick can fall behind permanently: the backlog it has not
+    # read is discarded before the next tick arrives. Measured on 2026-11-13,
+    # the reader was 123 MB behind a 2.8 MB file. Draining up to this many
+    # lines in a single poll lets it catch up in one or two ticks; the cap
+    # still bounds memory for a truly pathological file.
+    MAX_LINES_PER_POLL = 600_000
 
     # A collector that has written nothing for this long is not idle, it is
     # broken (or the router stopped exporting).  Callers surface it in the UI.
     STALE_AFTER_S = 300
+
+    # Shortest interval that may produce an authoritative rate.
+    #
+    # Polling a nearly-drained cursor twice in quick succession yields a handful
+    # of records over tens of milliseconds. Dividing those packets by that
+    # interval manufactures a rate hundreds of times the link's real throughput
+    # — the same error class that produced a fabricated 1,022,898 pps sample and
+    # a false critical incident on 2026-11-12. Production sweeps span 2-3 s, so
+    # this floor only ever engages on a degenerate poll, which is then labelled
+    # non-authoritative instead of being trusted.
+    MIN_AUTHORITATIVE_SPAN_S = 1.0
 
     def __init__(self, flow_path: str):
         self.flow_path = flow_path
         self._offset = 0  # byte offset for incremental reads
         self._batch_seq = 0
         self._last_poll_mono = 0.0
+
+    def peek(self, tail_bytes: int = 8_000_000, min_span_s: float = 2.0) -> dict:
+        """Read the most recent records WITHOUT consuming the cursor.
+
+        Two consumers need the flow file: the detection sweep, which owns the
+        cursor because it is the only one whose rates feed decisions, and the
+        Sankey view, which just wants to draw the last few seconds. Sharing one
+        cursor made them race: whichever polled second got zero rows, so the
+        dashboard silently fell back to Torch and the sweep sometimes received
+        a drained backlog whose records spanned far more wall time than the
+        interval it measured — the amplification that fabricated a 1,022,898
+        pps incident.
+
+        Peeking reads a bounded tail of the file and derives its span from the
+        records' own receive stamps. That is safe *here* because it is display
+        data: it never feeds a threshold decision.
+
+        ``min_span_s`` exists because a tail of a busy file can cover well
+        under a second. Dividing a burst by a 0.8 s span produced 206,787 pps
+        readings on a link that averaged far less — a number close enough to
+        the 300,000 pps alert threshold to be dangerous if anyone ever reused
+        it for a decision. The floor keeps the displayed rate honest.
+        """
+        import os as _os
+        import time as _time
+
+        if not _os.path.exists(self.flow_path):
+            return {"ok": False, "error": f"Flow file not found: {self.flow_path}",
+                    "rows": [], "stale": True}
+
+        try:
+            size = _os.path.getsize(self.flow_path)
+            mtime = _os.path.getmtime(self.flow_path)
+        except OSError as e:
+            return {"ok": False, "error": f"Cannot stat flow file: {e}",
+                    "rows": [], "stale": True}
+
+        age_s = _time.time() - mtime
+        stale = age_s > self.STALE_AFTER_S
+        if size <= 0:
+            return {"ok": True, "flow_count": 0, "rows": [], "stale": stale,
+                    "file_age_s": round(age_s, 1), "file_size": size,
+                    "authoritative": False, "message": "flow file is empty"}
+
+        start = max(0, size - max(65536, int(tail_bytes)))
+        raw_lines: list[str] = []
+        try:
+            with open(self.flow_path, "r") as f:
+                f.seek(start)
+                if start > 0:
+                    f.readline()  # drop the partial line we landed inside
+                for _ in range(self.MAX_LINES_PER_POLL):
+                    line = f.readline()
+                    if not line:
+                        break
+                    raw_lines.append(line)
+        except OSError as e:
+            return {"ok": False, "error": f"Cannot read flow file: {e}", "rows": []}
+
+        import json as _json
+        records: list[dict] = []
+        for line in raw_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(_json.loads(line))
+            except (ValueError, TypeError):
+                continue
+
+        observed_ns = [int(r.get("time_received_ns") or r.get("time_flow_start_ns") or 0)
+                       for r in records]
+        observed_ns = [ts for ts in observed_ns if ts > 0]
+        span_s = ((max(observed_ns) - min(observed_ns)) / 1_000_000_000
+                  if len(observed_ns) > 1 else 0.0)
+        # A dense tail can span milliseconds; reporting a rate against that
+        # would show whatever burst happened to be at the end of the file.
+        span_s = max(span_s, float(min_span_s))
+
+        rows = [self._normalize(rec, span_s) for rec in records]
+        total_packets = sum(float(r.get("rx_packets") or 0) for r in rows)
+        total_bytes = sum(float(r.get("rate_bytes") or 0) for r in rows)
+        batch_pps = total_packets / span_s if span_s > 0 else 0.0
+        batch_bps = total_bytes * 8 / span_s if span_s > 0 else 0.0
+
+        return {
+            "ok": True,
+            "flow_count": len(rows),
+            "rows": rows,
+            "batch_duration_s": round(span_s, 3),
+            "batch_pps": round(batch_pps, 2),
+            "batch_bps": round(batch_bps, 2),
+            "authoritative": span_s > 0,
+            "min_span_applied": span_s == float(min_span_s),
+            "stale": stale,
+            "file_age_s": round(age_s, 1),
+            "file_size": size,
+        }
 
     def poll(self) -> dict:
         """Read new flow lines since last poll. Returns torch-compatible dict."""
@@ -1191,19 +1300,62 @@ class GoFlow2Client:
         age_s = _time.time() - mtime
         stale = age_s > self.STALE_AFTER_S
 
+        # Detect a rotated/truncated file. logrotate uses `copytruncate`, which
+        # copies the file aside and truncates the original in place: the inode
+        # survives, so `size < self._offset` is the only visible signal. It is
+        # also an unreliable one — if the collector writes faster than the
+        # sweeper polls, the file can regrow past the old offset within one
+        # interval and the shrink is never observed, leaving the cursor
+        # pointing into the middle of a line. A truncated file that dropped a
+        # partial line yields a JSON decode error for that one record (handled
+        # below), but a cursor past the new EOF yields silence, which reads as
+        # "no traffic" during real traffic.
+        #
+        # Reading the first bytes back is cheap and catches both cases.
+        rotated = False
+        if size < self._offset:
+            rotated = True
+        elif self._offset > 0 and size > 0:
+            try:
+                with open(self.flow_path, "rb") as fh:
+                    fh.seek(max(0, self._offset - 1))
+                    prev = fh.read(1)
+                # A line boundary must be preceded by a newline. If it is not,
+                # the file was rewritten under us and the offset is meaningless.
+                if prev not in (b"\n", b""):
+                    rotated = True
+            except OSError:
+                rotated = True
+
+        if rotated:
+            self._offset = 0
+            self._batch_seq = 0
+            # The interval clock must reset too. Carrying `_last_poll_mono`
+            # across a rotation makes the next poll claim an interval that
+            # spans the rotation gap, which inflates `window_s` and would have
+            # divided a post-rotation batch by the wrong span.
+            self._last_poll_mono = 0.0
+
         if size <= self._offset:
-            if size < self._offset:
-                self._offset = 0  # file was rotated/truncated, reset
-                self._batch_seq = 0
             return {"ok": True, "flow_count": 0, "rows": [], "stale": stale,
                     "file_age_s": round(age_s, 1), "file_size": size,
+                    "rotated": rotated,
                     "message": (f"collector silent for {age_s/60:.1f} min"
                                 if stale else "no new flows since last poll")}
 
-        # Read at most MAX_LINES_PER_POLL lines since the last poll.  Note
-        # readlines() takes a *size hint in bytes*, so we iterate manually to
-        # cap on line count, not byte count.
-        raw_lines: list[str] = []
+        # Read up to MAX_LINES_PER_POLL lines since the last poll, parsing each
+        # line as it is read. Two reasons this is a streaming loop rather than
+        # `readlines()` + batch parse:
+        #
+        #  1. `readlines(n)` treats n as a BYTE hint, so capping by line count
+        #     needs manual iteration.
+        #  2. Holding 200k+ raw lines plus their parsed dicts at once costs on
+        #     the order of hundreds of MB, and this runs inside a worker that
+        #     shares memory with the API. Parsing in place keeps peak usage to
+        #     the record list the caller actually needs.
+        records: list[dict] = []
+        bad_lines = 0
+        import json as _json
         try:
             with open(self.flow_path, "r") as f:
                 f.seek(self._offset)
@@ -1211,22 +1363,19 @@ class GoFlow2Client:
                     line = f.readline()
                     if not line:
                         break
-                    raw_lines.append(line)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(_json.loads(line))
+                    except (ValueError, TypeError):
+                        # A record cut in half by copytruncate, or a torn write
+                        # at the tail. Dropping it is correct: the alternative
+                        # is a crash or a phantom record with zeroed counters.
+                        bad_lines += 1
                 self._offset = f.tell()
         except OSError as e:
             return {"ok": False, "error": f"Cannot read flow file: {e}", "rows": []}
-
-        import json as _json
-        records: list[dict] = []
-        for line in raw_lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = _json.loads(line)
-            except (ValueError, TypeError):
-                continue  # skip malformed lines
-            records.append(record)
 
         # RouterOS exports *counters* per flow interval, not rates.  The
         # authoritative rate for the poll is total packets over the actual
@@ -1234,29 +1383,67 @@ class GoFlow2Client:
         # by a 20-second window (packets=1 / 21s truncates to 0 pps and the
         # detector sees a quiet network during an active flood).
         #
-        # ``time_received_ns`` is when the collector accepted the datagram;
-        # ``time_flow_*`` is the router's own interval and can be stale or
-        # (on RouterOS) equal for instantaneous records.  Prefer the
-        # received clock, fall back to the flow clock.
+        # WHICH clock is the span?  Not the records' own timestamps.
+        # `time_received_ns` is when the collector accepted each datagram,
+        # so a router that buffers and then flushes a burst stamps thousands
+        # of records within a few hundred milliseconds even though they
+        # describe minutes of traffic.  Dividing that burst's packet total by
+        # the 4-second spread of its stamps produced a fabricated 1,022,898
+        # pps sample on 2026-11-12 — a false critical DDoS incident on a
+        # customer IP that was never under attack.
+        #
+        # The only span that cannot lie about how much traffic a batch
+        # represents is the interval this client actually waited between
+        # polls: every record in the batch was written during that interval.
+        # A cold first poll has no previous timestamp, so it is discarded as a
+        # baseline (duration 0) and its rows are marked non-authoritative
+        # rather than given an invented rate.
+        now_mono = _time.monotonic()
+        record_span_s = 0.0
         observed_ns = [
             int(r.get("time_received_ns") or r.get("time_flow_start_ns") or 0)
             for r in records
         ]
         observed_ns = [ts for ts in observed_ns if ts > 0]
         if len(observed_ns) > 1:
-            batch_duration_s = (max(observed_ns) - min(observed_ns)) / 1_000_000_000
+            record_span_s = (max(observed_ns) - min(observed_ns)) / 1_000_000_000
+
+        if self._last_poll_mono > 0:
+            batch_duration_s = max(0.05, now_mono - self._last_poll_mono)
         else:
             batch_duration_s = 0.0
-        # A single-record batch, or one where every record shares a
-        # timestamp, carries no interval information.  Fall back to the
-        # measured time between polls, and only then to a nominal window.
-        if batch_duration_s < 0.05:
-            now_mono = _time.monotonic()
-            if self._last_poll_mono > 0:
-                batch_duration_s = max(0.05, now_mono - self._last_poll_mono)
-            else:
-                batch_duration_s = 30.0
-        self._last_poll_mono = _time.monotonic()
+
+        # Backlog guard.  A poll that drains a large backlog covers MORE
+        # traffic than the interval it waited, so the interval understates the
+        # span and overstates the rate.  When the records themselves prove the
+        # batch is wider than the measured interval (a genuine burst flush),
+        # trust the wider span: understating an attack is recoverable, while
+        # inventing one triggers real blackhole actions.
+        if record_span_s > batch_duration_s:
+            batch_duration_s = record_span_s
+
+        # A nearly-drained cursor can be polled twice in a few tens of
+        # milliseconds — the scheduler wakes, reads 8 new records, and returns.
+        # Dividing those packets by a 0.05 s interval invents a rate several
+        # hundred times the link's real throughput. That is the same error
+        # class as the fabricated 1,022,898 pps sample: a tiny numerator over
+        # a tiny span.
+        #
+        # Order matters: this check runs AFTER the backlog guard, because only
+        # the FINAL span decides whether a rate is meaningful. A poll that
+        # waited 50 ms but whose records genuinely span 4 s is authoritative —
+        # demoting it would blind the detector on exactly the burst-flush path
+        # the guard exists to handle. The floor therefore only engages on a
+        # degenerate poll where neither the wait nor the records provide a
+        # usable span; such a poll is labelled non-authoritative while its rows
+        # still carry topology for the Sankey view.
+        if 0 < batch_duration_s < self.MIN_AUTHORITATIVE_SPAN_S:
+            too_short = batch_duration_s
+            batch_duration_s = self.MIN_AUTHORITATIVE_SPAN_S
+        else:
+            too_short = 0.0
+
+        self._last_poll_mono = now_mono
         self._batch_seq += 1
 
         rows: list[dict] = []
@@ -1268,6 +1455,27 @@ class GoFlow2Client:
             total_bytes += float(row.get("rate_bytes") or 0)
             rows.append(row)
 
+        # A zero span means "no rate can be derived from this batch" — the
+        # caller must treat the rows as position evidence only, never as a
+        # measurement, or it will divide by nothing and report infinity.
+        if batch_duration_s <= 0:
+            for row in rows:
+                row["batch_duration_s"] = 0.0
+                row["batch_pps"] = 0.0
+                row["batch_bps"] = 0.0
+                row["batch_seq"] = self._batch_seq
+                row["batch_authoritative"] = False
+            return {
+                "ok": True,
+                "flow_count": len(rows),
+                "rows": rows,
+                "batch_duration_s": 0.0,
+                "batch_pps": 0.0,
+                "batch_bps": 0.0,
+                "batch_seq": self._batch_seq,
+                "authoritative": False,
+            }
+
         # Every row is stamped with the SAME absolute rate context so
         # downstream aggregation can compare a target's share against the
         # batch instead of inventing per-record numbers.
@@ -1278,6 +1486,7 @@ class GoFlow2Client:
             row["batch_pps"] = round(batch_pps, 2)
             row["batch_bps"] = round(batch_bps, 2)
             row["batch_seq"] = self._batch_seq
+            row["batch_authoritative"] = too_short == 0.0
 
         return {
             "ok": True,
@@ -1285,6 +1494,10 @@ class GoFlow2Client:
             "batch_duration_s": round(batch_duration_s, 3),
             "batch_pps": round(batch_pps, 2),
             "batch_bps": round(batch_bps, 2),
+            "batch_seq": self._batch_seq,
+            "authoritative": too_short == 0.0,
+            "sub_span_floor_applied": too_short,
+            "bad_lines": bad_lines,
             "stale": stale,
             "file_age_s": round(age_s, 1),
             "total_rx_rate": batch_bps,

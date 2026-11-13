@@ -3,7 +3,7 @@ import "./App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "./components/ui/toaster";
 import { LanguageProvider } from "./i18n/LanguageContext";
-import { AuthProvider } from "./portal/AuthContext";
+import { AuthProvider, useAuth } from "./portal/AuthContext";
 import { RequireAuth } from "./portal/ProtectedRoute";
 import ScrollToTop from "./components/ScrollToTop";
 
@@ -76,6 +76,7 @@ const AdminArticles     = lazy(() => import("./pages/portal/admin/AdminArticles"
 const AdminCategories   = lazy(() => import("./pages/portal/admin/AdminCategories"));
 const AdminAuditLog     = lazy(() => import("./pages/portal/admin/AdminAuditLog"));
 const AdminNOC          = lazy(() => import("./pages/portal/admin/AdminNOC"));
+const AdminNOCCenter    = lazy(() => import("./pages/portal/admin/AdminNOCCenter"));
 const AdminMonitoring   = lazy(() => import("./pages/portal/admin/AdminMonitoring"));
 const AdminOps          = lazy(() => import("./pages/portal/admin/AdminOps"));
 const AdminCreditNotes  = lazy(() => import("./pages/portal/admin/AdminCreditNotes"));
@@ -109,6 +110,20 @@ const RouteFallback = () => (
     </div>
   </div>
 );
+
+// Operations Center composes five role-gated surfaces as tabs, so the route
+// itself admits any staff role and each tab applies its own gate — same rule
+// as the standalone pages, just resolved inside the console.
+const STAFF_ROLES = ["admin", "support", "finance", "sales", "ticket_only", "creative"];
+
+const AdminNOCCenterRoute = () => {
+  const { user } = useAuth();
+  return (
+    <RequireAuth role={STAFF_ROLES}>
+      <AdminNOCCenter user={user} />
+    </RequireAuth>
+  );
+};
 
 function App() {
   return (
@@ -196,6 +211,8 @@ function App() {
                   <Route path="security" element={<AdminSecurity />} />
                   <Route path="audit-log" element={<AdminAuditLog />} />
                   <Route path="noc" element={<RequireAuth role={["admin", "support"]}><AdminNOC /></RequireAuth>} />
+                  {/* All-in-one console: composes NOC / Monitoring / Security / Audit / SLA as tabs */}
+                  <Route path="operations-center" element={<AdminNOCCenterRoute />} />
                   <Route path="ops" element={<RequireAuth role={["admin", "support"]}><AdminOps /></RequireAuth>} />
                   <Route path="monitoring" element={<RequireAuth role={["admin", "support"]}><AdminMonitoring /></RequireAuth>} />
                   <Route path="credit-notes" element={<AdminCreditNotes />} />

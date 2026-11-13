@@ -355,7 +355,13 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
         from .. import emails as _em
         gf = await _em._get_goflow2_client(db)
         if gf is not None:
-            res = await loop.run_in_executor(None, gf.poll)
+            # peek(), not poll(): the detection sweep owns the file cursor
+            # because it is the only consumer whose rates feed decisions.
+            # Both calling poll() meant whichever ran second saw zero new
+            # lines, so this view silently fell back to Torch while the sweep
+            # intermittently received a drained backlog and computed an
+            # inflated rate from it.
+            res = await loop.run_in_executor(None, gf.peek)
             if res.get("ok"):
                 stale = bool(res.get("stale"))
                 file_age_s = res.get("file_age_s")

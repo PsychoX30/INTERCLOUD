@@ -300,6 +300,29 @@ def _in_prefixes(ip: str, nets: list) -> bool:
     return any(addr in n for n in nets)
 
 
+# Parsing the same prefix list tens of thousands of times per sweep is pure
+# overhead: `aggregate_targets` calls classify_direction once per flow, and a
+# steady sweep carries 12k-19k flows. Measured with cProfile, the rebuild of
+# `ip_network` objects accounted for ~1 s of a 1.5 s sweep. The prefixes are
+# operator configuration that changes rarely, so cache by value.
+_NET_CACHE: dict[tuple[str, ...], tuple] = {}
+
+
+def _parse_prefixes(prefixes: list[str]):
+    key = tuple(prefixes)
+    cached = _NET_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        nets = tuple(ipaddress.ip_network(p, strict=False) for p in prefixes)
+    except ValueError:
+        return None
+    if len(_NET_CACHE) > 64:  # bounded: rule scopes are few
+        _NET_CACHE.clear()
+    _NET_CACHE[key] = nets
+    return nets
+
+
 def classify_direction(src_ip: str, dst_ip: str, prefixes: list[str]) -> Optional[str]:
     """Return inbound / outbound / internal / None for a flow.
 
@@ -307,10 +330,7 @@ def classify_direction(src_ip: str, dst_ip: str, prefixes: list[str]) -> Optiona
     internet-facing RTBH can help with and which must never trigger an
     upstream announcement.
     """
-    try:
-        nets = [ipaddress.ip_network(p, strict=False) for p in prefixes]
-    except ValueError:
-        return None
+    nets = _parse_prefixes(prefixes)
     if not nets:
         return None
     src_in = _in_prefixes(src_ip, nets)
