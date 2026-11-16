@@ -30,7 +30,7 @@ const SectionLink = ({ hash, children, className, testid }) => {
 };
 
 const Footer = () => {
-  const { lang, t } = useLang();
+  const { lang, t, cmsLists } = useLang();
   const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
   const branding = useBranding();
 
@@ -88,18 +88,39 @@ const Footer = () => {
         <div>
           <h4 className="text-white font-bold mb-4">{t("footer.services")}</h4>
           <ul className="space-y-2 text-sm text-white/70">
-            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Cloud Service</SectionLink></li>
-            <li><SectionLink hash="services" className="hover:text-[#f5b120]">VPS &amp; Hosting</SectionLink></li>
-            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Dedicated Server</SectionLink></li>
-            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Colocation</SectionLink></li>
-            <li><SectionLink hash="services" className="hover:text-[#f5b120]">DC Interconnect</SectionLink></li>
-            <li><SectionLink hash="services" className="hover:text-[#f5b120]">Firewall Solution</SectionLink></li>
+            {(cmsLists?.footer_links?.length
+              ? (cmsLists.footer_links.find((g) => g.group?.en === "Services" || g.group?.id === "Layanan")?.items || [])
+              : []
+            ).map((it, i) => (
+              <li key={`svc-${i}`}>
+                <SectionLink hash="services" className="hover:text-[#f5b120]">
+                  {it.label?.[lang] || it.label?.id || ""}
+                </SectionLink>
+              </li>
+            ))}
+            {!cmsLists?.footer_links?.length && (<>
+              <li><SectionLink hash="services" className="hover:text-[#f5b120]">Cloud Service</SectionLink></li>
+              <li><SectionLink hash="services" className="hover:text-[#f5b120]">VPS &amp; Hosting</SectionLink></li>
+              <li><SectionLink hash="services" className="hover:text-[#f5b120]">Dedicated Server</SectionLink></li>
+              <li><SectionLink hash="services" className="hover:text-[#f5b120]">Colocation</SectionLink></li>
+              <li><SectionLink hash="services" className="hover:text-[#f5b120]">DC Interconnect</SectionLink></li>
+              <li><SectionLink hash="services" className="hover:text-[#f5b120]">Firewall Solution</SectionLink></li>
+            </>)}
           </ul>
-          <h4 className="text-white font-bold mt-6 mb-3">Legal</h4>
+          <h4 className="text-white font-bold mt-6 mb-3">{t("footer.legal")}</h4>
           <ul className="space-y-2 text-sm text-white/70">
-            <li><Link to="/legal/terms" className="hover:text-[#f5b120]">Terms of Service</Link></li>
-            <li><Link to="/legal/aup" className="hover:text-[#f5b120]">Acceptable Use Policy</Link></li>
-            <li><Link to="/legal/sla" className="hover:text-[#f5b120]">Service Level Agreement</Link></li>
+            {((cmsLists?.footer_links || []).find((g) => g.group?.en === "Legal" || g.group?.id === "Legal")?.items || []).map((it, i) => (
+              <li key={`legal-${i}`}>
+                <Link to={it.href || "/legal/terms"} className="hover:text-[#f5b120]">
+                  {it.label?.[lang] || it.label?.id || ""}
+                </Link>
+              </li>
+            ))}
+            {!cmsLists?.footer_links?.length && (<>
+              <li><Link to="/legal/terms" className="hover:text-[#f5b120]">Terms of Service</Link></li>
+              <li><Link to="/legal/aup" className="hover:text-[#f5b120]">Acceptable Use Policy</Link></li>
+              <li><Link to="/legal/sla" className="hover:text-[#f5b120]">Service Level Agreement</Link></li>
+            </>)}
           </ul>
         </div>
       </div>

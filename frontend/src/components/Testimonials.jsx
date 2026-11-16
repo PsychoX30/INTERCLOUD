@@ -57,23 +57,35 @@ const DATA = {
 };
 
 const Testimonials = () => {
-  const { lang } = useLang();
+  const { lang, cmsLists, t: tKey } = useLang();
+  // CMS-managed testimonials win; empty list falls back to the shipped mock so
+  // the section never renders blank.
+  const cmsItems = Array.isArray(cmsLists?.testimonials) ? cmsLists.testimonials : [];
   const t = DATA[lang] || DATA.id;
+  const items = cmsItems.length
+    ? cmsItems.map((x) => ({
+        quote: (x.quote && (x.quote[lang] || x.quote.id)) || "",
+        name: x.name || "",
+        role: (x.role && (x.role[lang] || x.role.id)) || "",
+        rating: typeof x.rating === "number" ? x.rating : 5,
+      }))
+    : t.items;
+
   return (
     <section id="testimonials" className="py-24 bg-white">
       <div className="max-w-7xl mx-auto px-5 lg:px-8">
         <div className="max-w-2xl">
-          <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#f5b120]">{t.tag}</div>
+          <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#f5b120]">{tKey("tst.tag")}</div>
           <h2 className="mt-3 text-3xl md:text-4xl font-extrabold text-[#0a2350] leading-tight">
-            {t.title_a} <span className="text-[#f5b120]">{t.title_b}</span>
+            {tKey("tst.title_a")} <span className="text-[#f5b120]">{tKey("tst.title_b")}</span>
           </h2>
           <div className="mt-4 h-1 w-14 rounded-full bg-[#f5b120]" />
         </div>
 
         <div className="mt-12 grid md:grid-cols-3 gap-6" data-testid="testimonials-grid">
-          {t.items.map((x, i) => (
+          {items.map((x, i) => (
             <figure
-              key={x.name}
+              key={`${x.name}-${i}`}
               className={`relative rounded-3xl border p-7 flex flex-col ${
                 i === 1
                   ? "bg-[#0a2350] border-[#0a2350] text-white md:-mt-4 md:mb-4 shadow-xl"

@@ -4,6 +4,7 @@ Split from the former monolithic routes.py - behavior preserved 1:1.
 """
 import os
 import asyncio
+import copy
 import logging
 import secrets
 import re
@@ -132,6 +133,103 @@ def _clean_landing_images(raw) -> dict:
     return out
 
 
+def _sane_id(obj):
+    """Keep only {id,en} string pairs; drop anything else so a malformed CMS
+    payload can never crash the renderer."""
+    if isinstance(obj, str):
+        return {"id": obj, "en": obj}
+    if not isinstance(obj, dict):
+        return None
+    out = {}
+    for lang in ("id", "en"):
+        v = obj.get(lang)
+        if isinstance(v, str) and v.strip():
+            out[lang] = v.strip()
+    if not out:
+        return None
+    if "id" in out and "en" not in out:
+        out["en"] = out["id"]
+    if "en" in out and "id" not in out:
+        out["id"] = out["en"]
+    return out
+
+
+def _sane_str(v, limit=240):
+    if not isinstance(v, str):
+        return ""
+    return v.strip()[:limit]
+
+
+LIST_SPEC = {
+    # name            max_items  fields
+    "services":        (24,  ("icon", "title", "desc", "bullets", "start_price", "href")),
+    "testimonials":    (12,  ("quote", "name", "role", "rating", "avatar")),
+    "partners":        (40,  ("name", "domain", "logo")),
+    "stats":           (8,   ("value", "label")),
+    "hero_terms":      (12,  ("text",)),
+    "footer_links":    (10,  ("group", "items")),
+}
+
+
+def _clean_landing_lists(raw) -> dict:
+    """Normalise the `lists` field from a CMS POST.
+
+    Unknown list keys are dropped. Each list is capped so a runaway payload
+    cannot blow the doc size. Entry shape is validated per LIST_SPEC; entries
+    that carry no usable text are discarded rather than rendered as blanks.
+    """
+    if not isinstance(raw, dict):
+        return {key: [] for key in LIST_SPEC}
+
+    out: dict[str, list] = {}
+    for name, (cap, fields) in LIST_SPEC.items():
+        rows = raw.get(name)
+        if not isinstance(rows, list):
+            out[name] = []
+            continue
+        clean_rows = []
+        for row in rows[:cap]:
+            if not isinstance(row, dict):
+                continue
+            entry = {}
+            for f in fields:
+                if f in ("title", "desc", "role", "label", "group", "text"):
+                    v = _sane_id(row.get(f))
+                    if v:
+                        entry[f] = v
+                elif f == "bullets":
+                    bl = row.get(f)
+                    if isinstance(bl, list):
+                        items = [x for x in (_sane_id(b) for b in bl) if x][:12]
+                        if items:
+                            entry[f] = items
+                elif f == "items":
+                    il = row.get(f)
+                    if isinstance(il, list):
+                        items = []
+                        for it in il[:20]:
+                            if not isinstance(it, dict):
+                                continue
+                            lbl = _sane_id(it.get("label"))
+                            href = _sane_str(it.get("href"), 300)
+                            if lbl and href:
+                                items.append({"label": lbl, "href": href})
+                        if items:
+                            entry[f] = items
+                elif f == "rating":
+                    r = row.get(f)
+                    if isinstance(r, (int, float)) and 0 <= r <= 5:
+                        entry[f] = int(r)
+                else:  # icon / start_price / href / name / domain / logo / avatar / value
+                    v = _sane_str(row.get(f), 300)
+                    if v:
+                        entry[f] = v
+            if entry:
+                clean_rows.append(entry)
+        out[name] = clean_rows
+    return out
+
+
 @router.get("/landing-content")
 async def landing_content_get():
     """Public - Landing page fetches on mount and merges overrides on top of
@@ -158,6 +256,7 @@ async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
         "faqs":      payload.get("faqs")      if isinstance(payload.get("faqs"), list)      else [],
         "contact":   payload.get("contact")   if isinstance(payload.get("contact"), dict)   else {},
         "images":    _clean_landing_images(payload.get("images")),
+        "lists":     _clean_landing_lists(payload.get("lists")),
     }
     # 128 KB cap on the whole doc - plenty for a landing page's worth of text.
     approx = len(str(clean))
@@ -179,7 +278,7 @@ async def landing_content_reset(admin=Depends(get_current_admin)):
     db = await _get_db()
     await db.settings.update_one(
         {"key": "landing_content"},
-        {"$set": {"value": {"overrides": {}, "faqs": [], "contact": {}, "images": {}},
+        {"$set": {"value": copy.deepcopy(_LANDING_DEFAULT),
                   "updated_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True,
     )

@@ -69,9 +69,9 @@ const Hero = () => {
           <div className="mt-5 w-16 h-1 bg-[#f5b120] rounded-full" />
           <p className="mt-6 text-white/80 text-base md:text-lg max-w-2xl leading-relaxed">
             {t("hero.body")}{" "}
-            <span className="text-white font-medium">Cloud, Hosting, VPS, Colocation, Dedicated Server, Firewall</span>,{" "}
+            <span className="text-white font-medium">{t("hero.terms")}</span>,{" "}
             {t("hero.body2")}{" "}
-            <span className="text-white font-medium">DC to DC Connectivity</span>{" "}
+            <span className="text-white font-medium">{t("hero.terms2")}</span>{" "}
             {t("hero.body3")}
           </p>
 
@@ -123,15 +123,15 @@ const Hero = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-[#f5b120] text-xs font-semibold">{t("hero.stat.sla")}</div>
-                  <div className="text-white text-2xl font-extrabold">99.5%</div>
+                  <div className="text-white text-2xl font-extrabold">{t("hero.stat.sla.value")}</div>
                 </div>
                 <div>
                   <div className="text-[#f5b120] text-xs font-semibold">{t("hero.stat.support")}</div>
-                  <div className="text-white text-2xl font-extrabold">24/7</div>
+                  <div className="text-white text-2xl font-extrabold">{t("hero.stat.support.value")}</div>
                 </div>
                 <div>
                   <div className="text-[#f5b120] text-xs font-semibold">{t("hero.stat.dc")}</div>
-                  <div className="text-white text-2xl font-extrabold">Tier III</div>
+                  <div className="text-white text-2xl font-extrabold">{t("hero.stat.dc.value")}</div>
                 </div>
               </div>
             </div>

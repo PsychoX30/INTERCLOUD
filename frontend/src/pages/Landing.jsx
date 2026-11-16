@@ -102,9 +102,9 @@ const Landing = () => {
         <div data-cms-section="pricing" id="pricing"><Pricing /></div>
         <div data-cms-section="pop" id="pop"><PoP /></div>
         <div data-cms-section="partners" id="partners"><Partners /></div>
-        <Testimonials />
+        <div data-cms-section="testimonials" id="testimonials"><Testimonials /></div>
         <div data-cms-section="faqsec" id="faqsec"><FAQ /></div>
-        <LeadForm />
+        <div data-cms-section="leadform" id="leadform"><LeadForm /></div>
         <div data-cms-section="cta" id="cta"><CTA /></div>
       </main>
       <div data-cms-section="footer" id="footer"><Footer /></div>

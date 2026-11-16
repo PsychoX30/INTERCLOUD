@@ -133,9 +133,105 @@ const SECTIONS = [
     { key: "footer.copy", label: "Teks copyright" },
     { key: "footer.made", label: "Baris penutup" },
   ]},
+  { id: "hero2", title: "Hero - Detail", keys: [
+    { key: "hero.terms", label: "Kata sorot 1 (layanan)" },
+    { key: "hero.terms2", label: "Kata sorot 2 (konektivitas)" },
+    { key: "hero.stat.sla.value", label: "Nilai statistik SLA" },
+    { key: "hero.stat.support.value", label: "Nilai statistik support" },
+    { key: "hero.stat.dc.value", label: "Nilai statistik data center" },
+  ]},
+  { id: "testimonials", title: "Testimoni (judul)", keys: [
+    { key: "tst.tag", label: "Label kecil" },
+    { key: "tst.title_a", label: "Judul (awal)" },
+    { key: "tst.title_b", label: "Judul (sorot)" },
+  ]},
+  { id: "labels", title: "Label & Satuan", keys: [
+    { key: "cta.perMonth", label: "per bulan" },
+    { key: "cta.plusSetup", label: "plus biaya setup" },
+    { key: "cta.startingFrom", label: "mulai dari" },
+    { key: "cta.viewDetails", label: "lihat detail" },
+    { key: "cta.sendEmail", label: "kirim email" },
+    { key: "cta.chatWhatsApp", label: "chat WhatsApp" },
+    { key: "pr.mostPopular", label: "Harga - label terpopuler" },
+    { key: "pr.setupFee", label: "Harga - biaya setup" },
+    { key: "pr.tnc", label: "Harga - catatan kaki" },
+    { key: "pr.tab.colocation", label: "Tab harga - colocation" },
+    { key: "pr.tab.dedicated", label: "Tab harga - dedicated" },
+    { key: "pr.tab.interconnect", label: "Tab harga - interconnect" },
+    { key: "pop.tagLabel", label: "PoP - label tag" },
+    { key: "svc.modal.features", label: "Modal layanan - fitur" },
+    { key: "svc.modal.useCases", label: "Modal layanan - use case" },
+    { key: "svc.modal.comparison", label: "Modal layanan - perbandingan" },
+    { key: "svc.modal.signals", label: "Modal layanan - sinyal" },
+  ]},
+  { id: "infra2", title: "Infrastruktur - Detail", keys: [
+    { key: "infra.dc.meta", label: "Layer 1 - meta" },
+    { key: "infra.servers.meta", label: "Layer 2 - meta" },
+    { key: "infra.fiber.meta", label: "Layer 3 - meta" },
+    { key: "infra.network.meta", label: "Layer 4 - meta" },
+    { key: "infra.flow.1", label: "Alur 1" },
+    { key: "infra.flow.2", label: "Alur 2" },
+    { key: "infra.flow.3", label: "Alur 3" },
+    { key: "infra.flow.4", label: "Alur 4" },
+  ]},
+  { id: "guide2", title: "Panduan - Detail", keys: [
+    { key: "dg.hosting.sub", label: "Hosting - subjudul" },
+    { key: "dg.vps.sub", label: "VPS - subjudul" },
+    { key: "dg.ded.sub", label: "Dedicated - subjudul" },
+  ]},
 ];
 
 const emptyFaq = () => ({ q: { id: "", en: "" }, a: { id: "", en: "" } });
+
+// Editable structured lists. `path` without a dot = plain string field;
+// with a dot = localized {id,en} field (rendered as two inputs).
+const L = (label, path, extra = {}) => ({ label, path, ...extra });
+const LIST_TABS = [
+  {
+    name: "services", label: "Layanan", singular: "Layanan",
+    fields: [
+      L("Judul", "title", { lang: true }),
+      L("Deskripsi", "desc", { lang: true, wide: true }),
+      L("Nama ikon", "icon", { placeholder: "server / cloud / shield / network" }),
+      L("Harga mulai", "start_price", { placeholder: "Rp 500.000" }),
+      L("Tautan", "href", { placeholder: "#services" }),
+    ],
+    blank: () => ({ title: { id: "", en: "" }, desc: { id: "", en: "" }, icon: "", start_price: "", href: "" }),
+  },
+  {
+    name: "testimonials", label: "Testimoni", singular: "Testimoni",
+    fields: [
+      L("Kutipan", "quote", { lang: true, wide: true }),
+      L("Nama", "name", { placeholder: "Nama klien" }),
+      L("Jabatan / perusahaan", "role", { lang: true, wide: true }),
+      L("Bintang (0-5)", "rating", { placeholder: "5" }),
+      L("URL avatar", "avatar", { placeholder: "https://..." }),
+    ],
+    blank: () => ({ quote: { id: "", en: "" }, name: "", role: { id: "", en: "" }, rating: 5, avatar: "" }),
+  },
+  {
+    name: "partners", label: "Partner", singular: "Partner",
+    fields: [
+      L("Nama", "name", { placeholder: "Nama perusahaan" }),
+      L("Domain", "domain", { placeholder: "contoh.co.id" }),
+      L("URL logo", "logo", { placeholder: "https://... (opsional)" }),
+    ],
+    blank: () => ({ name: "", domain: "", logo: "" }),
+  },
+  {
+    name: "stats", label: "Badge Statistik", singular: "Statistik",
+    fields: [
+      L("Nilai", "value", { placeholder: "99.9%" }),
+      L("Label", "label", { lang: true }),
+    ],
+    blank: () => ({ value: "", label: { id: "", en: "" } }),
+  },
+  {
+    name: "hero_terms", label: "Kata Sorot Hero", singular: "Kata",
+    fields: [L("Teks", "text", { lang: true, wide: true })],
+    blank: () => ({ text: { id: "", en: "" } }),
+  },
+];
 
 // Landing-page image slots that can be overridden from the CMS.
 // Defaults live in the components (Hero.jsx / Infrastructure.jsx) and are only
@@ -156,7 +252,8 @@ const DEVICES = {
 
 const AdminSiteContent = () => {
   const [content, setContent] = useState(null);
-  const [tab, setTab] = useState("editor");     // editor | faqs | images | json
+  const [tab, setTab] = useState("editor");     // editor | faqs | lists | images | json
+  const [listTab, setListTab] = useState("services");
   const [device, setDevice] = useState("desktop");
   const [previewLang, setPreviewLang] = useState("id");
   const [busy, setBusy] = useState(false);
@@ -202,6 +299,7 @@ const AdminSiteContent = () => {
       faqs: Array.isArray(c.faqs) ? c.faqs : [],
       contact: c.contact || null,
       images: c.images || {},
+      lists: c.lists || {},
       lang,
     }, window.location.origin);
   }, [content, previewLang]);
@@ -245,6 +343,37 @@ const AdminSiteContent = () => {
   };
   const addFaq = () => setContent((c) => ({ ...c, faqs: [...(c.faqs || []), emptyFaq()] }));
   const rmFaq = (i) => setContent((c) => ({ ...c, faqs: (c.faqs || []).filter((_, idx) => idx !== i) }));
+
+  // ---- Structured lists (services / testimonials / partners / footer) ----
+  // Generic helpers so every list tab shares one implementation. `path` is
+  // either a flat field ("name") or a localized one ("quote.id").
+  const listRows = (c, name) => (Array.isArray(c?.lists?.[name]) ? c.lists[name] : []);
+
+  const setListField = (name, i, path, val) =>
+    setContent((c) => {
+      const rows = [...listRows(c, name)];
+      const row = { ...(rows[i] || {}) };
+      const [field, lang] = path.split(".");
+      if (lang) {
+        row[field] = { ...(row[field] || { id: "", en: "" }), [lang]: val };
+      } else {
+        row[field] = val;
+      }
+      rows[i] = row;
+      return { ...c, lists: { ...(c.lists || {}), [name]: rows } };
+    });
+
+  const addListRow = (name, blank) =>
+    setContent((c) => ({
+      ...c,
+      lists: { ...(c.lists || {}), [name]: [...listRows(c, name), blank] },
+    }));
+
+  const rmListRow = (name, i) =>
+    setContent((c) => ({
+      ...c,
+      lists: { ...(c.lists || {}), [name]: listRows(c, name).filter((_, idx) => idx !== i) },
+    }));
 
   const setImage = (slot, field, val) => {
     setContent((c) => ({
@@ -366,6 +495,7 @@ const AdminSiteContent = () => {
             {[
               { k: "editor", label: "Teks per Bagian" },
               { k: "faqs", label: `FAQ (${(content.faqs || []).length})` },
+              { k: "lists", label: "Daftar Konten" },
               { k: "images", label: "Gambar" },
               { k: "json", label: "JSON" },
             ].map((t) => (
@@ -475,6 +605,86 @@ const AdminSiteContent = () => {
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {tab === "lists" && (
+              <div>
+                <div className="mb-4 text-xs text-slate-500">
+                  Kelola daftar konten landing: kartu layanan, testimoni, partner, badge statistik,
+                  dan tautan footer. Kosong = pakai daftar bawaan.
+                </div>
+
+                <div className="flex gap-1.5 mb-4 flex-wrap">
+                  {LIST_TABS.map((lt) => (
+                    <button key={lt.name}
+                            onClick={() => setListTab(lt.name)}
+                            className={`px-3 py-1.5 rounded-full text-[11px] font-semibold transition-colors ${listTab === lt.name ? "bg-[#0a2350] text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                            data-testid={`cms-listtab-${lt.name}`}>
+                      {lt.label} ({listRows(content, lt.name).length})
+                    </button>
+                  ))}
+                </div>
+
+                {(() => {
+                  const spec = LIST_TABS.find((x) => x.name === listTab);
+                  if (!spec) return null;
+                  const rows = listRows(content, spec.name);
+                  return (
+                    <div className="space-y-3" data-testid={`cms-list-${spec.name}`}>
+                      {rows.length === 0 && (
+                        <div className="text-xs text-slate-400 italic py-3">
+                          Belum ada entri — landing memakai daftar bawaan.
+                        </div>
+                      )}
+                      {rows.map((row, i) => (
+                        <div key={i} className="rounded-2xl border border-slate-200 bg-white p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="text-xs font-bold uppercase tracking-widest text-[#0a2350]">
+                              {spec.singular} #{i + 1}
+                            </div>
+                            <button onClick={() => rmListRow(spec.name, i)}
+                                    className="text-xs text-red-600 inline-flex items-center gap-1"
+                                    data-testid={`cms-list-rm-${spec.name}-${i}`}>
+                              <Trash2 className="h-3.5 w-3.5" /> Hapus
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {spec.fields.map((f) => (
+                              <div key={f.path} className={f.wide ? "md:col-span-2" : ""}>
+                                <label className="text-[10px] uppercase tracking-widest text-slate-400">{f.label}</label>
+                                {f.lang ? (
+                                  <div className="grid grid-cols-2 gap-2 mt-1">
+                                    {["id", "en"].map((L) => (
+                                      <input key={L}
+                                             value={(row?.[f.path]?.[L]) ?? ""}
+                                             onChange={(e) => setListField(spec.name, i, `${f.path}.${L}`, e.target.value)}
+                                             placeholder={L.toUpperCase()}
+                                             className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-[#f5b120]/40"
+                                             data-testid={`cms-${spec.name}-${i}-${f.path}-${L}`} />
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <input value={row?.[f.path] ?? ""}
+                                         onChange={(e) => setListField(spec.name, i, f.path, e.target.value)}
+                                         placeholder={f.placeholder || ""}
+                                         className="mt-1 w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-[#f5b120]/40"
+                                         data-testid={`cms-${spec.name}-${i}-${f.path}`} />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                      <button onClick={() => addListRow(spec.name, spec.blank())}
+                              className="w-full py-2 rounded-xl border border-dashed border-[#0a2350]/30 text-xs font-semibold text-[#0a2350] hover:border-[#f5b120] hover:bg-amber-50 transition-colors inline-flex items-center justify-center gap-1.5"
+                              data-testid={`cms-list-add-${spec.name}`}>
+                        <Plus className="h-3.5 w-3.5" /> Tambah {spec.singular}
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 

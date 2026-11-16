@@ -46,12 +46,20 @@ const dict = {
     id: "- semuanya kami dukung dengan solusi yang tepat.",
     en: "- we support you with the right solution.",
   },
+  "hero.terms": {
+    id: "Cloud, Hosting, VPS, Colocation, Dedicated Server, Firewall",
+    en: "Cloud, Hosting, VPS, Colocation, Dedicated Server, Firewall",
+  },
+  "hero.terms2": { id: "DC to DC Connectivity", en: "DC to DC Connectivity" },
   "hero.aud.company": { id: "Perusahaan", en: "Enterprises" },
   "hero.aud.software": { id: "Software House", en: "Software Houses" },
   "hero.aud.itsupport": { id: "Tim IT Support", en: "IT Teams" },
   "hero.stat.sla": { id: "SLA UPTIME", en: "SLA UPTIME" },
+  "hero.stat.sla.value": { id: "99.5%", en: "99.5%" },
   "hero.stat.support": { id: "SUPPORT", en: "SUPPORT" },
+  "hero.stat.support.value": { id: "24/7", en: "24/7" },
   "hero.stat.dc": { id: "DATA CENTER", en: "DATA CENTER" },
+  "hero.stat.dc.value": { id: "Tier III", en: "Tier III" },
 
   // Features / Why Us
   "feat.eyebrow": { id: "Why Choose Us", en: "Why Choose Us" },
@@ -246,6 +254,7 @@ const dict = {
   },
   "footer.pages": { id: "Pages", en: "Pages" },
   "footer.services": { id: "Layanan", en: "Services" },
+  "footer.legal": { id: "Legal", en: "Legal" },
   "footer.copy": {
     id: "PT. Intercloud Digital Inovasi. All rights reserved.",
     en: "PT. Intercloud Digital Inovasi. All rights reserved.",
@@ -284,6 +293,11 @@ const dict = {
 
   // Toggle
   "lang.toggle.aria": { id: "Ganti bahasa", en: "Change language" },
+
+  // Testimonials section
+  "tst.tag": { id: "Testimoni Klien", en: "Client Testimonials" },
+  "tst.title_a": { id: "Dipercaya bisnis yang", en: "Trusted by businesses that" },
+  "tst.title_b": { id: "tidak boleh down.", en: "cannot afford downtime." },
 };
 
 export const LanguageProvider = ({ children }) => {
@@ -298,6 +312,7 @@ export const LanguageProvider = ({ children }) => {
   const [cmsFaqs, setCmsFaqs] = useState(null);        // null = use hardcoded default
   const [contactOverride, setContactOverride] = useState(null);
   const [cmsImages, setCmsImages] = useState({});      // { hero_main: {url, alt_id, alt_en}, ... }
+  const [cmsLists, setCmsLists] = useState({});        // { services: [...], testimonials: [...] }
 
   useEffect(() => {
     const base = process.env.REACT_APP_BACKEND_URL;
@@ -310,6 +325,7 @@ export const LanguageProvider = ({ children }) => {
         setCmsFaqs(Array.isArray(data.faqs) && data.faqs.length ? data.faqs : null);
         setContactOverride(data.contact && typeof data.contact === "object" ? data.contact : null);
         setCmsImages(data.images && typeof data.images === "object" ? data.images : {});
+        setCmsLists(data.lists && typeof data.lists === "object" ? data.lists : {});
       })
       .catch(() => { /* stay on hardcoded defaults */ });
   }, []);
@@ -326,6 +342,7 @@ export const LanguageProvider = ({ children }) => {
       setCmsFaqs(Array.isArray(d.faqs) && d.faqs.length ? d.faqs : null);
       setContactOverride(d.contact && typeof d.contact === "object" ? d.contact : null);
       setCmsImages(d.images && typeof d.images === "object" ? d.images : {});
+      setCmsLists(d.lists && typeof d.lists === "object" ? d.lists : {});
       if (d.lang === "id" || d.lang === "en") setLangState(d.lang);
       if (d.scrollTo) {
         const el = document.getElementById(d.scrollTo) ||
@@ -366,8 +383,8 @@ export const LanguageProvider = ({ children }) => {
   }, [lang, mergedDict]);
 
   const value = useMemo(
-    () => ({ lang, setLang, t, cmsFaqs, contactOverride, cmsImages }),
-    [lang, setLang, t, cmsFaqs, contactOverride, cmsImages]
+    () => ({ lang, setLang, t, cmsFaqs, contactOverride, cmsImages, cmsLists }),
+    [lang, setLang, t, cmsFaqs, contactOverride, cmsImages, cmsLists]
   );
 
   return (

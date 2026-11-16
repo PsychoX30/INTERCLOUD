@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import shlex
 import subprocess
@@ -88,18 +89,44 @@ LANDING_CONTENT_DEFAULT: dict = {
     # path or absolute http/https), never base64 - keeps this doc small.
     # { "<slot>": {"url": "...", "alt_id": "...", "alt_en": "..."} }
     "images": {},
+    # Structured, admin-editable lists. Each entry is a list of objects whose
+    # display strings are {id,en} pairs. An empty list means "use the shipped
+    # default from mock/data.js / the component" so a blank CMS never blanks
+    # the page.
+    #   services:     [{icon, title:{id,en}, desc:{id,en}, bullets:[{id,en}], start_price}]
+    #   testimonials: [{quote:{id,en}, name, role:{id,en}, rating, avatar}]
+    #   partners:     [{name, domain, logo}]
+    #   stats:        [{value, label:{id,en}}]        (hero stat badges)
+    #   hero_terms:   [{text:{id,en}}]                (hero sentence highlights)
+    #   footer_links: [{group:{id,en}, items:[{label:{id,en}, href}]}]
+    "lists": {
+        "services": [],
+        "testimonials": [],
+        "partners": [],
+        "stats": [],
+        "hero_terms": [],
+        "footer_links": [],
+    },
 }
 
 
 async def get_landing_content(db) -> dict:
     if db is None:
-        return dict(LANDING_CONTENT_DEFAULT)
+        return copy.deepcopy(LANDING_CONTENT_DEFAULT)
     doc = await db.settings.find_one({"key": "landing_content"})
     value = (doc or {}).get("value") or {}
-    # Shallow-merge with defaults so callers always see the full shape.
+    # Shallow-merge with defaults so callers always see the full shape. `lists`
+    # is merged per-key so a CMS that predates a new list key still resolves it
+    # to the empty default instead of KeyError.
+    saved_lists = value.get("lists") if isinstance(value.get("lists"), dict) else {}
+    lists = {
+        key: (saved_lists.get(key) if isinstance(saved_lists.get(key), list) else [])
+        for key in LANDING_CONTENT_DEFAULT["lists"]
+    }
     return {
         "overrides": value.get("overrides") or {},
         "faqs":      value.get("faqs") or [],
         "contact":   value.get("contact") or {},
         "images":    value.get("images") or {},
+        "lists":     lists,
     }

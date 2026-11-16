@@ -50,8 +50,13 @@ const PartnerLogo = ({ p }) => {
 };
 
 const Partners = () => {
-  const { t } = useLang();
-  const loop = [...partners, ...partners];
+  const { t, cmsLists } = useLang();
+  // CMS-managed partner list wins; empty falls back to the shipped set.
+  const cmsPartners = Array.isArray(cmsLists?.partners) ? cmsLists.partners : [];
+  const list = cmsPartners.length
+    ? cmsPartners.map((p) => ({ name: p.name || "", domain: p.domain || "", logo: p.logo || "" }))
+    : partners;
+  const loop = [...list, ...list];
 
   return (
     <section
