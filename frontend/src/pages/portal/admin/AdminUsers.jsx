@@ -549,9 +549,12 @@ const UserAccessModal = ({ user, catalog, clients, onClose, onDone }) => {
     } finally { setBusy(false); }
   };
 
-  // Group menu catalog for display
+  // Group menu catalog for display. Entries with `kind: "tab"` are Operations
+  // Center tabs kept in the catalog only so an existing allow-list still
+  // resolves; they are not menus, so they must not appear as checkboxes.
   const groups = {};
   for (const m of catalog.menu_catalog) {
+    if (m.kind === "tab" || (m.group || "").startsWith("_")) continue;
     (groups[m.group] ??= []).push(m);
   }
 

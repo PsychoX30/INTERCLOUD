@@ -20,6 +20,9 @@ async def ops_overview(staff=Depends(require_roles("admin", "support"))):
     Read-only: no inserts, updates, dispatches, or side effects. Missing or
     unreadable counters are returned as ``null`` so the client can render
     "unknown" rather than a confident zero.
+
+    ``role`` is forwarded only so the attention rows link to a console tab the
+    caller may actually open; it does not change any counter.
     """
     db = await _get_db()
-    return await build_ops_overview(db)
+    return await build_ops_overview(db, role=staff.get("role") or "admin")

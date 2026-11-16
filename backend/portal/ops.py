@@ -97,10 +97,48 @@ async def _count(collection, query: dict) -> Optional[int]:
     return len(rows)
 
 
+def _ops_tab_link(link: str, *, role: str) -> str:
+    """Resolve a former standalone operations route to the console tab that now
+    hosts it.
+
+    Operations Center is one page with role-gated tabs. A raw
+    ``/portal/admin/sla`` link would bounce through a redirect into the console
+    and then be re-resolved client-side anyway, so emit the destination directly.
+    The role check matters: ``finance``/``sales`` can read SLA but must not be
+    sent to a ``noc``/``monitoring`` tab they cannot open, so those links fall
+    back to the console's default tab for their role.
+    """
+    tab_for_path = {
+        "/portal/admin/noc": "noc",
+        "/portal/admin/monitoring": "monitoring",
+        "/portal/admin/diagnostics": "diagnostics",
+        "/portal/admin/sla": "sla",
+        "/portal/admin/security": "security",
+        "/portal/admin/audit-log": "audit",
+        "/portal/admin/ops": "overview",
+    }
+    tab = tab_for_path.get(link)
+    if not tab:
+        return link
+    can_open = {
+        "noc": ("admin", "support"),
+        "monitoring": ("admin", "support"),
+        "diagnostics": ("admin", "support"),
+        "overview": ("admin", "support"),
+        "security": ("admin",),
+        "audit": ("admin",),
+        "sla": ("admin", "support", "finance", "sales"),
+    }[tab]
+    if role not in can_open:
+        return "/portal/admin/operations-center"
+    return f"/portal/admin/operations-center?tab={tab}"
+
+
 def _add_attention(items: list, *, level: str, area: str, title: str,
-                   detail: str, link: str) -> None:
+                   detail: str, link: str, role: str = "admin") -> None:
     items.append({"level": level, "area": area, "title": title,
-                  "detail": detail, "link": link})
+                  "detail": detail,
+                  "link": _ops_tab_link(link, role=role)})
 
 
 async def _rows(collection, query: dict, *, sort=None, limit=_MAX_ROWS) -> Optional[list]:
@@ -122,8 +160,14 @@ async def _rows(collection, query: dict, *, sort=None, limit=_MAX_ROWS) -> Optio
         return None
 
 
-async def build_ops_overview(db, *, now: Optional[datetime] = None) -> dict:
-    """Return a bounded, read-only unified operations snapshot."""
+async def build_ops_overview(db, *, now: Optional[datetime] = None, role: str = "admin") -> dict:
+    """Return a bounded, read-only unified operations snapshot.
+
+    ``role`` only shapes where the attention rows point — the counters are the
+    same read-only aggregate for every staff role the route admits. Passing it
+    prevents handing a ``finance``/``sales`` operator a link into a console tab
+    their role cannot open.
+    """
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -162,11 +206,11 @@ async def build_ops_overview(db, *, now: Optional[datetime] = None) -> dict:
         summary["monitoring"].update(checks=len(checks), **status_counts,
                                      disabled=sum(1 for c in checks if not c.get("enabled", True)))
         if status_counts["down"]:
-            _add_attention(attention, level=_LEVEL_CRITICAL, area=_AREA_MONITORING,
+            _add_attention(attention, role=role, level=_LEVEL_CRITICAL, area=_AREA_MONITORING,
                            title="Monitoring checks down", detail=f"{status_counts['down']} confirmed DOWN",
                            link="/portal/admin/monitoring")
         if status_counts["pending"]:
-            _add_attention(attention, level=_LEVEL_WARNING, area=_AREA_MONITORING,
+            _add_attention(attention, role=role, level=_LEVEL_WARNING, area=_AREA_MONITORING,
                            title="Monitoring checks pending", detail=f"{status_counts['pending']} awaiting retry confirmation",
                            link="/portal/admin/monitoring")
     else:
@@ -176,11 +220,11 @@ async def build_ops_overview(db, *, now: Optional[datetime] = None) -> dict:
     exhausted = await _count(db.monitoring_events, {"notify_exhausted": True})
     summary["monitoring"].update(undelivered_alerts=undelivered, exhausted_alerts=exhausted)
     if undelivered:
-        _add_attention(attention, level=_LEVEL_WARNING, area=_AREA_MONITORING,
+        _add_attention(attention, role=role, level=_LEVEL_WARNING, area=_AREA_MONITORING,
                        title="Undelivered alerts", detail=f"{undelivered} alert(s) queued for retry",
                        link="/portal/admin/monitoring")
     if exhausted:
-        _add_attention(attention, level=_LEVEL_CRITICAL, area=_AREA_MONITORING,
+        _add_attention(attention, role=role, level=_LEVEL_CRITICAL, area=_AREA_MONITORING,
                        title="Alerts exhausted", detail=f"{exhausted} alert(s) need operator review",
                        link="/portal/admin/monitoring")
 
@@ -196,7 +240,7 @@ async def build_ops_overview(db, *, now: Optional[datetime] = None) -> dict:
             counts[status if status in ("up", "down") else "unknown"] += 1
         summary["noc"].update(devices=len(devices), **counts)
         if counts["down"]:
-            _add_attention(attention, level=_LEVEL_CRITICAL, area=_AREA_NOC,
+            _add_attention(attention, role=role, level=_LEVEL_CRITICAL, area=_AREA_NOC,
                            title="NOC devices down", detail=f"{counts['down']} device(s) reported DOWN",
                            link="/portal/admin/noc")
     else:
@@ -211,7 +255,7 @@ async def build_ops_overview(db, *, now: Optional[datetime] = None) -> dict:
     sla_recent = await _count(db.sla_incidents, {"started_at": {"$gte": recent_cutoff.isoformat()}})
     summary["sla"].update(open_incidents=sla_open, recent_incidents=sla_recent)
     if sla_open:
-        _add_attention(attention, level=_LEVEL_WARNING, area=_AREA_SLA,
+        _add_attention(attention, role=role, level=_LEVEL_WARNING, area=_AREA_SLA,
                        title="Open SLA incidents", detail=f"{sla_open} incident(s) still open",
                        link="/portal/admin/sla")
 
@@ -229,7 +273,7 @@ async def build_ops_overview(db, *, now: Optional[datetime] = None) -> dict:
                 active_blocks += 1
         summary["security"]["active_blocks"] = active_blocks if len(blocks) <= _MAX_ROWS else None
         if active_blocks:
-            _add_attention(attention, level=_LEVEL_INFO, area=_AREA_SECURITY,
+            _add_attention(attention, role=role, level=_LEVEL_INFO, area=_AREA_SECURITY,
                            title="Active IP blocks", detail=f"{active_blocks} block(s) active",
                            link="/portal/admin/security")
     sec_recent = await _count(db.security_notifications, {"created_at": {"$gte": recent_cutoff.isoformat()}})
@@ -238,7 +282,7 @@ async def build_ops_overview(db, *, now: Optional[datetime] = None) -> dict:
     audit_critical = await _count(db.audit_logs, {"severity": "critical", "created_at": {"$gte": recent_cutoff.isoformat()}})
     summary["audit"]["recent_critical"] = audit_critical
     if audit_critical:
-        _add_attention(attention, level=_LEVEL_WARNING, area=_AREA_AUDIT,
+        _add_attention(attention, role=role, level=_LEVEL_WARNING, area=_AREA_AUDIT,
                        title="Critical audit entries", detail=f"{audit_critical} critical entry/entries in the last 7 days",
                        link="/portal/admin/audit-log")
 

@@ -19,7 +19,10 @@ const CATEGORY_TONES = {
 
 const PAGE_SIZE = 25;
 
-const AdminAuditLog = () => {
+// `embedded` is set when this page is composed as a tab inside Operations
+// Center. The console owns the title; the refresh control stays because it is a
+// real operator action.
+const AdminAuditLog = ({ embedded = false } = {}) => {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -55,17 +58,23 @@ const AdminAuditLog = () => {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  const headerActions = (
+    <button className={btnSecondary} onClick={load} data-testid="audit-refresh">
+      <RefreshCw className="h-4 w-4" /> Refresh
+    </button>
+  );
+
   return (
     <div data-testid="audit-log-page">
-      <PageHeader
-        title="Audit Log"
-        subtitle="Every sensitive administrative action (role changes, integrations, billing settings, factory reset, credit notes, backup restore, NOC alerts) is recorded here with actor, timestamp, IP, and a before/after snapshot."
-        actions={
-          <button className={btnSecondary} onClick={load} data-testid="audit-refresh">
-            <RefreshCw className="h-4 w-4" /> Refresh
-          </button>
-        }
-      />
+      {embedded ? (
+        <div className="flex items-center justify-end mb-3">{headerActions}</div>
+      ) : (
+        <PageHeader
+          title="Audit Log"
+          subtitle="Every sensitive administrative action (role changes, integrations, billing settings, factory reset, credit notes, backup restore, NOC alerts) is recorded here with actor, timestamp, IP, and a before/after snapshot."
+          actions={headerActions}
+        />
+      )}
 
       {/* Filters */}
       <Card className="p-4 mb-4">

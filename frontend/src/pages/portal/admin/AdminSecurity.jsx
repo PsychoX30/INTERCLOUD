@@ -46,15 +46,19 @@ const TABS = [
 ];
 
 // ============================================================
-const AdminSecurity = () => {
+// `embedded` is set when this page is composed as a tab inside Operations
+// Center — the console owns the title, so the page header is suppressed there.
+const AdminSecurity = ({ embedded = false } = {}) => {
   const [tab, setTab] = useState("analytics");
 
   return (
-    <div>
-      <PageHeader
-        title="Security"
-        subtitle="Login analytics, auto-block rules, active blocks, and notification channels."
-      />
+    <div data-testid="security-page">
+      {!embedded && (
+        <PageHeader
+          title="Security"
+          subtitle="Login analytics, auto-block rules, active blocks, and notification channels."
+        />
+      )}
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 mb-5 bg-white border border-slate-200 rounded-xl p-1 w-fit" data-testid="security-tabs">

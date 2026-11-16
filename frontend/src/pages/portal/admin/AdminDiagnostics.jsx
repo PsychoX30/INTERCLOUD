@@ -21,7 +21,10 @@ const TOOLS = [
 const RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "NS", "TXT", "SOA", "PTR", "ANY"];
 const PROTOCOLS = ["any", "tcp", "udp", "icmp", "gre", "esp", "ah", "ospf"];
 
-const AdminDiagnostics = () => {
+// `embedded` is set when this page is composed as a tab inside Operations
+// Center — the console owns the title, so the page header is suppressed there
+// to avoid stacking two headings with the same meaning.
+const AdminDiagnostics = ({ embedded = false } = {}) => {
   const [view, setView] = useState("tools");
   const [tool, setTool] = useState("ping");
   const [target, setTarget] = useState("google.com");
@@ -111,11 +114,13 @@ const AdminDiagnostics = () => {
   };
 
   return (
-    <div>
-      <PageHeader
-        title="Diagnostics"
-        subtitle="Network diagnostics dari host portal + status kesehatan sistem (DB, disk, SSL, service)."
-      />
+    <div data-testid="diagnostics-page">
+      {!embedded && (
+        <PageHeader
+          title="Diagnostics"
+          subtitle="Network diagnostics dari host portal + status kesehatan sistem (DB, disk, SSL, service)."
+        />
+      )}
 
       {/* View toggle: Diagnostic Tools | System Health */}
       <div className="flex gap-2 mb-5" data-testid="diag-view-toggle">

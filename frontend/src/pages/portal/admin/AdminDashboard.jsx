@@ -82,7 +82,7 @@ const QuickLinks = () => {
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
         <QL to="/portal/admin/invoices" icon={Receipt} label="Buat Tagihan" testid="ql-invoices" />
         <QL to="/portal/admin/tickets" icon={LifeBuoy} label="Buka Tiket" testid="ql-tickets" />
-        {canAccessNoc && <QL to="/portal/admin/noc" icon={TrendingUp} label="Cek NOC" testid="ql-noc" />}
+        {canAccessNoc && <QL to="/portal/admin/operations-center" icon={TrendingUp} label="Operations Center" testid="ql-noc" />}
         <QL to="/portal/admin/orders" icon={ShoppingCart} label="Orders" testid="ql-orders" />
         <QL to="/portal/admin/users" icon={Users} label="Manage Users" testid="ql-users" />
         <QL to="/portal/admin/products" icon={Package} label="Products" testid="ql-products" />

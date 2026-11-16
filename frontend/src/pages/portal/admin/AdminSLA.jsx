@@ -4,7 +4,12 @@ import { api, money, shortDate } from "../../../portal/api";
 import { PageHeader, StatusBadge } from "../ui";
 import { DataTable } from "../../../components/ui/data-table";
 
-const AdminSLA = () => {
+// `embedded` is set when this page is composed as a tab inside Operations
+// Center. The console owns the title; the header actions (Export PDF, Config,
+// New Incident) stay because they are the actual controls. The storefront pills
+// below are a redundant signpost once the page is a tab in the console, so they
+// are suppressed there — but kept on the standalone route.
+const AdminSLA = ({ embedded = false } = {}) => {
   const { user: me } = useAuth();
   const canWrite = ["admin", "support"].includes(me?.role);
   const canConfigure = me?.role === "admin";
@@ -114,23 +119,29 @@ const AdminSLA = () => {
     { key: "status", label: "Status", sortable: true, render: (v) => <StatusBadge status={v} /> },
   ];
 
+  const headerActions = (
+    <div className="flex items-center gap-2">
+      <button onClick={exportPDF} className="px-3 py-1.5 text-sm font-semibold bg-[#0a2350] text-white rounded-lg hover:bg-[#0a2350]/90" data-testid="sla-export-pdf">Export PDF</button>
+      {canConfigure && (
+        <button onClick={() => setShowConfigModal(true)} className="px-3 py-1.5 text-sm font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200" data-testid="sla-config-btn">Config</button>
+      )}
+      {canWrite && (
+        <button onClick={() => setShowCreateModal(true)} className="px-3 py-1.5 text-sm font-semibold bg-[#f5b120] text-[#0a2350] rounded-lg hover:bg-[#f5b120]/90" data-testid="sla-create-btn">New Incident</button>
+      )}
+    </div>
+  );
+
   return (
-    <div>
-      <PageHeader
-        title="SLA Incidents"
-        subtitle="Internal incident tracking and uptime reporting."
-        actions={
-          <div className="flex items-center gap-2">
-            <button onClick={exportPDF} className="px-3 py-1.5 text-sm font-semibold bg-[#0a2350] text-white rounded-lg hover:bg-[#0a2350]/90" data-testid="sla-export-pdf">Export PDF</button>
-            {canConfigure && (
-              <button onClick={() => setShowConfigModal(true)} className="px-3 py-1.5 text-sm font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200" data-testid="sla-config-btn">Config</button>
-            )}
-            {canWrite && (
-              <button onClick={() => setShowCreateModal(true)} className="px-3 py-1.5 text-sm font-semibold bg-[#f5b120] text-[#0a2350] rounded-lg hover:bg-[#f5b120]/90" data-testid="sla-create-btn">New Incident</button>
-            )}
-          </div>
-        }
-      />
+    <div data-testid="sla-page">
+      {embedded ? (
+        <div className="flex items-center justify-end mb-3">{headerActions}</div>
+      ) : (
+        <PageHeader
+          title="SLA Incidents"
+          subtitle="Internal incident tracking and uptime reporting."
+          actions={headerActions}
+        />
+      )}
       <div className="flex flex-wrap gap-4 mb-4 p-4 bg-[#f8fafc] rounded-lg border border-slate-200">
         <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value, page: 1 })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
           <option value="">All Status</option>

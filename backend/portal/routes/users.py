@@ -194,17 +194,13 @@ ADMIN_MENU_CATALOG = [
     {"key": "provisioning",    "label": "Provisioning",     "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "mikrotik",        "label": "MikroTik Ops",     "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "dcim",            "label": "DCIM & IPAM",      "group": "Operations",     "default_roles": ["admin", "support"]},
-    {"key": "diagnostics",     "label": "Diagnostics",      "group": "Operations",     "default_roles": ["admin", "support"]},
+    {"key": "operations_center","label": "Operations Center","group": "Operations",     "default_roles": ["admin", "support", "finance", "sales"]},
     {"key": "crm",             "label": "Customer DB (CRM)","group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "projects",        "label": "Project Tracker",  "group": "Business",       "default_roles": ["admin", "sales", "support"]},
     {"key": "content",         "label": "Content Planner",  "group": "Business",       "default_roles": ["admin", "sales", "finance", "support", "creative"]},
     {"key": "followups",       "label": "Follow-ups",       "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "documents",       "label": "Documents",        "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "integrations",    "label": "Integrations",     "group": "System",         "default_roles": ["admin"]},
-    {"key": "security",        "label": "Security",         "group": "System",         "default_roles": ["admin"]},
-    {"key": "audit_log",       "label": "Audit Log",        "group": "System",         "default_roles": ["admin"]},
-    {"key": "noc",             "label": "NOC Monitor",      "group": "Operations",     "default_roles": ["admin", "support"]},
-    {"key": "sla",             "label": "SLA & Incidents",   "group": "Operations",     "default_roles": ["admin", "support", "finance", "sales"]},
     {"key": "credit_notes",    "label": "Credit Notes",     "group": "Sales & Billing", "default_roles": ["admin", "finance"]},
     {"key": "owner_dashboard", "label": "Executive Overview","group": "Overview",       "default_roles": ["admin", "owner"]},
     {"key": "media_library",   "label": "Media Library",    "group": "Creative",       "default_roles": ["admin", "creative"]},
@@ -214,6 +210,24 @@ ADMIN_MENU_CATALOG = [
     {"key": "backup",          "label": "Backup & Restore", "group": "System",         "default_roles": ["admin"]},
     {"key": "status_page",     "label": "Public Status Page", "group": "System",       "default_roles": ["admin"]},
     {"key": "form_builder",    "label": "Form Builder",     "group": "Creative",       "default_roles": ["admin", "creative", "sales"]},
+]
+
+# Surfaces that Operations Center hosts as tabs, kept in the catalog so a user
+# who already has one of these keys in an allow-list does not lose the console.
+#
+# They are NOT menu entries and the Admin User Access modal must not render them
+# as checkboxes: checking "noc" would light up a menu that no longer exists while
+# doing nothing for the tab it actually names. They live under `group` values
+# that the modal filters out, and `kind: "tab"` states the intent in the payload
+# for any other consumer that reads this list.
+ADMIN_MENU_CATALOG += [
+    {"key": "ops",          "label": "Ops Overview tab",   "group": "_Operations Center tabs", "kind": "tab", "default_roles": ["admin", "support"]},
+    {"key": "noc",          "label": "NOC Monitor tab",    "group": "_Operations Center tabs", "kind": "tab", "default_roles": ["admin", "support"]},
+    {"key": "monitoring",   "label": "Monitoring tab",     "group": "_Operations Center tabs", "kind": "tab", "default_roles": ["admin", "support"]},
+    {"key": "diagnostics",  "label": "Diagnostics tab",    "group": "_Operations Center tabs", "kind": "tab", "default_roles": ["admin", "support"]},
+    {"key": "sla",          "label": "SLA & Incidents tab", "group": "_Operations Center tabs", "kind": "tab", "default_roles": ["admin", "support", "finance", "sales"]},
+    {"key": "security",     "label": "Security tab",       "group": "_Operations Center tabs", "kind": "tab", "default_roles": ["admin"]},
+    {"key": "audit_log",    "label": "Audit Log tab",      "group": "_Operations Center tabs", "kind": "tab", "default_roles": ["admin"]},
 ]
 
 

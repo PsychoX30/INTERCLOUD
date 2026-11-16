@@ -164,7 +164,10 @@ const graphSpanMs = (data) => {
 };
 
 // ── Main wrapper ─────────────────────────────────────────────────
-const AdminMonitoring = () => {
+// `embedded` is set when this page is composed as a tab inside Operations
+// Center — the console owns the title, so a second <PageHeader> here would
+// stack two headings. The refresh control stays; it is a real operator action.
+const AdminMonitoring = ({ embedded = false } = {}) => {
   const { user } = useAuth() || {};
   const isAdmin = user?.role === "admin";
   const [tab, setTab] = useState("ping");
@@ -184,10 +187,12 @@ const AdminMonitoring = () => {
 
   return (
     <div data-testid="monitoring-page">
-      <PageHeader
-        title="Monitoring"
-        subtitle="Unified monitoring: ping checks, SNMP/MRTG graphs, alerts, and network map."
-      />
+      {!embedded && (
+        <PageHeader
+          title="Monitoring"
+          subtitle="Unified monitoring: ping checks, SNMP/MRTG graphs, alerts, and network map."
+        />
+      )}
       <div className="flex items-center gap-2 mb-4 border-b border-slate-200 overflow-x-auto">
         <TabBtn active={tab === "ping"} onClick={() => setTab("ping")} icon={Activity} testid="tab-ping">Ping Checks</TabBtn>
         <TabBtn active={tab === "graphs"} onClick={() => setTab("graphs")} icon={BarChart3} testid="tab-graphs">SNMP Graphs</TabBtn>

@@ -15,7 +15,11 @@ import { OutboundAbuse } from "./OutboundAbuse";
 import { TablePager } from "./TablePager";
 import { SamplingBadge, SamplingAlert, useSamplingHealth } from "./SamplingHealth";
 
-const AdminNOC = () => {
+// `embedded` is set when this page is composed as a tab inside Operations
+// Center. The console already owns the page title, so rendering a second
+// <PageHeader> here is what made the two menus look like duplicates. The
+// actions stay — they are the controls an operator actually needs.
+const AdminNOC = ({ embedded = false } = {}) => {
   const [devices, setDevices] = useState([]);
   const [events, setEvents] = useState([]);
   const [eventsTotal, setEventsTotal] = useState(0);
@@ -67,22 +71,28 @@ const AdminNOC = () => {
     ? (devices.reduce((a, d) => a + (d.uptime_24h_pct ?? 0), 0) / devices.length).toFixed(1)
     : "-";
 
+  const headerActions = (
+    <div className="flex items-center gap-2">
+      <SamplingBadge payload={sampling.payload} testid="noc-sampling-badge" />
+      <button className={btnSecondary} onClick={load} data-testid="noc-refresh"><RefreshCw className="h-4 w-4" /> Refresh</button>
+      <button className={btnPrimary} onClick={runNow} disabled={polling} data-testid="noc-run-now">
+        {polling ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+        {polling ? "Probing…" : "Run probe now"}
+      </button>
+    </div>
+  );
+
   return (
     <div data-testid="noc-page">
-      <PageHeader
-        title="NOC Monitor"
-        subtitle="Proactive MikroTik reachability monitoring. Probes run every 5 minutes on the background scheduler. Transitions (up ↔ down) fire email alerts to configured recipients."
-        actions={
-          <div className="flex items-center gap-2">
-            <SamplingBadge payload={sampling.payload} testid="noc-sampling-badge" />
-            <button className={btnSecondary} onClick={load} data-testid="noc-refresh"><RefreshCw className="h-4 w-4" /> Refresh</button>
-            <button className={btnPrimary} onClick={runNow} disabled={polling} data-testid="noc-run-now">
-              {polling ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-              {polling ? "Probing…" : "Run probe now"}
-            </button>
-          </div>
-        }
-      />
+      {embedded ? (
+        <div className="flex items-center justify-end gap-2 mb-3">{headerActions}</div>
+      ) : (
+        <PageHeader
+          title="NOC Monitor"
+          subtitle="Proactive MikroTik reachability monitoring. Probes run every 5 minutes on the background scheduler. Transitions (up ↔ down) fire email alerts to configured recipients."
+          actions={headerActions}
+        />
+      )}
 
       <SamplingAlert health={sampling} context="DDoS detection and the Sankey view" />
 

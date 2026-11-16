@@ -58,7 +58,6 @@ const AdminQuotations   = lazy(() => import("./pages/portal/admin/AdminQuotation
 const AdminTickets      = lazy(() => import("./pages/portal/admin/AdminTickets"));
 const AdminFinance      = lazy(() => import("./pages/portal/admin/AdminFinance"));
 const AdminIntegrations = lazy(() => import("./pages/portal/admin/AdminIntegrations"));
-const AdminSecurity     = lazy(() => import("./pages/portal/admin/AdminSecurity"));
 const AdminBranding     = lazy(() => import("./pages/portal/admin/AdminBranding"));
 const AdminSiteContent  = lazy(() => import("./pages/portal/admin/AdminSiteContent"));
 const AdminBackup       = lazy(() => import("./pages/portal/admin/AdminBackup"));
@@ -70,18 +69,17 @@ const AdminServices     = lazy(() => import("./pages/portal/admin/AdminServices"
 const AdminServiceRequests = lazy(() => import("./pages/portal/admin/AdminServiceRequests"));
 const AdminAssets       = lazy(() => import("./pages/portal/admin/AdminAssets"));
 const AdminMikrotik     = lazy(() => import("./pages/portal/admin/AdminMikrotik"));
-const AdminDiagnostics  = lazy(() => import("./pages/portal/admin/AdminDiagnostics"));
 const AdminEmails       = lazy(() => import("./pages/portal/admin/AdminEmails"));
 const AdminArticles     = lazy(() => import("./pages/portal/admin/AdminArticles"));
 const AdminCategories   = lazy(() => import("./pages/portal/admin/AdminCategories"));
-const AdminAuditLog     = lazy(() => import("./pages/portal/admin/AdminAuditLog"));
-const AdminNOC          = lazy(() => import("./pages/portal/admin/AdminNOC"));
+// Operations Center is the single entry point for the operational surfaces and
+// lazy-loads AdminOps / AdminNOC / AdminMonitoring / AdminDiagnostics / AdminSLA /
+// AdminSecurity / AdminAuditLog itself. They are deliberately NOT imported here:
+// importing them at this level is what kept the old standalone routes alive, and
+// two ways into one page is exactly the duplicate-menu problem this removes.
 const AdminNOCCenter    = lazy(() => import("./pages/portal/admin/AdminNOCCenter"));
-const AdminMonitoring   = lazy(() => import("./pages/portal/admin/AdminMonitoring"));
-const AdminOps          = lazy(() => import("./pages/portal/admin/AdminOps"));
 const AdminCreditNotes  = lazy(() => import("./pages/portal/admin/AdminCreditNotes"));
 const AdminTransactions = lazy(() => import("./pages/portal/admin/AdminTransactions"));
-const AdminSLA          = lazy(() => import("./pages/portal/admin/AdminSLA"));
 const AdminOwnerDashboard = lazy(() => import("./pages/portal/admin/AdminOwnerDashboard"));
 const AdminStatusPage   = lazy(() => import("./pages/portal/admin/AdminStatusPage"));
 const AdminMediaLibrary = lazy(() => import("./pages/portal/admin/AdminMediaLibrary"));
@@ -114,9 +112,11 @@ const RouteFallback = () => (
   </div>
 );
 
-// Operations Center composes five role-gated surfaces as tabs, so the route
-// itself admits any staff role and each tab applies its own gate — same rule
-// as the standalone pages, just resolved inside the console.
+// Operations Center composes seven role-gated surfaces as tabs, so the route
+// itself admits any staff role and each tab applies its own gate — the same role
+// list the standalone page used to carry. A role that cannot see a tab also
+// could not open that page before this consolidation, so merging the menus
+// widens nothing. The backend re-checks every endpoint regardless.
 const STAFF_ROLES = ["admin", "support", "finance", "sales", "ticket_only", "creative"];
 
 const AdminNOCCenterRoute = () => {
@@ -206,23 +206,27 @@ function App() {
                   <Route path="virtualization" element={<AdminVirtualization />} />
                   <Route path="mikrotik" element={<AdminMikrotik />} />
                   <Route path="dcim" element={<AdminDCIM />} />
-                  <Route path="diagnostics" element={<AdminDiagnostics />} />
                   <Route path="crm" element={<AdminCRM />} />
                   <Route path="projects" element={<AdminProjects />} />
                   <Route path="content" element={<AdminContent />} />
                   <Route path="followups" element={<AdminFollowups />} />
                   <Route path="documents" element={<AdminDocuments />} />
                   <Route path="integrations" element={<AdminIntegrations />} />
-                  <Route path="security" element={<AdminSecurity />} />
-                  <Route path="audit-log" element={<AdminAuditLog />} />
-                  <Route path="noc" element={<RequireAuth role={["admin", "support"]}><AdminNOC /></RequireAuth>} />
-                  {/* All-in-one console: composes NOC / Monitoring / Security / Audit / SLA as tabs */}
+                  <Route path="security" element={<Navigate to="/portal/admin/operations-center?tab=security" replace />} />
+                  <Route path="audit-log" element={<Navigate to="/portal/admin/operations-center?tab=audit" replace />} />
+                  <Route path="noc" element={<Navigate to="/portal/admin/operations-center?tab=noc" replace />} />
+                  {/* Single operations entry point: Ops / NOC / Monitoring / Diagnostics /
+                      SLA / Security / Audit are tabs here. The old per-surface routes
+                      below stay as redirects so bookmarks and backend-emitted links
+                      (admin_core alerts, ops.py attention rows, dashboard quick link)
+                      keep working instead of 404ing. */}
                   <Route path="operations-center" element={<AdminNOCCenterRoute />} />
-                  <Route path="ops" element={<RequireAuth role={["admin", "support"]}><AdminOps /></RequireAuth>} />
-                  <Route path="monitoring" element={<RequireAuth role={["admin", "support"]}><AdminMonitoring /></RequireAuth>} />
+                  <Route path="ops" element={<Navigate to="/portal/admin/operations-center?tab=overview" replace />} />
+                  <Route path="monitoring" element={<Navigate to="/portal/admin/operations-center?tab=monitoring" replace />} />
+                  <Route path="diagnostics" element={<Navigate to="/portal/admin/operations-center?tab=diagnostics" replace />} />
+                  <Route path="sla" element={<Navigate to="/portal/admin/operations-center?tab=sla" replace />} />
                   <Route path="credit-notes" element={<AdminCreditNotes />} />
                   <Route path="transactions" element={<AdminTransactions />} />
-                  <Route path="sla" element={<AdminSLA />} />
                   <Route path="owner" element={<AdminOwnerDashboard />} />
                   <Route path="status-page" element={<AdminStatusPage />} />
                   <Route path="cve-tracker" element={<AdminCveTracker />} />

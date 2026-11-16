@@ -79,18 +79,18 @@ const ADMIN_NAV_GROUPS = [
     ],
   },
   {
-    // Network Operations consolidates the NOC/monitoring surface that used to be
-    // scattered across Operations. Routes and role guards are unchanged — this
-    // is nav grouping only, so RBAC enforcement still lives in App.js.
+    // One operational entry point. Ops Overview, NOC Monitor, Monitoring,
+    // Diagnostics, SLA & Incidents, Security and Audit Log are tabs inside
+    // Operations Center, not separate sidebar links — seven links that mostly
+    // opened the same console (Operations Center literally rendered NOC Monitor
+    // as its first tab) was the reported duplicate-menu problem.
+    // The role list is unchanged from /operations-center, and each tab keeps the
+    // exact role gate its standalone page had, so nothing widens here. MikroTik
+    // Ops stays separate: it is device configuration, not an operations read-out.
     label: "Network Operations",
     items: [
-      { key: "operations_center", to: "/portal/admin/operations-center", label: "Operations Center", icon: LayoutDashboard, testid: "nav-operations-center", roles: ["admin", "support", "finance", "sales"] },
-      { key: "ops",          to: "/portal/admin/ops",           label: "Ops Overview",  icon: LayoutDashboard, testid: "nav-ops",        roles: ["admin", "support"] },
-      { key: "monitoring",   to: "/portal/admin/monitoring",   label: "Monitoring", icon: Activity,     testid: "nav-monitoring",   roles: ["admin", "support"] },
-      { key: "noc",          to: "/portal/admin/noc",          label: "NOC Monitor",  icon: MonitorCheck,   testid: "nav-noc",          roles: ["admin", "support"] },
+      { key: "operations_center", to: "/portal/admin/operations-center", label: "Operations Center", icon: LayoutDashboard, testid: "nav-operations-center", roles: ["admin", "support", "finance", "sales"], aliasKeys: ["ops", "noc", "monitoring", "diagnostics", "sla", "security", "audit_log"] },
       { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
-      { key: "diagnostics",  to: "/portal/admin/diagnostics",  label: "Diagnostics",  icon: TerminalSquare, testid: "nav-diagnostics",  roles: ["admin", "support"] },
-      { key: "sla",          to: "/portal/admin/sla",          label: "SLA & Incidents", icon: Activity,   testid: "nav-sla",          roles: ["admin", "support", "finance", "sales"] },
     ],
   },
   {
@@ -115,8 +115,10 @@ const ADMIN_NAV_GROUPS = [
     label: "System",
     items: [
       { key: "integrations",  to: "/portal/admin/integrations",  label: "Integrations",   icon: Plug,           testid: "nav-integrations",  roles: ["admin"] },
-      { key: "security",      to: "/portal/admin/security",      label: "Security",       icon: ShieldCheck,    testid: "nav-security",      roles: ["admin"] },
-      { key: "audit_log",     to: "/portal/admin/audit-log",     label: "Audit Log",      icon: History,        testid: "nav-audit-log",     roles: ["admin"] },
+      // Security and Audit Log are tabs inside Operations Center. Keeping them
+      // here as well would recreate the "two menus, one page" problem this
+      // consolidation exists to remove. Their routes still resolve, so links
+      // from backend alerts and the audit trail keep landing correctly.
       { key: "branding",      to: "/portal/admin/branding",      label: "Branding",       icon: ImageIcon,      testid: "nav-branding",      roles: ["admin"] },
       { key: "site_content",  to: "/portal/admin/site-content",  label: "Landing CMS",    icon: Layout,         testid: "nav-site-content",  roles: ["admin"] },
       { key: "jitsi", to: "/portal/admin/jitsi", label: "Jitsi Meet", icon: Video, testid: "nav-jitsi", roles: ["admin"] },
@@ -168,7 +170,13 @@ const PortalLayout = ({ variant = "client" }) => {
       const items = grp.items.filter((it) => {
         if (it.roles && !it.roles.includes(user?.role)) return false;
         if (Array.isArray(user?.menu_keys) && user.menu_keys.length > 0) {
-          return user.menu_keys.includes(it.key);
+          // Operations Center hosts several former top-level menus as tabs, so a
+          // user whose allow-list still names one of those old keys (e.g. "noc")
+          // must keep seeing the console that now contains it. Without the alias
+          // check the merge would silently hide the group for such users. The
+          // plain key comparison stays as the base case.
+          if (user.menu_keys.includes(it.key)) return true;
+          return Array.isArray(it.aliasKeys) && it.aliasKeys.some((k) => user.menu_keys.includes(k));
         }
         return true;
       });

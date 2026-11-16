@@ -16,30 +16,51 @@ const LEVEL_STYLES = {
   info: "border-slate-200 bg-slate-50 text-slate-700",
 };
 
-const AttentionRow = ({ item }) => (
-  <Link
-    to={item.link}
-    data-testid={`ops-attention-${item.area}`}
-    className={`flex items-start gap-3 rounded-xl border p-3 hover:shadow-sm transition-shadow ${
-      LEVEL_STYLES[item.level] || LEVEL_STYLES.info
-    }`}
-  >
-    <div className="mt-0.5">
-      {item.level === "critical" ? (
-        <ShieldAlert className="h-4 w-4" />
-      ) : (
-        <AlertTriangle className="h-4 w-4" />
-      )}
-    </div>
-    <div className="min-w-0 flex-1">
-      <div className="text-sm font-bold text-[#0a2350]">{item.title}</div>
-      <div className="text-xs opacity-80">{item.detail}</div>
-    </div>
-    <ArrowRight className="h-4 w-4 opacity-60" />
-  </Link>
-);
+const AttentionRow = ({ item, onNavigate }) => {
+  const body = (
+    <>
+      <div className="mt-0.5">
+        {item.level === "critical" ? (
+          <ShieldAlert className="h-4 w-4" />
+        ) : (
+          <AlertTriangle className="h-4 w-4" />
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-bold text-[#0a2350]">{item.title}</div>
+        <div className="text-xs opacity-80">{item.detail}</div>
+      </div>
+      <ArrowRight className="h-4 w-4 opacity-60" />
+    </>
+  );
+  const cls = `flex items-start gap-3 rounded-xl border p-3 hover:shadow-sm transition-shadow ${
+    LEVEL_STYLES[item.level] || LEVEL_STYLES.info
+  }`;
+  const testid = `ops-attention-${item.area}`;
 
-const AdminOps = () => {
+  // Inside the console a raw route link would unmount the console and land on a
+  // standalone page. When the parent supplies `onNavigate`, resolve the target
+  // to a console tab first and only fall back to the route for surfaces that
+  // are genuinely not tabs (security, audit).
+  if (onNavigate) {
+    return (
+      <button type="button" onClick={() => onNavigate(item.link)} data-testid={testid} className={`${cls} w-full text-left`}>
+        {body}
+      </button>
+    );
+  }
+  return (
+    <Link to={item.link} data-testid={testid} className={cls}>
+      {body}
+    </Link>
+  );
+};
+
+// `embedded` is set when this page is composed as a tab inside Operations
+// Center: the console owns the title, and the cross-surface link block is
+// replaced by the console's own tabs (routed through `onNavigate`) so a link
+// never throws the operator out of the console.
+const AdminOps = ({ embedded = false, onNavigate } = {}) => {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -73,23 +94,29 @@ const AdminOps = () => {
   const sourceStatus = data?.source_status || {};
   const degraded = Object.keys(sourceStatus);
 
+  const headerActions = (
+    <button
+      type="button"
+      onClick={load}
+      className={btnSecondary}
+      data-testid="ops-refresh"
+      disabled={loading}
+    >
+      <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+    </button>
+  );
+
   return (
-    <div>
-      <PageHeader
-        title="Ops Overview"
-        subtitle="One read-only view across monitoring, NOC, SLA, security, and audit. Every number is aggregated from the owning module — nothing is stored twice."
-        actions={
-          <button
-            type="button"
-            onClick={load}
-            className={btnSecondary}
-            data-testid="ops-refresh"
-            disabled={loading}
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
-          </button>
-        }
-      />
+    <div data-testid="ops-page">
+      {embedded ? (
+        <div className="flex items-center justify-end mb-3">{headerActions}</div>
+      ) : (
+        <PageHeader
+          title="Ops Overview"
+          subtitle="One read-only view across monitoring, NOC, SLA, security, and audit. Every number is aggregated from the owning module — nothing is stored twice."
+          actions={headerActions}
+        />
+      )}
 
       {error && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" data-testid="ops-error">
