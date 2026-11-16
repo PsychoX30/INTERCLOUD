@@ -5,3 +5,9 @@
 # with core.autocrlf=true writes CRLF into the working tree, so the alignment
 # has to be stated here rather than left to each machine's git config.
 *.sh text eol=lf
+
+# Python is run on Linux (prod) but edited on Windows. A CRLF working tree
+# makes `git diff` on prod show the whole file as rewritten, which hides the
+# real change inside 1600+ fake lines — and upload paths that bypass git
+# (scp/upload) write CRLF straight into the prod working tree. Normalise.
+*.py text eol=lf

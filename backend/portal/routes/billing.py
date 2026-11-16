@@ -217,9 +217,13 @@ async def _apply_pending_upgrade(db, inv: dict) -> bool:
 
 @router.put("/admin/invoices/{iid}/status")
 async def admin_update_invoice_status(
-    iid: str, payload: m.InvoiceStatusIn, admin=Depends(get_current_admin)
+    iid: str, payload: m.InvoiceStatusIn, request: Request,
+    admin=Depends(get_current_admin),
 ):
     db = await _get_db()
+    # Capture the prior state so the audit row can prove what actually changed.
+    before = await db.invoices.find_one({"_id": _oid(iid)})
+    prev_status = (before or {}).get("status")
     upd = {"status": payload.status}
     if payload.status == "paid":
         upd["paid_at"] = _now()
@@ -270,6 +274,25 @@ async def admin_update_invoice_status(
     if payload.status == "cancelled" and d.get("status") == "cancelled":
         await _cancel_domain_for_invoice(db, d)
         await _cancel_ssl_for_invoice(db, d)
+
+    # Audit: this route confirms payments, provisions servers, and applies
+    # upgrades. It is money-moving, so every transition must record who did it.
+    # `severity` is warning when funds are recognised, info otherwise.
+    await log_audit(
+        db, actor=admin, action="invoice.status_update", category="billing",
+        target_type="invoice", target_id=str(d["_id"]),
+        target_label=d.get("number") or str(d["_id"]),
+        metadata={
+            "from": prev_status,
+            "to": d.get("status"),
+            "just_paid": just_paid,
+            "total": float(d.get("total") or 0),
+            "payment_method": d.get("payment_method"),
+            "order_id": str(d["order_id"]) if d.get("order_id") else None,
+        },
+        severity="warning" if d.get("status") == "paid" else "info",
+        request=request,
+    )
 
     return await _serialize_invoice(db, d)
 
