@@ -75,7 +75,7 @@ agenthub/agents/youtube/db
 *.deb
 *.dylib
 
-# Database backups (may contain live integration secrets — NEVER commit)
+# Database backups (may contain live integration secrets â€” NEVER commit)
 /backups/
 backups/
 **/*.archive.gz
@@ -130,3 +130,6 @@ backend/.version.json
 /backend/uploads/
 /backend/*.bak.*
 
+# MongoDB data directory, created on the prod host by the local mongod.
+# It never contains source and must not be committed or cleaned.
+/.mongodb/
