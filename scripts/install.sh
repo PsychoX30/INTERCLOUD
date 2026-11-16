@@ -696,7 +696,11 @@ log "Writing /etc/supervisor/conf.d/intercloud-backend.conf"
 cat > /etc/supervisor/conf.d/intercloud-backend.conf <<SUP
 [program:intercloud-backend]
 directory=$APP_DIR/backend
-command=$APP_DIR/backend/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8001 --workers 2
+# Bind loopback only. nginx talks to 127.0.0.1:8001, so nothing is lost, and a
+# bind on 0.0.0.0 would additionally expose the API on every interface in case
+# a firewall rule is ever relaxed. Least privilege: no reachable surface that
+# no consumer needs.
+command=$APP_DIR/backend/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8001 --workers 2
 autostart=true
 autorestart=true
 user=intercloud
