@@ -87,7 +87,11 @@ const ADMIN_NAV_GROUPS = [
     // The role list is unchanged from /operations-center, and each tab keeps the
     // exact role gate its standalone page had, so nothing widens here. MikroTik
     // Ops stays separate: it is device configuration, not an operations read-out.
-    label: "Network Operations",
+    // The label is "Operations" rather than the old "Network Operations" because
+    // the group now holds the merged console plus one device-config page — the
+    // old name described the seven-link shape it no longer has. Frontend-only
+    // string: no API or catalog key changes with it.
+    label: "Operations",
     items: [
       { key: "operations_center", to: "/portal/admin/operations-center", label: "Operations Center", icon: LayoutDashboard, testid: "nav-operations-center", roles: ["admin", "support", "finance", "sales"], aliasKeys: ["ops", "noc", "monitoring", "diagnostics", "sla", "security", "audit_log"] },
       { key: "mikrotik",     to: "/portal/admin/mikrotik",     label: "MikroTik Ops", icon: Network,        testid: "nav-mikrotik",     roles: ["admin", "support"] },
