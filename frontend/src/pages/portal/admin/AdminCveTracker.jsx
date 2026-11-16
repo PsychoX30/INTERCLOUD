@@ -86,12 +86,19 @@ const AdminCveTracker = () => {
 
   const searchCves = useCallback(async () => {
     setPickLoading(true);
+    setErr("");
     try {
       const params = { limit: 20 };
       if (pickQ.trim()) params.q = pickQ.trim();
       if (pickSev) params.severity = pickSev;
       const r = await api.get("/public/cve", { params });
-      setPicks(r.data.items || []);
+      // `/public/cve` menjawab dengan {total, count, results}. Versi lama membaca
+      // `items`, yang tidak pernah ada di respons ini — sehingga `undefined || []`
+      // membuat setiap pencarian tampil "Tidak ada CVE yang cocok" walaupun
+      // backend mengembalikan puluhan ribu hasil. Terima kedua bentuk supaya
+      // perbedaan nama field tidak lagi bisa mematikan panel ini diam-diam.
+      const rows = r.data?.results ?? r.data?.items ?? [];
+      setPicks(Array.isArray(rows) ? rows : []);
     } catch (e) {
       setErr(formatApiError(e));
       setPicks([]);
