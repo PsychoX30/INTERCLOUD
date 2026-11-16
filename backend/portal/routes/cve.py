@@ -302,6 +302,11 @@ async def admin_cve_publish_article(cve_id: str, payload: dict | None = None,
         "status": status,
         "title": title,
         "slug": slug,
-        "url": f"/artikel/{slug}",
+        # Rute publik artikel adalah /articles/<slug> (frontend App.js dan
+        # sitemap CMS memakai bentuk itu). Nilai ini sempat tertulis
+        # "/artikel/<slug>", yang tidak pernah ada sebagai rute — sehingga tautan
+        # "lihat artikel" di panel CVE selalu 404 walaupun artikelnya terbit
+        # dengan benar di /articles/<slug>.
+        "url": f"/articles/{slug}",
         "cve_id": cid,
     }
