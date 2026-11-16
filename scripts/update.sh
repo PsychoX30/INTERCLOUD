@@ -29,12 +29,38 @@
 #       backend is still running the previous process.  Restart it manually as
 #       root/support before declaring the deploy complete.
 #   6 = deploy key missing (see DEPLOY_KEY_DIR).
+#   7 = artifact ownership could not be corrected; the build was NOT attempted
+#       and the live site was left untouched.
 #   On failure NOTHING has been dropped: the backup archive is written before
 #   any git/rebuild step.
 #
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Pastikan artefak build yang bisa ditulis service user SEBELUM build dimulai.
+# 2026-11-16: frontend/build (dan node_modules) tertinggal milik user lain dari
+# build manual yang dijalankan sebagai user berbeda. `npm ci` meneruskannya,
+# sehingga craco menjalankan rmdir pada build/static/css milik user lain,
+# kena EACCES lalu mati - tepat SETELAH react-scripts mengosongkan build/.
+# Situs down sampai ada build berikutnya yang berhasil.
+ensure_euid_ownership() {
+    local p
+    for p in "$APP_DIR/frontend/build" "$APP_DIR/frontend/node_modules" "$APP_DIR/backend/.version.json"; do
+        [[ -e "$p" || -L "$p" ]] || continue
+        if [[ "$(stat -c '%u' "$p" 2>/dev/null || echo 0)" != "${EUID}" ]]; then
+            log "Fixing ownership of $p ($(stat -c '%U:%G' "$p" 2>/dev/null) -> $(id -un))"
+            chown -R "${EUID}:$(id -g)" "$p" 2>/dev/null || {
+                echo "!! cannot chown $p; re-run as root (sudo -u intercloud is not enough)" >&2
+                return 1
+            }
+        fi
+    done
+    # Sisa direktori staging dari build yang terinterupsi.
+    find "$APP_DIR/frontend" -maxdepth 1 -name 'build.stage.*' -user "$(id -u)" \
+        -exec rm -rf {} + 2>/dev/null || true
+    return 0
+}
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/intercloud}"
 BRANCH="${REPO_BRANCH:-main}"
 # Where the GitHub deploy key actually lives. Deliberately OUTSIDE APP_DIR: the
@@ -68,13 +94,21 @@ post_pull() {
     log "Installing Python deps"
     install_python_deps
 
-    log "Installing frontend deps + building production bundle"
+    log "Fixing artifact ownership + building production bundle"
+    # Ownership first: kalau build/ atau node_modules dipegang user lain, build
+    # berikutnya mati di tengah jalan. Lihat komentar ensure_euid_ownership().
+    if ! ensure_euid_ownership; then
+        echo "!! ownership artefak build tidak bisa diperbaiki — build dibatalkan," \
+             "situs TIDAK disentuh" >&2
+        echo "STATUS=ownership-failed OLD=$OLD_SHA NEW=$NEW_SHA BACKUP=$ARCHIVE" >&2
+        return 7
+    fi
     # build_frontend.sh membekukan VERSION ke frontend/src/version.json dan
-    # backend/.version.json SEBELUM build, lalu memverifikasi bahwa index.html
-    # menunjuk bundle yang benar-benar ada. Memanggil npm run build langsung
-    # akan menghasilkan bundle tanpa label versi.
+    # backend/.version.json SEBELUM build, membangun ke direktori staging, lalu
+    # memverifikasi index.html benar-benar menunjuk bundle yang ada di disk
+    # sebelum menukarnya secara atomik ke build/. Build yang gagal tidak
+    # menyentuh build/ yang sedang dilayani nginx.
     bash "$APP_DIR/scripts/build_frontend.sh"
-    cd "$APP_DIR"
 
     log "Restarting backend via supervisor"
     if ! command -v supervisorctl >/dev/null 2>&1; then
