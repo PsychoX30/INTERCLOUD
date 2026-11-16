@@ -382,6 +382,24 @@ async def admin_update_user(uid: str, payload: m.UserUpdateIn, request: Request,
             upd[k] = v
     if payload.assigned_client_ids is not None:
         upd["assigned_client_ids"] = [ObjectId(x) for x in payload.assigned_client_ids]
+
+    # Lock-out guards. Deactivating or demoting the last active admin would leave
+    # the console with nobody able to manage users, and `is_active` is now a real
+    # access gate, so refusing this is the difference between a revoke and an outage.
+    new_role = upd.get("role", existing.get("role"))
+    losing_admin = existing.get("role") == "admin" and new_role != "admin"
+    losing_active = existing.get("is_active") is not False and upd.get("is_active") is False
+    if existing.get("role") == "admin" and (losing_admin or losing_active):
+        remaining = await db.users.count_documents({
+            "role": "admin", "is_active": {"$ne": False},
+            "_id": {"$ne": existing["_id"]},
+        })
+        if remaining == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=("Tidak bisa menonaktifkan atau menurunkan admin aktif terakhir "
+                        "- minimal satu admin aktif harus tersisa."),
+            )
     password_changed = False
     if payload.password:
         upd["password_hash"] = hash_password(payload.password)

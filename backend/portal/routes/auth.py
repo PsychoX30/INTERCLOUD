@@ -99,6 +99,15 @@ async def login(payload: m.LoginIn, request: Request):
                                  reason="invalid_credentials", ip=ip, user_agent=ua,
                                  recaptcha_enabled=bool(recap_doc), recaptcha_score=recap_score)
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    # Deactivated account: `is_active` is exposed as an access lever
+    # (models.UserUpdateIn / users.py), so it has to actually revoke access.
+    # Previously it was stored and surfaced but never consulted here or in
+    # _resolve_user, so a "deactivated" user kept full access indefinitely.
+    if u.get("is_active") is False:
+        await _log_login_attempt(db, email=email, action="login", success=False,
+                                 reason="account_inactive", ip=ip, user_agent=ua,
+                                 recaptcha_enabled=bool(recap_doc), recaptcha_score=recap_score)
+        raise HTTPException(status_code=401, detail="Akun dinonaktifkan")
     if u.get("totp_enabled"):
         from portal import twofa as _tf
         await _log_login_attempt(db, email=email, action="login", success=True, reason="mfa_challenge",
@@ -133,6 +142,8 @@ async def login_2fa(payload: dict, request: Request):
     u = await db.users.find_one({"_id": _oid(uid)})
     if not u or not u.get("totp_enabled"):
         raise HTTPException(status_code=400, detail="2FA tidak aktif untuk akun ini")
+    if u.get("is_active") is False:
+        raise HTTPException(status_code=401, detail="Akun dinonaktifkan")
     code = str(payload.get("code", "")).strip()
     ok = _tf.verify_totp(_tf.decrypt_secret(u["totp_secret"]), code)
     if not ok:

@@ -958,6 +958,16 @@ _SCHEDULED_EVENTS = {
 _TERMINAL_EVENT = "service_suspension"
 _TERMINAL_OFFSET = _SCHEDULED_EVENTS[_TERMINAL_EVENT]
 
+# Single source of truth for the suspension reason string.
+# The reactivation paths (webhook in routes/billing.py, credit note in
+# routes/finance.py) find the suspended services by matching this text with
+# `$regex: "invoice <number> overdue"`, so the wording here MUST keep that
+# substring. It used to be a localized sentence without "overdue", which made
+# every suspension unreachable for reactivation.
+def suspended_reason_for(invoice_number: str) -> str:
+    return (f"invoice {invoice_number} overdue >{_TERMINAL_OFFSET}d "
+            f"(belum dibayar {_TERMINAL_OFFSET} hari setelah jatuh tempo)")
+
 
 async def _sent_today(db, invoice_id: str, event_key: str) -> bool:
     today = datetime.now(timezone.utc).date().isoformat()
@@ -1060,17 +1070,23 @@ async def _suspend_for_invoice(db, inv: dict, user: dict, *, now: datetime) -> i
     query = {"user_id": user["_id"], "status": "active"}
     svc_id = inv.get("service_id")
     if svc_id:
-        query["_id"] = svc_id
+        # `service_id` is stored as a STRING by the renewal sweep
+        # (run_renewal_invoice_sweep: sid = str(svc["_id"])) while `_id` is an
+        # ObjectId, so a raw equality match silently hits nothing and the
+        # service stays `active` forever. Accept either representation.
+        ids = [svc_id]
+        try:
+            ids.append(ObjectId(svc_id))
+        except Exception:
+            pass
+        query["_id"] = {"$in": ids}
 
     targets = [s async for s in db.services.find(query)]
     targets = [s for s in targets if not s.get("suspended_manual")]
     if not targets:
         return 0
 
-    reason = (
-        f"Invoice {inv.get('number', '')} belum dibayar "
-        f"{_TERMINAL_OFFSET} hari setelah jatuh tempo"
-    )
+    reason = suspended_reason_for(inv.get("number", ""))
     ids = [s["_id"] for s in targets]
     await db.services.update_many(
         {"_id": {"$in": ids}},

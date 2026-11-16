@@ -120,6 +120,11 @@ async def _resolve_user(request: Request, creds: HTTPAuthorizationCredentials | 
         raise HTTPException(status_code=401, detail="Invalid token subject")
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # Revoke in-flight access the moment an account is deactivated: without
+    # this, an already-issued token keeps working until it expires (7 days),
+    # so toggling a user off would not actually cut them off.
+    if user.get("is_active") is False:
+        raise HTTPException(status_code=401, detail="Akun dinonaktifkan")
     user["id"] = str(user.pop("_id"))
     user.pop("password_hash", None)
     # Normalize assigned_client_ids to str list

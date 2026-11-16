@@ -780,8 +780,9 @@ async def payment_webhook(provider: str, request: Request):
     reactivated = 0
     if inv:
         import re as _re
+        from portal.emails import suspended_reason_for as _susp_reason
         ors = [{"user_id": inv["user_id"],
-                "suspended_reason": {"$regex": f"invoice {_re.escape(inv_no)} overdue",
+                "suspended_reason": {"$regex": _re.escape(_susp_reason(inv_no)),
                                       "$options": "i"}}]
         if inv.get("service_id"):
             try:

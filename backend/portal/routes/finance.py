@@ -1905,8 +1905,9 @@ async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
     inv_no = invoice.get("number", "")
     reactivated = 0
     import re as _re
+    from portal.emails import suspended_reason_for as _susp_reason
     ors = [{"user_id": invoice["user_id"],
-            "suspended_reason": {"$regex": f"invoice {_re.escape(inv_no)} overdue",
+            "suspended_reason": {"$regex": _re.escape(_susp_reason(inv_no)),
                                   "$options": "i"}}]
     if invoice.get("service_id"):
         try:
