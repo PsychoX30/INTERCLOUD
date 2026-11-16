@@ -188,29 +188,41 @@ ADMIN_MENU_CATALOG = [
     {"key": "service_requests","label": "Termination Requests","group": "Catalog",     "default_roles": ["admin", "support", "sales"]},
     {"key": "users",           "label": "Users / Clients",  "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "tickets",         "label": "Tickets",          "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support", "ticket_only"]},
-    {"key": "mail",            "label": "Webmail",          "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support"]},
+    {"key": "mail",            "label": "Webmail",          "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support", "ticket_only", "creative"]},
     {"key": "email",           "label": "Email Automation", "group": "Support & CRM",  "default_roles": ["admin"]},
     {"key": "articles",        "label": "Articles",         "group": "Support & CRM",  "default_roles": ["admin", "sales", "finance", "support", "creative"]},
     {"key": "provisioning",    "label": "Provisioning",     "group": "Operations",     "default_roles": ["admin", "support"]},
+    {"key": "virtualization",  "label": "Virtualization",   "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "mikrotik",        "label": "MikroTik Ops",     "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "dcim",            "label": "DCIM & IPAM",      "group": "Operations",     "default_roles": ["admin", "support"]},
+    {"key": "domains",         "label": "Domain Management","group": "Operations",     "default_roles": ["admin", "support"]},
+    {"key": "ssl",             "label": "SSL Orders",       "group": "Operations",     "default_roles": ["admin", "support"]},
     {"key": "operations_center","label": "Operations Center","group": "Operations",     "default_roles": ["admin", "support", "finance", "sales"]},
     {"key": "crm",             "label": "Customer DB (CRM)","group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "projects",        "label": "Project Tracker",  "group": "Business",       "default_roles": ["admin", "sales", "support"]},
     {"key": "content",         "label": "Content Planner",  "group": "Business",       "default_roles": ["admin", "sales", "finance", "support", "creative"]},
     {"key": "followups",       "label": "Follow-ups",       "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
-    {"key": "documents",       "label": "Documents",        "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
+    {"key": "documents",       "label": "Documents",        "group": "Business",       "default_roles": ["admin", "sales", "finance", "support", "ticket_only", "creative"]},
     {"key": "integrations",    "label": "Integrations",     "group": "System",         "default_roles": ["admin"]},
     {"key": "credit_notes",    "label": "Credit Notes",     "group": "Sales & Billing", "default_roles": ["admin", "finance"]},
     {"key": "owner_dashboard", "label": "Executive Overview","group": "Overview",       "default_roles": ["admin", "owner"]},
-    {"key": "media_library",   "label": "Media Library",    "group": "Creative",       "default_roles": ["admin", "creative"]},
-    {"key": "content_calendar","label": "Content Calendar", "group": "Creative",       "default_roles": ["admin", "creative"]},
+    {"key": "media_library",   "label": "Media Library",    "group": "Creative",       "default_roles": ["admin", "sales", "finance", "support", "ticket_only", "creative"]},
+    {"key": "content_calendar","label": "Content Calendar", "group": "Creative",       "default_roles": ["admin", "sales", "finance", "support", "ticket_only", "creative"]},
     {"key": "branding",        "label": "Branding",         "group": "System",         "default_roles": ["admin"]},
     {"key": "site_content",    "label": "Landing CMS",      "group": "System",         "default_roles": ["admin"]},
     {"key": "backup",          "label": "Backup & Restore", "group": "System",         "default_roles": ["admin"]},
     {"key": "status_page",     "label": "Public Status Page", "group": "System",       "default_roles": ["admin"]},
+    {"key": "cve_tracker",     "label": "CVE Tracker",      "group": "System",         "default_roles": ["admin", "support"]},
+    {"key": "jitsi",           "label": "Jitsi Meet",       "group": "System",         "default_roles": ["admin"]},
     {"key": "form_builder",    "label": "Form Builder",     "group": "Creative",       "default_roles": ["admin", "creative", "sales"]},
 ]
+
+# Every entry above must also exist as a sidebar item in PortalLayout.jsx, and the
+# two role lists must agree. A menu the sidebar renders but the catalog omits has
+# no key to tick in the Admin User Access modal, so it can never be granted; and
+# because `menu_keys` is an allow-list, any user who is customised at all then
+# loses that menu with no way to get it back. test_operations_center_contract
+# enforces the parity in both directions.
 
 # Surfaces that Operations Center hosts as tabs, kept in the catalog so a user
 # who already has one of these keys in an allow-list does not lose the console.

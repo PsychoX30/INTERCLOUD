@@ -18,11 +18,16 @@ The contract now is:
 * the composed pages accept ``embedded`` and drop their own ``<PageHeader>``,
   which is the actual cause of "Operations Center and NOC Monitor look identical",
 * the ops read-model stays read-only and its attention links point at console
-  tabs the caller's role can open.
+  tabs the caller's role can open,
+* every menu the sidebar can render is also present in the access catalog, and
+  the catalog's ``default_roles`` agrees with the nav role gate. A menu the nav
+  renders but the catalog omits cannot be granted *at all*, because the access
+  modal builds its checkboxes from the catalog — there is no key to tick.
 
 AST/string level only: no app import, no network, no DB.
 """
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path("/home/support/INTERCLOUD")
@@ -369,3 +374,81 @@ def test_access_modal_does_not_render_tab_keys_as_checkboxes():
     modal = (ADMIN_DIR / "AdminUsers.jsx").read_text()
     assert 'm.kind === "tab"' in modal
     assert '(m.group || "").startsWith("_")' in modal
+
+
+# ---------------------------------------------------------------------------
+# Sidebar / access-catalog parity
+#
+# The access modal builds its checkboxes FROM the catalog. So a menu the sidebar
+# can render but the catalog omits has no key to tick — the admin literally
+# cannot grant it, and `menu_keys` (an allow-list) then hides it forever for any
+# user who is customised at all. Five menus were in that state: cve_tracker,
+# domains, jitsi, ssl, virtualization.
+# ---------------------------------------------------------------------------
+_NAV_ENTRY_RE = re.compile(
+    r'\{\s*key:\s*"(?P<key>[^"]+)",\s*to:\s*"(?P<to>[^"]+)",\s*'
+    r'label:\s*"(?P<label>[^"]+)"[^\n]*?roles:\s*\[(?P<roles>[^\]]*)\]'
+)
+
+
+def _nav_entries() -> dict:
+    """key -> {to, label, roles} for every admin sidebar item."""
+    entries = {}
+    for m in _NAV_ENTRY_RE.finditer(LAYOUT):
+        roles = [r.strip().strip('"') for r in m.group("roles").split(",") if r.strip()]
+        entries[m.group("key")] = {
+            "to": m.group("to"),
+            "label": m.group("label"),
+            "roles": roles,
+        }
+    return entries
+
+
+def test_sidebar_parse_is_not_silently_empty():
+    """Guards the parser itself: a refactor of PortalLayout must not turn the
+    parity checks below into a vacuous pass."""
+    nav = _nav_entries()
+    assert len(nav) > 30, f"parsed only {len(nav)} sidebar entries — parser drifted"
+    assert "operations_center" in nav
+
+
+def test_every_sidebar_menu_is_grantable_from_the_access_catalog():
+    """A nav item with no catalog entry can never be granted to anyone."""
+    catalog_keys = {e["key"] for e in _menu_catalog_entries() if e.get("kind") != "tab"}
+    orphans = sorted(set(_nav_entries()) - catalog_keys)
+    assert not orphans, (
+        "sidebar menus missing from ADMIN_MENU_CATALOG (cannot be granted, and "
+        f"`menu_keys` will hide them for every customised user): {orphans}"
+    )
+
+
+def test_catalog_default_roles_agree_with_the_sidebar_gate():
+    """`default_roles` is what the modal pre-ticks and what the backend falls back
+    to. If it names a role the sidebar does not render the item for, the catalog
+    promises access that does not exist; if it omits one, the item silently
+    disappears for that role once a user is customised."""
+    catalog = {e["key"]: e for e in _menu_catalog_entries() if e.get("kind") != "tab"}
+    nav = _nav_entries()
+    mismatches = []
+    for key, entry in catalog.items():
+        if key not in nav:
+            continue
+        promised = set(entry.get("default_roles") or [])
+        rendered = set(nav[key]["roles"])
+        if promised != rendered:
+            mismatches.append(
+                f"{key}: catalog-only={sorted(promised - rendered)} "
+                f"nav-only={sorted(rendered - promised)}"
+            )
+    assert not mismatches, "catalog/nav role drift:\n  " + "\n  ".join(mismatches)
+
+
+def test_catalog_has_no_key_that_resolves_to_nothing():
+    """The reverse direction: a grantable key with no nav entry and no console tab
+    is a checkbox that does nothing."""
+    nav = _nav_entries()
+    dangling = sorted(
+        e["key"] for e in _menu_catalog_entries()
+        if e.get("kind") != "tab" and e["key"] not in nav
+    )
+    assert not dangling, f"catalog menus with no sidebar entry: {dangling}"
