@@ -1136,6 +1136,161 @@ async def _suspend_for_invoice(db, inv: dict, user: dict, *, now: datetime) -> i
 # ============================================================
 _CYCLE_MONTHS = {"monthly": 1, "quarterly": 3, "semiannual": 6, "annual": 12}
 
+# ============================================================
+# Stranded-service reconciliation
+# ============================================================
+# A service is created with `status = "pending"` whenever automated
+# provisioning did not complete (provision.py:586). Categories that always need
+# NOC/DC work — dedicated, colocation, interconnect, firewall, lease — and any
+# hosting order whose WHM server is unreachable land there and stay there:
+#
+#   * `run_renewal_invoice_sweep` filters `status == "active"` → never billed
+#   * `_suspend_for_invoice` filters `status == "active"`   → never suspended
+#   * no scheduler job promotes `pending` → `active`
+#
+# Net effect: the client pays once, gets a dashboard entry, and is then billed
+# nothing forever — the service neither earns revenue nor expires. That is the
+# opposite of "no service may still be active while overdue": it is worse,
+# because an overdue service is at least visible.
+#
+# The rule below is deliberately conservative. A stuck `pending` service is only
+# promoted when ALL of these hold:
+#
+#   1. its `start_date` is in the past (it was meant to start), and
+#   2. its order is not cancelled/rejected (the client did not back out), and
+#   3. a PAID invoice exists for it (money actually changed hands).
+#
+# Condition 3 is the guard that stops this from billing anyone we never
+# collected from. Anything failing a condition is left untouched and reported as
+# skipped, never silently rewritten.
+_STRANDED_BLOCKED_ORDER_STATUS = ("cancelled", "rejected")
+_STRANDED_MAX_PROMOTIONS = 200      # hard ceiling per sweep, bounds a bad rule
+
+
+async def run_stranded_service_sweep(db, *, now: Optional[datetime] = None) -> dict:
+    """Promote paid-but-never-activated services so billing can reach them.
+
+    Idempotent: once a service is `active` it no longer matches the query, so a
+    second run promotes nothing. Every promotion writes an audit row and a
+    client notification, because a status flip that changes what someone is
+    billed must be explainable afterwards.
+    """
+    now = now or datetime.now(timezone.utc)
+    today = now.date()
+    promoted, skipped, errors = 0, 0, 0
+    details: list[dict] = []
+
+    cursor = db.services.find({"status": "pending"})
+    async for svc in cursor:
+        if promoted >= _STRANDED_MAX_PROMOTIONS:
+            break
+        sid = svc["_id"]
+
+        # 1. it was supposed to have started
+        start = (svc.get("start_date") or "")[:10]
+        try:
+            started = datetime.strptime(start, "%Y-%m-%d").date() <= today
+        except Exception:
+            started = False
+        if not started:
+            skipped += 1
+            continue
+
+        # 2. the order must not have been abandoned
+        order = None
+        oid = svc.get("order_id")
+        if oid:
+            try:
+                order = await db.orders.find_one({"_id": ObjectId(str(oid))})
+            except Exception:
+                order = None
+        if order and (order.get("status") in _STRANDED_BLOCKED_ORDER_STATUS):
+            skipped += 1
+            continue
+
+        # 3. someone actually paid
+        sid_variants = [str(sid), sid]
+        paid = await db.invoices.find_one({
+            "status": "paid",
+            "$or": [{"service_id": {"$in": sid_variants}},
+                    {"_id": (order or {}).get("invoice_id")}],
+        })
+        if not paid:
+            skipped += 1
+            continue
+
+        # Promote, and seed a renewal date if the old one is stale so the
+        # renewal sweep picks the service up on its next tick instead of
+        # immediately generating a backlog of missed periods.
+        nr = (svc.get("next_renewal") or "")[:10]
+        updates = {
+            "status": "active",
+            "activated_at": now.isoformat(),
+            "activated_reason": "stranded_pending_paid_reconciled",
+            "activated_order_id": str(oid) if oid else None,
+        }
+        # A stranded service is already overdue, so it must be billed NOW, not
+        # in 30 days. Seeding today makes the next renewal sweep (minute :20)
+        # pick it up immediately and raise exactly one invoice for the period
+        # that just elapsed.
+        #
+        # The renewal sweep advances `next_renewal` after inserting, so this
+        # seeds once and never loops. `stranded_gap_detected` keeps the original
+        # date for the record; nothing is back-billed silently.
+        try:
+            due = datetime.strptime(nr, "%Y-%m-%d").date() if nr else None
+        except Exception:
+            due = None
+        if due is None or due < today:
+            updates["next_renewal"] = today.isoformat()
+            updates["stranded_gap_detected"] = nr or ""
+
+        try:
+            await db.services.update_one({"_id": sid}, {"$set": updates})
+        except Exception:
+            log.exception(f"[stranded] promotion failed for service {sid}")
+            errors += 1
+            continue
+
+        promoted += 1
+        details.append({"service_id": str(sid),
+                        "next_renewal": updates.get("next_renewal"),
+                        "was_due": nr or None})
+
+        try:
+            await db.audit_logs.insert_one({
+                "action": "service.auto_activate",
+                "actor": "system:stranded_pending_reconcile",
+                "service_id": sid,
+                "order_id": oid,
+                "invoice_id": paid.get("_id"),
+                "invoice_number": paid.get("number", ""),
+                "previous_status": "pending",
+                "reason": "paid order never left pending provisioning",
+                "created_at": now.isoformat(),
+            })
+        except Exception:
+            pass
+
+        user = await db.users.find_one({"_id": svc.get("user_id")}) if svc.get("user_id") else None
+        if user:
+            try:
+                await db.notifications.insert_one({
+                    "user_id": user["_id"],
+                    "type": "service_activated",
+                    "title": "Layanan aktif",
+                    "message": (f"Layanan {svc.get('name', '')} sudah aktif dan "
+                                f"akan diperpanjang otomatis."),
+                    "service_id": str(sid),
+                    "read": False,
+                    "created_at": now.isoformat(),
+                })
+            except Exception:
+                pass
+
+    return {"date": today.isoformat(), "promoted": promoted,
+            "skipped": skipped, "errors": errors, "details": details}
+
 
 def _add_months(date_str: str, months: int) -> str:
     """Advance an ISO date by N calendar months, clamping the day
@@ -2996,6 +3151,17 @@ def start_scheduler(db):
         "date",
         run_date=datetime.now(timezone.utc) + timedelta(seconds=20),
         id="job:renewal:startup",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Stranded-service reconciliation - hourly at :35. Runs AFTER the renewal
+    # sweep (:20) so a service promoted here is billed on the NEXT tick rather
+    # than the same one, keeping the two jobs independently observable.
+    sched.add_job(
+        _leased("stranded", lambda: run_stranded_service_sweep(db)),
+        CronTrigger(minute=35),
+        id="job:stranded",
         max_instances=1,
         coalesce=True,
     )
