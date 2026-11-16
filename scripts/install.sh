@@ -693,6 +693,33 @@ fi
 # 8. supervisor — backend uvicorn only (frontend is static)
 # ------------------------------------------------------------------
 log "Writing /etc/supervisor/conf.d/intercloud-backend.conf"
+
+# This file is regenerated wholesale on every run, so anything appended to the
+# `environment=` line by an operator (or by a later step) would be silently
+# erased — the process comes back up without that variable and no error is
+# printed anywhere. The one that actually exists today is JITSI_APP_SECRET.
+#
+# Don't guess the variable by name: carry over every extra KEY=VALUE that the
+# live conf declares beyond PATH, then re-emit it. Superset-preserving means a
+# future operator-added secret survives a re-install too.
+SUP_EXTRA_ENV=""
+if [[ -f /etc/supervisor/conf.d/intercloud-backend.conf ]]; then
+  LIVE_ENV_LINE="$(grep -m1 '^environment=' /etc/supervisor/conf.d/intercloud-backend.conf || true)"
+  if [[ -n "$LIVE_ENV_LINE" ]]; then
+    # Split on commas; keep every pair whose key is not PATH.
+    # `printf '..\n'` matters: without the trailing newline `read` sees EOF on
+    # the only line and the loop body never runs, silently preserving nothing.
+    while IFS= read -r pair; do
+      key="${pair%%=*}"
+      [[ "$key" == "PATH" || -z "$key" ]] && continue
+      SUP_EXTRA_ENV+=",${pair}"
+    done < <(printf '%s\n' "${LIVE_ENV_LINE#environment=}" | tr ',' '\n')
+  fi
+fi
+if [[ -n "$SUP_EXTRA_ENV" ]]; then
+  log "Preserving extra supervisor env from the existing conf:${SUP_EXTRA_ENV%%=*},..."
+fi
+
 cat > /etc/supervisor/conf.d/intercloud-backend.conf <<SUP
 [program:intercloud-backend]
 directory=$APP_DIR/backend
@@ -704,7 +731,7 @@ command=$APP_DIR/backend/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 80
 autostart=true
 autorestart=true
 user=intercloud
-environment=PATH="$APP_DIR/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+environment=PATH="$APP_DIR/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"$SUP_EXTRA_ENV
 stdout_logfile=/var/log/intercloud-backend.out.log
 stderr_logfile=/var/log/intercloud-backend.err.log
 stopasgroup=true
