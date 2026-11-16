@@ -117,17 +117,21 @@ post_pull() {
         return 5
     fi
 
-    # The production service user cannot access the root-owned Supervisor
-    # socket and must not be prompted for an interactive sudo password here.
-    # Run the restart directly only when this script is already root; otherwise
-    # fail visibly so the caller can restart it through the privileged deploy
-    # step instead of silently serving the previous backend process.
+    # The production service user cannot reach the root-owned Supervisor socket.
+    # `sudo -n` only: never prompt for a password inside an unattended deploy -
+    # a prompt with no tty would hang or fail after the code is already live,
+    # leaving the old backend process serving the new tree.
+    # The narrow rule lives in /etc/sudoers.d/supervisor-restart-backend and
+    # grants exactly this one command, nothing else.
     if [[ "${EUID}" -eq 0 ]]; then
         if ! supervisorctl restart intercloud-backend; then
             echo "!! Supervisor restart failed — backend may still serve the old code" >&2
             echo "STATUS=restart-required OLD=$OLD_SHA NEW=$NEW_SHA BACKUP=$ARCHIVE" >&2
             return 5
         fi
+    elif [[ "${ALLOW_SUDO_RESTART:-1}" == "1" ]] \
+         && sudo -n /usr/bin/supervisorctl restart intercloud-backend 2>/dev/null; then
+        log "Backend restarted via narrow sudoers rule"
     else
         echo "!! Cannot restart Supervisor as $(id -un): root-owned Supervisor socket" >&2
         echo "!! Restart intercloud-backend as root/support before declaring deploy complete" >&2
