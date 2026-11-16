@@ -441,6 +441,32 @@ async def admin_update_order_status(
                 "at": _now(), "step": f"invoice_{new_status}",
                 "message": f"Invoice {inv.get('number', '')} ditandai {new_status} karena order ditolak."}}})
             d = await db.orders.find_one({"_id": d["_id"]})
+    # Reject: service tertaut juga harus ditutup.
+    #
+    # Dulu di sini hanya invoice yang ditutup. Service-nya dibiarkan hidup,
+    # sehingga order yang ditolak meninggalkan baris "hantu" di dashboard klien
+    # yang tidak pernah diprovision dan tidak akan pernah ditagih - ditemukan
+    # satu di produksi, menganggur 51 hari setelah invoicenya di-refund.
+    #
+    # Sengaja TIDAK bergantung pada `invoice_id`: order tanpa invoice tetap
+    # bisa punya service, dan menaruhnya di dalam blok invoice di atas akan
+    # melewatkan kasus itu.
+    if payload.status == "rejected" and d and d.get("service_id"):
+        svc = await db.services.find_one({"_id": d["service_id"]})
+        if svc and svc.get("status") != "terminated":
+            await db.services.update_one(
+                {"_id": svc["_id"]},
+                {"$set": {
+                    "status": "terminated",
+                    "terminated_at": _now(),
+                    "terminated_reason": "Order ditolak admin",
+                    "auto_renew": False,
+                }},
+            )
+            await db.orders.update_one({"_id": d["_id"]}, {"$push": {"provision_log": {
+                "at": _now(), "step": "service_terminated_on_reject",
+                "message": "Service ditutup karena order ditolak."}}})
+            d = await db.orders.find_one({"_id": d["_id"]})
     return _serialize_order(d)
 
 
