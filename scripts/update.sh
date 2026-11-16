@@ -24,10 +24,15 @@
 #
 # Exit code:
 #   0 = success/noop, 2 = backup failed, 3 = dirty tree, 4 = no git remote.
-#   5 = build/deps complete but Supervisor restart was skipped (non-root user
-#       cannot access the root-owned socket) — the source is deployed but the
-#       backend is still running the previous process.  Restart it manually as
-#       root/support before declaring the deploy complete.
+#   5 = build/deps complete but the Supervisor restart did not happen. When the
+#       deploy user holds the narrow rule in
+#       /etc/sudoers.d/supervisor-restart-backend (only
+#       `supervisorctl restart intercloud-backend`), the restart is performed
+#       with `sudo -n` and this code is not reached. Exit 5 means the rule is
+#       absent or the restart genuinely failed: the source is deployed but the
+#       backend still runs the previous process, so restart it as root/support
+#       before declaring the deploy complete. `ALLOW_SUDO_RESTART=0` forces
+#       this path deliberately.
 #   6 = deploy key missing (see DEPLOY_KEY_DIR).
 #   7 = artifact ownership could not be corrected; the build was NOT attempted
 #       and the live site was left untouched.
