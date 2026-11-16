@@ -161,22 +161,35 @@ def _sane_str(v, limit=240):
 
 
 LIST_SPEC = {
-    # name            max_items  fields
-    "services":        (24,  ("icon", "title", "desc", "bullets", "start_price", "href")),
-    "testimonials":    (12,  ("quote", "name", "role", "rating", "avatar")),
-    "partners":        (40,  ("name", "domain", "logo")),
-    "stats":           (8,   ("value", "label")),
-    "hero_terms":      (12,  ("text",)),
-    "footer_links":    (10,  ("group", "items")),
+    # name            max_items  fields: (name, kind) where kind is
+    #                            "i18n" | "str" | "num" | "i18n_list" | "links"
+    "services":        (24,  (("icon", "str"), ("title", "i18n"), ("desc", "i18n"),
+                              ("bullets", "i18n_list"), ("start_price", "str"),
+                              ("href", "str"))),
+    "testimonials":    (12,  (("quote", "i18n"), ("name", "str"), ("role", "i18n"),
+                              ("rating", "num"), ("avatar", "str"))),
+    "partners":        (40,  (("name", "str"), ("domain", "str"), ("logo", "str"))),
+    "stats":           (8,   (("value", "str"), ("label", "i18n"))),
+    "hero_terms":      (12,  (("text", "i18n"),)),
+    "footer_links":    (10,  (("group", "i18n"), ("items", "links"))),
 }
+
+# Kinds whose presence makes an entry worth rendering: localized text, a list,
+# or a scalar the card renders directly. An entry carrying only a group header
+# (no items) is dropped.
+_TEXT_KINDS = ("i18n", "i18n_list", "links")
+# Scalars that are meaningful on their own (a partner name, a stat value). A
+# bare `href`/`icon`/`avatar` is decoration and does not qualify an entry.
+_IDENTIFYING_SCALARS = ("name", "domain", "logo", "value", "start_price")
 
 
 def _clean_landing_lists(raw) -> dict:
     """Normalise the `lists` field from a CMS POST.
 
     Unknown list keys are dropped. Each list is capped so a runaway payload
-    cannot blow the doc size. Entry shape is validated per LIST_SPEC; entries
-    that carry no usable text are discarded rather than rendered as blanks.
+    cannot blow the doc size. Field type comes from LIST_SPEC so a field can
+    never be silently skipped. Entries with no usable text are discarded rather
+    than rendered as blanks.
     """
     if not isinstance(raw, dict):
         return {key: [] for key in LIST_SPEC}
@@ -192,22 +205,35 @@ def _clean_landing_lists(raw) -> dict:
             if not isinstance(row, dict):
                 continue
             entry = {}
-            for f in fields:
-                if f in ("title", "desc", "role", "label", "group", "text"):
-                    v = _sane_id(row.get(f))
+            has_text = False
+            for fname, kind in fields:
+                if kind == "i18n":
+                    v = _sane_id(row.get(fname))
                     if v:
-                        entry[f] = v
-                elif f == "bullets":
-                    bl = row.get(f)
-                    if isinstance(bl, list):
-                        items = [x for x in (_sane_id(b) for b in bl) if x][:12]
+                        entry[fname] = v
+                        has_text = True
+                elif kind == "str":
+                    v = _sane_str(row.get(fname), 300)
+                    if v:
+                        entry[fname] = v
+                        if fname in _IDENTIFYING_SCALARS:
+                            has_text = True
+                elif kind == "num":
+                    v = row.get(fname)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 5:
+                        entry[fname] = int(v)
+                elif kind == "i18n_list":
+                    lst = row.get(fname)
+                    if isinstance(lst, list):
+                        items = [x for x in (_sane_id(b) for b in lst) if x][:12]
                         if items:
-                            entry[f] = items
-                elif f == "items":
-                    il = row.get(f)
-                    if isinstance(il, list):
+                            entry[fname] = items
+                            has_text = True
+                elif kind == "links":
+                    lst = row.get(fname)
+                    if isinstance(lst, list):
                         items = []
-                        for it in il[:20]:
+                        for it in lst[:20]:
                             if not isinstance(it, dict):
                                 continue
                             lbl = _sane_id(it.get("label"))
@@ -215,16 +241,9 @@ def _clean_landing_lists(raw) -> dict:
                             if lbl and href:
                                 items.append({"label": lbl, "href": href})
                         if items:
-                            entry[f] = items
-                elif f == "rating":
-                    r = row.get(f)
-                    if isinstance(r, (int, float)) and 0 <= r <= 5:
-                        entry[f] = int(r)
-                else:  # icon / start_price / href / name / domain / logo / avatar / value
-                    v = _sane_str(row.get(f), 300)
-                    if v:
-                        entry[f] = v
-            if entry:
+                            entry[fname] = items
+                            has_text = True
+            if has_text:
                 clean_rows.append(entry)
         out[name] = clean_rows
     return out
