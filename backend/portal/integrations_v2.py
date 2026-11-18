@@ -1155,6 +1155,12 @@ class GoFlow2Client:
             # call; without a watermark those overlaps double-count.
             "time_received_ns": int(record.get("time_received_ns")
                                     or record.get("time_flow_start_ns") or 0),
+            # The exporter's own datagram counter. Kept because the timestamp
+            # above is not always usable: on 2026-11-18 `time_received_ns` was
+            # observed frozen for 120 s of wall clock while this counter
+            # advanced 1724601728 -> 1724601851. It is the only dedup key that
+            # survives a broken exporter clock.
+            "sequence_num": int(record.get("sequence_num") or 0),
         }
 
     # Production writes ~4.3 MB/s (~4,400 flows/s, ~987 B/record) and logrotate
@@ -1271,6 +1277,25 @@ class GoFlow2Client:
         batch_pps = total_packets / span_s if span_s > 0 else 0.0
         batch_bps = total_bytes * 8 / span_s if span_s > 0 else 0.0
 
+        # File age is NOT data age, and the two can disagree in both
+        # directions. Measured on production 2026-11-18: the collector held a
+        # 30-hour backlog, resumed, and began flushing it - the file grew
+        # 135 KB / 8 s (mtime = now) while every record carried a receive stamp
+        # 47 hours old. The opposite also happens: `time_received_ns` was then
+        # observed frozen at 2026-11-16 06:58:13 for 120 s of wall clock while
+        # `sequence_num` advanced 1724601728 -> 1724601851 over 1,745 records,
+        # i.e. live datagrams with broken timestamps. Because neither clock is
+        # trustworthy on its own, liveness stays a FILE-clock verdict (it has
+        # not lied yet) and the record clock is reported, never enforced:
+        # `data_age_s` exists so callers can tell "traffic is fresh" apart from
+        # "the source is stamping in the past", and a broken source cannot take
+        # the whole NOC view down with it.
+        data_age_s = None
+        clock_skew_s = None
+        if observed_ns:
+            data_age_s = _time.time() - max(observed_ns) / 1_000_000_000
+            clock_skew_s = data_age_s - age_s
+
         return {
             "ok": True,
             "flow_count": len(rows),
@@ -1282,6 +1307,8 @@ class GoFlow2Client:
             "min_span_applied": span_s == float(min_span_s),
             "stale": stale,
             "file_age_s": round(age_s, 1),
+            "data_age_s": None if data_age_s is None else round(data_age_s, 1),
+            "clock_skew_s": None if clock_skew_s is None else round(clock_skew_s, 1),
             "file_size": size,
         }
 

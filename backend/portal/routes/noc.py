@@ -389,6 +389,15 @@ _SANKEY_BUCKET_S = 10.0         # one bucket per collector tick
 # the difference between "diagram lost its lines" and a stable topology view.
 _SANKEY_KEEP_BUCKETS = 12       # 12 x 10 s = 120 s
 _SANKEY_LAST_NS = 0             # watermark: ignore records already counted
+# Second watermark, used when the exporter's wall clock cannot be trusted.
+# `sequence_num` is a datagram counter, so it keeps advancing through a frozen
+# or skewed timestamp (measured in production 2026-11-18).
+_SANKEY_LAST_SEQ = 0
+# How far an export stamp may sit from server time and still be trusted to key
+# a bucket. Timestamps further off than this mean the exporter clock is broken
+# (WIB-vs-UTC off-by-7h has been observed on this router), and bucketing by such
+# a stamp would collapse every observation into a single bucket.
+_SANKEY_CLOCK_TOLERANCE_S = 900.0
 
 # NOTE: eviction must be by bucket COUNT, never by wall clock. This router's
 # export timestamps sit ~7.7 h away from the server's clock (documented in
@@ -423,34 +432,80 @@ def _flow_bps(rec: dict) -> float:
 
 def _rolling_top_links(rows: list, limit: int, now: Optional[float] = None) -> tuple[list, dict]:
     """Fold a peeked batch into the rolling accumulator; return top links."""
-    global _SANKEY_LAST_NS
+    global _SANKEY_LAST_NS, _SANKEY_LAST_SEQ
     import time as _time
 
     now = _time.time() if now is None else now
     newest = _SANKEY_LAST_NS
     fresh: dict = {}
     seen = 0
+    # Two independent dedup keys, because neither is trustworthy alone.
+    #
+    # `time_received_ns` is the natural watermark, but production proved it can
+    # be BROKEN: measured 2026-11-18, it stayed frozen at 2026-11-16 06:58:13
+    # for 120 s of wall clock while `sequence_num` advanced 1724601728 ->
+    # 1724601851 across 1,745 records. With a frozen clock every re-read record
+    # compares <= the watermark, so the second call folded 0 rows and the
+    # diagram froze on its first snapshot - while the API still answered
+    # source="goflow2", live=True, stale=False. Silent, and the worst kind:
+    # a stale topology that looks healthy.
+    #
+    # `sequence_num` is the exporter's own datagram counter, so it survives a
+    # broken wall clock. It is NOT a total order (records arrive interleaved per
+    # datagram), so it is used as a coarse floor.
+    #
+    # WHICH key is in charge is decided by CLOCK SANITY, never by whether the
+    # batch looks like an overlap. An earlier version switched keys only when
+    # the batch's minimum sequence was <= the stored one; a batch consisting
+    # entirely of new records then took the stamp path and froze again (observed
+    # as the fold pattern 8102, 0, 0, 0, 0). Decide once, up front, from the
+    # data itself: if the batch's newest stamp sits near wall clock the clock is
+    # usable, otherwise it is not and the counter governs.
+    stamps_ns = [int(rec.get("time_received_ns") or 0) for rec in rows]
+    stamps_ns = [t for t in stamps_ns if t > 0]
+    seqs_in_batch = [int(rec.get("sequence_num") or 0) for rec in rows]
+    seqs_in_batch = [s for s in seqs_in_batch if s > 0]
+    batch_max_seq = max(seqs_in_batch) if seqs_in_batch else 0
+    # Judge the clock by the OLDEST stamp in the batch: if any record is
+    # implausibly far from wall clock, the source clock is not trustworthy and
+    # the counter governs. Using the newest stamp would let one fresh record
+    # mask a source that is mostly stamping nonsense.
+    clock_ok = (bool(stamps_ns)
+                and abs(now - min(stamps_ns) / 1e9) <= _SANKEY_CLOCK_TOLERANCE_S)
+    use_seq = bool(seqs_in_batch) and not clock_ok
+
     for rec in rows:
         src = (rec.get("src_address") or "").split("/")[0]
         dst = (rec.get("dst_address") or "").split("/")[0]
         if not src or not dst or src == dst:
             continue
         ts_ns = int(rec.get("time_received_ns") or 0)
-        # peek() re-reads an overlapping tail, so anything at or below the
-        # watermark was already accumulated on a previous call.
-        if ts_ns and ts_ns <= _SANKEY_LAST_NS:
+        seq = int(rec.get("sequence_num") or 0)
+        # peek() re-reads an overlapping tail, so anything already accumulated
+        # on a previous call must be skipped - by the counter when the clock is
+        # untrustworthy, by the stamp otherwise.
+        if use_seq:
+            if seq and seq <= _SANKEY_LAST_SEQ:
+                continue
+        elif ts_ns and ts_ns <= _SANKEY_LAST_NS:
             continue
         if ts_ns > newest:
             newest = ts_ns
         bps = _flow_bps(rec)
         if bps <= 0:
             continue
-        bucket = round((ts_ns / 1e9 if ts_ns else now) / _SANKEY_BUCKET_S) * _SANKEY_BUCKET_S
+        # Bucket by the export stamp only when it tracks wall clock; a stamp
+        # stuck hours in the past would pile every observation into one bucket
+        # and defeat the rolling average.
+        bucket = round((ts_ns / 1e9 if clock_ok and ts_ns else now)
+                       / _SANKEY_BUCKET_S) * _SANKEY_BUCKET_S
         fresh.setdefault(bucket, {})
         fresh[bucket][(src, dst)] = fresh[bucket].get((src, dst), 0.0) + bps
         seen += 1
 
     _SANKEY_LAST_NS = newest or _SANKEY_LAST_NS
+    if batch_max_seq > _SANKEY_LAST_SEQ:
+        _SANKEY_LAST_SEQ = batch_max_seq
     for bucket, links in fresh.items():
         acc = _SANKEY_ACC.setdefault(bucket, {})
         for k, v in links.items():
@@ -501,8 +556,9 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
     Torch kini hanya fallback ketika collector tidak tersedia.
 
     ``minutes`` membatasi jendela historis yang dibaca dari sampel yang
-    sudah dipersist ke ``flow_samples``, supaya diagram tetap terisi ketika
-    permintaan datang sesaat setelah rotasi file.
+    sudah dipersist ke ``flow_samples`` oleh job ``flow_persist`` (tiap menit),
+    supaya diagram tetap terisi ketika permintaan datang sesaat setelah rotasi
+    file.
 
     Kenapa ada akumulator (:data:`_SANKEY_ACC`) dan bukan satu snapshot:
 
@@ -533,6 +589,7 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
     source = "none"
     stale = False
     file_age_s = None
+    data_age_s = None
     batch_pps = batch_bps = 0.0
     window_s = 0.0
     coverage = None
@@ -550,6 +607,7 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
             if res.get("ok"):
                 stale = bool(res.get("stale"))
                 file_age_s = res.get("file_age_s")
+                data_age_s = res.get("data_age_s")
                 batch_pps = float(res.get("batch_pps") or 0)
                 batch_bps = float(res.get("batch_bps") or 0)
                 window_s = float(res.get("batch_duration_s") or 0)
@@ -566,6 +624,16 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
                     samplers = sorted({(f.get("sampler_address") or "collector")
                                        for f in rows_in})
                     sampled_interfaces = [f"flow:{s}" for s in samplers]
+                    if data_age_s is not None and data_age_s > 300:
+                        # Live flows, broken source clock: measured on
+                        # 2026-11-18, `time_received_ns` was frozen 47 h in the
+                        # past while sequence_num advanced and 1,745 records
+                        # arrived in 120 s. The diagram is correct; only its
+                        # timestamps lie. Say so instead of pretending the
+                        # numbers are wall-clock accurate.
+                        errors.append({"device": "goflow2", "interface": "-",
+                                       "error": (f"jam sumber meleset {data_age_s:.0f}s; "
+                                                 "arus tetap live, waktu tidak akurat")[:160]})
             else:
                 errors.append({"device": "goflow2", "interface": "-",
                                "error": str(res.get("error") or "poll gagal")[:160]})
@@ -592,6 +660,19 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
                 flows.sort(key=lambda x: x["bps"], reverse=True)
                 flows = flows[:limit]
                 window_s = minutes * 60
+                # Which snapshot is this? Without it the view cannot say
+                # whether it is showing traffic from 40 seconds or 40 minutes
+                # ago. `since` is server time, so the newest snapshot - also
+                # stamped with server time - compares directly.
+                newest_at = docs[0].get("at")
+                coverage = {
+                    "buckets": n,
+                    "kept_links": len(flows),
+                    "total_links": len(agg),
+                    "snapshots": len(docs),
+                    "age_s": (round((datetime.now(timezone.utc) - newest_at).total_seconds(), 1)
+                              if isinstance(newest_at, datetime) else None),
+                }
         except Exception as exc:  # noqa: BLE001
             errors.append({"device": "history", "interface": "-", "error": str(exc)[:160]})
 
@@ -660,7 +741,7 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
 
     total_bps = sum(f["bps"] for f in flows)
     return {"live": bool(flows), "source": source, "stale": stale,
-            "file_age_s": file_age_s,
+            "file_age_s": file_age_s, "data_age_s": data_age_s,
             "window_s": round(window_s, 2),
             "batch_pps": round(batch_pps, 1), "batch_bps": round(batch_bps, 1),
             "total_bps": total_bps,

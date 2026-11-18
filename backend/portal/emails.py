@@ -2659,6 +2659,169 @@ async def run_traffic_sample_sweep(db, *, now: Optional[datetime] = None) -> dic
 
 
 # ------------------------------------------------------------------
+# Flow snapshot persistence (feeds the NOC Sankey history fallback)
+# ------------------------------------------------------------------
+# `GET /admin/noc/netflow/sankey` has three sources: the goflow2 collector
+# (live), `flow_samples` history (so the diagram stays populated when the
+# collector tail is momentarily empty), and MikroTik Torch (slow fallback).
+#
+# The history source READ `flow_samples`, but no code ever WROTE it: the only
+# two references in the whole backend were the reader and a docstring. So
+# `docs` was always empty, `source` never became "history", and the endpoint
+# fell through to Torch every time. Nothing raised - an empty read is a valid
+# result. This job is the missing writer.
+#
+# Why peek() and not poll(): `GoFlow2Client.poll()` ADVANCES the shared file
+# cursor, and that cursor belongs to the DDoS detection sweep - it is the only
+# consumer whose rates feed blocking decisions. A second poll() here would hand
+# detection an already-drained tail and blind it. peek() does not touch the
+# cursor, so both consumers read the same tail independently; this job keeps
+# its own watermark to skip the overlapping records peek() re-delivers.
+_FLOW_PERSIST_LAST_NS = 0
+# Companion watermark keyed on the exporter's datagram counter, so the job
+# keeps working when `time_received_ns` is frozen (measured in production).
+_FLOW_PERSIST_LAST_SEQ = 0
+_FLOW_PERSIST_TOP = 50          # same ceiling the endpoint exposes (limit<=50)
+_FLOW_PERSIST_RETENTION_H = 6   # the reader asks for <=60 min; 6 h is generous
+# An export stamp further than this from server time means the source clock is
+# unusable; measured 2026-11-18 as a 47 h freeze and a ~7 h WIB/UTC offset. Past
+# this distance the exporter's datagram counter governs dedup instead.
+_FLOW_PERSIST_CLOCK_TOLERANCE_S = 900.0
+_FLOW_INDEX_READY = False
+
+
+async def _ensure_flow_sample_index(db) -> None:
+    """Index `at`: the reader filters on it and retention deletes on it."""
+    global _FLOW_INDEX_READY
+    if _FLOW_INDEX_READY:
+        return
+    try:
+        await db.flow_samples.create_index("at")
+        _FLOW_INDEX_READY = True
+    except Exception:  # noqa: BLE001 - an unusable index must not stop collection
+        pass
+
+
+async def run_flow_sample_sweep(db, *, now: Optional[datetime] = None) -> dict:
+    """Persist one snapshot of the busiest flow links to `flow_samples`.
+
+    Runs every minute. Each run writes at most `_FLOW_PERSIST_TOP` documents,
+    all sharing one `at`, so the reader's "average across distinct timestamps"
+    arithmetic keeps working unchanged.
+    """
+    global _FLOW_PERSIST_LAST_NS, _FLOW_PERSIST_LAST_SEQ
+    from .routes.noc import _flow_bps
+
+    now = now or datetime.now(timezone.utc)
+    gf = await _get_goflow2_client(db)
+    if gf is None:
+        # No collector deployed: the endpoint's Torch fallback is the real
+        # source, and there is nothing to persist. Not an error.
+        return {"skipped": "collector-not-configured"}
+
+    try:
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(None, gf.peek)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"peek: {str(exc)[:150]}"}
+    if not res.get("ok"):
+        return {"error": str(res.get("error") or "peek failed")[:150]}
+
+    rows = res.get("rows") or []
+    # A stalled collector keeps serving its last tail forever. Stamping those
+    # records with `now` would present hours-old traffic as a live snapshot -
+    # a chart that looks healthy while the collector is dead.
+    #
+    # The gate is the FILE clock, deliberately. Measured on production
+    # 2026-11-18: the record clock was frozen 47 h in the past while
+    # `sequence_num` advanced 1724601728 -> 1724601851 over 1,745 records in
+    # 120 s, i.e. live traffic with broken timestamps. Gating on record age
+    # would have rejected live data forever and darkened the diagram. The file
+    # clock has not lied; the record clock demonstrably has.
+    if res.get("stale"):
+        return {"skipped": "collector-stale",
+                "file_age_s": res.get("file_age_s"),
+                "data_age_s": res.get("data_age_s")}
+    agg: dict = {}
+    newest = _FLOW_PERSIST_LAST_NS
+    newest_seq = _FLOW_PERSIST_LAST_SEQ
+    counted = 0
+    # Dedup across the overlapping tail peek() re-delivers. Same two-key
+    # strategy as the Sankey accumulator: the counter when the export clock is
+    # unusable, the stamp otherwise. Which one governs is decided from CLOCK
+    # SANITY up front - an earlier version chose per-batch and froze whenever a
+    # batch happened to be entirely new. See `_rolling_top_links`.
+    stamps_ns = [int(r.get("time_received_ns") or 0) for r in rows]
+    stamps_ns = [t for t in stamps_ns if t > 0]
+    seqs_in_batch = [int(r.get("sequence_num") or 0) for r in rows]
+    seqs_in_batch = [s for s in seqs_in_batch if s > 0]
+    batch_max_seq = max(seqs_in_batch) if seqs_in_batch else 0
+    # Judge the clock by the OLDEST stamp in the batch (see _rolling_top_links):
+    # one fresh record must not mask a source that is mostly stamping nonsense.
+    clock_ok = (bool(stamps_ns)
+                and abs(now.timestamp() - min(stamps_ns) / 1e9)
+                <= _FLOW_PERSIST_CLOCK_TOLERANCE_S)
+    use_seq = bool(seqs_in_batch) and not clock_ok
+    for rec in rows:
+        src = (rec.get("src_address") or "").split("/")[0]
+        dst = (rec.get("dst_address") or "").split("/")[0]
+        if not src or not dst or src == dst:
+            continue
+        ts_ns = int(rec.get("time_received_ns") or 0)
+        seq = int(rec.get("sequence_num") or 0)
+        if use_seq:
+            if seq and seq <= _FLOW_PERSIST_LAST_SEQ:
+                continue
+        elif ts_ns and ts_ns <= _FLOW_PERSIST_LAST_NS:
+            continue
+        if ts_ns > newest:
+            newest = ts_ns
+        if seq > newest_seq:
+            newest_seq = seq
+        bps = _flow_bps(rec)
+        if bps <= 0:
+            continue
+        agg[(src, dst)] = agg.get((src, dst), 0.0) + bps
+        counted += 1
+    _FLOW_PERSIST_LAST_NS = newest or _FLOW_PERSIST_LAST_NS
+    _FLOW_PERSIST_LAST_SEQ = newest_seq or _FLOW_PERSIST_LAST_SEQ
+
+    await _ensure_flow_sample_index(db)
+    cutoff = now - timedelta(hours=_FLOW_PERSIST_RETENTION_H)
+    try:
+        await db.flow_samples.delete_many({"at": {"$lt": cutoff}})
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not agg:
+        return {"links": 0, "rows": len(rows), "counted": counted}
+
+    ranked = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)[:_FLOW_PERSIST_TOP]
+    # `at` is the SERVER clock for the instant of this snapshot, stored as a
+    # BSON date - NOT an ISO string. The reader queries
+    # {"at": {"$gte": <datetime>}}, and a datetime bound against a string field
+    # matches zero documents without raising: the diagram would go blank with no
+    # error anywhere. (The router's export timestamps are a different clock and
+    # drift hours from server time; that is why `_SANKEY_ACC` evicts by bucket
+    # count. A snapshot stamp must follow SERVER time to stay comparable with
+    # the reader's `since`.)
+    docs = [
+        {"at": now, "src": s, "dst": d,
+         "bps": float(v), "gbps": round(v / 1e9, 3),
+         "source": "goflow2", "batch_rows": len(rows)}
+        for (s, d), v in ranked if v > 0
+    ]
+    if not docs:
+        return {"links": 0, "rows": len(rows), "counted": counted}
+    try:
+        await db.flow_samples.insert_many(docs)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"insert: {str(exc)[:150]}"}
+    return {"links": len(docs), "rows": len(rows), "counted": counted,
+            "top_gbps": round(ranked[0][1] / 1e9, 3) if ranked else 0.0}
+
+
+# ------------------------------------------------------------------
 # Laporan bulanan (tagihan + trafik) ke email support - dokumentasi
 # ------------------------------------------------------------------
 async def run_monthly_report(db, *, month: Optional[str] = None) -> dict:
@@ -3311,6 +3474,25 @@ def start_scheduler(db):
         _leased("noc_retention", lambda: run_noc_probe_retention(db)),
         CronTrigger(hour=3, minute=40),
         id="job:noc_retention",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Flow snapshot persistence - every minute at :10.
+    #
+    # Writes `flow_samples`, the history source that `GET /admin/noc/netflow/
+    # sankey` reads when the goflow2 tail is momentarily empty. That read had no
+    # writer at all, so the fallback could never fire and the endpoint dropped
+    # straight to the slow Torch path. Kept off :05/:20/:35 so it never queues
+    # behind the invoice/renewal/stranded sweeps.
+    #
+    # TTL 120s: peek() re-reads an overlapping tail, and the job's own watermark
+    # skips what it already stored. A long TTL only delays recovery after a
+    # restart, never correctness.
+    sched.add_job(
+        _leased("flow_persist", lambda: run_flow_sample_sweep(db), ttl_seconds=120),
+        CronTrigger(minute="*", second=10),
+        id="job:flow_persist",
         max_instances=1,
         coalesce=True,
     )
