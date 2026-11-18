@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo } from "react";
 import Header from "../components/Header";
 import Hero from "../components/Hero";
 import Features from "../components/Features";
@@ -87,25 +87,76 @@ const FloatingWA = () => {
   );
 };
 
+// Section key -> component. The keys match `data-cms-section` and are the same
+// keys the backend validates against LANDING_SECTIONS, so a layout coming from
+// the CMS can only ever name a section that has a component here.
+const SECTION_COMPONENTS = {
+  hero: Hero,
+  features: Features,
+  infra: Infrastructure,
+  services: Services,
+  guide: DecisionGuide,
+  pricing: Pricing,
+  pop: PoP,
+  partners: Partners,
+  testimonials: Testimonials,
+  faqsec: FAQ,
+  leadform: LeadForm,
+  cta: CTA,
+};
+
+// Shipped order, used when the CMS has no layout (first paint before the fetch
+// resolves, backend unreachable, or a document that predates this feature).
+// Falls back to what the page looked like before reordering existed, never to
+// an empty page.
+const DEFAULT_ORDER = [
+  "hero", "features", "infra", "services", "guide", "pricing",
+  "pop", "partners", "testimonials", "faqsec", "leadform", "cta",
+];
+
 const Landing = () => {
   useLandingSEO();
+  const { cmsLayout } = useLang();
+
+  // navbar and footer are the page frame: they render outside <main> and are
+  // never reordered or hidden, matching the pinning the backend enforces.
+  const middle = useMemo(() => {
+    const rows = Array.isArray(cmsLayout) && cmsLayout.length ? cmsLayout : null;
+    if (!rows) return DEFAULT_ORDER;
+    // Two different things look alike here and must not be confused:
+    //   - a key MISSING from the layout  -> render it (old CMS document)
+    //   - a key PRESENT but visible:false -> do not render it (deliberate)
+    // `declared` tracks the first case, which is why it is filled before the
+    // visibility test and not after.
+    const declared = new Set();
+    const ordered = [];
+    for (const row of rows) {
+      const key = row && row.key;
+      if (!key || key === "navbar" || key === "footer") continue;
+      if (!SECTION_COMPONENTS[key] || declared.has(key)) continue;
+      declared.add(key);
+      if (row.visible === false) continue;
+      ordered.push(key);
+    }
+    for (const key of DEFAULT_ORDER) {
+      if (!declared.has(key)) ordered.push(key);
+    }
+    return ordered;
+  }, [cmsLayout]);
+
   return (
     <div className="bg-white text-[#0a2350]">
       <DefaultSeo />
       <div data-cms-section="navbar" id="navbar"><Header /></div>
       <main>
-        <div data-cms-section="hero" id="hero"><Hero /></div>
-        <div data-cms-section="features" id="features"><Features /></div>
-        <div data-cms-section="infra" id="infra"><Infrastructure /></div>
-        <div data-cms-section="services" id="services"><Services /></div>
-        <div data-cms-section="guide" id="guide"><DecisionGuide /></div>
-        <div data-cms-section="pricing" id="pricing"><Pricing /></div>
-        <div data-cms-section="pop" id="pop"><PoP /></div>
-        <div data-cms-section="partners" id="partners"><Partners /></div>
-        <div data-cms-section="testimonials" id="testimonials"><Testimonials /></div>
-        <div data-cms-section="faqsec" id="faqsec"><FAQ /></div>
-        <div data-cms-section="leadform" id="leadform"><LeadForm /></div>
-        <div data-cms-section="cta" id="cta"><CTA /></div>
+        {middle.map((key) => {
+          const Section = SECTION_COMPONENTS[key];
+          return (
+            <div key={key} data-cms-section={key} id={key}>
+              <Section />
+            </div>
+          );
+        })}
       </main>
       <div data-cms-section="footer" id="footer"><Footer /></div>
       <FloatingWA />

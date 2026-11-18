@@ -313,6 +313,7 @@ export const LanguageProvider = ({ children }) => {
   const [contactOverride, setContactOverride] = useState(null);
   const [cmsImages, setCmsImages] = useState({});      // { hero_main: {url, alt_id, alt_en}, ... }
   const [cmsLists, setCmsLists] = useState({});        // { services: [...], testimonials: [...] }
+  const [cmsLayout, setCmsLayout] = useState(null);    // [{key, visible}, ...] order + visibility
 
   useEffect(() => {
     const base = process.env.REACT_APP_BACKEND_URL;
@@ -326,6 +327,7 @@ export const LanguageProvider = ({ children }) => {
         setContactOverride(data.contact && typeof data.contact === "object" ? data.contact : null);
         setCmsImages(data.images && typeof data.images === "object" ? data.images : {});
         setCmsLists(data.lists && typeof data.lists === "object" ? data.lists : {});
+        setCmsLayout(Array.isArray(data.layout) && data.layout.length ? data.layout : null);
       })
       .catch(() => { /* stay on hardcoded defaults */ });
   }, []);
@@ -343,6 +345,7 @@ export const LanguageProvider = ({ children }) => {
       setContactOverride(d.contact && typeof d.contact === "object" ? d.contact : null);
       setCmsImages(d.images && typeof d.images === "object" ? d.images : {});
       setCmsLists(d.lists && typeof d.lists === "object" ? d.lists : {});
+      setCmsLayout(Array.isArray(d.layout) && d.layout.length ? d.layout : null);
       if (d.lang === "id" || d.lang === "en") setLangState(d.lang);
       if (d.scrollTo) {
         const el = document.getElementById(d.scrollTo) ||
@@ -383,8 +386,8 @@ export const LanguageProvider = ({ children }) => {
   }, [lang, mergedDict]);
 
   const value = useMemo(
-    () => ({ lang, setLang, t, cmsFaqs, contactOverride, cmsImages, cmsLists }),
-    [lang, setLang, t, cmsFaqs, contactOverride, cmsImages, cmsLists]
+    () => ({ lang, setLang, t, cmsFaqs, contactOverride, cmsImages, cmsLists, cmsLayout }),
+    [lang, setLang, t, cmsFaqs, contactOverride, cmsImages, cmsLists, cmsLayout]
   );
 
   return (

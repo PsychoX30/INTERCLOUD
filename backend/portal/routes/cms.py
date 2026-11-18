@@ -102,6 +102,11 @@ async def branding_reset(key: str, admin=Depends(get_current_admin)):
 from portal.backups import (
     get_landing_content as _get_landing_content,
     LANDING_CONTENT_DEFAULT as _LANDING_DEFAULT,
+    # The canonical section list lives in `portal/backups.py` because it owns
+    # LANDING_CONTENT_DEFAULT and this module imports from it - restating the
+    # list here would give two copies that drift, and the copy ordering the
+    # page would eventually disagree with the copy validating the payload.
+    resolve_layout as _clean_layout,
     run_mongodump as _run_mongodump,
     run_mongorestore as _run_mongorestore,
 )
@@ -276,6 +281,10 @@ async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
         "contact":   payload.get("contact")   if isinstance(payload.get("contact"), dict)   else {},
         "images":    _clean_landing_images(payload.get("images")),
         "lists":     _clean_landing_lists(payload.get("lists")),
+        # Reorder/hide only. `resolve_layout` fills in every section the payload
+        # omits and re-pins navbar/footer, so a partial or hostile layout can
+        # never blank out the page.
+        "layout":    _clean_layout(payload.get("layout")),
     }
     # 128 KB cap on the whole doc - plenty for a landing page's worth of text.
     approx = len(str(clean))

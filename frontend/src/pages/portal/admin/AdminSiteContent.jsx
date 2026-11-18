@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { Save, RotateCcw, Plus, Trash2, Loader2, Monitor, Tablet, Smartphone, RefreshCw, Eye, UploadCloud } from "lucide-react";
+import { Save, RotateCcw, Plus, Trash2, Loader2, Monitor, Tablet, Smartphone, RefreshCw, Eye, EyeOff, ChevronUp, ChevronDown, UploadCloud } from "lucide-react";
 import { api } from "../../../portal/api";
 
 // Full landing-page coverage grouped by the sections a visitor scrolls through.
@@ -250,6 +250,57 @@ const DEVICES = {
   mobile: { w: "390px", icon: Smartphone, label: "Mobile" },
 };
 
+// The sections the public landing page is built from, in the shipped order.
+// Keys must match LANDING_SECTIONS in backend/portal/backups.py - the backend
+// rejects anything else, and the frontend has no component for it either.
+// `leadform` has no editable text so it has no editor group above, but it is
+// still a section a visitor sees and can be moved or hidden.
+const LAYOUT_SECTIONS = [
+  { key: "navbar",       label: "Menu Navigasi (atas)", pinned: true },
+  { key: "hero",         label: "Hero" },
+  { key: "features",     label: "Kenapa Memilih Kami" },
+  { key: "infra",        label: "Infrastruktur" },
+  { key: "services",     label: "Layanan" },
+  { key: "guide",        label: "Panduan Pemilihan" },
+  { key: "pricing",      label: "Harga" },
+  { key: "pop",          label: "Point of Presence" },
+  { key: "partners",     label: "Partners & Clients" },
+  { key: "testimonials", label: "Testimoni" },
+  { key: "faqsec",       label: "FAQ" },
+  { key: "leadform",     label: "Formulir Kontak" },
+  { key: "cta",          label: "Ajakan (CTA)" },
+  { key: "footer",       label: "Footer (bawah)", pinned: true },
+];
+
+const LAYOUT_LABEL = Object.fromEntries(LAYOUT_SECTIONS.map((s) => [s.key, s.label]));
+const SHIPPED_LAYOUT = LAYOUT_SECTIONS.map((s) => ({ key: s.key, visible: true }));
+
+// Reconcile a stored layout against the canonical set. Mirrors resolve_layout()
+// on the backend: drop unknown keys, first occurrence wins, append whatever the
+// document omits, and re-pin the chrome. Kept here so the admin always edits a
+// complete list even when the stored document is old or was hand-edited through
+// the JSON tab - what the admin shows must match what the page renders.
+const normalizeLayout = (saved) => {
+  const rows = Array.isArray(saved) ? saved : [];
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const key = row && row.key;
+    if (!key || !LAYOUT_LABEL[key] || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, visible: row.visible !== false });
+  }
+  for (const s of LAYOUT_SECTIONS) {
+    if (!seen.has(s.key)) out.push({ key: s.key, visible: true });
+  }
+  const isPinned = (k) => !!LAYOUT_SECTIONS.find((s) => s.key === k)?.pinned;
+  return [
+    ...out.filter((r) => r.key === LAYOUT_SECTIONS[0].key),
+    ...out.filter((r) => !isPinned(r.key)),
+    ...out.filter((r) => r.key === LAYOUT_SECTIONS[LAYOUT_SECTIONS.length - 1].key),
+  ].map((r) => (isPinned(r.key) ? { ...r, visible: true } : r));
+};
+
 const AdminSiteContent = () => {
   const [content, setContent] = useState(null);
   const [tab, setTab] = useState("editor");     // editor | faqs | lists | images | json
@@ -268,8 +319,9 @@ const AdminSiteContent = () => {
 
   useEffect(() => {
     api.get("/landing-content").then(({ data }) => {
-      setContent(data);
-      setJsonText(JSON.stringify(data, null, 2));
+      const next = { ...data, layout: normalizeLayout(data.layout) };
+      setContent(next);
+      setJsonText(JSON.stringify(next, null, 2));
     });
   }, []);
 
@@ -290,7 +342,7 @@ const AdminSiteContent = () => {
 
   const previewUrl = useMemo(() => `${window.location.origin}/?cmsPreview=1`, []);
 
-  const pushPreview = useCallback((c = content, lang = previewLang) => {
+  const pushPreview = useCallback((c = content, lang = previewLang, scrollTo = null) => {
     const win = iframeRef.current && iframeRef.current.contentWindow;
     if (!win || !c) return;
     win.postMessage({
@@ -300,6 +352,8 @@ const AdminSiteContent = () => {
       contact: c.contact || null,
       images: c.images || {},
       lists: c.lists || {},
+      layout: normalizeLayout(c.layout),
+      ...(scrollTo ? { scrollTo } : {}),
       lang,
     }, window.location.origin);
   }, [content, previewLang]);
@@ -375,6 +429,38 @@ const AdminSiteContent = () => {
       lists: { ...(c.lists || {}), [name]: listRows(c, name).filter((_, idx) => idx !== i) },
     }));
 
+  // ---- Section order + visibility ----
+  // The stored layout is a list; array position IS the display order. Moving a
+  // section is a splice, not a re-index, so there is nothing to renumber.
+  const layoutRows = (c) => normalizeLayout(c?.layout);
+
+  const moveSection = (key, delta) =>
+    setContent((c) => {
+      const rows = layoutRows(c);
+      const i = rows.findIndex((r) => r.key === key);
+      const j = i + delta;
+      if (i < 0 || j < 0 || j >= rows.length) return c;
+      // Pinned chrome never moves: navbar must stay first, footer last.
+      // Refusing here makes the button visibly do nothing, instead of saving an
+      // order the backend would silently override on the next read.
+      if (LAYOUT_SECTIONS.find((s) => s.key === rows[i].key)?.pinned) return c;
+      if (LAYOUT_SECTIONS.find((s) => s.key === rows[j].key)?.pinned) return c;
+      const next = [...rows];
+      [next[i], next[j]] = [next[j], next[i]];
+      return { ...c, layout: next };
+    });
+
+  const toggleSection = (key) =>
+    setContent((c) => ({
+      ...c,
+      layout: layoutRows(c).map((r) =>
+        r.key === key ? { ...r, visible: r.visible === false } : r
+      ),
+    }));
+
+  const resetLayout = () =>
+    setContent((c) => ({ ...c, layout: SHIPPED_LAYOUT.map((r) => ({ ...r })) }));
+
   const setImage = (slot, field, val) => {
     setContent((c) => ({
       ...c,
@@ -423,8 +509,9 @@ const AdminSiteContent = () => {
   const jumpTo = (secId) => {
     const el = editorScrollRef.current && editorScrollRef.current.querySelector(`#sec-${secId}`);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    const win = iframeRef.current && iframeRef.current.contentWindow;
-    if (win) win.postMessage({ type: "ic-cms-preview", overrides: content?.overrides || {}, faqs: content?.faqs || [], lang: previewLang, scrollTo: secId }, window.location.origin);
+    // Full draft, not a partial message: the preview replaces everything it
+    // receives, so a scroll-only payload would wipe the other fields.
+    pushPreview(content, previewLang, secId);
   };
 
   const save = async () => {
@@ -494,6 +581,7 @@ const AdminSiteContent = () => {
           <div className="px-4 md:px-6 pt-3 flex items-center gap-1 border-b border-slate-100">
             {[
               { k: "editor", label: "Teks per Bagian" },
+              { k: "layout", label: "Urutan & Tampil" },
               { k: "faqs", label: `FAQ (${(content.faqs || []).length})` },
               { k: "lists", label: "Daftar Konten" },
               { k: "images", label: "Gambar" },
@@ -559,6 +647,78 @@ const AdminSiteContent = () => {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {tab === "layout" && (
+              <div>
+                <div className="mb-4 text-xs text-slate-500">
+                  Atur urutan bagian landing page dan sembunyikan yang tidak dipakai.
+                  Menu Navigasi selalu di paling atas, Footer selalu di paling bawah.
+                  Perubahan langsung terlihat di pratinjau, klik Simpan untuk menerbitkan.
+                </div>
+
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-xs text-slate-400">
+                    {layoutRows(content).filter((r) => r.visible !== false).length} dari{" "}
+                    {layoutRows(content).length} bagian ditampilkan
+                  </div>
+                  <button onClick={resetLayout}
+                          className="text-xs text-slate-500 hover:text-[#0a2350] inline-flex items-center gap-1.5"
+                          data-testid="cms-layout-reset">
+                    <RotateCcw className="h-3.5 w-3.5" /> Urutan bawaan
+                  </button>
+                </div>
+
+                <div className="space-y-2" data-testid="cms-layout-list">
+                  {layoutRows(content).map((row, i) => {
+                    const meta = LAYOUT_SECTIONS.find((s) => s.key === row.key) || {};
+                    const hidden = row.visible === false;
+                    return (
+                      <div key={row.key}
+                           className={`rounded-xl border p-2.5 flex items-center gap-2 transition-colors ${hidden ? "border-slate-200 bg-slate-50" : "border-slate-200 bg-white"}`}
+                           data-testid={`cms-layout-row-${row.key}`}>
+                        <div className={`h-7 w-7 shrink-0 rounded-lg grid place-items-center text-[11px] font-bold ${hidden ? "bg-slate-200 text-slate-400" : "bg-[#0a2350] text-white"}`}>
+                          {i + 1}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className={`text-sm font-semibold truncate ${hidden ? "text-slate-400 line-through" : "text-[#0a2350]"}`}>
+                            {meta.label || row.key}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            {meta.pinned ? "Posisi terkunci" : hidden ? "Disembunyikan" : "Tampil"}
+                          </div>
+                        </div>
+                        <button onClick={() => moveSection(row.key, -1)}
+                                disabled={!!meta.pinned || i === 0}
+                                title="Naikkan"
+                                className="h-7 w-7 grid place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+                                data-testid={`cms-layout-up-${row.key}`}>
+                          <ChevronUp className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => moveSection(row.key, 1)}
+                                disabled={!!meta.pinned || i === layoutRows(content).length - 1}
+                                title="Turunkan"
+                                className="h-7 w-7 grid place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+                                data-testid={`cms-layout-down-${row.key}`}>
+                          <ChevronDown className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => toggleSection(row.key)}
+                                disabled={!!meta.pinned}
+                                title={meta.pinned ? "Tidak bisa disembunyikan" : "Tampil / sembunyi"}
+                                className={`h-7 w-7 grid place-items-center rounded-lg border transition-colors disabled:opacity-30 ${hidden ? "border-slate-200 text-slate-400 hover:bg-slate-100" : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"}`}
+                                data-testid={`cms-layout-toggle-${row.key}`}>
+                          {hidden ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                  Bagian yang disembunyikan tidak dirender maupun dihapus — teksnya tetap tersimpan
+                  dan bisa ditampilkan lagi kapan saja.
+                </div>
               </div>
             )}
 

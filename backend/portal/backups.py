@@ -70,6 +70,83 @@ async def run_mongorestore(archive_bytes: bytes, *, drop: bool = True) -> str:
 # ============================================================
 # Landing-content defaults - the CMS overrides these keys.
 # ============================================================
+# ------------------------------------------------------------------
+# Landing page composition (section order + visibility)
+# ------------------------------------------------------------------
+# The landing page is a stack of independent section components, each already
+# carrying `id` / `data-cms-section` anchors. This tuple is the canonical set
+# and the shipped order. The CMS may REORDER or HIDE these; it can never add a
+# key, so a payload cannot conjure a section the frontend has no component for.
+#
+# Lives here rather than in `routes/cms.py` because this module owns
+# LANDING_CONTENT_DEFAULT and `routes/cms.py` imports from it - the reverse
+# import would be circular.
+LANDING_SECTIONS = (
+    "navbar", "hero", "features", "infra", "services", "guide",
+    "pricing", "pop", "partners", "testimonials", "faqsec", "leadform",
+    "cta", "footer",
+)
+
+# Chrome sections stay pinned: navbar first, footer last. Hiding either is a
+# trap rather than a design - with no menu a visitor cannot navigate, and the
+# CMS preview pane is too narrow for the mistake to be obvious before saving.
+# `visible: false` on these is accepted and then overridden, so a payload never
+# fails; it just cannot hide the page's own frame.
+LANDING_PINNED_FIRST = ("navbar",)
+LANDING_PINNED_LAST = ("footer",)
+
+
+def default_layout() -> list:
+    """Every section, visible, in the shipped order."""
+    return [{"key": k, "visible": True} for k in LANDING_SECTIONS]
+
+
+def resolve_layout(saved) -> list:
+    """Reconcile a stored `layout` against the canonical section set.
+
+    Wire shape is an ORDERED LIST - the array position IS the display order:
+
+        [{"key": "hero", "visible": true},
+         {"key": "services", "visible": false}, ...]
+
+    A list beats integer order fields: no duplicate ranks to resolve, no gaps to
+    renumber, and reordering is a splice instead of a re-index.
+
+    Unknown keys are dropped, the first occurrence of a key wins, and any
+    canonical section missing from the payload is appended in the shipped order
+    and left visible. That last rule is what stops a settings document written
+    before a section existed from silently erasing that section.
+    """
+    rows = saved if isinstance(saved, list) else []
+    visible: dict = {}
+    ordered: list = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        if not isinstance(key, str) or key not in LANDING_SECTIONS:
+            continue
+        if key in visible:
+            continue
+        # `is not False` rather than a truthiness test: a payload that omits
+        # `visible`, or sends "false" as a string, must not silently hide a
+        # section. Only an explicit boolean False hides.
+        visible[key] = item.get("visible") is not False
+        ordered.append(key)
+    for key in LANDING_SECTIONS:
+        if key not in visible:
+            visible[key] = True
+            ordered.append(key)
+    for key in LANDING_PINNED_FIRST:
+        visible[key] = True
+    for key in LANDING_PINNED_LAST:
+        visible[key] = True
+    middle = [k for k in ordered
+              if k not in LANDING_PINNED_FIRST and k not in LANDING_PINNED_LAST]
+    final = list(LANDING_PINNED_FIRST) + middle + list(LANDING_PINNED_LAST)
+    return [{"key": k, "visible": visible[k]} for k in final]
+
+
 LANDING_CONTENT_DEFAULT: dict = {
     # i18n dict overrides - anything you want to change lives here as
     # { "<key>": { "id": "...", "en": "..." } }. Empty dict = no overrides.
@@ -107,6 +184,10 @@ LANDING_CONTENT_DEFAULT: dict = {
         "hero_terms": [],
         "footer_links": [],
     },
+    # Display order + visibility of the landing sections. Resolved against
+    # LANDING_SECTIONS on read, so a document written before a section existed
+    # renders that section in its shipped position instead of dropping it.
+    "layout": default_layout(),
 }
 
 
@@ -129,4 +210,8 @@ async def get_landing_content(db) -> dict:
         "contact":   value.get("contact") or {},
         "images":    value.get("images") or {},
         "lists":     lists,
+        # Always resolved, never passed through raw: the frontend renders this
+        # order verbatim, so it must be complete and canonical even when the
+        # stored document predates a section or was edited by hand.
+        "layout":    resolve_layout(value.get("layout")),
     }
