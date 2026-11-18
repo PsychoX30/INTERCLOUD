@@ -121,8 +121,13 @@ backend/.version.json
 # dari home passwd itu, BUKAN dari $HOME. Selama kuncinya ditaruh langsung di
 # sini, `git checkout`/pembersihan worktree bisa menghancurkannya.
 #
-# .ssh sengaja diabaikan supaya `git status` bersih dan `git clean -fdx`
-# tidak menyentuhnya.
+# PERINGATAN: mengabaikan sebuah path TIDAK melindunginya dari
+# `git clean -fdx`. Justru `-x` yang berarti "ikutkan file yang di-ignore",
+# jadi seluruh blok di bawah ini ADALAH daftar yang akan dihapus oleh clean.
+# Yang melindungi hanya argumen `-e <path>` eksplisit di pemanggilnya.
+# install.sh membentuk daftar itu dari APP_DIR_KEEP dan memverifikasinya
+# sesudah pembersihan; update.sh menjaga .ssh sendiri.
+# Jangan pernah menjalankan `git clean -fdx` di worktree ini tanpa `-e`.
 /.ssh
 /.local-junk/
 /.lesshst
