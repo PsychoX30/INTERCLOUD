@@ -426,6 +426,42 @@ install -d -m 0755 "$(dirname "$APP_DIR")"
 if [[ -d "$APP_DIR/.git" ]]; then
   log "Existing repo at $APP_DIR — resetting to origin/$REPO_BRANCH"
   chown -R intercloud:intercloud "$APP_DIR"
+
+  # --- State a re-run must never destroy ---------------------------------
+  # `git clean -fdx` deletes IGNORED files *by design* — that is exactly what
+  # -x means — so .gitignore cannot protect anything listed there. Every path
+  # below has to be named explicitly, or this installer silently wipes it.
+  #
+  # The list used to cover only .env / node_modules / build / .venv. That was
+  # enough to lose:
+  #   backend/uploads/  client documents + article media. Gitignored, written
+  #                     at runtime, NO other copy exists. Verified on prod
+  #                     2026-11-18: 9 files, 3.0 MB, tracked by media_assets.
+  #   .ssh              symlink to the GitHub deploy key at
+  #                     /var/lib/intercloud/.ssh. Losing it makes every later
+  #                     `git fetch` fail with "Permission denied (publickey)",
+  #                     which reads like an ssh outage rather than a wipe.
+  #                     update.sh already guards this defensively; install.sh
+  #                     did not.
+  APP_DIR_KEEP=(
+    backend/uploads
+    backend/.env
+    frontend/.env
+    backend/.venv
+    frontend/node_modules
+    frontend/build
+    .ssh
+  )
+  keep_args=()
+  for _keep in "${APP_DIR_KEEP[@]}"; do
+    keep_args+=(-e "$_keep")
+  done
+
+  # Count what is about to be protected, so a regression is loud, not silent.
+  uploads_before=$(find "$APP_DIR/backend/uploads" -type f 2>/dev/null | wc -l)
+  deploy_key_before=0
+  [[ -f "$APP_DIR/.ssh/config" ]] && deploy_key_before=1
+
   # Force clean state: any local edits (config tweaks, sed patches from an
   # earlier failed run) are discarded so 'git pull' can always fast-forward.
   # If operators want to preserve local edits they should use a separate branch.
@@ -433,7 +469,22 @@ if [[ -d "$APP_DIR/.git" ]]; then
       git fetch --all --prune && \
       git checkout '$REPO_BRANCH' && \
       git reset --hard 'origin/$REPO_BRANCH' && \
-      git clean -fdx -e backend/.env -e frontend/.env -e frontend/node_modules -e frontend/build -e backend/.venv"
+      git clean -fdx ${keep_args[*]}"
+
+  # --- Post-clean assertion ----------------------------------------------
+  # A wrong pattern (or a future edit that drops an entry) must abort here,
+  # not three steps later when a media file 404s or a fetch cannot authenticate.
+  uploads_after=$(find "$APP_DIR/backend/uploads" -type f 2>/dev/null | wc -l)
+  if [[ "$uploads_after" -lt "$uploads_before" ]]; then
+    die "Uploaded files were deleted by 'git clean' ($uploads_before -> $uploads_after). Refusing to continue. Restore from /var/backups/intercloud before re-running."
+  fi
+  if [[ "$deploy_key_before" == "1" && ! -f "$APP_DIR/.ssh/config" ]]; then
+    ln -sfn /var/lib/intercloud/.ssh "$APP_DIR/.ssh" 2>/dev/null || true
+    [[ -f "$APP_DIR/.ssh/config" ]] \
+      || die "Deploy key symlink at $APP_DIR/.ssh was lost and could not be restored. Recreate it before re-running."
+    log "Deploy key symlink re-created (-> /var/lib/intercloud/.ssh)"
+  fi
+  log "Preserved: ${uploads_after} uploaded file(s), deploy key, .env files"
 else
   log "Cloning $REPO_URL → $APP_DIR"
   rm -rf "$APP_DIR"
