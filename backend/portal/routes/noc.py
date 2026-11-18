@@ -560,6 +560,14 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
     supaya diagram tetap terisi ketika permintaan datang sesaat setelah rotasi
     file.
 
+    ``data_age_s`` dan ``file_age_s`` adalah dua jam yang berbeda dan bisa
+    berbeda jauh.  Yang menentukan "hidup atau tidak" adalah ``file_age_s``:
+    pada 2026-11-18 clock collector (``time_received_ns``) beku 47 jam sementara
+    ``sequence_num`` terus maju dan 1.745 record masuk dalam 120 detik — arus
+    tetap live, cap waktunya yang salah.  ``data_age_s`` melaporkan selisih itu
+    supaya klien bisa membedakan "trafik basi" dari "sumber salah jam"; ia
+    dilaporkan, tidak ditegakkan.
+
     Kenapa ada akumulator (:data:`_SANKEY_ACC`) dan bukan satu snapshot:
 
     ``peek()`` mengembalikan ekor file yang bergerak.  Dua pemanggilan
@@ -624,16 +632,6 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
                     samplers = sorted({(f.get("sampler_address") or "collector")
                                        for f in rows_in})
                     sampled_interfaces = [f"flow:{s}" for s in samplers]
-                    if data_age_s is not None and data_age_s > 300:
-                        # Live flows, broken source clock: measured on
-                        # 2026-11-18, `time_received_ns` was frozen 47 h in the
-                        # past while sequence_num advanced and 1,745 records
-                        # arrived in 120 s. The diagram is correct; only its
-                        # timestamps lie. Say so instead of pretending the
-                        # numbers are wall-clock accurate.
-                        errors.append({"device": "goflow2", "interface": "-",
-                                       "error": (f"jam sumber meleset {data_age_s:.0f}s; "
-                                                 "arus tetap live, waktu tidak akurat")[:160]})
             else:
                 errors.append({"device": "goflow2", "interface": "-",
                                "error": str(res.get("error") or "poll gagal")[:160]})
