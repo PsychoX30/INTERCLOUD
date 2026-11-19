@@ -1,10 +1,10 @@
 import React, { useState } from "react";
 import { Menu, X, Phone, LogIn } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN } from "../mock/data";
 import { useLang } from "../i18n/LanguageContext";
 import LanguageToggle from "./LanguageToggle";
 import useBranding from "../hooks/useBranding";
+import useContact from "../hooks/useContact";
 
 const Logo = () => {
   const branding = useBranding();
@@ -67,7 +67,8 @@ const Header = () => {
     navigate({ pathname: "/", hash: `#${hash}` });
   };
 
-  const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
+  const contact = useContact();
+  const waLink = contact.waLink;
 
   return (
     <header

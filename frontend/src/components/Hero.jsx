@@ -1,7 +1,7 @@
 import React from "react";
 import { ArrowRight, PlayCircle, Building2, Code2, Headphones } from "lucide-react";
-import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN } from "../mock/data";
-import { useLang } from "../i18n/LanguageContext";
+import { useLang, pick } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 
 const CurvedAccent = () => (
   <svg
@@ -41,9 +41,29 @@ const BottomWave = () => (
 );
 
 const Hero = () => {
-  const { lang, t, cmsImages } = useLang();
-  const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
+  const { lang, t, cmsImages, cmsLists } = useLang();
+  const contact = useContact();
+  const waLink = contact.waLink;
   const heroImg = cmsImages?.hero_main;
+
+  // CMS-managed highlight words and stat badges win; an empty CMS list keeps
+  // the shipped wording so the hero never renders blank.
+  const cmsTerms = (Array.isArray(cmsLists?.hero_terms) ? cmsLists.hero_terms : [])
+    .map((x) => (x?.text ? pick(x.text, lang) : ""))
+    .filter(Boolean);
+  const termA = cmsTerms[0] || t("hero.terms");
+  const termB = cmsTerms[1] || t("hero.terms2");
+  const cmsStats = (Array.isArray(cmsLists?.stats) ? cmsLists.stats : [])
+    .filter((x) => x && (x.value || x.label))
+    .slice(0, 3)
+    .map((x) => ({ label: pick(x.label, lang), value: x.value || "" }));
+  const stats = cmsStats.length
+    ? cmsStats
+    : [
+        { label: t("hero.stat.sla"), value: t("hero.stat.sla.value") },
+        { label: t("hero.stat.support"), value: t("hero.stat.support.value") },
+        { label: t("hero.stat.dc"), value: t("hero.stat.dc.value") },
+      ];
 
   return (
     <section
@@ -69,9 +89,9 @@ const Hero = () => {
           <div className="mt-5 w-16 h-1 bg-[#f5b120] rounded-full" />
           <p className="mt-6 text-white/80 text-base md:text-lg max-w-2xl leading-relaxed">
             {t("hero.body")}{" "}
-            <span className="text-white font-medium">{t("hero.terms")}</span>,{" "}
+            <span className="text-white font-medium">{termA}</span>,{" "}
             {t("hero.body2")}{" "}
-            <span className="text-white font-medium">{t("hero.terms2")}</span>{" "}
+            <span className="text-white font-medium">{termB}</span>{" "}
             {t("hero.body3")}
           </p>
 
@@ -121,18 +141,12 @@ const Hero = () => {
             <div className="absolute inset-0 bg-gradient-to-t from-[#0a2350] via-[#0a2350]/30 to-transparent" />
             <div className="absolute bottom-4 left-4 right-4 bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4">
               <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-[#f5b120] text-xs font-semibold">{t("hero.stat.sla")}</div>
-                  <div className="text-white text-2xl font-extrabold">{t("hero.stat.sla.value")}</div>
-                </div>
-                <div>
-                  <div className="text-[#f5b120] text-xs font-semibold">{t("hero.stat.support")}</div>
-                  <div className="text-white text-2xl font-extrabold">{t("hero.stat.support.value")}</div>
-                </div>
-                <div>
-                  <div className="text-[#f5b120] text-xs font-semibold">{t("hero.stat.dc")}</div>
-                  <div className="text-white text-2xl font-extrabold">{t("hero.stat.dc.value")}</div>
-                </div>
+                {stats.map((s, i) => (
+                  <div key={`${s.label}-${i}`}>
+                    <div className="text-[#f5b120] text-xs font-semibold">{s.label}</div>
+                    <div className="text-white text-2xl font-extrabold">{s.value}</div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>

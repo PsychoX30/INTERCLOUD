@@ -1,9 +1,9 @@
 import React from "react";
 import { Instagram, Mail, MessageCircle, MapPin } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN, EMAIL, ADDRESS } from "../mock/data";
-import { useLang, pick } from "../i18n/LanguageContext";
+import { useLang } from "../i18n/LanguageContext";
 import useBranding from "../hooks/useBranding";
+import useContact from "../hooks/useContact";
 
 // Section anchor - behaves like Header's nav links: scroll on landing,
 // route+scroll on other pages. Kept local since Footer is the only other
@@ -31,7 +31,8 @@ const SectionLink = ({ hash, children, className, testid }) => {
 
 const Footer = () => {
   const { lang, t, cmsLists } = useLang();
-  const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
+  const contact = useContact();
+  const waLink = contact.waLink;
   const branding = useBranding();
 
   return (
@@ -57,7 +58,7 @@ const Footer = () => {
           </p>
           <div className="mt-5 flex items-start gap-3 text-white/75 text-sm">
             <MapPin className="h-5 w-5 text-[#f5b120] flex-shrink-0 mt-0.5" />
-            <span>{pick(ADDRESS, lang)}</span>
+            <span>{contact.addressText}</span>
           </div>
 
           <div className="mt-5 flex items-center gap-3">
@@ -67,7 +68,7 @@ const Footer = () => {
             <a href={waLink} target="_blank" rel="noreferrer" className="h-10 w-10 rounded-full bg-white/10 hover:bg-[#f5b120] hover:text-[#0a2350] flex items-center justify-center transition-colors">
               <MessageCircle className="h-4 w-4" />
             </a>
-            <a href={`mailto:${EMAIL}`} className="h-10 w-10 rounded-full bg-white/10 hover:bg-[#f5b120] hover:text-[#0a2350] flex items-center justify-center transition-colors">
+            <a href={contact.mailtoHref} className="h-10 w-10 rounded-full bg-white/10 hover:bg-[#f5b120] hover:text-[#0a2350] flex items-center justify-center transition-colors">
               <Mail className="h-4 w-4" />
             </a>
           </div>

@@ -19,7 +19,10 @@ const getInitials = (name) =>
 
 const PartnerLogo = ({ p }) => {
   const [broken, setBroken] = useState(false);
-  const hasLogo = !!p.domain && !broken;
+  // A CMS-supplied logo URL wins; without one fall back to Google's favicon
+  // service for the partner's domain, then to initials.
+  const src = p.logo || (p.domain ? faviconUrl(p.domain) : "");
+  const hasLogo = !!src && !broken;
 
   return (
     <div
@@ -30,7 +33,7 @@ const PartnerLogo = ({ p }) => {
       <div className="h-11 w-11 flex-shrink-0 rounded-lg bg-slate-50 border border-slate-100 group-hover:border-[#f5b120]/40 flex items-center justify-center overflow-hidden">
         {hasLogo ? (
           <img
-            src={faviconUrl(p.domain)}
+            src={src}
             alt={`${p.name} logo`}
             className="h-8 w-8 object-contain"
             loading="lazy"

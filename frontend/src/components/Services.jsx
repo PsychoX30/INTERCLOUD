@@ -1,8 +1,9 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowUpRight, CheckCircle2, X, MessageCircle, Lightbulb, Target, GitCompareArrows, Sparkles, LogIn } from "lucide-react";
-import { services, buildWaLink } from "../mock/data";
-import { useLang, pick } from "../i18n/LanguageContext";
+import { services } from "../mock/data";
+import { useLang, pick, useWaMessage } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 import {
   Dialog,
   DialogContent,
@@ -25,6 +26,8 @@ const SectionHeader = ({ icon: Icon, label }) => (
 const Services = () => {
   const [active, setActive] = useState(null);
   const { lang, t } = useLang();
+  const contact = useContact();
+  const waMessage = useWaMessage();
 
   return (
     <section id="services" className="relative py-24 bg-slate-50" data-testid="services-section">
@@ -108,9 +111,7 @@ const Services = () => {
             const comparison = pick(active.comparison, lang);
             const featuresList = pick(active.features, lang) || [];
             const startFrom = pick(active.startFrom, lang);
-            const waTemplate = lang === "en"
-              ? `Hello Intercloud Digital Inovasi, I'm interested in *${title}*. Please share package details, pricing, and onboarding steps. Thank you.`
-              : `Halo Intercloud Digital Inovasi, saya tertarik dengan layanan *${title}*. Mohon informasi paket, harga, dan proses onboarding-nya. Terima kasih.`;
+            const waTemplate = waMessage("wa.prefilled.svc", title);
             return (
               <>
                 <div className="relative bg-[#0a2350] text-white p-7 md:p-8 flex-shrink-0">
@@ -225,7 +226,7 @@ const Services = () => {
                           {lang === "en" ? "Order in Portal" : "Pesan di Portal"}
                         </Link>
                         <a
-                          href={buildWaLink(waTemplate)}
+                          href={contact.waLinkWith(waTemplate)}
                           target="_blank"
                           rel="noreferrer"
                           data-testid={`service-modal-wa-${active.id}`}

@@ -6,12 +6,14 @@ import {
   AccordionTrigger,
 } from "./ui/accordion";
 import { HelpCircle, MessageCircle } from "lucide-react";
-import { faqs as fallbackFaqs, WHATSAPP_LINK_ID, WHATSAPP_LINK_EN } from "../mock/data";
+import { faqs as fallbackFaqs } from "../mock/data";
 import { useLang, pick } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 
 const FAQ = () => {
   const { lang, t, cmsFaqs } = useLang();
-  const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
+  const contact = useContact();
+  const waLink = contact.waLink;
   // Admin ▸ Site Content overrides win; empty CMS list falls back to defaults.
   const faqs = (cmsFaqs && cmsFaqs.length) ? cmsFaqs : fallbackFaqs;
 

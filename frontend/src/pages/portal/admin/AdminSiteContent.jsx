@@ -130,6 +130,7 @@ const SECTIONS = [
     { key: "footer.tagline", label: "Tagline" },
     { key: "footer.pages", label: "Judul kolom Pages" },
     { key: "footer.services", label: "Judul kolom Layanan" },
+    { key: "footer.legal", label: "Judul kolom Legal" },
     { key: "footer.copy", label: "Teks copyright" },
     { key: "footer.made", label: "Baris penutup" },
   ]},
@@ -139,6 +140,20 @@ const SECTIONS = [
     { key: "hero.stat.sla.value", label: "Nilai statistik SLA" },
     { key: "hero.stat.support.value", label: "Nilai statistik support" },
     { key: "hero.stat.dc.value", label: "Nilai statistik data center" },
+  ]},
+  { id: "wa", title: "Pesan WhatsApp (teks otomatis)", keys: [
+    { key: "wa.prefilled.generic", label: "Pesan umum" },
+    { key: "wa.prefilled.consult", label: "Konsultasi gratis" },
+    { key: "wa.prefilled.decide", label: "Bantu pilih layanan" },
+    { key: "wa.prefilled.customQuote", label: "Minta penawaran custom" },
+    { key: "wa.prefilled.pop", label: "Tanya ketersediaan PoP" },
+    // The two template entries take runtime values (service / plan name), so
+    // their CMS override only applies when left as a plain sentence.
+    { key: "wa.prefilled.svc", label: "Tanya layanan tertentu" },
+    { key: "wa.prefilled.plan", label: "Pesan paket harga tertentu" },
+  ]},
+  { id: "a11y", title: "Aksesibilitas", keys: [
+    { key: "lang.toggle.aria", label: "Label tombol ganti bahasa" },
   ]},
   { id: "testimonials", title: "Testimoni (judul)", keys: [
     { key: "tst.tag", label: "Label kecil" },
@@ -242,6 +257,18 @@ const IMAGE_SLOTS = [
   { slot: "infra_servers",  label: "Infrastruktur - Server" },
   { slot: "infra_fiber",    label: "Infrastruktur - Fiber" },
   { slot: "infra_network",  label: "Infrastruktur - Network" },
+];
+
+// Contact details the landing page renders. The backend has always accepted and
+// stored these under `contact`; without this editor the field was writable only
+// through the JSON tab, and no component read it either.
+const CONTACT_FIELDS = [
+  { path: "phone",     label: "Telepon / WhatsApp (yang tampil)", placeholder: "+62 878-1239-7187" },
+  { path: "whatsapp_number", label: "Nomor WhatsApp (angka saja, untuk link wa.me)", placeholder: "6287812397187" },
+  { path: "email",     label: "Email",            placeholder: "support@intercloud-digital.com" },
+  { path: "address_id", label: "Alamat (Indonesia)", placeholder: "" },
+  { path: "address_en", label: "Alamat (English)",   placeholder: "" },
+  { path: "maps_url",  label: "URL Google Maps",  placeholder: "https://maps.google.com/?q=..." },
 ];
 
 const DEVICES = {
@@ -384,6 +411,9 @@ const AdminSiteContent = () => {
       },
     }));
   };
+
+  const setContactField = (path, val) =>
+    setContent((c) => ({ ...c, contact: { ...(c.contact || {}), [path]: val } }));
 
   const setFaq = (i, path, val) => {
     setContent((c) => {
@@ -585,6 +615,7 @@ const AdminSiteContent = () => {
               { k: "faqs", label: `FAQ (${(content.faqs || []).length})` },
               { k: "lists", label: "Daftar Konten" },
               { k: "images", label: "Gambar" },
+              { k: "contact", label: "Kontak" },
               { k: "json", label: "JSON" },
             ].map((t) => (
               <button key={t.k}
@@ -719,6 +750,27 @@ const AdminSiteContent = () => {
                   Bagian yang disembunyikan tidak dirender maupun dihapus — teksnya tetap tersimpan
                   dan bisa ditampilkan lagi kapan saja.
                 </div>
+              </div>
+            )}
+
+            {tab === "contact" && (
+              <div className="space-y-4" data-testid="cms-contact">
+                <div className="text-xs text-slate-500">
+                  Dipakai oleh Hero, CTA, dan Footer. Kosong = pakai kontak bawaan dari kode.
+                  Nomor WhatsApp cukup angka, mis. <span className="font-mono">6287812397187</span>.
+                </div>
+                {CONTACT_FIELDS.map((f) => (
+                  <div key={f.path}>
+                    <label className="text-[10px] uppercase tracking-widest text-slate-400">{f.label}</label>
+                    <input
+                      value={(content.contact || {})[f.path] ?? ""}
+                      onChange={(e) => setContactField(f.path, e.target.value)}
+                      placeholder={f.placeholder || ""}
+                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#f5b120]/40"
+                      data-testid={`cms-contact-${f.path}`}
+                    />
+                  </div>
+                ))}
               </div>
             )}
 

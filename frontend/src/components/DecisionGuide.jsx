@@ -1,11 +1,12 @@
 import React from "react";
 import { CheckCircle2, ArrowRight, MessageCircle } from "lucide-react";
 import { Globe2, Boxes, HardDrive } from "lucide-react";
-import { buildWaLink } from "../mock/data";
-import { useLang } from "../i18n/LanguageContext";
+import { useLang, useWaMessage } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 
 const DecisionGuide = () => {
   const { lang, t } = useLang();
+  const contact = useContact();
 
   const guides = [
     {
@@ -38,9 +39,9 @@ const DecisionGuide = () => {
     },
   ];
 
-  const waMsg = lang === "en"
-    ? "Hello Intercloud, I need help choosing the right service (Hosting / VPS / Dedicated Server) for my business."
-    : "Halo Intercloud, saya butuh konsultasi untuk memilih layanan yang paling sesuai (Hosting / VPS / Dedicated Server) untuk kebutuhan bisnis saya.";
+  const waMsg = useWaMessage();
+  const waMsgText = waMsg("wa.prefilled.decide");
+  const waHref = contact.waLinkWith(waMsgText);
 
   return (
     <section id="decision-guide" className="relative py-24 bg-white" data-testid="decision-guide-section">
@@ -131,7 +132,7 @@ const DecisionGuide = () => {
             <p className="text-white/80 text-sm mt-1">{t("dg.help.body")}</p>
           </div>
           <a
-            href={buildWaLink(waMsg)}
+            href={waHref}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-full bg-[#f5b120] hover:bg-[#ffc94a] text-[#0a2350] px-6 py-3 text-sm font-semibold transition-colors flex-shrink-0"

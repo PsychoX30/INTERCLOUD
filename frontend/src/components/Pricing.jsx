@@ -4,22 +4,23 @@ import {
   dedicatedTiers,
   colocationTiers,
   interconnectTiers,
-  buildWaLink,
 } from "../mock/data";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
-import { useLang, pick } from "../i18n/LanguageContext";
+import { useLang, pick, useWaMessage } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 
 const PlanCard = ({ p, categoryName }) => {
   const { lang, t } = useLang();
+  const contact = useContact();
+  const waMessage = useWaMessage();
   const name = pick(p.name, lang);
   const setup = pick(p.setup, lang);
   const items = pick(p.items, lang) || [];
   const note = pick(p.note, lang);
   const subtle = pick(p.subtle, lang);
 
-  const waMsg = lang === "en"
-    ? `Hello Intercloud, I'd like to order the *${name}* plan (${categoryName}). Please share more info.`
-    : `Halo Intercloud, saya ingin memesan paket *${name}* (${categoryName}). Mohon informasi lebih lanjut.`;
+  const waMsg = waMessage("wa.prefilled.plan", name, categoryName);
+  const waHref = contact.waLinkWith(waMsg);
 
   return (
     <div
@@ -71,7 +72,7 @@ const PlanCard = ({ p, categoryName }) => {
       )}
 
       <a
-        href={buildWaLink(waMsg)}
+        href={waHref}
         target="_blank"
         rel="noreferrer"
         data-testid={`pricing-cta-${p.id}`}
@@ -107,9 +108,10 @@ const TAB_STYLES =
 
 const Pricing = () => {
   const { lang, t } = useLang();
-  const customQuoteMsg = lang === "en"
-    ? "Hello Intercloud, I'd like a custom quotation for enterprise IT infrastructure. Please share more information."
-    : "Halo Intercloud, saya ingin custom quotation untuk kebutuhan infrastruktur IT enterprise. Mohon informasi lebih lanjut.";
+  const waMessage = useWaMessage();
+  const contact = useContact();
+  const customQuoteMsg = waMessage("wa.prefilled.customQuote");
+  const customQuoteHref = contact.waLinkWith(customQuoteMsg);
 
   return (
     <section id="pricing" className="relative py-24 bg-slate-50" data-testid="pricing-section">
@@ -163,7 +165,7 @@ const Pricing = () => {
             <p className="text-slate-600 text-sm mt-1">{t("pr.custom.body")}</p>
           </div>
           <a
-            href={buildWaLink(customQuoteMsg)}
+            href={customQuoteHref}
             target="_blank"
             rel="noreferrer"
             data-testid="custom-quote-wa"

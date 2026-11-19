@@ -1,19 +1,20 @@
 import React from "react";
 import { ArrowRight, Mail, Phone, MapPin, Rocket } from "lucide-react";
-import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN, WHATSAPP_PHONE, EMAIL, ADDRESS, buildWaLink } from "../mock/data";
-import { useLang, pick } from "../i18n/LanguageContext";
+import { useLang, useWaMessage } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 
 const CTA = () => {
-  const { lang, t } = useLang();
-  const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
-  const consultMsg = lang === "en"
-    ? "Hello Intercloud, I'd like a free consultation for my business's IT infrastructure needs."
-    : "Halo Intercloud, saya ingin konsultasi gratis kebutuhan infrastruktur IT bisnis saya.";
+  const { t } = useLang();
+  const contact = useContact();
+  const waMsg = useWaMessage();
+  const waLink = contact.waLink;
+  const consultMsg = waMsg("wa.prefilled.consult");
+  const consultLink = contact.waLinkWith(consultMsg);
 
   const contactList = [
-    { icon: Phone, label: t("cta_sec.phone"), value: WHATSAPP_PHONE, href: waLink },
-    { icon: Mail, label: t("cta_sec.email"), value: EMAIL, href: `mailto:${EMAIL}` },
-    { icon: MapPin, label: t("cta_sec.office"), value: pick(ADDRESS, lang), href: "https://maps.google.com/?q=Menara+Cakrawala+Jl+MH+Thamrin+No+9+Jakarta+Pusat" },
+    { icon: Phone, label: t("cta_sec.phone"), value: contact.phone, href: waLink },
+    { icon: Mail, label: t("cta_sec.email"), value: contact.email, href: contact.mailtoHref },
+    { icon: MapPin, label: t("cta_sec.office"), value: contact.addressText, href: contact.mapsUrl },
   ];
 
   return (
@@ -36,7 +37,7 @@ const CTA = () => {
 
           <div className="mt-8 flex flex-wrap gap-3">
             <a
-              href={buildWaLink(consultMsg)}
+              href={consultLink}
               target="_blank"
               rel="noreferrer"
               data-testid="cta-chat-now"
@@ -45,7 +46,7 @@ const CTA = () => {
               {t("cta.chatNow")} <ArrowRight className="h-4 w-4" />
             </a>
             <a
-              href={`mailto:${EMAIL}`}
+              href={contact.mailtoHref}
               className="inline-flex items-center gap-2 rounded-full bg-white/10 hover:bg-white/15 border border-white/20 text-white px-6 py-3.5 text-sm font-semibold transition-colors"
             >
               <Mail className="h-4 w-4" /> {t("cta.sendEmail")}

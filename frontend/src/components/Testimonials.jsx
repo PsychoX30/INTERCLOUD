@@ -68,6 +68,7 @@ const Testimonials = () => {
         name: x.name || "",
         role: (x.role && (x.role[lang] || x.role.id)) || "",
         rating: typeof x.rating === "number" ? x.rating : 5,
+        avatar: x.avatar || "",
       }))
     : t.items;
 
@@ -102,9 +103,19 @@ const Testimonials = () => {
                   <Star key={s} className="h-3.5 w-3.5 fill-[#f5b120] text-[#f5b120]" />
                 ))}
               </div>
-              <figcaption className="mt-3">
-                <div className={`text-sm font-extrabold ${i === 1 ? "text-white" : "text-[#0a2350]"}`}>{x.name}</div>
-                <div className={`text-xs ${i === 1 ? "text-white/60" : "text-slate-500"}`}>{x.role}</div>
+              <figcaption className={`mt-3 ${x.avatar ? "flex items-center gap-3" : ""}`}>
+                {x.avatar && (
+                  <img
+                    src={x.avatar}
+                    alt={x.name}
+                    loading="lazy"
+                    className="h-9 w-9 rounded-full object-cover flex-shrink-0 border border-slate-200"
+                  />
+                )}
+                <div>
+                  <div className={`text-sm font-extrabold ${i === 1 ? "text-white" : "text-[#0a2350]"}`}>{x.name}</div>
+                  <div className={`text-xs ${i === 1 ? "text-white/60" : "text-slate-500"}`}>{x.role}</div>
+                </div>
               </figcaption>
             </figure>
           ))}

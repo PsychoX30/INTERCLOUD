@@ -1,10 +1,11 @@
 import React from "react";
 import { MapPin, ArrowRight, Building2, Server, Layers, Waypoints } from "lucide-react";
-import { buildWaLink } from "../mock/data";
 import { useLang } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 
 const PoP = () => {
   const { t } = useLang();
+  const contact = useContact();
 
   const items = [
     { id: "metta", icon: Server,   nameKey: "pop.item1.name", descKey: "pop.item1.desc", floor: "5F" },
@@ -86,7 +87,7 @@ const PoP = () => {
             <p className="text-white/80 text-sm mt-1">{t("pop.cta.body")}</p>
           </div>
           <a
-            href={buildWaLink(t("wa.prefilled.pop"))}
+            href={contact.waLinkWith(t("wa.prefilled.pop"))}
             target="_blank"
             rel="noreferrer"
             data-testid="pop-cta-wa"

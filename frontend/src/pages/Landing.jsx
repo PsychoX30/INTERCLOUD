@@ -14,8 +14,8 @@ import Testimonials from "../components/Testimonials";
 import CTA from "../components/CTA";
 import Footer from "../components/Footer";
 import { MessageCircle } from "lucide-react";
-import { WHATSAPP_LINK_ID, WHATSAPP_LINK_EN } from "../mock/data";
 import { useLang } from "../i18n/LanguageContext";
+import useContact from "../hooks/useContact";
 import DefaultSeo from "../components/DefaultSeo";
 
 const CANONICAL = "https://intercloud-digital.com/";
@@ -71,11 +71,10 @@ const useLandingSEO = () => {
 };
 
 const FloatingWA = () => {
-  const { lang } = useLang();
-  const waLink = lang === "en" ? WHATSAPP_LINK_EN : WHATSAPP_LINK_ID;
+  const contact = useContact();
   return (
     <a
-      href={waLink}
+      href={contact.waLink}
       target="_blank"
       rel="noreferrer"
       aria-label="Chat WhatsApp"

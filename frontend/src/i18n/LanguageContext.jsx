@@ -405,3 +405,32 @@ export const pick = (field, lang) => {
   if (typeof field === "string") return field;
   return field[lang] ?? field.id ?? "";
 };
+
+/**
+ * Resolve the pre-filled WhatsApp message for a key such as "wa.prefilled.consult".
+ *
+ * Some entries in the shipped dict are already *templates* - functions that take
+ * runtime values (a service title, a plan name). A function can never be a plain
+ * CMS override, so those are invoked structurally here; a plain string key falls
+ * through to `t()`, which is where CMS overrides apply.
+ *
+ * Why the components must call this instead of hardcoding the sentence: the
+ * sentence is editable in Admin ▸ Site Content, and a component that spells the
+ * text out inline silently ignores the CMS. Every shipped value is identical to
+ * the inline string it replaces, so wiring this in is render-neutral until an
+ * admin actually edits one.
+ */
+export const useWaMessage = () => {
+  const { t, lang } = useLang();
+  return useCallback(
+    (key, ...args) => {
+      const entry = dict[key];
+      const active = entry && typeof entry === "object" ? entry[lang] : undefined;
+      if (typeof active === "function") return active(...args);
+      // A plain string - or a template the active language does not define -
+      // resolves through t() so an admin override still wins.
+      return t(key);
+    },
+    [t, lang]
+  );
+};
