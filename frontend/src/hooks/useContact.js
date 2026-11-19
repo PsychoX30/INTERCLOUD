@@ -27,9 +27,12 @@ const buildWaLink = (number, message) =>
 export const useContact = () => {
   const { lang, contactOverride } = useLang();
   const waMessage = useWaMessage();
-  const o = contactOverride || {};
 
+  // `contactOverride` is read inside the memo body, not captured from a
+  // variable defined above it: `const o = contactOverride || {}` would mint a
+  // fresh object on every render and make the memo pointless.
   return useMemo(() => {
+    const o = contactOverride || {};
     const number = o.whatsapp_number || WHATSAPP_NUMBER;
     const phone = o.phone || WHATSAPP_PHONE;
     const email = o.email || EMAIL;
@@ -51,7 +54,7 @@ export const useContact = () => {
       // Same number, caller-chosen message.
       waLinkWith: (message) => buildWaLink(number, message),
     };
-  }, [o, lang, waMessage]);
+  }, [contactOverride, lang, waMessage]);
 };
 
 export default useContact;
