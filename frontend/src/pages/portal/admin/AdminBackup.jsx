@@ -407,15 +407,22 @@ const AdminBackup = () => {
 };
 
 const BackupHistory = () => {
+  const { user } = useAuth();
+  // Same gap as the parent page: history GET/POST and the per-archive download
+  // are all get_current_admin in admin_core.py.
+  const canEdit = !!user && user.role === "admin";
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
   const load = () => api.get("/admin/backup/history").then((r) => setRows(r.data)).catch(() => {});
   useEffect(() => { load(); }, []);
   const trigger = async () => {
+    if (!canEdit) { setNotice("Hanya admin yang dapat membuat backup."); return; }
     setBusy(true);
     try { await api.post("/admin/backup/trigger"); load(); } finally { setBusy(false); }
   };
   const dl = (b) => {
+    if (!canEdit) { setNotice("Hanya admin yang dapat mengunduh arsip backup."); return; }
     const token = localStorage.getItem(TOKEN_KEY) || "";
     window.open(`${API_BASE}/api/portal/admin/backup/history/${b.id}/download?token=${encodeURIComponent(token)}`, "_blank");
   };
@@ -432,6 +439,12 @@ const BackupHistory = () => {
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} Backup sekarang
         </button>
       </div>
+      {notice && (
+        <div className="mt-3 rounded-lg px-3 py-2 text-xs bg-amber-50 border border-amber-200 text-amber-900"
+             data-testid="backup-history-notice">
+          {notice}
+        </div>
+      )}
       {rows.length > 0 && (
         <div className="mt-4 divide-y divide-slate-100 text-sm" data-testid="backup-history-list">
           {rows.slice(0, 10).map((b) => (
