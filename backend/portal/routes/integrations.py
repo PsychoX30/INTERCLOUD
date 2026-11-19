@@ -61,14 +61,6 @@ def _iv2_settings_for_module(module: str, cfg: dict) -> dict:
         return {"credentials": {"host": _url(2087), "username": cfg.get("username"),
                                 "api_token": cfg.get("api_token")},
                 "options": {"ssl_verify": False}}
-    if module == "plesk":
-        return {"credentials": {"host": _url(8443), "username": cfg.get("username"),
-                                "password": cfg.get("password")},
-                "options": {"ssl_verify": False}}
-    if module == "directadmin":
-        return {"credentials": {"host": _url(2222), "username": cfg.get("username"),
-                                "api_token": cfg.get("api_token")},
-                "options": {"ssl_verify": False}}
     if module == "proxmox":
         return {"credentials": {"host": _url(8006), "username": cfg.get("username"),
                                 "password": cfg.get("password"),
@@ -116,10 +108,6 @@ async def _live_test_connection(module: str, cfg: dict) -> dict:
         settings = _iv2_settings_for_module(module, cfg)
         if module == "cpanel":
             result = await iv2.CpanelClient(settings).test_connection()
-        elif module == "plesk":
-            result = await iv2.PleskClient(settings).test_connection()
-        elif module == "directadmin":
-            result = await iv2.DirectAdminClient(settings).test_connection()
         elif module == "proxmox":
             result = await iv2.ProxmoxClient(settings).test_connection()
         elif module == "mikrotik":
@@ -363,20 +351,6 @@ async def integrations_v2_test(provider: str, admin=Depends(get_current_admin)):
         if missing or not secret_ok:
             return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
         return await iv2.CpanelClient(settings).test_connection()
-    if provider == "plesk":
-        c = settings.get("credentials") or {}
-        missing = [k for k in ("host", "username") if not c.get(k)]
-        secret_ok = bool(c.get("api_token") or c.get("password"))
-        if missing or not secret_ok:
-            return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
-        return await iv2.PleskClient(settings).test_connection()
-    if provider == "directadmin":
-        c = settings.get("credentials") or {}
-        missing = [k for k in ("host", "username") if not c.get(k)]
-        secret_ok = bool(c.get("api_token") or c.get("password"))
-        if missing or not secret_ok:
-            return {"ok": False, "message": f"Missing credentials: {', '.join(missing) or 'api_token/password'}"}
-        return await iv2.DirectAdminClient(settings).test_connection()
     if provider == "rna":
         c = settings.get("credentials") or {}
         missing = [k for k in ("reseller_id", "api_key") if not c.get(k)]

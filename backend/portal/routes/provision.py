@@ -344,7 +344,7 @@ async def _order_log(db, order: dict, step: str, msg: str) -> None:
 
 async def _auto_provision(db, order: dict) -> dict:
     """Run auto-provisioning based on product category.
-    Uses LIVE integration APIs (cPanel/Plesk/DirectAdmin/Proxmox) when they are
+    Uses LIVE integration APIs (cPanel/WHM + Proxmox) when they are
     enabled under /admin/integrations. When no live integration is available the
     service is created in `pending` state and an admin follow-up task is raised -
     no fake/mock success is ever recorded.
@@ -386,12 +386,13 @@ async def _auto_provision(db, order: dict) -> dict:
 
     hosting_credentials = None
     if cat in ("hosting",):
-        # Live provisioning cPanel/Plesk/DirectAdmin bila integrasi aktif.
+        # Live provisioning cPanel/WHM bila integrasi aktif.
         hosting_cfg = _resolve_hosting_config(prod, cfg)
+        # Only WHM/cPanel is supported. Plesk and DirectAdmin were removed:
+        # they had no suspend/unsuspend/terminate method, so enabling them
+        # would have made lifecycle actions fail silently.
         _PANELS = [
             ("cpanel", "cPanel/WHM", iv2.CpanelClient, "package"),
-            ("plesk", "Plesk", iv2.PleskClient, "plan"),
-            ("directadmin", "DirectAdmin", iv2.DirectAdminClient, "package"),
         ]
         chosen = None
         cp_report = []
@@ -468,7 +469,7 @@ async def _auto_provision(db, order: dict) -> dict:
                     domain=domain, username=uname, password=password,
                     contact_email=order["user_email"], **{pkg_kw: resolved_package})
                 bare_host = re.sub(r"^https?://", "", (settings.get("credentials") or {}).get("host") or "").split(":")[0].split("/")[0]
-                panel_port = {"cpanel": 2083, "plesk": 8443, "directadmin": 2222}[key]
+                panel_port = {"cpanel": 2083}[key]
                 panel_url = f"https://{bare_host}:{panel_port}" if bare_host else ""
                 account_ip = (account.get("ip") or account.get("ip_address") or ""
                               if isinstance(account, dict) else "")
@@ -514,7 +515,7 @@ async def _auto_provision(db, order: dict) -> dict:
             cp_configured = bool(cp_report)
             reason = (f"Tidak ada WHM server aktif/terjangkau yang menyediakan package "
                       f"'{requested_package}'." if cp_configured and requested_package else
-                      "Integrasi panel hosting (cPanel/Plesk/DirectAdmin) belum aktif.")
+                      "Integrasi panel hosting (cPanel/WHM) belum aktif.")
             cfg["provision_error"] = reason
             await _log("manual_provision_required",
                        reason + " Provisioning belum selesai; tindak lanjut admin diperlukan.")
@@ -1545,15 +1546,13 @@ async def admin_service_verify_vm(sid: str, payload: dict,
 
 @router.post("/admin/provisioning/hosting/create")
 async def admin_provision_hosting_account(payload: dict, admin=Depends(require_roles("admin", "support"))):
-    """Manually create a hosting account on the LIVE control panel (cPanel/
-    Plesk/DirectAdmin). Fails clearly when no integration is enabled."""
+    """Manually create a hosting account on the LIVE control panel (cPanel/WHM).
+    Fails clearly when the integration is not enabled."""
     db = await _get_db()
-    panels = {"cpanel": ("cPanel/WHM", iv2.CpanelClient, "package"),
-              "plesk": ("Plesk", iv2.PleskClient, "plan"),
-              "directadmin": ("DirectAdmin", iv2.DirectAdminClient, "package")}
-    key = (payload.get("panel") or "").lower()
+    panels = {"cpanel": ("cPanel/WHM", iv2.CpanelClient, "package")}
+    key = (payload.get("panel") or "cpanel").lower()
     if key not in panels:
-        raise HTTPException(status_code=400, detail="panel harus cpanel / plesk / directadmin")
+        raise HTTPException(status_code=400, detail="panel harus cpanel")
     s = await iv2.get_settings(db, key)
     if not s or not s.get("enabled"):
         raise HTTPException(status_code=400,

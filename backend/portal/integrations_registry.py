@@ -1,4 +1,4 @@
-"""Module registry for third-party integrations (cPanel, Plesk, Proxmox, MikroTik,
+"""Module registry for third-party integrations (cPanel, Proxmox, MikroTik,
 Duitku, Xendit, Midtrans, SMTP, etc.).
 
 Each module declares the fields the admin must fill in the "Add Server" dialog,

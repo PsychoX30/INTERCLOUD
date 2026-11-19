@@ -225,7 +225,7 @@ class CategoryOut(CategoryIn):
 # ---------- SERVICES (client-owned instances) ----------
 class HostingConfig(BaseModel):
     """Skema config layanan hosting (services.config untuk category=hosting)."""
-    control_panel: Literal["cpanel", "plesk", "directadmin"] = "cpanel"
+    control_panel: Literal["cpanel"] = "cpanel"
     domain: str = ""
     username: str = ""
     package: str = ""
@@ -237,7 +237,7 @@ class HostingConfig(BaseModel):
 
 class HostingProvisionIn(BaseModel):
     """Payload provisioning akun hosting via panel API."""
-    control_panel: Literal["cpanel", "plesk", "directadmin"] = "cpanel"
+    control_panel: Literal["cpanel"] = "cpanel"
     domain: str
     username: str = ""
     password: str = ""

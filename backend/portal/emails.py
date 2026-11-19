@@ -1216,7 +1216,9 @@ async def run_stranded_service_sweep(db, *, now: Optional[datetime] = None) -> d
     promoted, skipped, errors = 0, 0, 0
     details: list[dict] = []
 
-    cursor = db.services.find({"status": "pending"})
+    # Test services are excluded: promoting one to `active` would put an
+    # unbilled lab row into the renewal cycle and start issuing invoices.
+    cursor = db.services.find({"status": "pending", "is_test": {"$ne": True}})
     async for svc in cursor:
         if promoted >= _STRANDED_MAX_PROMOTIONS:
             break

@@ -104,8 +104,11 @@ async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
             "detail": "Verifikasi pembayaran untuk memproses provisioning",
             "link": "/portal/admin/orders",
         })
+    # is_test=True rows are internal setup data: they must never raise an
+    # operational alert, or a lab service reads as a production failure.
+    _not_test = {"is_test": {"$ne": True}}
     failed_services = await db.services.find(
-        {"config.provision_status": "failed"}).sort("created_at", -1).to_list(5)
+        {"config.provision_status": "failed", **_not_test}).sort("created_at", -1).to_list(5)
     for s in failed_services:
         addons = (s.get("config") or {}).get("addons") or []
         detail = ("Termasuk add-on: " + ", ".join(addons)) if addons else "Perlu tindak lanjut manual di panel"
@@ -117,7 +120,7 @@ async def _build_admin_alerts(db, staff, scope_user_ids=None) -> list:
             "link": "/portal/admin/services",
         })
     pending_provision = await db.services.find(
-        {"config.provision_status": "pending"}).sort("created_at", -1).to_list(5)
+        {"config.provision_status": "pending", **_not_test}).sort("created_at", -1).to_list(5)
     for s in pending_provision:
         alerts.append({
             "type": "provision_pending",
@@ -1162,8 +1165,9 @@ async def owner_overview(owner=Depends(_get_current_owner)):
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    # ---- MRR: sum of active-service monthly prices ----
-    services = await db.services.find({"status": "active"}).to_list(5000)
+    # ---- MRR: sum of active-service monthly prices (test rows excluded) ----
+    services = await db.services.find(
+        {"status": "active", "is_test": {"$ne": True}}).to_list(5000)
     mrr = sum(float(s.get("price_monthly") or 0) for s in services)
     active_services_count = len(services)
     total_clients = await db.users.count_documents({"role": "client"})

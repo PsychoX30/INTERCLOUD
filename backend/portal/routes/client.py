@@ -101,7 +101,7 @@ async def client_services(
 
 @router.get("/client/hosting-accounts")
 async def client_hosting_accounts(user=Depends(get_current_user)):
-    """Daftar akun hosting (cPanel/Plesk/DirectAdmin) milik klien."""
+    """Daftar akun hosting (cPanel/WHM) milik klien."""
     db = await _get_db()
     docs = await db.services.find(
         {"user_id": ObjectId(user["id"]), "category": "hosting"}

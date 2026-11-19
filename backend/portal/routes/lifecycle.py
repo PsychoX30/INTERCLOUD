@@ -198,6 +198,44 @@ async def _delete_service_vm(db, svc: dict) -> None:
             "terminate cleanup gagal utk service %s: %s", svc.get("_id"), e)
 
 
+@router.post("/admin/services/{sid}/test-flag")
+async def admin_service_test_flag(sid: str, payload: dict, request: Request,
+                                  admin=Depends(get_current_admin)):
+    """Mark a service as internal test data (or clear the mark).
+
+    Test services are excluded from ops dashboards, revenue reporting and the
+    stranded-service sweep, so an `active` row that was never provisioned no
+    longer reads as a provisioning failure. The billing lifecycle is NOT
+    altered: invoices still follow their own state machine.
+    """
+    db = await _get_db()
+    try:
+        service_id = _oid(sid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Service not found")
+    svc = await db.services.find_one({"_id": service_id})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    is_test = bool(payload.get("is_test"))
+    reason = (payload.get("reason") or "").strip()
+    await db.services.update_one(
+        {"_id": service_id},
+        {"$set": {"is_test": is_test,
+                  "is_test_reason": reason if is_test else "",
+                  "is_test_marked_at": _now() if is_test else "",
+                  "is_test_marked_by": getattr(admin, "email", "") if is_test else ""}},
+    )
+    await log_audit(db, actor=admin,
+                    action="service.test_flag_set" if is_test else "service.test_flag_cleared",
+                    category="services", target_type="service",
+                    target_id=str(service_id), target_label=svc.get("name", ""),
+                    severity="info",
+                    metadata={"is_test": is_test, "reason": reason},
+                    request=request)
+    return {"ok": True, "service_id": str(service_id), "is_test": is_test}
+
+
 @router.post("/admin/services/{sid}/suspend")
 async def admin_service_suspend(sid: str, payload: dict, request: Request,
                                 staff=Depends(require_roles("admin", "support", "sales"))):
