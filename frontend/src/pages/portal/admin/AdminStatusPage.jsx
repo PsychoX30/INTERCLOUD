@@ -1,11 +1,19 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 import { PageHeader, Card, Loading, btnPrimary, btnSecondary, btnDanger, inputClass, labelClass } from "../ui";
-import { Save, Loader2, Plus, Trash2, ExternalLink, Globe } from "lucide-react";
+import { Save, Loader2, Plus, Trash2, ExternalLink, Globe, Lock } from "lucide-react";
 
 const BASE = process.env.REACT_APP_BACKEND_URL;
 
 const AdminStatusPage = () => {
+  const { user } = useAuth();
+  // Save is admin-only on the server (cms.py PUT /admin/status-page/config uses
+  // get_current_admin), but the route sits inside RequireAuth role="staff". View
+  // stays open - GET is admin-only too on the backend, so a non-admin sees the
+  // error instead of silent failure - and the controls below are blocked before
+  // any request is made.
+  const canEdit = !!user && user.role === "admin";
   const [cfg, setCfg] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -31,6 +39,7 @@ const AdminStatusPage = () => {
   };
 
   const save = async () => {
+    if (!canEdit) { setErr("Hanya admin yang dapat mengubah konfigurasi halaman status."); return; }
     setSaving(true); setErr(""); setSaved(false);
     try {
       const { data } = await api.put("/admin/status-page/config", cfg);
@@ -45,11 +54,30 @@ const AdminStatusPage = () => {
         title="Public Status Page"
         subtitle="Konfigurasi halaman status publik di /status. Perangkat MikroTik dikelompokkan ke label abstrak - nama device dan IP tidak pernah bocor ke publik."
         actions={
-          <a href={`${BASE.replace(/\/$/, '')}/status`} target="_blank" rel="noreferrer" className={btnSecondary} data-testid="status-page-preview">
-            <ExternalLink className="h-4 w-4" /> Preview public page
-          </a>
+          <div className="flex items-center gap-2">
+            {!canEdit && (
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200"
+                data-testid="status-readonly-badge"
+                title="Role Anda tidak punya izin mengubah konfigurasi status"
+              >
+                <Lock className="h-3.5 w-3.5" /> Hanya baca
+              </span>
+            )}
+            <a href={`${BASE.replace(/\/$/, '')}/status`} target="_blank" rel="noreferrer" className={btnSecondary} data-testid="status-page-preview">
+              <ExternalLink className="h-4 w-4" /> Preview public page
+            </a>
+          </div>
         }
       />
+
+      {!canEdit && (
+        <div className="mb-4 rounded-xl px-4 py-3 text-sm bg-amber-50 border border-amber-200 text-amber-900"
+             data-testid="status-readonly-notice">
+          Anda dapat melihat konfigurasi halaman status, tetapi hanya <strong>admin</strong> yang
+          bisa menyimpannya.
+        </div>
+      )}
 
       <Card className="p-5 mb-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">

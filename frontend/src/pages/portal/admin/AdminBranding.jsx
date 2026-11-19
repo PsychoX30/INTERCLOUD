@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { UploadCloud, RotateCcw, Check, ImageOff, Loader2, Images } from "lucide-react";
+import { UploadCloud, RotateCcw, Check, ImageOff, Loader2, Images, Lock } from "lucide-react";
 import { api } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 import { MediaPickerModal } from "./AdminMediaLibrary";
 
 const FIELDS = [
@@ -49,6 +50,13 @@ const readableBytes = (n) => {
 };
 
 const AdminBranding = () => {
+  const { user } = useAuth();
+  // Branding writes are admin-only on the server (cms.py POST/DELETE both use
+  // get_current_admin). Staff reach this page through RequireAuth role="staff",
+  // so without this flag they get a fully interactive UI whose every action
+  // 403s - the same dishonesty the Landing CMS had. Read stays open: GET
+  // /branding is public, so the previews below are accurate for everyone.
+  const canEdit = !!user && user.role === "admin";
   const [branding, setBranding] = useState(null);
   const [busyKey, setBusyKey] = useState("");
   const [pickerKey, setPickerKey] = useState("");
@@ -62,6 +70,10 @@ const AdminBranding = () => {
   useEffect(() => { load(); }, [load]);
 
   const onFile = async (key, file) => {
+    if (!canEdit) {
+      setMsg({ kind: "error", text: "Hanya admin yang dapat mengubah branding." });
+      return;
+    }
     if (!file) return;
     if (file.size > MAX_BYTES) {
       setMsg({ kind: "error", text: `${file.name} is ${readableBytes(file.size)} - max ${readableBytes(MAX_BYTES)}` });
@@ -85,6 +97,10 @@ const AdminBranding = () => {
   };
 
   const reset = async (key) => {
+    if (!canEdit) {
+      setMsg({ kind: "error", text: "Hanya admin yang dapat mengubah branding." });
+      return;
+    }
     if (!window.confirm(`Reset ${key} to the default?`)) return;
     setBusyKey(key); setMsg(null);
     try {
@@ -97,6 +113,10 @@ const AdminBranding = () => {
   };
 
   const pickFromLibrary = async (url) => {
+    if (!canEdit) {
+      setMsg({ kind: "error", text: "Hanya admin yang dapat mengubah branding." });
+      return;
+    }
     const key = pickerKey;
     setPickerKey(""); setBusyKey(key); setMsg(null);
     try {
@@ -111,11 +131,30 @@ const AdminBranding = () => {
   return (
     <div className="p-6 md:p-8 max-w-6xl mx-auto" data-testid="admin-branding-page">
       <div className="mb-8">
-        <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Branding</h1>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Branding</h1>
+          {!canEdit && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200"
+              data-testid="branding-readonly-badge"
+              title="Role Anda tidak punya izin mengubah branding"
+            >
+              <Lock className="h-3.5 w-3.5" /> Hanya baca
+            </span>
+          )}
+        </div>
         <p className="mt-1.5 text-sm text-slate-500 max-w-2xl">
           Upload logo variants, favicon, and email banner without touching code. Changes take effect immediately - new invoices, PDFs, and emails will use the uploaded artwork.
         </p>
       </div>
+
+      {!canEdit && (
+        <div className="mb-6 rounded-xl px-4 py-3 text-sm bg-amber-50 border border-amber-200 text-amber-900"
+             data-testid="branding-readonly-notice">
+          Anda dapat melihat semua logo dan banner yang sedang aktif, tetapi hanya <strong>admin</strong> yang
+          bisa mengunggah atau meresetnya.
+        </div>
+      )}
 
       {msg && (
         <div className={`mb-6 rounded-xl px-4 py-3 text-sm border ${msg.kind === "error" ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}

@@ -1,11 +1,19 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Download, Upload, ShieldAlert, Loader2, CheckCircle2, AlertTriangle, RefreshCw, GitBranch, Skull } from "lucide-react";
+import { Download, Upload, ShieldAlert, Loader2, CheckCircle2, AlertTriangle, RefreshCw, GitBranch, Skull, Lock } from "lucide-react";
 import { api } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 
 const API_BASE = process.env.REACT_APP_BACKEND_URL;
 const TOKEN_KEY = "ic_portal_token";
 
 const AdminBackup = () => {
+  const { user } = useAuth();
+  // Every write on this page - backup trigger, system update, restore, factory
+  // reset - is admin-only in admin_core.py (get_current_admin). The route sits
+  // inside RequireAuth role="staff", so staff can open it. These are the most
+  // destructive controls in the product; a click that only 403s after a scary
+  // confirm dialog is worse than one that explains itself up front.
+  const canEdit = !!user && user.role === "admin";
   const [downloading, setDownloading] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -20,6 +28,7 @@ const AdminBackup = () => {
   const [frSummary, setFrSummary] = useState(null);
 
   const factoryReset = async () => {
+    if (!canEdit) { setMsg({ kind: "error", text: "Hanya admin yang dapat menjalankan factory reset." }); return; }
     if (frConfirmText !== "FACTORY RESET") { setMsg({ kind: "error", text: 'Type "FACTORY RESET" exactly to confirm.' }); return; }
     if (!frPassword) { setMsg({ kind: "error", text: "Admin password is required." }); return; }
     if (!window.confirm("This will PERMANENTLY delete ALL data except the settings collection and admin users. A safety snapshot is taken automatically. Continue?")) return;
@@ -84,6 +93,7 @@ const AdminBackup = () => {
   }, []);
 
   const runUpdate = async () => {
+    if (!canEdit) { setMsg({ kind: "error", text: "Hanya admin yang dapat menjalankan update sistem." }); return; }
     if (!window.confirm("This will git-pull the latest release, install any new dependencies, rebuild the frontend, and restart the backend. A full DB backup is taken automatically before anything changes. Continue?")) return;
     setUpdating(true); setMsg(null); setUpdateLog("");
     try {
@@ -99,6 +109,7 @@ const AdminBackup = () => {
   // ---------------------------------
 
   const download = async () => {
+    if (!canEdit) { setMsg({ kind: "error", text: "Hanya admin yang dapat mengunduh backup." }); return; }
     setDownloading(true); setMsg(null);
     try {
       const token = localStorage.getItem(TOKEN_KEY) || "";
@@ -121,6 +132,7 @@ const AdminBackup = () => {
   };
 
   const restore = async () => {
+    if (!canEdit) { setMsg({ kind: "error", text: "Hanya admin yang dapat melakukan restore." }); return; }
     if (!file) { setMsg({ kind: "error", text: "Pick a backup archive first." }); return; }
     if (confirmText !== "REPLACE") { setMsg({ kind: "error", text: "Type REPLACE to confirm." }); return; }
     if (!window.confirm(`This will WIPE every collection in the archive and restore the uploaded snapshot. Continue?`)) return;
@@ -145,12 +157,31 @@ const AdminBackup = () => {
   return (
     <div className="p-6 md:p-8 max-w-4xl mx-auto" data-testid="admin-backup-page">
       <div className="mb-8">
-        <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Backup, Restore &amp; Update</h1>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-2xl md:text-3xl font-bold text-[#0a2350]">Backup, Restore &amp; Update</h1>
+          {!canEdit && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200"
+              data-testid="backup-readonly-badge"
+              title="Role Anda tidak punya izin mengubah data atau sistem"
+            >
+              <Lock className="h-3.5 w-3.5" /> Hanya baca
+            </span>
+          )}
+        </div>
         <p className="mt-1.5 text-sm text-slate-500 max-w-2xl">
           Manage full snapshots of the portal - download a backup archive, restore from an existing
           one, or roll the running system forward to the latest release from GitHub.
         </p>
       </div>
+
+      {!canEdit && (
+        <div className="mb-6 rounded-xl px-4 py-3 text-sm bg-amber-50 border border-amber-200 text-amber-900"
+             data-testid="backup-readonly-notice">
+          Anda dapat melihat riwayat backup dan versi sistem, tetapi hanya <strong>admin</strong> yang
+          bisa menjalankan backup, restore, update, atau factory reset.
+        </div>
+      )}
 
       {msg && (
         <div className={`mb-6 rounded-xl px-4 py-3 text-sm border flex items-start gap-2 ${msg.kind === "error" ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}
