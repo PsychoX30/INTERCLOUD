@@ -37,13 +37,19 @@ router = APIRouter()
 async def admin_list_services(admin=Depends(require_roles("admin", "finance", "support")),
                               skip: int = 0, limit: int = 50, sort: str = "created_at",
                               order: str = "desc", status: Optional[str] = None,
-                              q: Optional[str] = None, paginate: Optional[bool] = None):
+                              q: Optional[str] = None, paginate: Optional[bool] = None,
+                              include_test: Optional[bool] = None):
     """Server-side pagination untuk Services. Default response tetap bare array."""
     _SORT = {"created_at", "name", "status", "next_renewal", "price_monthly"}
     db = await _get_db()
     query: dict = {}
     if status and status != "all":
         query["status"] = status
+    # Test rows stay VISIBLE in the admin list by default: this is an operations
+    # surface, and hiding a service an operator is working on is worse than
+    # showing it. Pass include_test=false to get the billable view.
+    if include_test is False:
+        query["is_test"] = {"$ne": True}
     if q:
         query["$or"] = [{"name": {"$regex": q, "$options": "i"}},
                         {"product_name": {"$regex": q, "$options": "i"}}]

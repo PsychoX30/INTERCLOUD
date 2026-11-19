@@ -1690,7 +1690,19 @@ async def _compute_cashflow_forecast(db) -> dict:
     horizon = today + timedelta(days=91)
 
     events = []  # (date, amount, kind)
+    # Collect the ids of test services once so invoices attached to them can be
+    # recognised without a per-invoice round trip.
+    _test_svc_ids = set()
+    async for _ts in db.services.find({"is_test": True}, {"_id": 1}):
+        _test_svc_ids.add(str(_ts["_id"]))
+
     async for inv in db.invoices.find({"status": {"$in": ["unpaid", "overdue"]}}):
+        # An invoice for a test service is not collectable revenue either.
+        if inv.get("is_test") is True:
+            continue
+        _sv = inv.get("service_id")
+        if _sv is not None and str(_sv) in _test_svc_ids:
+            continue
         try:
             due = datetime.strptime((inv.get("due_date") or "")[:10], "%Y-%m-%d").date()
         except Exception:
@@ -1698,7 +1710,11 @@ async def _compute_cashflow_forecast(db) -> dict:
         due = max(due, today)
         if due < horizon:
             events.append((due, float(inv.get("total") or 0), "invoice"))
-    async for svc in db.services.find({"status": "active"}):
+    # is_test=True services are internal setup data: they are real rows a client
+    # can log in and see, but they are not revenue. Counting them inflates the
+    # forecast with money nobody will ever pay. Their linked invoices are
+    # excluded from the invoice leg by the `is_test` marker on the invoice.
+    async for svc in db.services.find({"status": "active", "is_test": {"$ne": True}}):
         try:
             due = datetime.strptime((svc.get("next_renewal") or "")[:10], "%Y-%m-%d").date()
         except Exception:
