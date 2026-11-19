@@ -26,6 +26,7 @@ from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
                          decrypt_config as _sb_dec_config)
 from .. import integrations_v2 as iv2
+from .. import provision_state as _pstate
 from .shared import _get_db, _get_setting_value, _next_number, _now, _oid  # noqa: E402
 
 router = APIRouter()
@@ -65,6 +66,61 @@ async def _proxmox_settings(db) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # Multi-server Proxmox: registry (`proxmox_servers`) + resource-aware placement
 # ---------------------------------------------------------------------------
+async def _set_provision_status(db, service_id, new_status, svc=None, *,
+                                 extra: dict | None = None) -> str:
+    """Write `config.provision_status` through the state machine.
+
+    Never raises: production data already contains contradictions, and a repair
+    must not turn an operator action (terminate/suspend) into a 500. Instead the
+    illegal input is coerced to a legal target, the coercion is recorded in
+    audit_logs, and the write proceeds. The guard exists to stop *new*
+    contradictions, not to freeze the ones already on disk.
+    """
+    current = ((svc or {}).get("config") or {}).get("provision_status")
+    service_status = (svc or {}).get("status")
+    # Callers usually move `status` and `provision_status` in the same write
+    # (terminate sets status=terminated AND provision_status=terminated). The
+    # check must therefore run against the lifecycle status the row will HAVE,
+    # not the one it has now - otherwise every legitimate terminate looks like a
+    # contradiction and gets silently refused.
+    dest_status = ((extra or {}).get("status") or service_status)
+    target = _pstate.normalize(new_status)
+    coerced = None
+    # Two ways a write can be wrong, and both must be caught:
+    #   1. the transition itself is illegal (terminated -> pending)
+    #   2. the transition is legal but its RESULT contradicts the lifecycle
+    #      field already on disk (pending -> pending on a terminated row)
+    # Case 2 is the one that actually produced the production contradictions,
+    # so checking only case 1 leaves the door open.
+    illegal = not _pstate.can_transition(current, target)
+    contradictory = _pstate.is_contradiction(target, dest_status)
+    if illegal or contradictory:
+        # Obeying the request verbatim is what produced the bad rows, so the
+        # stored value must also be compatible with the lifecycle status.
+        coerced = _pstate.coerce_legal(current, target, dest_status)
+        if coerced == target and contradictory:
+            # coerce_legal could not find a better value; keep the current one
+            # rather than knowingly write a contradiction.
+            keep = _pstate.normalize(current)
+            if not _pstate.is_contradiction(keep, dest_status):
+                coerced = keep
+        try:
+            await db.audit_logs.insert_one({
+                "action": "service.provision_status_coerced",
+                "actor": "system:provision_state",
+                "service_id": service_id,
+                "from": current, "requested": target, "applied": coerced,
+                "service_status": dest_status, "created_at": _now(),
+            })
+        except Exception:
+            pass
+    payload = {"config.provision_status": coerced if coerced is not None else target}
+    if extra:
+        payload.update(extra)
+    await db.services.update_one({"_id": service_id}, {"$set": payload})
+    return payload["config.provision_status"]
+
+
 def _px_server_to_settings(doc: dict) -> dict:
     return {
         "provider": "proxmox",
@@ -970,8 +1026,7 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
             {"$push": {"provision_log": {"at": _now(), "step": step, "message": msg}}})
 
     async def _fail(msg):
-        await db.services.update_one({"_id": service_id},
-                                     {"$set": {"config.provision_status": "pending"}})
+        await _set_provision_status(db, service_id, _pstate.FAILED, svc)
         await _log("vm_create_failed",
                    f"{msg} Perlu tindak lanjut manual - buat VM dengan hostname yang sama lalu "
                    "gunakan 'Verifikasi VM by Hostname' di detail service.")
@@ -1169,7 +1224,7 @@ async def _vps_provision_task(db, order_id, service_id) -> None:
                 "config.server_name": pxs.get("name", ""),
                 "config.ram_gb": round(memory_mb / 1024, 1),
                 "config.disk_gb": disk_gb or 40,
-                "config.provision_status": "pending"}})
+                "config.provision_status": _pstate.PROVISIONING}})
             await _log("vm_created_iso",
                        f"VM {newid} dibuat di node {node} dengan ISO {iso['name']} terpasang "
                        f"({cores} vCPU / {memory_mb} MB / {disk_gb or 40} GB). OS ini belum punya "
@@ -1530,7 +1585,7 @@ async def admin_service_verify_vm(sid: str, payload: dict,
         "config.server_id": found_srv.get("server_id") or "legacy",
         "config.server_name": found_srv.get("name", ""),
         "config.node": found["node"], "config.vmid": found["vmid"],
-        "config.provision_status": "provisioned", "config.provisioned_at": _now(),
+        "config.provision_status": _pstate.PROVISIONED, "config.provisioned_at": _now(),
         "status": "active"}})
     if svc.get("order_id"):
         try:
@@ -1606,9 +1661,9 @@ async def admin_hosting_suspend(sid: str, payload: dict,
         await cp.suspend_account(username, reason)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"WHM suspend gagal: {str(e)[:180]}")
-    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
-        "status": "suspended", "config.provision_status": "suspended",
-        "config.suspended_at": _now(), "config.suspend_reason": reason}})
+    await _set_provision_status(db, svc["_id"], _pstate.SUSPENDED, svc, extra={
+        "status": "suspended",
+        "config.suspended_at": _now(), "config.suspend_reason": reason})
     return {"ok": True, "status": "suspended"}
 
 
@@ -1621,9 +1676,11 @@ async def admin_hosting_unsuspend(sid: str, payload: dict = {},
         await cp.unsuspend_account(username)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"WHM unsuspend gagal: {str(e)[:180]}")
-    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
-        "status": "active", "config.provision_status": "provisioned",
-        "config.unsuspended_at": _now()}, "$unset": {"config.suspend_reason": ""}})
+    await _set_provision_status(db, svc["_id"], _pstate.PROVISIONED, svc, extra={
+        "status": "active",
+        "config.unsuspended_at": _now()})
+    await db.services.update_one({"_id": svc["_id"]},
+                                 {"$unset": {"config.suspend_reason": ""}})
     return {"ok": True, "status": "active"}
 
 
@@ -1637,13 +1694,13 @@ async def admin_hosting_terminate(sid: str, payload: dict,
     try:
         await cp.remove_account(username)
     except Exception as e:
-        await db.services.update_one({"_id": svc["_id"]}, {"$set": {
-            "config.provision_status": "termination_pending",
-            "config.termination_error": str(e)[:180]}})
+        await _set_provision_status(db, svc["_id"], _pstate.TERMINATION_PENDING, svc, extra={
+            "config.termination_error": str(e)[:180]})
         raise HTTPException(status_code=502, detail=f"WHM terminate gagal: {str(e)[:180]}")
-    await db.services.update_one({"_id": svc["_id"]}, {"$set": {
-        "status": "terminated", "config.provision_status": "terminated",
-        "config.terminated_at": _now()}, "$unset": {"config.termination_error": ""}})
+    await _set_provision_status(db, svc["_id"], _pstate.TERMINATED, svc, extra={
+        "status": "terminated", "config.terminated_at": _now()})
+    await db.services.update_one({"_id": svc["_id"]},
+                                 {"$unset": {"config.termination_error": ""}})
     return {"ok": True, "status": "terminated"}
 
 

@@ -199,6 +199,73 @@ async def _delete_service_vm(db, svc: dict) -> None:
 
 
 @router.post("/admin/services/{sid}/test-flag")
+@router.get("/admin/services/provision-state/scan")
+async def admin_provision_state_scan(admin=Depends(require_roles("admin", "support"))):
+    """List services whose provisioning state contradicts their lifecycle status.
+
+    Read-only. Exists so an operator can see the drift instead of discovering it
+    one terminated-but-pending row at a time.
+    """
+    from .. import provision_state as _ps
+    db = await _get_db()
+    rows, scanned = [], 0
+    async for s in db.services.find({}):
+        scanned += 1
+        cfg = s.get("config") or {}
+        psv = cfg.get("provision_status")
+        if _ps.is_contradiction(psv, s.get("status")):
+            rows.append({
+                "id": str(s["_id"]), "name": s.get("name"),
+                "status": s.get("status"), "provision_status": psv,
+                "repair_to": _ps.repair_target(psv, s.get("status")),
+                "is_test": bool(s.get("is_test")),
+                "provision_error": (cfg.get("provision_error") or "")[:160],
+            })
+    return {"scanned": scanned, "contradictions": len(rows), "rows": rows}
+
+
+@router.post("/admin/services/provision-state/repair")
+async def admin_provision_state_repair(payload: dict = {},
+                                       admin=Depends(require_roles("admin", "support"))):
+    """Reconcile contradictory `config.provision_status` values.
+
+    Dry-run unless `apply: true`. Only ever writes the value `repair_target()`
+    returns, which is `terminated` for terminated rows - nothing is invented for
+    provisioning that never happened.
+    """
+    from .. import provision_state as _ps
+    db = await _get_db()
+    apply = payload.get("apply") is True
+    only_ids = payload.get("service_ids") or []
+    plan, applied = [], 0
+
+    async for s in db.services.find({}):
+        if only_ids and str(s["_id"]) not in only_ids:
+            continue
+        cfg = s.get("config") or {}
+        psv = cfg.get("provision_status")
+        target = _ps.repair_target(psv, s.get("status"))
+        if target is None:
+            continue
+        plan.append({"id": str(s["_id"]), "name": s.get("name"),
+                     "status": s.get("status"), "from": psv, "to": target})
+        if apply:
+            await db.services.update_one(
+                {"_id": s["_id"]}, {"$set": {"config.provision_status": target}})
+            try:
+                await db.audit_logs.insert_one({
+                    "action": "service.provision_status_repaired",
+                    "actor": f"admin:{admin.get('email', '')}",
+                    "service_id": s["_id"], "from": psv, "to": target,
+                    "service_status": s.get("status"), "created_at": _now()})
+            except Exception:
+                pass
+            applied += 1
+
+    return {"dry_run": not apply, "would_repair": len(plan),
+            "applied": applied, "rows": plan}
+
+
 async def admin_service_test_flag(sid: str, payload: dict, request: Request,
                                   admin=Depends(get_current_admin)):
     """Mark a service as internal test data (or clear the mark).
