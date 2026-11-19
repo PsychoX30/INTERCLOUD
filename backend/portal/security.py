@@ -18,18 +18,39 @@ from typing import Callable
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+# Peer addresses whose X-Forwarded-For header we believe. nginx terminates TLS
+# and proxies to 127.0.0.1:8001, so loopback is the only legitimate source. An
+# empty set would break rate limiting for everyone (one shared bucket); a set
+# containing "*" would let any direct caller forge its own audit IP.
+_TRUSTED_PROXY_PEERS = {"127.0.0.1", "::1", "localhost"}
+
 
 def _client_ip(request):
-    """Rate-limit key: prefer the LAST X-Forwarded-For hop (appended by our
-    trusted nginx / ingress proxy), falling back to the socket peer address.
-    Without this, every production user behind the reverse proxy shares one
-    127.0.0.1 bucket and legitimate users rate-limit each other out."""
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        ip = xff.split(",")[-1].strip()
-        if ip:
-            return ip
-    return get_remote_address(request)
+    """Rate-limit key: prefer the LAST X-Forwarded-For hop, falling back to the
+    socket peer address. Without this, every production user behind the reverse
+    proxy shares one 127.0.0.1 bucket and legitimate users rate-limit each other
+    out.
+
+    The header is only trusted when the peer really is our own proxy. uvicorn is
+    started without `--proxy-headers`, so a request that reaches :8001 directly
+    carries whatever X-Forwarded-For the sender chose - and this value is not
+    only the rate-limit key, it is also what `_log_login_attempt` stores as the
+    audit IP and what `_maybe_auto_block` bans. A local process could therefore
+    ban an arbitrary public address (verified: 8 forged failures on a
+    documentation-range IP produced a blocked_ips row with
+    reason=auto_block_threshold). Requiring a loopback peer closes that while
+    leaving the nginx path unchanged, because nginx connects over loopback.
+    """
+    peer = get_remote_address(request)
+    if peer in _TRUSTED_PROXY_PEERS:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            ip = xff.split(",")[-1].strip()
+            if ip:
+                return ip
+    return peer
+
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
