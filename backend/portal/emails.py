@@ -1242,8 +1242,30 @@ async def run_stranded_service_sweep(db, *, now: Optional[datetime] = None) -> d
         except Exception:
             due = None
         if due is None or due < today:
-            updates["next_renewal"] = today.isoformat()
-            updates["stranded_gap_detected"] = nr or ""
+            # Seed `today` (so the lapse is billed now) UNLESS the customer is
+            # already paid up to the future. A stranded service was never
+            # provisioned; that says nothing about whether it was paid for.
+            # Overwriting a valid future date with today made the renewal
+            # sweep raise a fresh period invoice on the next tick, which is
+            # how INV-2026-00024 was billed to a customer who had paid.
+            covered = ""
+            async for p_inv in db.invoices.find(
+                    {"status": "paid",
+                     "$or": [{"service_id": {"$in": [str(sid), sid]}},
+                             {"_id": (paid or {}).get("_id")}]}):
+                rp = (p_inv.get("renewal_period") or "")[:10]
+                if rp and rp > covered:
+                    covered = rp
+            if covered and covered >= today.isoformat():
+                months = _CYCLE_MONTHS.get(
+                    (svc.get("billing_cycle") or "monthly").lower(), 1)
+                updates["next_renewal"] = _add_months(covered, months)
+                updates["stranded_gap_detected"] = nr or ""
+                log.info(f"[stranded] {sid} already paid to {covered}; "
+                         f"next_renewal -> {updates['next_renewal']}")
+            else:
+                updates["next_renewal"] = today.isoformat()
+                updates["stranded_gap_detected"] = nr or ""
 
         try:
             await db.services.update_one({"_id": sid}, {"$set": updates})
@@ -1357,6 +1379,27 @@ async def run_renewal_invoice_sweep(db, *, now: Optional[datetime] = None) -> di
             continue
         sid = str(svc["_id"])
         if await db.invoices.find_one({"service_id": sid, "renewal_period": period}):
+            skipped_existing += 1
+            continue
+        # A wrong `next_renewal` must never turn into a second invoice for a
+        # period that has already been settled. If a PAID invoice covers this
+        # period or later, the stored date is stale: advance it and skip.
+        paid_through = ""
+        async for p_inv in db.invoices.find(
+                {"service_id": sid, "status": "paid",
+                 "renewal_period": {"$nin": [None, ""]}}):
+            rp = (p_inv.get("renewal_period") or "")[:10]
+            if rp and rp > paid_through:
+                paid_through = rp
+        if paid_through and period <= paid_through:
+            months = _CYCLE_MONTHS.get(
+                (svc.get("billing_cycle") or "monthly").lower(), 1)
+            nxt = _add_months(paid_through, months)
+            await db.services.update_one(
+                {"_id": svc["_id"]},
+                {"$set": {"next_renewal": nxt, "renewal_seed_corrected": period}})
+            log.warning(f"[renewal] {sid}: next_renewal was {period} but "
+                        f"{paid_through} is already paid; advanced to {nxt}")
             skipped_existing += 1
             continue
         user = await db.users.find_one({"_id": svc["user_id"]})
@@ -1727,6 +1770,20 @@ async def run_order_expiry_sweep(db, *, now: Optional[datetime] = None) -> dict:
                           "cancelled_reason": "order_expired"}},
             )
             invoices_cancelled += upd.modified_count
+            # Same ratchet as the staff cancel path: an order that expired
+            # leaves behind a cancelled invoice, so any service suspended
+            # because of it must be released too or it never comes back up.
+            if upd.modified_count:
+                from portal.routes.shared import _release_suspended_for_invoice
+                expired_inv = await db.invoices.find_one({"_id": inv_id})
+                if expired_inv:
+                    try:
+                        await _release_suspended_for_invoice(
+                            db, expired_inv,
+                            reason=f"invoice {expired_inv.get('number', '')} "
+                                   f"dibatalkan (order kedaluwarsa)")
+                    except Exception:
+                        log.exception("[order-expiry] release of suspended services failed")
 
         user = await db.users.find_one({"_id": order["user_id"]})
         if not user:

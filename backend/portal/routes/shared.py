@@ -251,6 +251,109 @@ async def _mark_overdue(db):
     )
 
 
+# ---------- Release of invoice-driven service suspensions ----------
+import re as _releases_re
+
+
+async def _release_suspended_for_invoice(db, invoice: dict, *, reason: str) -> int:
+    """Reactivate services whose suspension rests on an invoice that is no
+    longer collectible.
+
+    The D+8 sweep suspends a service and records the invoice number inside
+    `services.suspended_reason`; the only things that ever lifted that state
+    were the two *payment* paths. When an invoice is cancelled instead of
+    paid - by staff, or by the payment-window sweep that cancels orders - the
+    service was left suspended forever with no invoice left to chase and no
+    way for the customer to clear it. This closes that ratchet.
+
+    Deliberately conservative; it will not touch a service that has any other
+    reason to be down:
+
+      * only ``status == "suspended"``;
+      * never a manual suspension (``suspended_manual``) - staff intent wins;
+      * only services whose stored ``suspended_reason`` cites THIS invoice, or
+        the single service this invoice explicitly points at;
+      * skipped when the service still has another live (unpaid/overdue)
+        invoice - it has not cleared its debt yet.
+
+    Returns the number of services reactivated.
+    """
+    if not invoice:
+        return 0
+    number = invoice.get("number") or ""
+    if not number:
+        return 0
+
+    from portal.emails import suspended_reason_for
+    needles = [f"invoice {number} overdue",
+               f"invoice {number} settled",
+               suspended_reason_for(number)]
+
+    ors = []
+    for needle in needles:
+        ors.append({"suspended_reason": {"$regex": _releases_re.escape(needle),
+                                        "$options": "i"}})
+    svc_id = invoice.get("service_id")
+    if svc_id:
+        ors.append({"_id": svc_id})
+        try:
+            ors.append({"_id": _oid(svc_id)})
+        except Exception:
+            pass
+
+    released = 0
+    cursor = db.services.find({"status": "suspended", "$or": ors})
+    async for svc in cursor:
+        if svc.get("suspended_manual"):
+            continue
+        # Another invoice still holds it down? Then it stays down.
+        others = await db.invoices.count_documents({
+            "service_id": str(svc["_id"]),
+            "status": {"$in": ["unpaid", "overdue"]},
+        })
+        if others:
+            continue
+        res = await db.services.update_one(
+            {"_id": svc["_id"], "status": "suspended"},
+            {"$set": {"status": "active",
+                      "reactivated_at": _now(),
+                      "reactivated_reason": reason},
+             "$unset": {"suspended_at": "", "suspended_reason": "", "suspended_by": ""}},
+        )
+        if not res.modified_count:
+            continue
+        released += 1
+        try:
+            await db.audit_logs.insert_one({
+                "action": "service.auto_reactivate",
+                "actor": "system:invoice_not_collectible",
+                "service_id": svc["_id"],
+                "invoice_id": invoice.get("_id"),
+                "invoice_number": number,
+                "previous_status": "suspended",
+                "reason": reason,
+                "created_at": _now(),
+            })
+        except Exception:
+            pass
+        try:
+            user = await db.users.find_one({"_id": svc.get("user_id")})
+            if user:
+                await db.notifications.insert_one({
+                    "user_id": user["_id"],
+                    "type": "service_reactivated",
+                    "title": "Layanan aktif kembali",
+                    "message": (f"Layanan {svc.get('name', '')} diaktifkan kembali: "
+                                f"tagihan {number} sudah tidak berlaku."),
+                    "service_id": str(svc["_id"]),
+                    "read": False,
+                    "created_at": _now(),
+                })
+        except Exception:
+            pass
+    return released
+
+
 # ---------- Global settings helpers (settings collection: {key, value}) ----------
 async def _get_setting_value(db, key: str, default=None):
     doc = await db.settings.find_one({"key": key})

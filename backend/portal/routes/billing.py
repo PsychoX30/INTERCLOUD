@@ -274,6 +274,13 @@ async def admin_update_invoice_status(
     if payload.status == "cancelled" and d.get("status") == "cancelled":
         await _cancel_domain_for_invoice(db, d)
         await _cancel_ssl_for_invoice(db, d)
+        # A cancelled invoice can never be paid, so the D+8 suspension it
+        # caused would never lift. Release those services explicitly.
+        released_services = await _release_suspended_for_invoice(
+            db, d, reason=f"invoice {d.get('number', '')} dibatalkan")
+        if released_services:
+            logging.getLogger(__name__).info(
+                f"[cancel] {d.get('number')}: reactivated {released_services} service(s)")
 
     # Audit: this route confirms payments, provisions servers, and applies
     # upgrades. It is money-moving, so every transition must record who did it.
