@@ -18,9 +18,54 @@ const AdminStatusPage = () => {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState("");
+  const [loadErr, setLoadErr] = useState("");
 
-  const load = () => api.get("/admin/status-page/config").then((r) => setCfg(r.data));
+  const load = () => api.get("/admin/status-page/config")
+    .then((r) => setCfg(r.data))
+    .catch((e) => { setLoadErr(e?.response?.data?.detail || e.message || "Gagal memuat konfigurasi"); });
   useEffect(() => { load(); }, []);
+
+  // Both GET and PUT of this config are admin-only in cms.py, so a non-admin
+  // cannot even read the page data. Rendering <Loading/> forever would be a
+  // spinner that never resolves - worse than an honest refusal. Show the reason
+  // and stop, before the read-error branch below.
+  if (!canEdit) {
+    return (
+      <div data-testid="status-page-config">
+        <PageHeader
+          title="Public Status Page"
+          subtitle="Konfigurasi halaman status publik di /status."
+          actions={
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200"
+              data-testid="status-readonly-badge"
+              title="Role Anda tidak punya izin mengubah konfigurasi status"
+            >
+              <Lock className="h-3.5 w-3.5" /> Hanya baca
+            </span>
+          }
+        />
+        <div className="rounded-xl px-4 py-3 text-sm bg-amber-50 border border-amber-200 text-amber-900"
+             data-testid="status-readonly-notice">
+          Halaman ini hanya dapat dibuka oleh <strong>admin</strong>, karena konfigurasi status
+          publik adalah pengaturan tingkat sistem.
+        </div>
+      </div>
+    );
+  }
+
+  if (loadErr) {
+    return (
+      <div data-testid="status-page-config">
+        <PageHeader title="Public Status Page" subtitle="Konfigurasi halaman status publik di /status." />
+        <div className="rounded-xl px-4 py-3 text-sm bg-red-50 border border-red-200 text-red-800"
+             data-testid="status-load-error">
+          Gagal memuat konfigurasi: {loadErr}
+        </div>
+      </div>
+    );
+  }
+
   if (!cfg) return <Loading />;
 
   const setGroup = (i, patch) => {
