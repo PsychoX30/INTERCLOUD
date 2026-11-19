@@ -1083,6 +1083,42 @@ async def _suspend_for_invoice(db, inv: dict, user: dict, *, now: datetime) -> i
 
     targets = [s async for s in db.services.find(query)]
     targets = [s for s in targets if not s.get("suspended_manual")]
+
+    # Never suspend a service that was never actually delivered. An automation
+    # attempt that recorded a failure leaves `config.provision_status` at
+    # "pending" with a `provision_error`; suspending it protects no revenue and
+    # tells the customer their non-existent service has been taken away. The
+    # examples in production: a WHM account that no reachable server could
+    # create, still being dunned four times and about to be suspended at D+8.
+    #
+    # Categories fulfilled by hand (interconnect, lease, colocation, dedicated)
+    # do not carry `provision_status` at all, and a completed provision is
+    # "provisioned" - so neither is caught by this.
+    delivered, undelivered = [], []
+    for svc in targets:
+        cfg = svc.get("config") or {}
+        if cfg.get("provision_status") == "pending":
+            undelivered.append(svc)
+        else:
+            delivered.append(svc)
+    for svc in undelivered:
+        try:
+            await db.audit_logs.insert_one({
+                "action": "service.suspend_blocked_undelivered",
+                "actor": "system:invoice_overdue",
+                "service_id": svc["_id"],
+                "invoice_id": inv["_id"],
+                "invoice_number": inv.get("number", ""),
+                "reason": "layanan belum pernah ter-provision, tidak disuspend",
+                "provision_error": (svc.get("config") or {}).get("provision_error", ""),
+                "created_at": now.isoformat(),
+            })
+        except Exception:
+            pass
+        log.warning(
+            f"[suspend] {svc.get('name')} untuk {inv.get('number')} TIDAK disuspend: "
+            f"provision_status=pending ({((svc.get('config') or {}).get('provision_error') or '')[:80]})")
+    targets = delivered
     if not targets:
         return 0
 
