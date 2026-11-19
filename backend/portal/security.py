@@ -19,9 +19,15 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 # Peer addresses whose X-Forwarded-For header we believe. nginx terminates TLS
-# and proxies to 127.0.0.1:8001, so loopback is the only legitimate source. An
-# empty set would break rate limiting for everyone (one shared bucket); a set
-# containing "*" would let any direct caller forge its own audit IP.
+# and proxies to 127.0.0.1:8001, so loopback is the only legitimate source.
+#
+# This set alone is NOT a security boundary: a local process connecting to
+# 127.0.0.1:8001 is also a loopback peer, and it writes the header itself. The
+# transport lock is what makes the check meaningful - an iptables owner match
+# (service `intercloud-lock-backend`) drops every uid except nginx's on that
+# port, so any request that reaches this function with a loopback peer really
+# did come through nginx, which overwrites the header with `$remote_addr`.
+# Keep the two together: removing the iptables rule re-opens audit-IP forgery.
 _TRUSTED_PROXY_PEERS = {"127.0.0.1", "::1", "localhost"}
 
 
@@ -31,15 +37,25 @@ def _client_ip(request):
     proxy shares one 127.0.0.1 bucket and legitimate users rate-limit each other
     out.
 
-    The header is only trusted when the peer really is our own proxy. uvicorn is
-    started without `--proxy-headers`, so a request that reaches :8001 directly
-    carries whatever X-Forwarded-For the sender chose - and this value is not
-    only the rate-limit key, it is also what `_log_login_attempt` stores as the
-    audit IP and what `_maybe_auto_block` bans. A local process could therefore
-    ban an arbitrary public address (verified: 8 forged failures on a
-    documentation-range IP produced a blocked_ips row with
-    reason=auto_block_threshold). Requiring a loopback peer closes that while
-    leaving the nginx path unchanged, because nginx connects over loopback.
+    This value is not just a limiter key: `_log_login_attempt` stores it as the
+    audit IP and `_maybe_auto_block` bans it. A forgeable value therefore lets a
+    local process ban an arbitrary public address - measured before the ingress
+    lock existed, 8 failing logins sent straight at :8001 with
+    `X-Forwarded-For: 198.51.100.9` produced a blocked_ips row for
+    198.51.100.9 (`reason=auto_block_threshold`).
+
+    Two changes closed it, and both are load-bearing:
+
+    1. uvicorn runs with `--forwarded-allow-ips=__no_trusted_proxy__`, so its
+       ProxyHeadersMiddleware leaves `scope["client"]` alone and the peer below
+       is the true socket peer. With the default (`127.0.0.1`) the middleware
+       overwrote `scope["client"]` with the header, so this function compared a
+       forged peer against a forged peer and always "passed".
+    2. nginx's /api/ block overwrites `X-Forwarded-For` with `$remote_addr`
+       instead of appending, so the last hop is the address nginx saw.
+
+    Note the peer check alone cannot separate nginx from a local process - both
+    are loopback. The iptables owner match on :8001 is what makes it sound.
     """
     peer = get_remote_address(request)
     if peer in _TRUSTED_PROXY_PEERS:
