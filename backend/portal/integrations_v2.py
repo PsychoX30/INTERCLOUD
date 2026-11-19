@@ -93,7 +93,7 @@ class ProxmoxClient:
           default_node: "pve-jkt-01",
           default_storage: "local-lvm",
           default_bridge: "vmbr0",
-          ssl_verify: false,
+          ssl_verify: false,          # set true only if the node has a valid cert
           clone_template_vmid: 9000,
         }
       }

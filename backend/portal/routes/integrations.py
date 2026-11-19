@@ -57,16 +57,19 @@ def _iv2_settings_for_module(module: str, cfg: dict) -> dict:
         scheme = "http" if proto == "http" else "https"
         return f"{scheme}://{host}:{int(cfg.get('port') or default_port)}"
 
+    # ssl_verify comes from the module config so an operator's choice is not
+    # discarded. Defaulting to False preserves behaviour for self-signed panels.
+    _ssl = bool(cfg.get("ssl_verify", False))
     if module == "cpanel":
         return {"credentials": {"host": _url(2087), "username": cfg.get("username"),
                                 "api_token": cfg.get("api_token")},
-                "options": {"ssl_verify": False}}
+                "options": {"ssl_verify": _ssl}}
     if module == "proxmox":
         return {"credentials": {"host": _url(8006), "username": cfg.get("username"),
                                 "password": cfg.get("password"),
                                 "token_id": cfg.get("api_token_id"),
                                 "token_secret": cfg.get("api_token_secret")},
-                "options": {"ssl_verify": False}}
+                "options": {"ssl_verify": _ssl}}
     if module == "mikrotik":
         return {"credentials": {"host": host, "port": cfg.get("port") or 8728,
                                 "username": cfg.get("username"), "password": cfg.get("password"),

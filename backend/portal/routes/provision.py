@@ -50,7 +50,9 @@ async def _proxmox_settings(db) -> Optional[dict]:
                             "token_secret": cfg.get("api_token_secret"),
                             "username": cfg.get("username"),
                             "password": cfg.get("password")},
-            "options": {"default_node": cfg.get("default_node") or "", "ssl_verify": False},
+            "options": {"default_node": cfg.get("default_node") or "",
+                        # Read from config so the admin toggle is not silently lost.
+                        "ssl_verify": bool(cfg.get("ssl_verify", False))},
         }
     # Fallback terakhir: server pertama dari registry multi-server
     doc = await db.proxmox_servers.find_one(
@@ -78,7 +80,11 @@ def _px_server_to_settings(doc: dict) -> dict:
                     "default_storage": doc.get("default_storage") or "local-lvm",
                     "default_bridge": doc.get("default_bridge") or "vmbr0",
                     "clone_template_vmid": doc.get("clone_template_vmid"),
-                    "ssl_verify": False},
+                    # Honour the per-server flag. It is NOT hardcoded: an operator
+                    # who turns verification on must actually get it. Default stays
+                    # False because lab Proxmox nodes use self-signed certs
+                    # (verified: verify=True -> CERTIFICATE_VERIFY_FAILED on prod).
+                    "ssl_verify": bool(doc.get("ssl_verify", False))},
     }
 
 
