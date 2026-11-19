@@ -4,6 +4,7 @@ Split from the former monolithic routes.py - behavior preserved 1:1.
 """
 import os
 import asyncio
+import copy
 import logging
 import secrets
 import re
@@ -68,11 +69,56 @@ async def get_my_email_settings(user=Depends(get_current_user)):
     return _mask_email_settings((doc or {}).get("email_settings") or {})
 
 
+def _encrypt_email_settings(es: dict) -> dict:
+    """Return a copy of email settings with both passwords sealed for storage.
+
+    `enc_value` is idempotent (it returns an already-prefixed value untouched),
+    so this is safe to call on a payload merged from an existing document -
+    which is the normal save path when the operator only edits the host.
+    """
+    out = copy.deepcopy(es or {})
+
+    def _seal(creds):
+        if isinstance(creds, dict) and creds.get("password"):
+            creds["password"] = _sb_enc(creds["password"])
+        return creds
+
+    _seal(out.get("credentials"))
+    _seal((out.get("imap") or {}).get("credentials"))
+    _seal((out.get("smtp") or {}).get("credentials"))
+    return out
+
+
+def _decrypt_email_settings(es: dict) -> dict:
+    """Return a copy with passwords unsealed for use against a real mail server.
+
+    `dec_value` passes plaintext through untouched, so legacy rows written
+    before at-rest encryption keep working until `secretbox.migrate_at_rest`
+    seals them on the next boot.
+    """
+    out = copy.deepcopy(es or {})
+
+    def _open(creds):
+        if isinstance(creds, dict) and creds.get("password"):
+            creds["password"] = _sb_dec(creds["password"])
+        return creds
+
+    _open(out.get("credentials"))
+    _open((out.get("imap") or {}).get("credentials"))
+    _open((out.get("smtp") or {}).get("credentials"))
+    return out
+
+
 def _merge_email_payload(existing: dict, payload: dict) -> dict:
     """Merge an incoming (possibly password-masked) email-settings payload with
     what's already stored on the user document. Shared by the save endpoint and
     the test-connection endpoint so both resolve masked "••••••••" passwords
-    back to the stored value."""
+    back to the stored value.
+
+    `existing` is the raw document (passwords possibly sealed); the merge keeps
+    whatever it finds, so callers that need a usable password must decrypt the
+    result themselves instead of trying a sealed value against IMAP/SMTP.
+    """
     def _merge(kind: str) -> dict:
         old_creds = ((existing.get(kind) or {}).get("credentials") or
                      (existing.get("credentials") if kind == "imap" else {})) or {}
@@ -122,7 +168,7 @@ async def save_my_email_settings(payload: dict, user=Depends(get_current_user)):
     stored = _merge_email_payload(existing, payload)
     await db.users.update_one(
         {"_id": ObjectId(user["id"])},
-        {"$set": {"email_settings": stored}},
+        {"$set": {"email_settings": _encrypt_email_settings(stored)}},
     )
     return _mask_email_settings(stored)
 
@@ -140,7 +186,10 @@ async def test_my_email_settings(payload: dict = None, user=Depends(get_current_
     db = await _get_db()
     doc = await db.users.find_one({"_id": ObjectId(user["id"])})
     existing = (doc or {}).get("email_settings") or {}
-    merged = _merge_email_payload(existing, payload or {})
+    # The merged password may still be sealed (masked payload -> stored value),
+    # so unseal before handing it to IMAPClient/SMTP. A sealed string sent as a
+    # password produces an auth failure that looks like a wrong password.
+    merged = _decrypt_email_settings(_merge_email_payload(existing, payload or {}))
 
     def _test(kind: str) -> dict:
         cfg = merged[kind]
@@ -572,9 +621,16 @@ _MAIL_NOT_SETUP = {"not_setup": True, "reason": "no_credentials",
 
 
 async def _my_email_settings(staff) -> dict:
+    """This staff member's mail config, passwords unsealed.
+
+    Every mail endpoint (folders/inbox/read/send/...) reads settings through
+    here, so this is the one place that must decrypt: the stored value is
+    sealed at rest, and a sealed string handed to IMAPClient/SMTP fails as an
+    auth error that reads like a wrong password.
+    """
     db = await _get_db()
     user_doc = await db.users.find_one({"_id": ObjectId(staff["id"])})
-    return (user_doc or {}).get("email_settings") or {}
+    return _decrypt_email_settings((user_doc or {}).get("email_settings") or {})
 
 
 def _imap_ready(my_imap: dict) -> bool:

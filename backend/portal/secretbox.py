@@ -88,7 +88,7 @@ decrypt_config = decrypt_credentials
 async def migrate_at_rest(db) -> dict:
     """Enkripsi in-place data plaintext lama. Idempotent (dipanggil tiap startup)."""
     changed = {"integration_settings": 0, "proxmox_servers": 0, "integrations": 0,
-               "mikrotik_devices": 0}
+               "mikrotik_devices": 0, "users_email_settings": 0}
     async for d in db.integration_settings.find({}):
         creds = d.get("credentials")
         if isinstance(creds, dict) and any(
@@ -124,4 +124,24 @@ async def migrate_at_rest(db) -> dict:
             await db.mikrotik_devices.update_one(
                 {"_id": d["_id"]}, {"$set": {"password": enc_value(raw)}})
             changed["mikrotik_devices"] += 1
+    # Per-staff IMAP/SMTP passwords (users.email_settings). These are the
+    # credentials an operator's own mailbox is reached with, so they were the
+    # last ones still sitting in plaintext. The routes decrypt on read and
+    # encrypt on write, so sealing here is invisible to every mail endpoint.
+    # Both the nested imap/smtp shape and the legacy top-level `credentials`
+    # mirror are covered.
+    async for d in db.users.find({"email_settings": {"$exists": True, "$ne": None}}):
+        es = d.get("email_settings") or {}
+        upd = {}
+        for path in ("email_settings.credentials.password",
+                     "email_settings.imap.credentials.password",
+                     "email_settings.smtp.credentials.password"):
+            node = es
+            for part in path.split(".")[1:]:
+                node = (node or {}).get(part) if isinstance(node, dict) else None
+            if isinstance(node, str) and node and not is_encrypted(node):
+                upd[path] = enc_value(node)
+        if upd:
+            await db.users.update_one({"_id": d["_id"]}, {"$set": upd})
+            changed["users_email_settings"] += 1
     return changed
