@@ -25,6 +25,11 @@ BILLING_ROLES = {"admin", "sales"}  # invoices/quotations
 CATALOG_ROLES = {"admin", "support"}  # product mgmt
 OPS_ROLES = {"admin", "support"}  # provisioning/mikrotik/dcim/diagnostics
 USER_MGMT_ROLES = {"admin"}
+# Landing CMS: the admin UI exposes the 146-slot editor to every staff role, but
+# only these roles may publish. Kept as a set so the route dependency and the UI
+# guard read the same source of truth - a literal `role != "admin"` in a route
+# silently gives a working-looking page that 403s on save.
+SITE_CONTENT_ROLES = {"admin"}
 TICKET_ROLES = {"admin", "sales", "support", "ticket_only"}
 # Executive read-only visibility - cannot write, only see aggregated dashboards.
 OWNER_ROLES = {"admin", "owner"}
@@ -191,6 +196,22 @@ def require_roles(*allowed):
         return user
 
     return _dep
+
+
+async def get_current_site_content_editor(user=Depends(get_current_user)):
+    """Landing CMS publish rights.
+
+    Reads `SITE_CONTENT_ROLES` rather than hard-coding `role != "admin"`. The
+    message names the requirement so a staff member who reaches the editor UI
+    (the page itself is not role-gated on the client) understands why saving
+    is refused instead of seeing a bare "Admin only".
+    """
+    if user.get("role") not in SITE_CONTENT_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Landing CMS is read-only for your role; only an admin can publish changes",
+        )
+    return user
 
 
 def sales_can_access(user: dict, client_user_id: str) -> bool:

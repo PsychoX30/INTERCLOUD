@@ -19,10 +19,10 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
-    get_current_kb_author,
+    get_current_kb_author, get_current_site_content_editor,
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
-    OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES, SITE_CONTENT_ROLES,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -263,7 +263,7 @@ async def landing_content_get():
 
 
 @router.post("/admin/landing-content")
-async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
+async def landing_content_set(payload: dict, admin=Depends(get_current_site_content_editor)):
     """Replace the landing-content JSON. Body:
         {
           "overrides": {"hero.h1a": {"id": "...", "en": "..."}},
@@ -301,7 +301,7 @@ async def landing_content_set(payload: dict, admin=Depends(get_current_admin)):
 
 
 @router.delete("/admin/landing-content")
-async def landing_content_reset(admin=Depends(get_current_admin)):
+async def landing_content_reset(admin=Depends(get_current_site_content_editor)):
     """Wipe all landing overrides - Landing renders the shipped defaults."""
     db = await _get_db()
     await db.settings.update_one(

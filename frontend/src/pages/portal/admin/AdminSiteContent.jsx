@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { Save, RotateCcw, Plus, Trash2, Loader2, Monitor, Tablet, Smartphone, RefreshCw, Eye, EyeOff, ChevronUp, ChevronDown, UploadCloud } from "lucide-react";
+import { Save, RotateCcw, Plus, Trash2, Loader2, Monitor, Tablet, Smartphone, RefreshCw, Eye, EyeOff, ChevronUp, ChevronDown, UploadCloud, Lock } from "lucide-react";
 import { api } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 
 // Full landing-page coverage grouped by the sections a visitor scrolls through.
 // Friendly Indonesian labels so non-technical (creative) team members can edit
@@ -329,6 +330,11 @@ const normalizeLayout = (saved) => {
 };
 
 const AdminSiteContent = () => {
+  const { user } = useAuth();
+  // Mirrors backend SITE_CONTENT_ROLES. The page is reachable by every staff
+  // role, so the editor must say plainly whether saving is possible instead of
+  // letting a staff member fill 146 slots and discover the 403 on save.
+  const canPublish = !!user && user.role === "admin";
   const [content, setContent] = useState(null);
   const [tab, setTab] = useState("editor");     // editor | faqs | lists | images | json
   const [listTab, setListTab] = useState("services");
@@ -545,6 +551,10 @@ const AdminSiteContent = () => {
   };
 
   const save = async () => {
+    if (!canPublish) {
+      setMsg({ kind: "error", text: "Hanya admin yang bisa menerbitkan perubahan. Hubungi admin untuk menyimpan." });
+      return;
+    }
     setBusy(true); setMsg(null);
     try {
       let body = content;
@@ -563,6 +573,10 @@ const AdminSiteContent = () => {
   };
 
   const resetAll = async () => {
+    if (!canPublish) {
+      setMsg({ kind: "error", text: "Hanya admin yang bisa mereset konten landing." });
+      return;
+    }
     if (!window.confirm("Reset SEMUA teks landing ke bawaan?")) return;
     setBusy(true); setMsg(null);
     try {
@@ -586,6 +600,15 @@ const AdminSiteContent = () => {
           <p className="text-xs text-slate-500">Edit teks landing page dengan pratinjau langsung. Kolom kosong = pakai teks bawaan.</p>
         </div>
         <div className="flex items-center gap-2">
+          {!canPublish && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200"
+              data-testid="cms-readonly-badge"
+              title="Role Anda tidak punya izin menerbitkan perubahan"
+            >
+              <Lock className="h-3.5 w-3.5" /> Hanya baca
+            </span>
+          )}
           <button onClick={resetAll} disabled={busy}
                   className="text-xs text-slate-500 hover:text-red-600 inline-flex items-center gap-1.5 disabled:opacity-50"
                   data-testid="cms-reset-all">
@@ -598,6 +621,13 @@ const AdminSiteContent = () => {
           </button>
         </div>
       </div>
+
+      {!canPublish && (
+        <div className="px-4 md:px-6 py-2 text-sm border-b bg-amber-50 border-amber-200 text-amber-900" data-testid="cms-readonly-notice">
+          Anda dapat melihat dan menyalin isi landing page, tetapi hanya <strong>admin</strong> yang
+          bisa menerbitkan perubahan. Pratinjau tetap memperlihatkan hasil edit Anda.
+        </div>
+      )}
 
       {msg && (
         <div className={`px-4 md:px-6 py-2 text-sm border-b ${msg.kind === "error" ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`} data-testid="cms-msg">
