@@ -54,6 +54,8 @@ def _serialize_incident(doc: dict) -> dict:
         "ended_at": doc.get("ended_at"),
         "affected_customers": doc.get("affected_customers", []),
         "status": doc.get("status", "open"),
+        "maintenance_start": doc.get("maintenance_start"),
+        "maintenance_end": doc.get("maintenance_end"),
         "root_cause": doc.get("root_cause", ""),
         "created_by": doc.get("created_by"),
         "notes": doc.get("notes", ""),
@@ -220,14 +222,22 @@ async def sla_report_pdf(
     target = float(await _get_setting_value(db, "sla_target_uptime_percent", "99.5"))
 
     total_downtime_minutes = 0
+    planned_maintenance_minutes = 0
     for inc in incidents:
+        # Planned maintenance is not unplanned downtime: counting it would
+        # punish the team for work that was scheduled on purpose.
+        is_planned = inc.get("status") == "maintenance"
         started = inc.get("started_at")
         ended = inc.get("ended_at")
         if started and ended:
             try:
                 s = started if isinstance(started, datetime) else datetime.fromisoformat(started.replace("Z", "+00:00"))
                 e = ended if isinstance(ended, datetime) else datetime.fromisoformat(ended.replace("Z", "+00:00"))
-                total_downtime_minutes += (e - s).total_seconds() / 60
+                minutes = (e - s).total_seconds() / 60
+                if is_planned:
+                    planned_maintenance_minutes += minutes
+                else:
+                    total_downtime_minutes += minutes
             except Exception:
                 pass
 
@@ -245,10 +255,13 @@ async def sla_report_pdf(
         started = inc.get("started_at", "")[:16] if isinstance(inc.get("started_at"), str) else str(inc.get("started_at", ""))[:16]
         ended = inc.get("ended_at", "")[:16] if isinstance(inc.get("ended_at"), str) else (str(inc.get("ended_at", ""))[:16] if inc.get("ended_at") else "-")
         dur = _serialize_incident(inc).get("duration_minutes") or 0
+        is_planned_row = inc.get("status") == "maintenance"
+        kind = "Planned" if is_planned_row else "Unplanned"
         incident_rows += (
             f"<tr><td>{escape(started)}</td><td>{escape(ended)}</td>"
             f"<td>{escape(str(inc.get('title', '')))}</td>"
             f"<td>{escape(str(inc.get('severity', '')))}</td>"
+            f"<td>{escape(kind)}</td>"
             f"<td>{dur} min</td><td>{escape(str(inc.get('status', '')))}</td></tr>\n"
         )
 
@@ -276,11 +289,12 @@ async def sla_report_pdf(
     <div class="box"><div class="label">Target Uptime</div><div class="value">{target}%</div></div>
     <div class="box"><div class="label">Actual Availability</div><div class="value">{availability:.2f}%</div></div>
     <div class="box"><div class="label">Total Incidents</div><div class="value">{len(incidents)}</div></div>
-    <div class="box"><div class="label">Total Downtime</div><div class="value">{total_downtime_minutes:.0f} min</div></div>
+    <div class="box"><div class="label">Unplanned Downtime</div><div class="value">{total_downtime_minutes:.0f} min</div></div>
+    <div class="box"><div class="label">Planned Maintenance</div><div class="value">{planned_maintenance_minutes:.0f} min</div></div>
     <div class="box"><div class="label">SLA Met?</div><div class="value {'pass' if availability >= target else 'fail'}">{'YES' if availability >= target else 'NO'}</div></div>
   </div>
   <table>
-    <thead><tr><th>Started</th><th>Ended</th><th>Title</th><th>Severity</th><th>Duration</th><th>Status</th></tr></thead>
+    <thead><tr><th>Started</th><th>Ended</th><th>Title</th><th>Severity</th><th>Type</th><th>Duration</th><th>Status</th></tr></thead>
     <tbody>{incident_rows}</tbody>
   </table>
 </body></html>"""

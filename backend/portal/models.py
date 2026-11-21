@@ -814,10 +814,15 @@ class SLAIncidentIn(BaseModel):
     started_at: str  # ISO datetime
     ended_at: Optional[str] = None
     affected_customers: List[str] = []  # user_id list
-    status: Literal["open", "resolved", "postmortem"] = "open"
+    # "maintenance" is a planned window: it must not be counted as
+    # unplanned downtime in the SLA report, but it still needs to be
+    # visible and editable like any other incident.
+    status: Literal["open", "maintenance", "resolved", "postmortem"] = "open"
     root_cause: str = ""
     created_by: Optional[str] = None
     notes: str = ""
+    maintenance_start: Optional[str] = None  # ISO datetime
+    maintenance_end: Optional[str] = None    # ISO datetime
 
 
 class SLAIncidentOut(SLAIncidentIn):
@@ -834,9 +839,11 @@ class SLAIncidentUpdate(BaseModel):
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     affected_customers: Optional[List[str]] = None
-    status: Optional[Literal["open", "resolved", "postmortem"]] = None
+    status: Optional[Literal["open", "maintenance", "resolved", "postmortem"]] = None
     root_cause: Optional[str] = None
     notes: Optional[str] = None
+    maintenance_start: Optional[str] = None
+    maintenance_end: Optional[str] = None
 
 
 class SLAConfigIn(BaseModel):
