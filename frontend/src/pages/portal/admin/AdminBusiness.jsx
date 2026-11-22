@@ -382,13 +382,16 @@ const CrmForm = ({ c, clients, isSales, onClose, onDone }) => {
   return (
     <Modal onClose={onClose} title={c ? "Edit contact" : "New contact"}>
       <form onSubmit={submit} className="grid grid-cols-2 gap-3" data-testid="crm-form">
-        {isSales && !c && (
+        {isSales && !c && clients.length > 0 && (
           <label className="col-span-2">
-            <div className={labelClass}>Assigned client *</div>
-            <select required value={f.user_id} onChange={(e) => setF({ ...f, user_id: e.target.value })} className={inputClass} data-testid="crm-client">
-              <option value="">Select client…</option>
+            <div className={labelClass}>Assigned client <span className="font-normal text-slate-400">(optional)</span></div>
+            <select value={f.user_id} onChange={(e) => setF({ ...f, user_id: e.target.value })} className={inputClass} data-testid="crm-client">
+              <option value="">No client - save to shared prospect pool</option>
               {clients.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email || u.company || "-"})</option>)}
             </select>
+            <div className="text-[11px] text-slate-400 mt-1">
+              Lists only clients assigned to you. Leave empty to keep this as a shared prospect.
+            </div>
           </label>
         )}
         <label className="col-span-2"><div className={labelClass}>Full name *</div><input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inputClass} data-testid="crm-name" /></label>
