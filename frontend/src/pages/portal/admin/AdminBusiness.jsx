@@ -8,6 +8,7 @@ import TablePager from "./TablePager";
 import ShareModalComp from "../../../components/business/ShareModal";
 import ShareFolderModalComp from "../../../components/business/ShareFolderModal";
 import PreviewModalComp from "../../../components/business/PreviewModal";
+import { useUploadPolicy, acceptAttr, parseExtInput } from "./uploadPolicy";
 
 /* ============ Small generic modal ============ */
 const Modal = ({ children, onClose, title }) => (
@@ -1660,6 +1661,7 @@ export const AdminDocuments = () => {
 };
 
 const DocForm = ({ onClose, onDone, folders }) => {
+  const { policy } = useUploadPolicy();
   const [f, setF] = useState({ title: "", category: "contract", customer_name: "", url: "", notes: "", folder_id: "" });
   const [file, setFile] = useState(null);
   const [drag, setDrag] = useState(false);
@@ -1679,6 +1681,17 @@ const DocForm = ({ onClose, onDone, folders }) => {
 
   const pick = (fl) => {
     if (!fl) return;
+    const ext = (fl.name.split(".").pop() || "").toLowerCase();
+    if (!policy.document_extensions.includes(ext)) {
+      setFile(null);
+      setErr(`Format .${ext} belum diizinkan. Minta admin/support menambahkannya lewat Upload Settings.`);
+      return;
+    }
+    if (fl.size > policy.document_max_mb * 1024 * 1024) {
+      setFile(null);
+      setErr(`File ${(fl.size / 1024 / 1024).toFixed(1)} MB melebihi batas ${policy.document_max_mb} MB.`);
+      return;
+    }
     setFile(fl);
     setErr("");
     setF((p) => ({ ...p, title: p.title || fl.name.replace(/\.[^.]+$/, "") }));
@@ -1724,7 +1737,7 @@ const DocForm = ({ onClose, onDone, folders }) => {
             ref={fileRef}
             type="file"
             className="hidden"
-            accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.zip,.txt,.csv"
+            accept={acceptAttr(policy.document_extensions)}
             onChange={(e) => pick(e.target.files?.[0])}
             data-testid="doc-file-input"
           />
@@ -1736,7 +1749,9 @@ const DocForm = ({ onClose, onDone, folders }) => {
           ) : (
             <div className="text-sm text-slate-500">
               <b className="text-[#0a2350]">Drag & drop file di sini</b> atau klik untuk memilih
-              <div className="text-[11px] mt-1">PDF, Word, Excel, gambar, ZIP, teks · maks 15 MB</div>
+              <div className="text-[11px] mt-1">
+                {policy.document_extensions.map((e) => e.toUpperCase()).join(", ")} · maks {policy.document_max_mb} MB
+              </div>
             </div>
           )}
         </div>

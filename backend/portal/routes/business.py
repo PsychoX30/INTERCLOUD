@@ -1717,7 +1717,171 @@ _DOC_ALLOWED_TYPES = {
 }
 
 
-_DOC_MAX_BYTES = 15 * 1024 * 1024  # 15 MB
+_DOC_MAX_BYTES = 50 * 1024 * 1024  # 50 MB (default; overridable via upload policy)
+
+
+# ---- Upload policy: allowed extensions + size caps, editable by admin/support ----
+_UPLOAD_POLICY_KEY = "upload_policy"
+_UPLOAD_POLICY_ROLES = {"admin", "support"}
+
+_DEFAULT_DOC_EXTENSIONS = [
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+    "rtf", "txt", "csv", "zip",
+    "png", "jpg", "jpeg", "webp", "gif", "svg",
+    "mp3", "ogg", "wav", "m4a", "flac", "aac",
+    "mp4", "webm", "mov", "mkv", "avi",
+]
+_DEFAULT_MEDIA_EXTENSIONS = [
+    "png", "jpg", "jpeg", "webp", "gif", "svg",
+    "mp3", "ogg", "wav", "m4a", "flac", "aac",
+    "mp4", "webm", "mov", "mkv",
+]
+
+
+def _norm_ext_list(values) -> list:
+    """Normalize an extension allowlist: lowercase, no dots, deduped, safe chars."""
+    out, seen = [], set()
+    for v in values or []:
+        e = str(v or "").strip().lower().lstrip(".")
+        if not e or e in seen or not re.fullmatch(r"[a-z0-9]{1,12}", e):
+            continue
+        seen.add(e)
+        out.append(e)
+    return out
+
+
+def _clamp_int(value, lo: int, hi: int, default: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def _upload_policy_defaults() -> dict:
+    return {
+        "document_extensions": list(_DEFAULT_DOC_EXTENSIONS),
+        "media_extensions": list(_DEFAULT_MEDIA_EXTENSIONS),
+        "document_max_mb": _DOC_MAX_BYTES // (1024 * 1024),
+        "media_max_mb": _MEDIA_MAX_BYTES // (1024 * 1024),
+    }
+
+
+async def _get_upload_policy(db) -> dict:
+    """Runtime upload policy: defaults merged with the saved overrides."""
+    pol = _upload_policy_defaults()
+    row = await db.settings.find_one({"key": _UPLOAD_POLICY_KEY})
+    saved = (row or {}).get("value") or {}
+    if isinstance(saved, dict):
+        doc_ext = _norm_ext_list(saved.get("document_extensions"))
+        if doc_ext:
+            pol["document_extensions"] = doc_ext
+        media_ext = _norm_ext_list(saved.get("media_extensions"))
+        if media_ext:
+            pol["media_extensions"] = media_ext
+        pol["document_max_mb"] = _clamp_int(
+            saved.get("document_max_mb"), 1, 1024, pol["document_max_mb"])
+        pol["media_max_mb"] = _clamp_int(
+            saved.get("media_max_mb"), 1, 2048, pol["media_max_mb"])
+    return pol
+
+
+def _check_upload_allowed(ctype: str, ext: str, allowed_ext: list,
+                          allowed_types: set, label: str) -> None:
+    """Accept when the file extension is allowlisted (support can add formats at
+    runtime) or when the browser-reported MIME type is on the fixed list."""
+    if ext and ext in allowed_ext:
+        return
+    if (ctype or "").split(";")[0].strip() in allowed_types:
+        return
+    shown = ", ".join(sorted({e.upper() for e in allowed_ext}))
+    raise HTTPException(
+        status_code=400,
+        detail=f"{label}: format .{(ext or 'unknown')} tidak diizinkan. Format yang didukung: {shown}.")
+
+
+async def _save_upload(file, dest, max_bytes: int, too_big_msg: str) -> int:
+    """Stream the upload to disk in chunks so a 300 MB file never lands in RAM."""
+    total = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=400, detail=too_big_msg)
+                fh.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="File kosong")
+    except BaseException:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    return total
+
+
+_RANGE_CHUNK = 512 * 1024
+
+
+def _file_response(request, path, media_type: str, filename: str | None = None,
+                   attachment: bool = False):
+    """Serve a file with HTTP Range support.
+
+    Starlette 0.37 FileResponse ignores Range, so Chrome aborts large media
+    streams instead of progressively playing them. Video/audio needs 206.
+    """
+    fp = _DocPath(path)
+    try:
+        file_size = fp.stat().st_size
+    except OSError:
+        raise HTTPException(status_code=404, detail="File missing on disk")
+
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=0"}
+    if attachment:
+        headers["Content-Disposition"] = (
+            f'attachment; filename="{quote(filename or fp.name)}"')
+
+    start, end, status = 0, max(file_size - 1, 0), 200
+    rng = (request.headers.get("range") or "").strip()
+    if rng.startswith("bytes=") and file_size > 0:
+        spec = rng[6:].split(",")[0].strip()
+        first, _, last = spec.partition("-")
+        try:
+            if first:
+                start = int(first)
+                end = int(last) if last else file_size - 1
+            elif last:
+                start = max(0, file_size - int(last))
+                end = file_size - 1
+        except ValueError:
+            start, end = 0, file_size - 1
+        if start >= file_size or start > end:
+            return Response(status_code=416, headers={
+                **headers, "Content-Range": f"bytes */{file_size}"})
+        end = min(end, file_size - 1)
+        status = 206
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    length = (end - start + 1) if file_size else 0
+    headers["Content-Length"] = str(file_size if status == 200 else length)
+
+    def _iter():
+        remaining = length
+        with open(fp, "rb") as fh:
+            fh.seek(start)
+            while remaining > 0:
+                chunk = fh.read(min(_RANGE_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(_iter(), status_code=status,
+                             media_type=media_type, headers=headers)
 
 
 def _serialize_doc(d):
@@ -2138,7 +2302,7 @@ async def docs_delete(did: str, staff=Depends(get_current_staff)):
 
 
 @router.get("/documents/file/{did}")
-async def docs_file(did: str, staff=Depends(get_current_staff)):
+async def docs_file(did: str, request: Request, staff=Depends(get_current_staff)):
     """Serve dokumen bisnis yang di-upload (URL ber-ObjectId, seperti media)."""
     _require_internal_document_access(staff)
     db = await _get_db()
@@ -2147,11 +2311,9 @@ async def docs_file(did: str, staff=Depends(get_current_staff)):
         raise HTTPException(status_code=404, detail="Document not found")
     if not _doc_can_read(staff, d):
         raise HTTPException(status_code=403, detail="Dokumen ini privat")
-    fp = DOCS_DIR / d["stored_name"]
-    if not fp.exists():
-        raise HTTPException(status_code=404, detail="File missing on disk")
-    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
-                        filename=d.get("filename") or d["stored_name"])
+    return _file_response(request, DOCS_DIR / d["stored_name"],
+                          d.get("content_type") or "application/octet-stream",
+                          filename=d.get("filename") or d["stored_name"])
 
 
 # ============================================================
@@ -2445,7 +2607,7 @@ async def docs_move(did: str, payload: dict, staff=Depends(get_current_staff)):
 # Document download + preview
 # ============================================================
 @router.get("/admin/documents/{did}/download")
-async def docs_download(did: str, staff=Depends(get_current_staff)):
+async def docs_download(did: str, request: Request, staff=Depends(get_current_staff)):
     _require_internal_document_access(staff)
     db = await _get_db()
     d = await db.documents.find_one({"_id": _oid(did)})
@@ -2453,12 +2615,10 @@ async def docs_download(did: str, staff=Depends(get_current_staff)):
         raise HTTPException(status_code=404, detail="Document not found")
     if not _doc_can_read(staff, d):
         raise HTTPException(status_code=403, detail="Dokumen ini privat")
-    fp = DOCS_DIR / d["stored_name"]
-    if not fp.exists():
-        raise HTTPException(status_code=404, detail="File missing on disk")
-    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
-                        filename=d.get("filename") or d["stored_name"],
-                        headers={"Content-Disposition": f'attachment; filename="{quote(d.get("filename") or d["stored_name"])}"'})
+    return _file_response(request, DOCS_DIR / d["stored_name"],
+                          d.get("content_type") or "application/octet-stream",
+                          filename=d.get("filename") or d["stored_name"],
+                          attachment=True)
 
 
 @router.get("/admin/documents/{did}/preview.pdf")
@@ -2494,7 +2654,9 @@ _DOC_PREVIEW_KIND_BY_TYPE = {
     "application/pdf": "pdf",
     "image/png": "image", "image/jpeg": "image", "image/webp": "image", "image/gif": "image",
     "audio/mpeg": "audio", "audio/ogg": "audio", "audio/wav": "audio", "audio/mp4": "audio",
+    "audio/flac": "audio", "audio/x-flac": "audio", "audio/aac": "audio", "audio/x-m4a": "audio",
     "video/mp4": "video", "video/webm": "video", "video/ogg": "video", "video/quicktime": "video",
+    "video/x-matroska": "video", "video/x-msvideo": "video",
     "text/plain": "text", "text/csv": "text",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
@@ -2513,7 +2675,8 @@ def _doc_preview_kind(ctype: str, filename: str = "") -> str:
     return {
         "pdf": "pdf", "png": "image", "jpg": "image", "jpeg": "image", "webp": "image", "gif": "image",
         "mp3": "audio", "ogg": "audio", "wav": "audio", "m4a": "audio",
-        "mp4": "video", "webm": "video", "mov": "video",
+        "flac": "audio", "aac": "audio",
+        "mp4": "video", "webm": "video", "mov": "video", "mkv": "video", "avi": "video",
         "txt": "text", "csv": "text",
         "docx": "docx", "xlsx": "xlsx", "pptx": "pptx", "odt": "odt", "ods": "ods", "odp": "odp",
     }.get(ext, "none")
@@ -2863,7 +3026,7 @@ async def content_calendar_holidays(year: int = 2026, staff=Depends(get_current_
 from fastapi import UploadFile, File, Form  # noqa: E402
 
 
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.responses import FileResponse, Response, StreamingResponse  # noqa: E402
 
 
 import uuid as _uuid  # noqa: E402
@@ -2875,10 +3038,16 @@ from pathlib import Path as _Path  # noqa: E402
 MEDIA_DIR = _Path(__file__).resolve().parent.parent.parent / "uploads" / "media"
 
 
-_MEDIA_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"}
+_MEDIA_ALLOWED_TYPES = {
+    "image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml",
+    "audio/mpeg", "audio/ogg", "audio/wav", "audio/mp4", "audio/flac", "audio/aac",
+    "audio/x-flac", "audio/x-m4a",
+    "video/mp4", "video/webm", "video/ogg", "video/quicktime",
+    "video/x-matroska", "video/x-msvideo",
+}
 
 
-_MEDIA_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+_MEDIA_MAX_BYTES = 300 * 1024 * 1024  # 300 MB (default; overridable via upload policy)
 
 
 async def _media_usage(db, media_id: str) -> list:
@@ -2944,24 +3113,25 @@ async def media_upload(file: UploadFile = File(...),
                        tags: str = Form(""),
                        staff=Depends(get_current_staff)):
     db = await _get_db()
-    if file.content_type not in _MEDIA_ALLOWED_TYPES:
-        raise HTTPException(status_code=400,
-                            detail=f"Unsupported type {file.content_type}. Allowed: PNG, JPEG, WebP, GIF, SVG.")
-    raw = await file.read()
-    if len(raw) > _MEDIA_MAX_BYTES:
-        raise HTTPException(status_code=400, detail="File exceeds 8 MB limit")
+    policy = await _get_upload_policy(db)
+    max_bytes = int(policy["media_max_mb"]) * 1024 * 1024
+    ctype = (file.content_type or "application/octet-stream").split(";")[0].strip()
+    ext = _Path(file.filename or "upload.bin").suffix.lower().lstrip(".")
+    _check_upload_allowed(ctype, ext, policy["media_extensions"],
+                          _MEDIA_ALLOWED_TYPES, "Media")
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    ext = _Path(file.filename or "upload.bin").suffix.lower() or ".bin"
     mid = ObjectId()
-    stored_name = f"{mid}{ext}"
-    (MEDIA_DIR / stored_name).write_bytes(raw)
+    stored_name = f"{mid}." + (ext or "bin")
+    size = await _save_upload(
+        file, MEDIA_DIR / stored_name, max_bytes,
+        f"Ukuran file melebihi {policy['media_max_mb']} MB")
     doc = {
         "_id": mid,
         "filename": file.filename or stored_name,
         "stored_name": stored_name,
         "url": f"/api/portal/media/file/{mid}",
-        "content_type": file.content_type,
-        "size_bytes": len(raw),
+        "content_type": ctype,
+        "size_bytes": size,
         "alt_text": (alt_text or "").strip(),
         "tags": sorted({t.strip().lower() for t in (tags or "").split(",") if t.strip()}),
         "uploaded_by": staff["email"],
@@ -2988,18 +3158,18 @@ async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
     else:
         folder = f"private/{staff.get('id', 'unknown')}"
         owner_id = staff.get("id")
-    ctype = file.content_type or "application/octet-stream"
-    if ctype not in _DOC_ALLOWED_TYPES:
-        raise HTTPException(status_code=400,
-                            detail=f"Tipe file {ctype} tidak didukung. Gunakan PDF, Word, Excel, PowerPoint, OpenDocument, gambar, audio, video, ZIP, atau teks.")
-    raw = await file.read()
-    if len(raw) > _DOC_MAX_BYTES:
-        raise HTTPException(status_code=400, detail="Ukuran file melebihi 15 MB")
+    ctype = (file.content_type or "application/octet-stream").split(";")[0].strip()
+    policy = await _get_upload_policy(db)
+    max_bytes = int(policy["document_max_mb"]) * 1024 * 1024
+    ext = _DocPath(file.filename or "dokumen.bin").suffix.lower().lstrip(".")
+    _check_upload_allowed(ctype, ext, policy["document_extensions"],
+                          _DOC_ALLOWED_TYPES, "Dokumen")
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     did = ObjectId()
-    ext = _DocPath(file.filename or "dokumen.bin").suffix.lower() or ".bin"
-    stored_name = f"{did}{ext}"
-    (DOCS_DIR / stored_name).write_bytes(raw)
+    stored_name = f"{did}." + (ext or "bin")
+    size = await _save_upload(
+        file, DOCS_DIR / stored_name, max_bytes,
+        f"Ukuran file melebihi {policy['document_max_mb']} MB")
     resolved_folder_id, resolved_folder_path = None, ""
     if (folder_id or "").strip():
         f_oid = _oid(folder_id.strip())
@@ -3029,7 +3199,7 @@ async def docs_upload(file: UploadFile = File(...), title: str = Form(""),
         "filename": file.filename or stored_name,
         "stored_name": stored_name,
         "content_type": ctype,
-        "size_bytes": len(raw),
+        "size_bytes": size,
         "uploaded_by": staff["email"],
         "created_at": _now(),
         "folder": folder,
@@ -3087,17 +3257,16 @@ async def media_delete(mid: str, staff=Depends(get_current_staff)):
 
 
 @router.get("/media/file/{mid}", include_in_schema=False)
-async def media_file(mid: str):
+async def media_file(mid: str, request: Request):
     """Public file serve - media is referenced from public articles."""
     db = await _get_db()
     d = await db.media_assets.find_one({"_id": _oid(mid)})
     if not d:
         raise HTTPException(status_code=404, detail="Media not found")
-    fp = MEDIA_DIR / d.get("stored_name", "")
-    if not fp.exists():
-        raise HTTPException(status_code=404, detail="File missing on disk")
-    return FileResponse(fp, media_type=d.get("content_type") or "application/octet-stream",
-                        headers={"Cache-Control": "public, max-age=86400"})
+    resp = _file_response(request, MEDIA_DIR / d.get("stored_name", ""),
+                          d.get("content_type") or "application/octet-stream")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 # ============================================================
@@ -3113,6 +3282,45 @@ def _serialize_comment(d: dict) -> dict:
         "body": d.get("body", ""),
         "created_at": _iso(d.get("created_at", "")),
     }
+
+
+@router.get("/admin/upload-policy")
+async def upload_policy_get(staff=Depends(get_current_staff)):
+    """Allowed extensions and size caps for document/media uploads."""
+    db = await _get_db()
+    pol = await _get_upload_policy(db)
+    pol["can_edit"] = (staff.get("role") or "") in _UPLOAD_POLICY_ROLES
+    return pol
+
+
+@router.put("/admin/upload-policy")
+async def upload_policy_put(payload: dict, staff=Depends(get_current_staff)):
+    """Support/admin can allow a new extension at runtime (e.g. FLAC)."""
+    if (staff.get("role") or "") not in _UPLOAD_POLICY_ROLES:
+        raise HTTPException(status_code=403,
+                            detail="Hanya admin/support yang dapat mengubah kebijakan upload")
+    db = await _get_db()
+    cur = await _get_upload_policy(db)
+    doc_ext = _norm_ext_list(payload.get("document_extensions")) or cur["document_extensions"]
+    media_ext = _norm_ext_list(payload.get("media_extensions")) or cur["media_extensions"]
+    value = {
+        "document_extensions": doc_ext,
+        "media_extensions": media_ext,
+        "document_max_mb": _clamp_int(
+            payload.get("document_max_mb"), 1, 1024, cur["document_max_mb"]),
+        "media_max_mb": _clamp_int(
+            payload.get("media_max_mb"), 1, 2048, cur["media_max_mb"]),
+        "updated_at": _now(),
+        "updated_by": staff.get("email", ""),
+    }
+    await db.settings.update_one(
+        {"key": _UPLOAD_POLICY_KEY},
+        {"$set": {"key": _UPLOAD_POLICY_KEY, "value": value}},
+        upsert=True,
+    )
+    out = dict(value)
+    out["can_edit"] = True
+    return out
 
 
 @router.get("/admin/media/{mid}/comments")

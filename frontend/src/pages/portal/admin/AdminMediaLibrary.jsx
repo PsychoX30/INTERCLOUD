@@ -2,17 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../../portal/api";
 import { useAuth } from "../../../portal/AuthContext";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary, btnDanger, inputClass, labelClass } from "../ui";
-import { UploadCloud, Trash2, Tag, Search, Copy, CheckCircle2, X, Loader2, MessageSquare } from "lucide-react";
+import { UploadCloud, Trash2, Tag, Search, Copy, CheckCircle2, X, Loader2, MessageSquare, Settings2, Play, Music } from "lucide-react";
+import { useUploadPolicy, acceptAttr, parseExtInput } from "./uploadPolicy";
 import { toast } from "sonner";
 
 const BACKEND = process.env.REACT_APP_BACKEND_URL;
 export const mediaUrl = (m) => (m?.url?.startsWith("http") ? m.url : `${BACKEND}${m?.url || ""}`);
 
 const AdminMediaLibrary = () => {
+  const { policy, save } = useUploadPolicy();
   const [rows, setRows] = useState(null);
   const [q, setQ] = useState("");
   const [tag, setTag] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const fileRef = useRef(null);
 
   const load = async () => {
@@ -35,6 +38,15 @@ const AdminMediaLibrary = () => {
 
   const upload = async (file) => {
     if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!policy.media_extensions.includes(ext)) {
+      toast.error(`Format .${ext} belum diizinkan. Tambahkan lewat Upload settings.`);
+      return;
+    }
+    if (file.size > policy.media_max_mb * 1024 * 1024) {
+      toast.error(`${(file.size / 1024 / 1024).toFixed(1)} MB melebihi batas ${policy.media_max_mb} MB`);
+      return;
+    }
     setUploading(true);
     try {
       const fd = new FormData();
@@ -75,15 +87,20 @@ const AdminMediaLibrary = () => {
     <div data-testid="media-library-page">
       <PageHeader
         title="Media Library"
-        subtitle="Shared images for articles, branding, and campaigns. Uploaded files are served from this portal - reuse them anywhere via their URL."
+        subtitle="Shared assets for articles, branding, and campaigns. Images, audio and video are served from this portal - reuse them anywhere via their URL."
         actions={
           <>
-            <input ref={fileRef} type="file" accept="image/*" className="hidden"
+            <input ref={fileRef} type="file" accept={acceptAttr(policy.media_extensions)} className="hidden"
                    onChange={(e) => upload(e.target.files?.[0])} data-testid="media-file-input" />
+            {policy.can_edit && (
+              <button className={btnSecondary} onClick={() => setSettingsOpen(true)} data-testid="media-settings-btn">
+                <Settings2 className="h-4 w-4" /> Upload settings
+              </button>
+            )}
             <button className={btnPrimary} disabled={uploading}
                     onClick={() => fileRef.current?.click()} data-testid="media-upload-btn">
               {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-              {uploading ? "Uploading…" : "Upload image"}
+              {uploading ? "Uploading…" : "Upload file"}
             </button>
           </>
         }
@@ -112,13 +129,13 @@ const AdminMediaLibrary = () => {
           <EmptyState
             title={rows.length === 0 ? "The media library is empty" : "No assets match your filter"}
             body={rows.length === 0
-              ? "Upload your first image - it becomes instantly reusable as an article cover, branding asset, or campaign visual."
+              ? "Upload your first asset - images, audio or video become instantly reusable as article covers, branding assets, or campaign media."
               : "Try clearing the search box or tag filter."}
           />
           {rows.length === 0 && (
             <div className="text-center mt-4">
               <button className={btnPrimary} onClick={() => fileRef.current?.click()} data-testid="media-empty-upload">
-                <UploadCloud className="h-4 w-4" /> Upload your first image
+                <UploadCloud className="h-4 w-4" /> Upload your first asset
               </button>
             </div>
           )}
@@ -128,8 +145,89 @@ const AdminMediaLibrary = () => {
           {filtered.map((m) => <MediaCard key={m.id} m={m} onDelete={() => remove(m)} onSaved={load} />)}
         </div>
       )}
+      {settingsOpen && (
+        <UploadSettingsModal policy={policy} onSave={save} onClose={() => setSettingsOpen(false)} />
+      )}
     </div>
   );
+};
+
+export const UploadSettingsModal = ({ policy, onSave, onClose }) => {
+  const [docExt, setDocExt] = useState((policy.document_extensions || []).join(", "));
+  const [mediaExt, setMediaExt] = useState((policy.media_extensions || []).join(", "));
+  const [docMb, setDocMb] = useState(policy.document_max_mb || 50);
+  const [mediaMb, setMediaMb] = useState(policy.media_max_mb || 300);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      await onSave({
+        document_extensions: parseExtInput(docExt),
+        media_extensions: parseExtInput(mediaExt),
+        document_max_mb: Number(docMb) || 50,
+        media_max_mb: Number(mediaMb) || 300,
+      });
+      toast.success("Upload settings saved");
+      onClose();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Gagal menyimpan pengaturan");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={submit}
+            className="w-full max-w-xl bg-white rounded-3xl p-6 max-h-[90vh] overflow-y-auto"
+            data-testid="upload-settings-modal">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-extrabold text-[#0a2350]">Upload settings</h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="h-5 w-5" /></button>
+        </div>
+        {err && <div className="mb-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2">{err}</div>}
+        <label className="block mb-3">
+          <div className={labelClass}>Ekstensi dokumen yang diizinkan</div>
+          <textarea rows={3} value={docExt} onChange={(e) => setDocExt(e.target.value)}
+                    className={`${inputClass} h-auto py-2`} data-testid="upload-settings-doc-ext" />
+          <div className="text-[11px] text-slate-500 mt-1">Pisahkan dengan koma. Contoh: pdf, docx, flac</div>
+        </label>
+        <label className="block mb-3">
+          <div className={labelClass}>Batas ukuran dokumen (MB)</div>
+          <input type="number" min={1} max={1024} value={docMb} onChange={(e) => setDocMb(e.target.value)}
+                 className={inputClass} data-testid="upload-settings-doc-mb" />
+        </label>
+        <label className="block mb-3">
+          <div className={labelClass}>Ekstensi media yang diizinkan</div>
+          <textarea rows={3} value={mediaExt} onChange={(e) => setMediaExt(e.target.value)}
+                    className={`${inputClass} h-auto py-2`} data-testid="upload-settings-media-ext" />
+        </label>
+        <label className="block mb-4">
+          <div className={labelClass}>Batas ukuran media (MB)</div>
+          <input type="number" min={1} max={2048} value={mediaMb} onChange={(e) => setMediaMb(e.target.value)}
+                 className={inputClass} data-testid="upload-settings-media-mb" />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
+          <button type="submit" className={btnPrimary} disabled={busy} data-testid="upload-settings-save">
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+export const mediaKind = (m) => {
+  const ct = (m?.content_type || "").toLowerCase();
+  if (ct.startsWith("video/")) return "video";
+  if (ct.startsWith("audio/")) return "audio";
+  if (ct.startsWith("image/")) return "image";
+  const ext = (m?.filename || "").split(".").pop().toLowerCase();
+  if (["mp4", "webm", "mov", "mkv", "avi", "ogv"].includes(ext)) return "video";
+  if (["mp3", "ogg", "wav", "m4a", "flac", "aac"].includes(ext)) return "audio";
+  return "image";
 };
 
 const MediaCard = ({ m, onDelete, onSaved }) => {
@@ -139,13 +237,30 @@ const MediaCard = ({ m, onDelete, onSaved }) => {
   const copy = async () => {
     await navigator.clipboard.writeText(mediaUrl(m));
     setCopied(true);
-    toast.success("Image URL copied");
+    toast.success("Asset URL copied");
     setTimeout(() => setCopied(false), 1500);
   };
+  const kind = mediaKind(m);
   return (
     <div className="rounded-2xl bg-white border border-slate-200 overflow-hidden group focus-within:ring-2 focus-within:ring-[#f5b120]" data-testid={`media-card-${m.id}`}>
       <div className="aspect-square bg-slate-100 relative">
-        <img src={mediaUrl(m)} alt={m.alt_text || m.filename} className="w-full h-full object-cover" loading="lazy" />
+        {kind === "video" ? (
+          <video src={mediaUrl(m)} className="w-full h-full object-cover bg-black"
+                 muted preload="metadata" playsInline data-testid={`media-video-${m.id}`} />
+        ) : kind === "audio" ? (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-slate-400">
+            <Music className="h-8 w-8" />
+            <audio src={mediaUrl(m)} controls className="w-[85%]" data-testid={`media-audio-${m.id}`} />
+          </div>
+        ) : (
+          <img src={mediaUrl(m)} alt={m.alt_text || m.filename} className="w-full h-full object-cover" loading="lazy" />
+        )}
+        {kind !== "image" && (
+          <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-[#0a2350]/85 text-white text-[10px] font-bold inline-flex items-center gap-1">
+            {kind === "video" ? <Play className="h-2.5 w-2.5" /> : <Music className="h-2.5 w-2.5" />}
+            {kind.toUpperCase()}
+          </span>
+        )}
         {(m.used_in || []).length > 0 && (
           <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-[#0a2350]/85 text-white text-[10px] font-bold" title={(m.used_in || []).map((u) => u.label).join(", ")}>
             in use ×{m.used_in.length}
@@ -301,7 +416,13 @@ export const MediaPickerModal = ({ onPick, onClose }) => {
               <button key={m.id} onClick={() => onPick(mediaUrl(m), m)}
                       className="rounded-xl overflow-hidden border border-slate-200 hover:border-[#f5b120] focus-visible:ring-2 focus-visible:ring-[#f5b120]"
                       data-testid={`media-pick-${m.id}`}>
-                <img src={mediaUrl(m)} alt={m.alt_text || m.filename} className="aspect-square w-full object-cover" loading="lazy" />
+                {mediaKind(m) === "image" ? (
+                  <img src={mediaUrl(m)} alt={m.alt_text || m.filename} className="aspect-square w-full object-cover" loading="lazy" />
+                ) : (
+                  <div className="aspect-square w-full bg-slate-900 flex items-center justify-center text-slate-300">
+                    {mediaKind(m) === "video" ? <Play className="h-6 w-6" /> : <Music className="h-6 w-6" />}
+                  </div>
+                )}
                 <div className="px-2 py-1 text-[10px] text-slate-500 truncate">{m.filename}</div>
               </button>
             ))}
