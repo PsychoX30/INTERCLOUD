@@ -32,6 +32,7 @@ from .. import integrations_v2 as iv2
 from .shared import (_get_db, _iso, _now, _oid, _sales_scope_filter, _sales_visible_crm_ids,
                      _pagination_params, _pagination_response)  # noqa: E402
 from .tickets import _deny_creative  # noqa: E402
+from ..activity_sync import close_activity, drop_activity, upsert_activity  # noqa: E402
 
 router = APIRouter()
 
@@ -722,6 +723,17 @@ async def content_create(payload: dict, staff=Depends(get_current_staff)):
     }
     r = await db.content_plan.insert_one(doc)
     doc["_id"] = r.inserted_id
+    # Content Planner -> Activity: rencana tayang adalah pekerjaan tim.
+    await upsert_activity(
+        db, source="content_plan", source_id=r.inserted_id,
+        title=f"Konten: {doc.get('title') or 'tanpa judul'}",
+        kind="content", status="done" if doc.get("status") == "published" else "planned",
+        scheduled_start=(doc.get("publish_date") or None),
+        description=doc.get("hook") or "",
+        owner_name=doc.get("owner") or staff.get("name") or "",
+        source_label=doc.get("channel") or "", link_url=doc.get("url") or "",
+        actor_name=staff.get("name") or staff.get("email") or "", now=_now(),
+    )
     return _serialize_content(doc)
 
 
@@ -733,6 +745,17 @@ async def content_update(cid: str, payload: dict, staff=Depends(get_current_staf
     }}
     await db.content_plan.update_one({"_id": _oid(cid)}, {"$set": upd})
     d = await db.content_plan.find_one({"_id": _oid(cid)})
+    if d:
+        await upsert_activity(
+            db, source="content_plan", source_id=d["_id"],
+            title=f"Konten: {d.get('title') or 'tanpa judul'}",
+            kind="content", status="done" if d.get("status") == "published" else "planned",
+            scheduled_start=(d.get("publish_date") or None),
+            description=d.get("hook") or "",
+            owner_name=d.get("owner") or "",
+            source_label=d.get("channel") or "", link_url=d.get("url") or "",
+            actor_name=staff.get("name") or staff.get("email") or "", now=_now(),
+        )
     return _serialize_content(d)
 
 
@@ -740,6 +763,7 @@ async def content_update(cid: str, payload: dict, staff=Depends(get_current_staf
 async def content_delete(cid: str, staff=Depends(get_current_staff)):
     db = await _get_db()
     r = await db.content_plan.delete_one({"_id": _oid(cid)})
+    await drop_activity(db, source="content_plan", source_id=cid)
     return {"deleted": r.deleted_count}
 
 
@@ -1285,6 +1309,18 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
     }
     r = await db.followups.insert_one(doc)
     doc["_id"] = r.inserted_id
+    # Follow-up klien -> Activity: rencana kunjungan/hubungan klien.
+    await upsert_activity(
+        db, source="followup", source_id=r.inserted_id,
+        title=f"Follow-up: {doc.get('customer_name') or doc.get('task') or 'klien'}",
+        kind="followup", status="done" if doc.get("done") else "planned",
+        scheduled_end=(doc.get("due_date") or None),
+        description=doc.get("task") or "",
+        owner_name=doc.get("owner") or "", owner_id=doc.get("owner_id") or None,
+        customer_id=doc.get("customer_id"), customer_name=doc.get("customer_name") or "",
+        source_label=doc.get("channel") or "",
+        actor_name=staff.get("name") or staff.get("email") or "", now=_now(),
+    )
     return _serialize_followup(doc)
 
 
@@ -1379,6 +1415,23 @@ async def followups_update(fid: str, payload: dict, staff=Depends(get_current_st
                     }},
                 )
     updated = await db.followups.find_one({"_id": _oid(fid)})
+    if updated:
+        if updated.get("done"):
+            await close_activity(db, source="followup", source_id=fid, now=_now())
+        else:
+            await upsert_activity(
+                db, source="followup", source_id=fid,
+                title=f"Follow-up: {updated.get('customer_name') or updated.get('task') or 'klien'}",
+                kind="followup", status="planned",
+                scheduled_end=(updated.get("due_date") or None),
+                description=updated.get("task") or "",
+                owner_name=updated.get("owner") or "",
+                owner_id=updated.get("owner_id") or None,
+                customer_id=updated.get("customer_id"),
+                customer_name=updated.get("customer_name") or "",
+                source_label=updated.get("channel") or "",
+                actor_name=staff.get("name") or staff.get("email") or "", now=_now(),
+            )
     return _serialize_followup(updated)
 
 
@@ -1576,6 +1629,7 @@ async def followups_delete(fid: str, staff=Depends(get_current_staff)):
     if not getattr(r, "deleted_count", 0):
         return {"deleted": 0, "crm_released": False}
     released = await _release_crm_after_followup_delete(db, fu or {})
+    await drop_activity(db, source="followup", source_id=fid)
     return {"deleted": r.deleted_count, "crm_released": released}
 
 

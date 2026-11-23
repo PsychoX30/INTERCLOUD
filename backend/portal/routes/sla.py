@@ -17,6 +17,7 @@ from ..auth import (
     get_current_admin, get_current_staff, require_roles,
     STAFF_ROLES, FINANCE_ROLES, OPS_ROLES,
 )
+from ..activity_sync import close_activity, drop_activity, upsert_activity
 from .shared import _get_db, _oid, _now, _sales_scope_filter, _get_setting_value, _set_setting_value
 from .documents import _render_pdf_bytes
 
@@ -25,6 +26,41 @@ _log = logging.getLogger("portal.sla")
 
 
 # ── helpers ──────────────────────────────────────────────────────
+async def _sync_incident_activity(db, doc: dict) -> None:
+    """Maintenance terjadwal di SLA ikut muncul sebagai Activity."""
+    if not doc:
+        return
+    iid = str(doc.get("_id"))
+    status = doc.get("status")
+    # Hanya maintenance (planned window) yang relevan sebagai pekerjaan
+    # terjadwal. Insiden murni tetap di SLA supaya daftar Activity tidak
+    # penuh alert yang tidak pernah dikerjakan orang.
+    if status == "maintenance" or doc.get("maintenance_start"):
+        if status in ("resolved", "postmortem"):
+            await close_activity(db, source="sla_maintenance", source_id=iid,
+                                 now=doc.get("ended_at"), status="done")
+            return
+        await upsert_activity(
+            db,
+            source="sla_maintenance",
+            source_id=iid,
+            title=f"Maintenance: {doc.get('title') or 'tanpa judul'}",
+            kind="maintenance",
+            status="in_progress" if status == "maintenance" else "planned",
+            scheduled_start=doc.get("maintenance_start") or doc.get("started_at"),
+            scheduled_end=doc.get("maintenance_end"),
+            location="Data center",
+            description=doc.get("description") or "",
+            customer_name=", ".join(doc.get("affected_customers") or [])[:200],
+            source_label=doc.get("severity") or "",
+            actor_name=doc.get("created_by") or "",
+            now=_now(),
+        )
+    elif status in ("resolved", "postmortem"):
+        await close_activity(db, source="sla_maintenance", source_id=iid,
+                             now=doc.get("ended_at"), status="done")
+
+
 def _serialize_incident(doc: dict) -> dict:
     if not doc:
         return {}
@@ -145,6 +181,7 @@ async def create_sla_incident(payload: m.SLAIncidentIn, admin=Depends(get_curren
     doc["created_at"] = now
     doc["updated_at"] = now
     r = await db.sla_incidents.insert_one(doc)
+    await _sync_incident_activity(db, {**doc, "_id": r.inserted_id})
     return {"id": str(r.inserted_id)}
 
 
@@ -162,6 +199,7 @@ async def update_sla_incident(iid: str, payload: m.SLAIncidentUpdate, admin=Depe
     update["updated_at"] = _now()
     await db.sla_incidents.update_one({"_id": existing["_id"], **_sales_scope_filter_for_incidents(admin)}, {"$set": update})
     doc = await db.sla_incidents.find_one({"_id": existing["_id"], **_sales_scope_filter_for_incidents(admin)})
+    await _sync_incident_activity(db, doc)
     return {"incident": _serialize_incident(doc)}
 
 
@@ -173,6 +211,7 @@ async def delete_sla_incident(iid: str, admin=Depends(get_current_staff)):
     r = await db.sla_incidents.delete_one({"_id": _oid(iid)})
     if not r.deleted_count:
         raise HTTPException(status_code=404, detail="Incident not found")
+    await drop_activity(db, source="sla_maintenance", source_id=iid)
     return {"deleted": r.deleted_count}
 
 

@@ -7,6 +7,7 @@ from bson import ObjectId
 from pydantic import BaseModel, field_validator
 from pymongo.errors import DuplicateKeyError
 
+from ..activity_sync import close_activity, upsert_activity
 from ..audit import log_audit
 from ..auth import get_current_admin
 from ..jitsi_meetings import (
@@ -244,6 +245,26 @@ async def jitsi_meeting_create(payload: MeetingCreateIn, admin=Depends(get_curre
         target_label=doc["slug"],
         after={"slug": doc["slug"], "starts_at": doc["starts_at"]},
     )
+    # Rapat online otomatis jadi satu baris Activity: tim melihat jadwal
+    # rapat di tempat yang sama dengan survey/visit/instalasi.
+    await upsert_activity(
+        db,
+        source="jitsi_meeting",
+        source_id=out["id"],
+        title=f"Meeting online: {doc['title']}",
+        kind="meeting",
+        status="planned",
+        scheduled_start=doc.get("starts_at"),
+        scheduled_end=doc.get("ends_at"),
+        location="Online (Jitsi Meet)",
+        description="Rapat online otomatis dari Jitsi Meet.",
+        owner_name=doc.get("host_name") or admin.get("name") or admin.get("email", ""),
+        owner_id=str(admin.get("id") or ""),
+        source_label=doc.get("slug", ""),
+        link_url=out.get("invite_url", ""),
+        actor_name=admin.get("name") or admin.get("email", ""),
+        now=doc.get("created_at"),
+    )
     return out
 
 
@@ -276,6 +297,7 @@ async def jitsi_meeting_end(meeting_id: str, admin=Depends(get_current_admin)):
         target_id=meeting_id,
         severity="warning",
     )
+    await close_activity(db, source="jitsi_meeting", source_id=meeting_id)
     return {"ended": True}
 
 

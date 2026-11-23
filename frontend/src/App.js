@@ -85,6 +85,7 @@ const AdminStatusPage   = lazy(() => import("./pages/portal/admin/AdminStatusPag
 const AdminMediaLibrary = lazy(() => import("./pages/portal/admin/AdminMediaLibrary"));
 const AdminCveTracker   = lazy(() => import("./pages/portal/admin/AdminCveTracker"));
 const AdminContentCalendar = lazy(() => import("./pages/portal/admin/AdminContentCalendar"));
+const AdminActivity      = lazy(() => import("./pages/portal/admin/AdminActivity"));
 const PublicStatusPage  = lazy(() => import("./pages/PublicStatusPage"));
 const CveTracker        = lazy(() => import("./pages/CveTracker"));
 const CveDetail         = lazy(() => import("./pages/CveDetail"));
@@ -232,6 +233,7 @@ function App() {
                   <Route path="cve-tracker" element={<AdminCveTracker />} />
                   <Route path="media-library" element={<AdminMediaLibrary />} />
                   <Route path="content-calendar" element={<AdminContentCalendar />} />
+                  <Route path="activity" element={<AdminActivity />} />
                   <Route path="form-builder" element={<AdminFormBuilder />} />
                   <Route path="branding" element={<AdminBranding />} />
                   <Route path="site-content" element={<AdminSiteContent />} />

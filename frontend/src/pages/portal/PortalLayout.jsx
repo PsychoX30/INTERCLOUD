@@ -8,7 +8,7 @@ import {
   UserSquare, ClipboardList, CalendarDays, CheckSquare, Files, FolderTree, Lock,
   Newspaper, ShieldCheck, Image as ImageIcon, Layout, DatabaseBackup,
   History, MonitorCheck, ReceiptText, LineChart, Globe, Images, Link2, Globe2, FormInput,
-  Bell, BookOpen, TrendingUp, Video, ShieldAlert,
+  Bell, BookOpen, TrendingUp, Video, ShieldAlert, Clock,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import { api } from "../../portal/api";
@@ -102,6 +102,7 @@ const ADMIN_NAV_GROUPS = [
     items: [
       { key: "crm",       to: "/portal/admin/crm",       label: "Customer DB (CRM)", icon: UserSquare,    testid: "nav-crm",       roles: ["admin", "sales", "finance", "support"] },
       { key: "projects",  to: "/portal/admin/projects",  label: "Project Tracker",   icon: ClipboardList, testid: "nav-projects",  roles: ["admin", "sales", "support"] },
+      { key: "activity",  to: "/portal/admin/activity",  label: "Activity",          icon: Clock,         testid: "nav-activity",  roles: ["admin", "sales", "finance", "support", "ticket_only"] },
       { key: "content",   to: "/portal/admin/content",   label: "Content Planner",   icon: CalendarDays,  testid: "nav-content",   roles: ["admin", "sales", "finance", "support", "creative"] },
       { key: "followups", to: "/portal/admin/followups", label: "Follow-ups",        icon: CheckSquare,   testid: "nav-followups", roles: ["admin", "sales", "finance", "support"] },
       { key: "documents", to: "/portal/admin/documents", label: "Documents",         icon: Files,         testid: "nav-documents", roles: ["admin", "sales", "finance", "support", "ticket_only", "creative"] },
