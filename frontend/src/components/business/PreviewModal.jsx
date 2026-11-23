@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api } from "../../portal/api";
+import { api, getToken } from "../../portal/api";
 import { btnSecondary, Loading } from "../../pages/portal/ui";
 import { Download, X, FileText } from "lucide-react";
 import PdfCanvas from "./PdfCanvas";
@@ -9,6 +9,16 @@ const PreviewModal = ({ doc, onClose }) => {
   const [err, setErr] = useState("");
   const [blobUrl, setBlobUrl] = useState(null);
   const [pdfBlob, setPdfBlob] = useState(null);
+  const [streamUrl, setStreamUrl] = useState(null);
+
+  // Media (video/audio) must be streamed by the browser so HTTP Range works:
+  // a 300 MB MP4 cannot be buffered into a Blob, and Chrome needs 206 replies
+  // to seek. The token rides along as a query param (auth.py supports it).
+  const withToken = (path) => {
+    const t = getToken();
+    if (!t) return path;
+    return `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(t)}`;
+  };
 
   // Fetch preview metadata and any binary blob through the authenticated
   // Axios instance so the portal Bearer token is attached. Plain <img src>
@@ -16,22 +26,26 @@ const PreviewModal = ({ doc, onClose }) => {
   useEffect(() => {
     let cancelled = false;
     let objUrl = null;
-    setBlobUrl(null); setPdfBlob(null); setErr(""); setData(null);
+    setBlobUrl(null); setPdfBlob(null); setStreamUrl(null); setErr(""); setData(null);
     api.get(`/admin/documents/${doc.id}/preview`)
       .then(async (r) => {
         if (cancelled) return;
         const info = r.data;
         setData(info);
-        const binaryKinds = ["image", "audio", "video", "pdf"];
+        const blobKinds = ["image", "pdf"];
         if (info.preview_pdf_url && info.render_mode === "libreoffice") {
           // LibreOffice-rendered Office/ODF → fetch the converted PDF blob.
           const path = info.preview_pdf_url.replace(/^\/api\/portal/, "");
           const br = await api.get(path, { responseType: "blob" });
           if (cancelled) return;
           setPdfBlob(new Blob([br.data], { type: "application/pdf" }));
-        } else if (info.file_url && binaryKinds.includes(info.kind)) {
+        } else if (info.kind === "audio" || info.kind === "video") {
+          // Streamed with Range support - never buffered through axios.
+          if (info.file_url) setStreamUrl(withToken(info.file_url));
+        } else if (info.file_url && blobKinds.includes(info.kind)) {
           const path = info.file_url.replace(/^\/api\/portal/, "");
           const br = await api.get(path, { responseType: "blob" });
+          if (cancelled) return;
           objUrl = URL.createObjectURL(new Blob([br.data], { type: info.content_type || "application/octet-stream" }));
           setBlobUrl(objUrl);
           if (info.kind === "pdf") {
@@ -98,15 +112,18 @@ const PreviewModal = ({ doc, onClose }) => {
         {data && kind === "image" && blobUrl && (
           <img src={blobUrl} alt={data.title} className="max-h-[70vh] w-full object-contain bg-slate-50 rounded-xl" />
         )}
-        {data && kind === "audio" && blobUrl && <audio controls src={blobUrl} className="w-full mt-4" />}
-        {data && kind === "video" && blobUrl && (
-          <video controls src={blobUrl} className="max-h-[70vh] w-full bg-black rounded-xl" />
+        {data && kind === "audio" && streamUrl && (
+          <audio controls preload="metadata" src={streamUrl} className="w-full mt-4" data-testid="doc-preview-audio" />
+        )}
+        {data && kind === "video" && streamUrl && (
+          <video controls preload="metadata" playsInline src={streamUrl}
+                 className="max-h-[70vh] w-full bg-black rounded-xl" data-testid="doc-preview-video" />
         )}
         {data && (kind === "pdf" || renderPdf) && pdfBlob && <PdfCanvas blob={pdfBlob} />}
         {data && (kind === "pdf" || renderPdf) && !pdfBlob && (
           <div className="py-12 text-center text-slate-400 text-sm">Memuat berkas…</div>
         )}
-        {data && ["image", "audio", "video"].includes(kind) && !blobUrl && (
+        {data && kind === "image" && !blobUrl && (
           <div className="py-12 text-center text-slate-400 text-sm">Memuat berkas…</div>
         )}
         {data && htmlKinds.includes(kind) && !renderPdf && (
