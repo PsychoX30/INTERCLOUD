@@ -18,7 +18,7 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
-    require_roles, sales_can_access,
+    require_roles, sales_can_access, require_flag,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
@@ -42,7 +42,7 @@ async def _recompute_prefix_usage(db, prefix_id) -> int:
 
 
 @router.post("/admin/dcim/prefixes/{pid}/allocate")
-async def dcim_prefix_allocate(pid: str, payload: dict, staff=Depends(get_current_staff)):
+async def dcim_prefix_allocate(pid: str, payload: dict, staff=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     p = await db.dcim_prefixes.find_one({"_id": _oid(pid)})
     if not p:
@@ -115,7 +115,7 @@ async def dcim_prefixes(staff=Depends(get_current_staff)):
 
 
 @router.post("/admin/dcim/racks")
-async def dcim_rack_create(payload: dict, staff=Depends(get_current_staff)):
+async def dcim_rack_create(payload: dict, staff=Depends(require_flag("can_edit_dcim_devices"))):
     db = await _get_db()
     doc = {
         "name": payload.get("name", "Untitled Rack"),
@@ -133,7 +133,7 @@ async def dcim_rack_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/dcim/racks/{rid}")
-async def dcim_rack_update(rid: str, payload: dict, staff=Depends(get_current_staff)):
+async def dcim_rack_update(rid: str, payload: dict, staff=Depends(require_flag("can_edit_dcim_devices"))):
     db = await _get_db()
     upd = {k: v for k, v in payload.items() if k in {"name", "site", "u_size", "occupancy", "power_draw_w", "power_cap_w", "notes"}}
     for k in ("u_size", "power_draw_w", "power_cap_w"):
@@ -147,14 +147,14 @@ async def dcim_rack_update(rid: str, payload: dict, staff=Depends(get_current_st
 
 
 @router.delete("/admin/dcim/racks/{rid}")
-async def dcim_rack_delete(rid: str, staff=Depends(get_current_staff)):
+async def dcim_rack_delete(rid: str, staff=Depends(require_flag("can_edit_dcim_devices"))):
     db = await _get_db()
     r = await db.dcim_racks.delete_one({"_id": _oid(rid)})
     return {"deleted": r.deleted_count}
 
 
 @router.put("/admin/dcim/prefixes/{pid}")
-async def dcim_prefix_update(pid: str, payload: dict, staff=Depends(get_current_staff)):
+async def dcim_prefix_update(pid: str, payload: dict, staff=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     # `usage` tidak lagi bisa di-override manual: selalu dihitung dari record
     # dcim_ips. Payload yang membawa `usage` diabaikan.
@@ -184,7 +184,7 @@ async def dcim_ips_list(prefix_id: str | None = None, staff=Depends(get_current_
 
 
 @router.post("/admin/dcim/ips")
-async def dcim_ip_create(payload: dict, staff=Depends(get_current_staff)):
+async def dcim_ip_create(payload: dict, staff=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     doc = {
         "address": payload.get("address", ""),
@@ -205,7 +205,7 @@ async def dcim_ip_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/dcim/ips/{ipid}")
-async def dcim_ip_update(ipid: str, payload: dict, staff=Depends(get_current_staff)):
+async def dcim_ip_update(ipid: str, payload: dict, staff=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     before = await db.dcim_ips.find_one({"_id": _oid(ipid)})
     if not before:
@@ -223,7 +223,7 @@ async def dcim_ip_update(ipid: str, payload: dict, staff=Depends(get_current_sta
 
 
 @router.delete("/admin/dcim/ips/{ipid}")
-async def dcim_ip_delete(ipid: str, staff=Depends(get_current_staff)):
+async def dcim_ip_delete(ipid: str, staff=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     before = await db.dcim_ips.find_one({"_id": _oid(ipid)})
     r = await db.dcim_ips.delete_one({"_id": _oid(ipid)})
@@ -250,7 +250,7 @@ async def dcim_sites(staff=Depends(get_current_staff)):
 
 
 @router.post("/admin/dcim/sites")
-async def dcim_site_create(payload: dict, staff=Depends(get_current_staff)):
+async def dcim_site_create(payload: dict, staff=Depends(require_flag("can_edit_dcim_devices"))):
     db = await _get_db()
     doc = {**payload, "created_at": _now()}
     r = await db.dcim_sites.insert_one(doc)
@@ -258,14 +258,14 @@ async def dcim_site_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.delete("/admin/dcim/sites/{sid}")
-async def dcim_site_delete(sid: str, staff=Depends(get_current_staff)):
+async def dcim_site_delete(sid: str, staff=Depends(require_flag("can_edit_dcim_devices"))):
     db = await _get_db()
     r = await db.dcim_sites.delete_one({"_id": _oid(sid)})
     return {"deleted": r.deleted_count}
 
 
 @router.post("/admin/dcim/prefixes")
-async def dcim_prefix_create(payload: dict, staff=Depends(get_current_staff)):
+async def dcim_prefix_create(payload: dict, staff=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     doc = {**payload, "created_at": _now()}
     r = await db.dcim_prefixes.insert_one(doc)
@@ -274,7 +274,7 @@ async def dcim_prefix_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.delete("/admin/dcim/prefixes/{pid}")
-async def dcim_prefix_delete(pid: str, staff=Depends(get_current_staff)):
+async def dcim_prefix_delete(pid: str, staff=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     r = await db.dcim_prefixes.delete_one({"_id": _oid(pid)})
     return {"deleted": r.deleted_count}

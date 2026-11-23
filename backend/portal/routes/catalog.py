@@ -18,7 +18,7 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
-    require_roles, sales_can_access,
+    require_roles, sales_can_access, require_flag,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
@@ -676,7 +676,7 @@ async def form_builder_list(staff=Depends(get_current_staff)):
 
 
 @router.post("/admin/form-builder")
-async def form_builder_create(payload: dict, staff=Depends(get_current_staff)):
+async def form_builder_create(payload: dict, staff=Depends(require_flag("can_manage_forms"))):
     db = await _get_db()
     name = str(payload.get("name", "")).strip()
     if not name:
@@ -708,7 +708,7 @@ async def form_builder_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/form-builder/{fid}")
-async def form_builder_update(fid: str, payload: dict, staff=Depends(get_current_staff)):
+async def form_builder_update(fid: str, payload: dict, staff=Depends(require_flag("can_manage_forms"))):
     db = await _get_db()
     d = await db.form_configs.find_one({"_id": _oid(fid)})
     if not d:
@@ -736,7 +736,7 @@ async def form_builder_update(fid: str, payload: dict, staff=Depends(get_current
     return _fb_serialize(d)
 
 @router.put("/admin/form-builder/{fid}/publish")
-async def form_builder_publish(fid: str, staff=Depends(get_current_staff)):
+async def form_builder_publish(fid: str, staff=Depends(require_flag("can_manage_forms"))):
     """Publish draft -> published, bump version, generate share_id if first publish."""
     db = await _get_db()
     d = await db.form_configs.find_one({"_id": _oid(fid)})
@@ -755,7 +755,7 @@ async def form_builder_publish(fid: str, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/form-builder/{fid}/draft")
-async def form_builder_new_draft(fid: str, staff=Depends(get_current_staff)):
+async def form_builder_new_draft(fid: str, staff=Depends(require_flag("can_manage_forms"))):
     """Create a new draft from a published form (copy for editing)."""
     db = await _get_db()
     d = await db.form_configs.find_one({"_id": _oid(fid)})
@@ -773,7 +773,7 @@ async def form_builder_new_draft(fid: str, staff=Depends(get_current_staff)):
 
 
 @router.delete("/admin/form-builder/{fid}")
-async def form_builder_delete(fid: str, staff=Depends(get_current_staff)):
+async def form_builder_delete(fid: str, staff=Depends(require_flag("can_manage_forms"))):
     db = await _get_db()
     oid = _oid(fid)
     d = await db.form_configs.find_one({"_id": oid})
@@ -787,7 +787,7 @@ async def form_builder_delete(fid: str, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/form-builder/{fid}/close")
-async def form_builder_toggle_close(fid: str, payload: dict = None, staff=Depends(get_current_staff)):
+async def form_builder_toggle_close(fid: str, payload: dict = None, staff=Depends(require_flag("can_manage_forms"))):
     """Open/close a published form and adjust its submission cap.
 
     Closing keeps the data (unlike delete) and flips the public endpoint to a
@@ -966,7 +966,7 @@ async def form_builder_submissions(fid: str, skip: int = 0, limit: int = 25,
 
 
 @router.delete("/admin/form-builder/{fid}/submissions/{sid}")
-async def form_builder_delete_submission(fid: str, sid: str, staff=Depends(get_current_staff)):
+async def form_builder_delete_submission(fid: str, sid: str, staff=Depends(require_flag("can_manage_forms"))):
     """Delete one submission (spam cleanup) and resync the form counter."""
     db = await _get_db()
     d = await _fb_load_or_404(db, fid)

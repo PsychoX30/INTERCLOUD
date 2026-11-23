@@ -77,8 +77,23 @@ export const AuthProvider = ({ children }) => {
     window.location.href = "/portal/login";
   }, []);
 
+  /* Capability check for the UI. The backend enforces the same list
+   * (`effective_feature_flags` is computed server-side from the role defaults or
+   * the account's override), so a hidden button and a refused request always
+   * agree. Admin bypasses flags, matching `require_flag`.
+   *
+   * Purely cosmetic: never rely on this for security, only to avoid showing
+   * actions the API will reject.
+   */
+  const hasFlag = useCallback((key) => {
+    if (!key) return true;
+    if (user?.role === "admin") return true;
+    const granted = user?.effective_feature_flags || user?.feature_flags || [];
+    return granted.includes(key);
+  }, [user]);
+
   return (
-    <AuthContext.Provider value={{ user, error, login, loginTwoFA, register, logout, refresh }}>
+    <AuthContext.Provider value={{ user, error, login, loginTwoFA, register, logout, refresh, hasFlag }}>
       {children}
     </AuthContext.Provider>
   );

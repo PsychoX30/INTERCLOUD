@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from ..auth import get_current_staff
+from ..auth import get_current_staff, require_roles
 from ..security import PUBLIC_STATUS_LIMIT
 from ..security import limiter as _rl_limiter
 from .shared import _get_db
@@ -121,7 +121,7 @@ async def admin_cve_sync_status(staff=Depends(get_current_staff)):
 
 
 @router.post("/admin/cve/sync")
-async def admin_cve_sync(staff=Depends(get_current_staff),
+async def admin_cve_sync(admin=Depends(require_roles("admin")),
                          max_pages: int = Query(2, ge=1, le=10)):
     """Run a short sync batch on demand (the scheduler does the long runs)."""
     db = await _get_db()
@@ -130,7 +130,7 @@ async def admin_cve_sync(staff=Depends(get_current_staff),
 
 
 @router.post("/admin/cve/sync/rebuild")
-async def admin_cve_rebuild(staff=Depends(get_current_staff)):
+async def admin_cve_rebuild(admin=Depends(require_roles("admin"))):
     """Reset the NVD cursor to 0. Documents are kept; the next sync re-walks
     the catalogue from the newest entry."""
     db = await _get_db()

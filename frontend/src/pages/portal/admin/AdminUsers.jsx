@@ -75,8 +75,11 @@ const AdminUsers = () => {
             {u.assigned_client_ids?.length > 0 && (
               <span className="text-emerald-600 text-[10px]">{u.assigned_client_ids.length} client(s) assigned</span>
             )}
-            {u.feature_flags?.length > 0 && (
-              <span className="text-purple-600 text-[10px]">{u.feature_flags.length} feature flag(s)</span>
+            {u.role !== "admin" && u.role !== "client" && (
+              <span className="text-purple-600 text-[10px]" data-testid={`flags-${u.email}`}>
+                {(u.feature_flags_custom ? u.feature_flags.length : (u.effective_feature_flags || []).length)} feature flag(s)
+                {!u.feature_flags_custom && " (default)"}
+              </span>
             )}
           </div>
         )
@@ -519,103 +522,232 @@ const ClientProfileModal = ({ userId, onClose }) => {
   );
 };
 
-/* ==== User access modal - menu permissions + feature flags + client assignments ==== */
+/* ==== User access modal - role + menu permissions + feature flags + clients ====
+ *
+ * Two invariants drive this component:
+ *
+ * 1. Every menu and every flag is ALWAYS rendered, whichever mode is active.
+ *    `menu_keys` is an allow-list on the backend, so a menu this modal does not
+ *    show is a menu the operator cannot grant - and a customised user silently
+ *    loses it. "Use default" therefore changes what is CHECKED, never what is
+ *    listed.
+ * 2. "Use default" is a preview of the role's defaults, not a lock. Ticking or
+ *    unticking anything while in default mode switches to override and keeps
+ *    the full list on screen, so a sales user can be given an Operations menu
+ *    and have a default capability taken away in the same save.
+ */
+const ROLE_LABELS = {
+  admin: "Admin", owner: "Owner (read-only)", sales: "Sales", finance: "Finance",
+  support: "Support", ticket_only: "Ticket only", creative: "Creative",
+};
+
 const UserAccessModal = ({ user, catalog, clients, onClose, onDone }) => {
+  const roleOptions = catalog.roles || ["admin", "owner", "sales", "finance", "support", "ticket_only", "creative"];
+  const roleDefaults = catalog.role_defaults || {};
+
+  const [role, setRole] = useState(user.role);
+  const roleChanged = role !== user.role;
+
+  // Menus: default mode means "give this role its defaults".
+  const [useDefaultMenus, setUseDefaultMenus] = useState(!user.menu_keys || user.menu_keys.length === 0);
   const [menuKeys, setMenuKeys] = useState(user.menu_keys || []);
+
+  // Flags: same pattern. An account that was never customised (or whose role
+  // just changed through this form) follows the role defaults.
+  const [useDefaultFlags, setUseDefaultFlags] = useState(!user.feature_flags_custom);
   const [flags, setFlags] = useState(user.feature_flags || []);
+
   const [assigned, setAssigned] = useState(user.assigned_client_ids || []);
-  const [useDefault, setUseDefault] = useState(!user.menu_keys || user.menu_keys.length === 0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  const toggleMenu = (k) => {
-    setMenuKeys((prev) => prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]);
-    setUseDefault(false);
+  const flagDefaultFor = (key) => (roleDefaults[role] || []).includes(key);
+  const menuDefaultFor = (m) => (m.default_roles || []).includes(role);
+
+  const checkedMenu = (m) => (useDefaultMenus ? menuDefaultFor(m) : menuKeys.includes(m.key));
+  const checkedFlag = (ff) => (useDefaultFlags ? flagDefaultFor(ff.key) : flags.includes(ff.key));
+
+  // Any toggle leaves default mode but keeps the whole list rendered; the
+  // visible checkmarks are seeded from the defaults so nothing disappears.
+  const toggleMenu = (m) => {
+    if (useDefaultMenus) {
+      const seeded = catalog.menu_catalog
+        .filter((x) => x.kind !== "tab" && !(x.group || "").startsWith("_") && menuDefaultFor(x))
+        .map((x) => x.key);
+      const next = seeded.includes(m.key)
+        ? seeded.filter((k) => k !== m.key)
+        : [...seeded, m.key];
+      setMenuKeys(next);
+      setUseDefaultMenus(false);
+      return;
+    }
+    setMenuKeys((prev) => (prev.includes(m.key) ? prev.filter((k) => k !== m.key) : [...prev, m.key]));
   };
-  const toggleFlag = (k) => setFlags((prev) => prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]);
-  const toggleClient = (id) => setAssigned((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+
+  const toggleFlag = (ff) => {
+    if (useDefaultFlags) {
+      const seeded = catalog.feature_flags.filter((x) => flagDefaultFor(x.key)).map((x) => x.key);
+      const next = seeded.includes(ff.key) ? seeded.filter((k) => k !== ff.key) : [...seeded, ff.key];
+      setFlags(next);
+      setUseDefaultFlags(false);
+      return;
+    }
+    setFlags((prev) => (prev.includes(ff.key) ? prev.filter((k) => k !== ff.key) : [...prev, ff.key]));
+  };
+
+  const resetMenusToDefault = () => { setUseDefaultMenus(true); setMenuKeys([]); };
+  const resetFlagsToDefault = () => { setUseDefaultFlags(true); setFlags([]); };
+
+  const toggleClient = (id) => setAssigned((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const onRoleChange = (next) => {
+    setRole(next);
+    // A role change re-seeds from the new role's defaults unless the operator
+    // has already overridden; overrides survive so an ad-hoc grant is not lost.
+    if (useDefaultMenus) setMenuKeys([]);
+  };
 
   const save = async () => {
     setBusy(true); setErr("");
     try {
-      await api.put(`/admin/users/${user.id}`, {
-        menu_keys: useDefault ? [] : menuKeys,
-        feature_flags: flags,
+      const payload = {
         assigned_client_ids: assigned,
-      });
+        menu_keys: useDefaultMenus ? [] : menuKeys,
+        feature_flags_custom: !useDefaultFlags,
+        feature_flags: useDefaultFlags ? [] : flags,
+      };
+      if (roleChanged) payload.role = role;
+      await api.put(`/admin/users/${user.id}`, payload);
       onDone();
     } catch (e) {
       setErr(e?.response?.data?.detail || "Failed to save");
     } finally { setBusy(false); }
   };
 
-  // Group menu catalog for display. Entries with `kind: "tab"` are Operations
-  // Center tabs kept in the catalog only so an existing allow-list still
-  // resolves; they are not menus, so they must not appear as checkboxes.
+  // Entries with `kind: "tab"` are Operations Center tabs kept in the catalog
+  // only so an existing allow-list still resolves; they are not menus.
   const groups = {};
   for (const m of catalog.menu_catalog) {
     if (m.kind === "tab" || (m.group || "").startsWith("_")) continue;
     (groups[m.group] ??= []).push(m);
   }
 
+  const menuCount = catalog.menu_catalog.filter(
+    (m) => m.kind !== "tab" && !(m.group || "").startsWith("_") && checkedMenu(m)
+  ).length;
+  const flagCount = catalog.feature_flags.filter(checkedFlag).length;
+
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-3xl bg-white rounded-3xl p-6 max-h-[92vh] overflow-y-auto" data-testid="user-access-modal">
         <h3 className="text-xl font-extrabold text-[#0a2350]">Access for {user.name}</h3>
-        <div className="text-sm text-slate-500">{user.email} · <b className="uppercase">{user.role}</b></div>
+        <div className="text-sm text-slate-500">{user.email}</div>
         {err && <div className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
+
+        {/* Role */}
+        <div className="mt-5 border border-slate-200 rounded-xl p-3">
+          <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350] mb-2">Role</div>
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={role}
+              onChange={(e) => onRoleChange(e.target.value)}
+              className={inputClass}
+              data-testid="access-role-select"
+            >
+              {roleOptions.map((r) => (
+                <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>
+              ))}
+            </select>
+            {roleChanged && (
+              <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1" data-testid="role-change-note">
+                akan berubah dari <b className="uppercase">{user.role}</b> ke <b className="uppercase">{role}</b>
+              </span>
+            )}
+          </div>
+          <div className="text-[11px] text-slate-500 mt-2">
+            Ubah role tanpa membuat ulang akun. Pengaturan menu &amp; fitur di bawah diterapkan bersamaan.
+          </div>
+        </div>
 
         {/* Menu access */}
         <div className="mt-5">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350]">Menu access</div>
+            <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350]">
+              Menu access <span className="text-slate-400 font-normal normal-case">({menuCount} aktif)</span>
+            </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={useDefault} onChange={(e) => setUseDefault(e.target.checked)} data-testid="use-default-menus" />
-              <span className="text-slate-600">Use default for role <b className="uppercase text-slate-800">{user.role}</b></span>
+              <input
+                type="checkbox"
+                checked={useDefaultMenus}
+                onChange={(e) => (e.target.checked ? resetMenusToDefault() : setUseDefaultMenus(false))}
+                data-testid="use-default-menus"
+              />
+              <span className="text-slate-600">Default untuk role <b className="uppercase text-slate-800">{role}</b></span>
             </label>
           </div>
-          {!useDefault && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {Object.entries(groups).map(([grpLabel, items]) => (
-                <div key={grpLabel} className="border border-slate-200 rounded-xl p-3">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">{grpLabel}</div>
-                  {items.map((m) => {
-                    const on = menuKeys.includes(m.key);
-                    const roleDefault = m.default_roles.includes(user.role);
-                    return (
-                      <label key={m.key} className="flex items-center gap-2 text-sm py-1" data-testid={`menu-${m.key}`}>
-                        <input type="checkbox" checked={on} onChange={() => toggleMenu(m.key)} />
-                        <span className="text-slate-700">{m.label}</span>
-                        {roleDefault && <span className="text-[10px] text-emerald-600 font-bold">default</span>}
-                      </label>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          )}
-          {useDefault && (
-            <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl p-3">
-              This user sees the standard menus for role <b className="uppercase">{user.role}</b>. Uncheck the box above to customize.
-            </div>
-          )}
-        </div>
-
-        {/* Feature flags */}
-        <div className="mt-5">
-          <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350] mb-2">Feature flags</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-1 border border-slate-200 rounded-xl p-3">
-            {catalog.feature_flags.map((ff) => (
-              <label key={ff.key} className="flex items-center gap-2 text-sm py-1" data-testid={`flag-${ff.key}`}>
-                <input type="checkbox" checked={flags.includes(ff.key)} onChange={() => toggleFlag(ff.key)} />
-                <span className="text-slate-700">{ff.label}</span>
-              </label>
+          <div className="text-[11px] text-slate-500 mb-2">
+            {useDefaultMenus
+              ? "Menampilkan default role. Centang/lepas salah satu untuk beralih ke pengaturan khusus (daftar tetap lengkap)."
+              : "Pengaturan khusus aktif. Semua menu tetap bisa dicentang, termasuk di luar default role."}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {Object.entries(groups).map(([grpLabel, items]) => (
+              <div key={grpLabel} className="border border-slate-200 rounded-xl p-3">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">{grpLabel}</div>
+                {items.map((m) => {
+                  const on = checkedMenu(m);
+                  const roleDefault = menuDefaultFor(m);
+                  return (
+                    <label key={m.key} className="flex items-center gap-2 text-sm py-1" data-testid={`menu-${m.key}`}>
+                      <input type="checkbox" checked={on} onChange={() => toggleMenu(m)} />
+                      <span className="text-slate-700">{m.label}</span>
+                      {roleDefault && <span className="text-[10px] text-emerald-600 font-bold">default</span>}
+                    </label>
+                  );
+                })}
+              </div>
             ))}
           </div>
         </div>
 
+        {/* Feature flags */}
+        <div className="mt-5">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350]">
+              Feature flags <span className="text-slate-400 font-normal normal-case">({flagCount} aktif)</span>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={useDefaultFlags}
+                onChange={(e) => (e.target.checked ? resetFlagsToDefault() : setUseDefaultFlags(false))}
+                data-testid="use-default-flags"
+              />
+              <span className="text-slate-600">Default untuk role <b className="uppercase text-slate-800">{role}</b></span>
+            </label>
+          </div>
+          <div className="text-[11px] text-slate-500 mb-2">
+            {useDefaultFlags
+              ? "Menampilkan default role. Centang/lepas salah satu untuk beralih ke pengaturan khusus."
+              : "Pengaturan khusus aktif. Flag default role bisa dilepas, flag di luar role bisa di-allow."}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1 border border-slate-200 rounded-xl p-3">
+            {catalog.feature_flags.map((ff) => {
+              const on = checkedFlag(ff);
+              const roleDefault = flagDefaultFor(ff.key);
+              return (
+                <label key={ff.key} className="flex items-center gap-2 text-sm py-1" data-testid={`flag-${ff.key}`}>
+                  <input type="checkbox" checked={on} onChange={() => toggleFlag(ff)} />
+                  <span className="text-slate-700">{ff.label}</span>
+                  {roleDefault && <span className="text-[10px] text-emerald-600 font-bold">default</span>}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Assigned clients (sales/support only) */}
-        {(user.role === "sales" || user.role === "support") && (
+        {(role === "sales" || role === "support") && (
           <div className="mt-5">
             <div className="flex items-center justify-between mb-2">
               <div className="text-[11px] font-bold uppercase tracking-widest text-[#0a2350]">Assigned clients</div>
@@ -634,7 +766,9 @@ const UserAccessModal = ({ user, catalog, clients, onClose, onDone }) => {
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className={btnSecondary}>Cancel</button>
-          <button onClick={save} disabled={busy} className={btnPrimary} data-testid="save-access">Save access</button>
+          <button onClick={save} disabled={busy} className={btnPrimary} data-testid="save-access">
+            {busy ? "Menyimpan…" : "Save access"}
+          </button>
         </div>
       </div>
     </div>
@@ -681,6 +815,7 @@ const NewUserModal = ({ onClose, onDone }) => {
             <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })} className={inputClass} data-testid="u-role">
               <option value="client">Client</option>
               <option value="admin">Admin</option>
+              <option value="owner">Owner (read-only)</option>
               <option value="sales">Sales</option>
               <option value="finance">Finance</option>
               <option value="support">Support</option>

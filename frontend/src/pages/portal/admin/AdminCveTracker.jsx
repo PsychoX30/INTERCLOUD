@@ -5,6 +5,7 @@ import {
   RotateCcw, ExternalLink, Clock, FileText, Search,
 } from "lucide-react";
 import { api, formatApiError } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 
 const fmt = (v) => (v == null ? "—" : Number(v).toLocaleString());
 const fmtWhen = (iso) => {
@@ -32,6 +33,11 @@ const AdminCveTracker = () => {
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState("");
+  // Sync / rebuild are admin-only on the backend now (they are system-level
+  // jobs, not per-role ops). Hide the buttons so a support user gets a working
+  // read-only hub instead of two controls that always 403.
+  const { user: me } = useAuth();
+  const isAdmin = me?.role === "admin";
 
   // CVE -> article picker. Publishing used to mean copying a CVE by hand into
   // the article editor; the references are long enough that transcriptions rot.
@@ -138,6 +144,7 @@ const AdminCveTracker = () => {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {isAdmin && (
             <button
               onClick={runSync}
               disabled={!!busy}
@@ -147,6 +154,8 @@ const AdminCveTracker = () => {
               {busy === "sync" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               Sync sekarang
             </button>
+            )}
+            {isAdmin && (
             <button
               onClick={rebuild}
               disabled={!!busy}
@@ -156,6 +165,7 @@ const AdminCveTracker = () => {
               {busy === "rebuild" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
               Rebuild kursor
             </button>
+            )}
             <button
               onClick={load}
               disabled={!!busy}

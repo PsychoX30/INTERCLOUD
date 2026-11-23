@@ -220,3 +220,99 @@ def sales_can_access(user: dict, client_user_id: str) -> bool:
         return True
     assigned = user.get("assigned_client_ids") or []
     return str(client_user_id) in [str(x) for x in assigned]
+
+
+# ---------------------------------------------------------------------------
+# Per-user feature flags
+# ---------------------------------------------------------------------------
+# A flag is a capability that is NOT implied by the role. Roles get a default
+# set; a user may be customised (`feature_flags_custom = True`) so that flags can
+# be granted AND revoked individually. Admin always passes (see require_flag),
+# so tightening or extending this table can never lock the console out.
+ALL_FEATURE_FLAGS = (
+    "can_delete_invoices", "can_delete_users", "can_delete_tickets",
+    "can_run_factory_reset", "can_view_all_invoices", "can_edit_pricing",
+    "can_apply_discounts", "can_view_assets", "can_export_data",
+    "can_edit_dcim_devices", "can_edit_ip_prefixes", "can_run_provisioning",
+    "can_control_mikrotik", "can_run_diagnostics", "can_manage_users",
+    "can_manage_articles", "can_edit_branding", "can_manage_integrations",
+    "can_manage_projects", "can_manage_content", "can_manage_crm",
+    "can_manage_followups", "can_manage_forms",
+    "can_run_backups", "can_delete_backups", "can_view_all_clients",
+    "can_reassign_clients", "can_impersonate_client",
+    "can_view_email_automation", "can_manage_tickets", "can_manage_sla",
+)
+
+# Defaults mirror what each role can already do, so enabling enforcement does
+# not take anything away. `ticket_only` and `creative` intentionally get none.
+ROLE_DEFAULT_FLAGS = {
+    "admin": set(ALL_FEATURE_FLAGS),
+    "owner": {"can_view_all_invoices", "can_view_assets", "can_view_all_clients"},
+    # `can_manage_sla` is deliberately absent: SLA incident writes are
+    # admin/support today, so granting the flag by default would widen access.
+    # It stays available for an ad-hoc grant instead.
+    "finance": {"can_view_all_invoices", "can_view_assets", "can_export_data",
+                "can_edit_pricing", "can_apply_discounts",
+                "can_manage_tickets",
+                "can_manage_crm", "can_manage_followups",
+                "can_manage_content"},
+    "sales": {"can_export_data", "can_apply_discounts",
+              "can_manage_tickets", "can_view_all_clients",
+              "can_manage_projects", "can_manage_crm", "can_manage_followups",
+              "can_manage_content", "can_manage_forms"},
+    "support": {"can_edit_dcim_devices", "can_edit_ip_prefixes",
+                "can_run_provisioning", "can_control_mikrotik",
+                "can_run_diagnostics", "can_manage_sla", "can_manage_tickets",
+                "can_manage_articles", "can_manage_projects",
+                "can_manage_crm", "can_manage_followups", "can_manage_content"},
+    "ticket_only": {"can_manage_tickets"},
+    "creative": {"can_manage_articles", "can_manage_content", "can_manage_forms"},
+}
+
+
+def effective_flags(user: dict) -> set:
+    """Flags in force for this user.
+
+    When the account has never been customised, the role defaults apply — the
+    same capabilities the role already had. Once customised, the stored list is
+    authoritative, which is what makes a flag removable as well as grantable.
+    """
+    if user.get("feature_flags_custom"):
+        return set(user.get("feature_flags") or [])
+    role = user.get("role") or ""
+    return set(ROLE_DEFAULT_FLAGS.get(role, set()))
+
+
+def has_flag(user: dict, key: str) -> bool:
+    if (user.get("role") or "") == "admin":
+        return True
+    return key in effective_flags(user)
+
+
+def require_flag(*keys: str):
+    """Dependency: caller must hold at least one of `keys` (admin always passes).
+
+    Built on `get_current_staff`, so a client token can never satisfy it even if
+    a flag is somehow set on a client account. Admin bypasses the flag check but
+    still has to be staff, which keep the two gates independent: role decides
+    which surface you can reach, the flag decides whether an optional capability
+    is switched on for you.
+    """
+    wanted = tuple(keys)
+
+    async def _dep(user=Depends(get_current_staff)):
+        if (user.get("role") or "") == "admin":
+            return user
+        granted = effective_flags(user)
+        if not any(k in granted for k in wanted):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Fitur ini belum diaktifkan untuk akun Anda "
+                    f"({', '.join(wanted)}). Minta admin mengaktifkannya di "
+                    "Users -> Manage access."
+                ),
+            )
+        return user
+
+    return _dep

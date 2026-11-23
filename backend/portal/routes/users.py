@@ -19,7 +19,8 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
-    require_roles, sales_can_access,
+    require_roles, sales_can_access, effective_flags, has_flag,
+    ROLE_DEFAULT_FLAGS, ALL_FEATURE_FLAGS,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
@@ -252,6 +253,7 @@ ADMIN_MENU_CATALOG = [
     {"key": "content",         "label": "Content Planner",  "group": "Business",       "default_roles": ["admin", "sales", "finance", "support", "creative"]},
     {"key": "followups",       "label": "Follow-ups",       "group": "Business",       "default_roles": ["admin", "sales", "finance", "support"]},
     {"key": "documents",       "label": "Documents",        "group": "Business",       "default_roles": ["admin", "sales", "finance", "support", "ticket_only", "creative"]},
+    {"key": "activity",        "label": "Activity",         "group": "Business",       "default_roles": ["admin", "sales", "finance", "support", "ticket_only"]},
     {"key": "integrations",    "label": "Integrations",     "group": "System",         "default_roles": ["admin"]},
     {"key": "credit_notes",    "label": "Credit Notes",     "group": "Sales & Billing", "default_roles": ["admin", "finance"]},
     {"key": "owner_dashboard", "label": "Executive Overview","group": "Overview",       "default_roles": ["admin", "owner"]},
@@ -316,6 +318,14 @@ FEATURE_FLAG_CATALOG = [
     {"key": "can_edit_branding",     "label": "Can update logo / colours / landing CMS"},
     {"key": "can_manage_integrations","label": "Can configure MikroTik / Telegram / SMTP integrations"},
     {"key": "can_run_backups",       "label": "Can trigger backups & restore snapshots"},
+    {"key": "can_delete_backups",    "label": "Can delete backup archives"},
+    {"key": "can_manage_tickets",    "label": "Can update ticket status & reply as staff"},
+    {"key": "can_manage_sla",        "label": "Can create / edit SLA incidents"},
+    {"key": "can_manage_projects",   "label": "Can create / edit projects"},
+    {"key": "can_manage_content",    "label": "Can create / edit content plan & calendar"},
+    {"key": "can_manage_crm",        "label": "Can create / edit CRM customers"},
+    {"key": "can_manage_followups",  "label": "Can create / edit follow-ups"},
+    {"key": "can_manage_forms",      "label": "Can build & publish forms"},
     # CRM / Sales
     {"key": "can_view_all_clients",  "label": "Can view ALL client accounts (not just assigned)"},
     {"key": "can_reassign_clients",  "label": "Can reassign clients to different sales staff"},
@@ -328,13 +338,31 @@ FEATURE_FLAG_CATALOG = [
 async def admin_user_access_catalog(admin=Depends(require_roles("admin", "sales", "finance", "support"))):
     """Returns everything the User Access UI needs to render checkboxes.
 
-    - `menu_catalog`: list of menu keys with human labels & the default roles that
-      have access to each menu (used to show the default vs. the override).
-    - `feature_flags`: list of extra per-user feature toggles.
+    - `menu_catalog`: every menu key with label, group and the roles that get it
+      by default. The modal must render ALL of them regardless of the selected
+      role: `menu_keys` is an allow-list, so a menu the modal does not show is a
+      menu the operator cannot grant.
+    - `feature_flags`: every capability toggle, each annotated with the roles
+      that receive it by default. Annotated here rather than stored on the
+      catalog literal so `ROLE_DEFAULT_FLAGS` stays the single source of truth
+      and cannot drift from what the backend actually enforces.
+    - `role_defaults`: role -> flag list, for "use role default" previews.
+    - `roles`: the staff roles an account can be moved to.
     """
+    role_defaults = {role: sorted(flags) for role, flags in ROLE_DEFAULT_FLAGS.items()}
+    flags = []
+    for item in FEATURE_FLAG_CATALOG:
+        key = item["key"]
+        entry = dict(item)
+        entry["default_roles"] = sorted(
+            role for role, keys in role_defaults.items() if key in keys
+        )
+        flags.append(entry)
     return {
         "menu_catalog": ADMIN_MENU_CATALOG,
-        "feature_flags": FEATURE_FLAG_CATALOG,
+        "feature_flags": flags,
+        "role_defaults": role_defaults,
+        "roles": ["admin", "owner", "sales", "finance", "support", "ticket_only", "creative"],
     }
 
 
@@ -425,12 +453,21 @@ async def admin_update_user(uid: str, payload: m.UserUpdateIn, request: Request,
     for k in ("name", "role", "company", "phone", "billing_emails",
               "attention", "address_line1", "address_line2", "city",
               "province", "postal_code", "country", "npwp",
-              "menu_keys", "feature_flags", "is_active"):
+              "menu_keys", "feature_flags", "feature_flags_custom", "is_active"):
         v = getattr(payload, k, None)
         if v is not None:
             upd[k] = v
     if payload.assigned_client_ids is not None:
         upd["assigned_client_ids"] = [ObjectId(x) for x in payload.assigned_client_ids]
+
+    # A role change invalidates the previous role's defaults: if the caller did
+    # not send an explicit flag list, drop the customisation so the new role's
+    # defaults apply. Without this, demoting an admin to sales would leave the
+    # admin-only flags (factory reset, integrations, backups) in force.
+    role_changed = upd.get("role") is not None and upd["role"] != existing.get("role")
+    if role_changed and "feature_flags_custom" not in upd and "feature_flags" not in upd:
+        upd["feature_flags_custom"] = False
+        upd["feature_flags"] = []
 
     # Lock-out guards. Deactivating or demoting the last active admin would leave
     # the console with nobody able to manage users, and `is_active` is now a real

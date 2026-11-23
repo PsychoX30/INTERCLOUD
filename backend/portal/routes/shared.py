@@ -18,7 +18,7 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
-    require_roles, sales_can_access,
+    require_roles, sales_can_access, effective_flags,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
@@ -88,6 +88,12 @@ def _user_public(u: dict) -> dict:
         "npwp": u.get("npwp"),
         "menu_keys": u.get("menu_keys"),
         "feature_flags": list(u.get("feature_flags") or []),
+        # `feature_flags` alone cannot distinguish "no flags granted" from "never
+        # customised". The UI needs to know which one it is showing, and the
+        # effective list is what the backend enforces (role defaults apply until
+        # the account is customised), so the client renders the same truth.
+        "feature_flags_custom": bool(u.get("feature_flags_custom")),
+        "effective_feature_flags": sorted(effective_flags(u)),
         "is_active": u.get("is_active", True),
         "must_change_password": bool(u.get("must_change_password", False)),
     }

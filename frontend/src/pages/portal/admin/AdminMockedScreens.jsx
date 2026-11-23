@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { PageHeader, Card, btnPrimary, btnSecondary, inputClass, labelClass } from "../ui";
 import { Loader2 } from "lucide-react";
 import { api } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 
 /* -------------------- Provisioning manual (cPanel/WHM) --------------------
  *
@@ -107,6 +108,10 @@ const DModal = ({ title, onClose, children }) => (
 
 /* ---- Racks ---- */
 const RacksTab = () => {
+  const { hasFlag } = useAuth();
+  // Write controls mirror the backend gate (`require_flag`), so a viewer without
+  // the capability never sees a button that would 403.
+  const canEdit = hasFlag("can_edit_dcim_devices");
   const [racks, setRacks] = useState(null);
   const [editing, setEditing] = useState(null);
   const [rackForm, setRackForm] = useState(null); // {new/obj}
@@ -116,9 +121,11 @@ const RacksTab = () => {
   const del = async (id) => { if (window.confirm("Delete rack?")) { await api.delete(`/admin/dcim/racks/${id}`); load(); } };
   return (
     <div>
-      <div className="mb-4 flex justify-end">
-        <button className={btnPrimary} onClick={() => setRackForm("new")}><span className="text-lg">+</span> New Rack</button>
-      </div>
+      {canEdit && (
+        <div className="mb-4 flex justify-end">
+          <button className={btnPrimary} onClick={() => setRackForm("new")} data-testid="dcim-rack-new"><span className="text-lg">+</span> New Rack</button>
+        </div>
+      )}
       <div className="grid lg:grid-cols-3 gap-4">
         {racks.map((r) => {
           const pct = (r.power_draw_w / r.power_cap_w) * 100;
@@ -129,11 +136,13 @@ const RacksTab = () => {
                   <div className="text-sm font-extrabold text-[#0a2350]">{r.name}</div>
                   <div className="text-xs text-slate-500">{r.site}</div>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={() => setEditing(r)} className="text-slate-500 hover:text-[#f5b120] text-xs font-bold">Edit U</button>
-                  <button onClick={() => setRackForm(r)} className="text-slate-500 hover:text-[#f5b120] text-xs font-bold">Config</button>
-                  <button onClick={() => del(r.id)} className="text-slate-500 hover:text-red-600 text-xs font-bold">×</button>
-                </div>
+                {canEdit && (
+                  <div className="flex gap-2">
+                    <button onClick={() => setEditing(r)} className="text-slate-500 hover:text-[#f5b120] text-xs font-bold">Edit U</button>
+                    <button onClick={() => setRackForm(r)} className="text-slate-500 hover:text-[#f5b120] text-xs font-bold">Config</button>
+                    <button onClick={() => del(r.id)} className="text-slate-500 hover:text-red-600 text-xs font-bold">×</button>
+                  </div>
+                )}
               </div>
               <div className="mt-2 h-2 bg-slate-100 rounded overflow-hidden">
                 <div className={`h-full ${pct > 80 ? "bg-red-500" : "bg-emerald-500"}`} style={{ width: `${Math.min(100, pct)}%` }} />
@@ -255,6 +264,8 @@ const OccupancyEditor = ({ rack, onClose, onDone }) => {
 
 /* ---- Prefixes ---- */
 const PrefixesTab = () => {
+  const { hasFlag } = useAuth();
+  const canEdit = hasFlag("can_edit_ip_prefixes");
   const [rows, setRows] = useState(null);
   const [editing, setEditing] = useState(null);
   const load = () => api.get("/admin/dcim/prefixes").then((r) => setRows(r.data));
@@ -263,9 +274,11 @@ const PrefixesTab = () => {
   const del = async (id) => { if (window.confirm("Delete prefix?")) { await api.delete(`/admin/dcim/prefixes/${id}`); load(); } };
   return (
     <div>
-      <div className="mb-4 flex justify-end">
-        <button className={btnPrimary} onClick={() => setEditing("new")}>+ New Prefix</button>
-      </div>
+      {canEdit && (
+        <div className="mb-4 flex justify-end">
+          <button className={btnPrimary} onClick={() => setEditing("new")} data-testid="dcim-prefix-new">+ New Prefix</button>
+        </div>
+      )}
       <div className="rounded-2xl bg-white border border-slate-200 overflow-x-auto">
         <table className="w-full min-w-[720px] text-sm">
           <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-widest text-slate-500">
@@ -295,7 +308,7 @@ const PrefixesTab = () => {
               <td className="px-4 py-3 font-mono text-xs text-slate-500">{p.vlan}</td>
               <td className="px-4 py-3">{p.site}</td>
               <td className="px-4 py-3 text-right whitespace-nowrap">
-                {p.family === 4 && (
+                {canEdit && p.family === 4 && (
                   <button className="text-emerald-700 hover:text-emerald-900 font-bold text-xs mr-3" data-testid={`prefix-allocate-${p.id}`}
                     onClick={async () => {
                       const hostname = window.prompt("Hostname untuk IP yang dialokasikan (opsional):", "");
@@ -309,8 +322,12 @@ const PrefixesTab = () => {
                     Allocate IP
                   </button>
                 )}
-                <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(p)}>Edit</button>
-                <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => del(p.id)}>×</button>
+                {canEdit ? (
+                  <>
+                    <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(p)}>Edit</button>
+                    <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => del(p.id)}>×</button>
+                  </>
+                ) : <span className="text-slate-300 text-xs">read-only</span>}
               </td>
             </tr>
           ))}</tbody>
@@ -363,6 +380,8 @@ const PrefixForm = ({ p, onClose, onDone }) => {
 
 /* ---- IPs ---- */
 const IPsTab = () => {
+  const { hasFlag } = useAuth();
+  const canEdit = hasFlag("can_edit_ip_prefixes");
   const [prefixes, setPrefixes] = useState([]);
   const [ips, setIps] = useState(null);
   const [filter, setFilter] = useState("");
@@ -381,7 +400,9 @@ const IPsTab = () => {
           <option value="">All prefixes</option>
           {prefixes.map((p) => <option key={p.id} value={p.id}>{p.prefix}</option>)}
         </select>
-        <button className={btnPrimary} onClick={() => setEditing("new")}>+ New IP</button>
+        {canEdit && (
+          <button className={btnPrimary} onClick={() => setEditing("new")} data-testid="dcim-ip-new">+ New IP</button>
+        )}
       </div>
       {ips.length === 0 && <div className="text-center py-8 text-sm text-slate-500">No IP records - add your first below.</div>}
       {ips.length > 0 && (
@@ -398,8 +419,12 @@ const IPsTab = () => {
                 <td className="px-4 py-3 text-xs">{ip.customer || "-"}</td>
                 <td className="px-4 py-3 text-xs"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${ip.status === "active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"}`}>{ip.status}</span></td>
                 <td className="px-4 py-3 text-right">
-                  <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(ip)}>Edit</button>
-                  <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => del(ip.id)}>×</button>
+                  {canEdit ? (
+                    <>
+                      <button className="text-slate-600 hover:text-[#f5b120]" onClick={() => setEditing(ip)}>Edit</button>
+                      <button className="ml-3 text-slate-500 hover:text-red-600" onClick={() => del(ip.id)}>×</button>
+                    </>
+                  ) : <span className="text-slate-300 text-xs">read-only</span>}
                 </td>
               </tr>
             ))}</tbody>
@@ -444,6 +469,8 @@ const IPForm = ({ ip, prefixes, onClose, onDone }) => {
 
 /* ---- Sites ---- */
 const SitesTab = () => {
+  const { hasFlag } = useAuth();
+  const canEdit = hasFlag("can_edit_dcim_devices");
   const [rows, setRows] = useState(null);
   const [modal, setModal] = useState(false);
   const load = () => api.get("/admin/dcim/sites").then((r) => setRows(r.data));
@@ -452,14 +479,20 @@ const SitesTab = () => {
   const del = async (id) => { if (window.confirm("Delete site?")) { await api.delete(`/admin/dcim/sites/${id}`); load(); } };
   return (
     <div>
-      <div className="mb-4 flex justify-end"><button className={btnPrimary} onClick={() => setModal(true)}>+ New Site</button></div>
+      {canEdit && (
+        <div className="mb-4 flex justify-end">
+          <button className={btnPrimary} onClick={() => setModal(true)} data-testid="dcim-site-new">+ New Site</button>
+        </div>
+      )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {rows.map((s) => (
           <Card key={s.id} className="p-5">
             <div className="text-sm font-extrabold text-[#0a2350]">{s.name}</div>
             <div className="text-xs font-mono text-[#f5b120] mt-1">{s.code}</div>
             <div className="text-xs text-slate-500 mt-2">{s.address}</div>
-            <button onClick={() => del(s.id)} className="mt-3 text-xs text-slate-500 hover:text-red-600">Delete</button>
+            {canEdit && (
+              <button onClick={() => del(s.id)} className="mt-3 text-xs text-slate-500 hover:text-red-600">Delete</button>
+            )}
           </Card>
         ))}
       </div>

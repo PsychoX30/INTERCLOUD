@@ -173,16 +173,22 @@ const PortalLayout = ({ variant = "client" }) => {
     if (!isAdmin) return [];
     return ADMIN_NAV_GROUPS.map((grp) => {
       const items = grp.items.filter((it) => {
-        if (it.roles && !it.roles.includes(user?.role)) return false;
-        if (Array.isArray(user?.menu_keys) && user.menu_keys.length > 0) {
+        const hasAllowList = Array.isArray(user?.menu_keys) && user.menu_keys.length > 0;
+        if (hasAllowList) {
+          // An explicit allow-list is authoritative in BOTH directions. Checking
+          // `roles` first made an ad-hoc grant impossible: giving a sales user
+          // the Operations Center left the item filtered out by its role list
+          // before the allow-list was ever consulted. The role check now only
+          // governs users who have no allow-list at all.
+          //
           // Operations Center hosts several former top-level menus as tabs, so a
           // user whose allow-list still names one of those old keys (e.g. "noc")
           // must keep seeing the console that now contains it. Without the alias
-          // check the merge would silently hide the group for such users. The
-          // plain key comparison stays as the base case.
+          // check the merge would silently hide the group for such users.
           if (user.menu_keys.includes(it.key)) return true;
           return Array.isArray(it.aliasKeys) && it.aliasKeys.some((k) => user.menu_keys.includes(k));
         }
+        if (it.roles && !it.roles.includes(user?.role)) return false;
         return true;
       });
       return { ...grp, items };

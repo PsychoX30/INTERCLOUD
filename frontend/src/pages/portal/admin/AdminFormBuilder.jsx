@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../../portal/api";
+import { useAuth } from "../../../portal/AuthContext";
 import { PageHeader, Card, StatusBadge, btnPrimary, btnSecondary, inputClass, labelClass, Loading, EmptyState } from "../ui";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, Eye, ExternalLink, Save, FormInput, Copy,
@@ -31,6 +32,11 @@ const NUMERIC_TYPES = new Set(["number"]);
 const TEXT_TYPES = new Set(["text", "textarea"]);
 
 const AdminFormBuilder = () => {
+  // Form building is a capability (`can_manage_forms`), not a role: hidden here
+  // so a viewer without it sees the list and the submissions but no controls
+  // that would be refused by the API.
+  const { hasFlag } = useAuth();
+  const canBuild = hasFlag("can_manage_forms");
   const [rows, setRows] = useState(null);
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
@@ -100,7 +106,9 @@ const AdminFormBuilder = () => {
       <PageHeader
         title="Form Builder"
         subtitle="Buat form sesuai kebutuhan, publikasikan, lalu bagikan link publiknya. Setiap form punya database kiriman sendiri yang bisa dilihat sebagai tabel dan diekspor ke CSV."
-        actions={<button className={btnPrimary} onClick={create} data-testid="fb-new-btn"><Plus className="h-4 w-4" /> Form baru</button>}
+        actions={canBuild ? (
+          <button className={btnPrimary} onClick={create} data-testid="fb-new-btn"><Plus className="h-4 w-4" /> Form baru</button>
+        ) : null}
       />
       {rows.length === 0 && (
         <EmptyState title="Belum ada form" body='Klik "Form baru" untuk membuat form pertama — misalnya form survei, undangan, atau daftar kehadiran.' />

@@ -87,6 +87,10 @@ class UserOut(BaseModel):
     # Fine-grained access control (staff only). If empty → role defaults apply.
     menu_keys: Optional[List[str]] = None      # allow-list of admin menu keys; None = use role default
     feature_flags: List[str] = []              # arbitrary per-user feature toggles
+    # False/absent = role defaults in force. True = `feature_flags` is the exact
+    # grant, so a default capability can be revoked as well as extended.
+    feature_flags_custom: bool = False
+    effective_feature_flags: List[str] = []    # computed server-side; what is enforced
     is_active: bool = True
     must_change_password: bool = False         # forced password rotation (installer-seeded admin)
 
@@ -118,6 +122,7 @@ class UserCreateIn(BaseModel):
     npwp: Optional[str] = None
     menu_keys: Optional[List[str]] = None
     feature_flags: List[str] = []
+    feature_flags_custom: bool = False
     is_active: bool = True
 
 
@@ -139,6 +144,9 @@ class UserUpdateIn(BaseModel):
     npwp: Optional[str] = None
     menu_keys: Optional[List[str]] = None
     feature_flags: Optional[List[str]] = None
+    # True means `feature_flags` is authoritative; False/absent means the role
+    # defaults apply. Without this the API cannot express "revoke a default".
+    feature_flags_custom: Optional[bool] = None
     is_active: Optional[bool] = None
 
 

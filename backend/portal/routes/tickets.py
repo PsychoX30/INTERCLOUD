@@ -18,7 +18,7 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
-    require_roles, sales_can_access,
+    require_roles, sales_can_access, require_flag,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
@@ -146,7 +146,7 @@ async def client_close_ticket(tid: str, user=Depends(get_current_user)):
 
 
 @router.put("/admin/tickets/{tid}/status")
-async def admin_ticket_status(tid: str, payload: m.TicketStatusIn, staff=Depends(get_current_staff)):
+async def admin_ticket_status(tid: str, payload: m.TicketStatusIn, staff=Depends(require_flag("can_manage_tickets"))):
     """UAT-011: staf dapat mengubah status tiket (termasuk close/resolve)."""
     db = await _get_db()
     d = await db.tickets.find_one({"_id": _oid(tid), **_sales_scope_filter(staff, key="user_id")})
@@ -188,7 +188,7 @@ async def admin_list_tickets(staff=Depends(get_current_staff),
 
 
 @router.post("/admin/tickets/{tid}/replies")
-async def admin_reply_ticket(tid: str, payload: m.TicketReplyIn, staff=Depends(get_current_staff)):
+async def admin_reply_ticket(tid: str, payload: m.TicketReplyIn, staff=Depends(require_flag("can_manage_tickets"))):
     db = await _get_db()
     d = await db.tickets.find_one({"_id": _oid(tid), **_sales_scope_filter(staff, key="user_id")})
     if not d:

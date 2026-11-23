@@ -21,7 +21,7 @@ from .. import models as m
 from ..auth import (
     verify_password, hash_password, create_access_token,
     get_current_user, get_current_admin, get_current_staff, get_current_content,
-    require_roles, sales_can_access,
+    require_roles, sales_can_access, require_flag,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
 )
@@ -250,7 +250,7 @@ async def crm_list(staff=Depends(get_current_staff),
 
 
 @router.post("/admin/crm")
-async def crm_create(payload: dict, staff=Depends(get_current_staff)):
+async def crm_create(payload: dict, staff=Depends(require_flag("can_manage_crm"))):
     """Create a CRM row.
 
     Sales may create:
@@ -317,7 +317,7 @@ async def _assert_sales_can_touch_crm(db, staff: dict, cid: str) -> dict:
 
 
 @router.put("/admin/crm/{cid}")
-async def crm_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
+async def crm_update(cid: str, payload: dict, staff=Depends(require_flag("can_manage_crm"))):
     db = await _get_db()
     await _assert_sales_can_touch_crm(db, staff, cid)
     payload = {k: v for k, v in payload.items() if k in {
@@ -342,7 +342,7 @@ async def crm_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.delete("/admin/crm/{cid}")
-async def crm_delete(cid: str, staff=Depends(get_current_staff)):
+async def crm_delete(cid: str, staff=Depends(require_flag("can_manage_crm"))):
     db = await _get_db()
     await _assert_sales_can_touch_crm(db, staff, cid)
     r = await db.crm_customers.delete_one({"_id": _oid(cid)})
@@ -624,7 +624,7 @@ async def projects_list(staff=Depends(get_current_staff),
 
 
 @router.post("/admin/projects")
-async def projects_create(payload: dict, staff=Depends(get_current_staff)):
+async def projects_create(payload: dict, staff=Depends(require_flag("can_manage_projects"))):
     db = await _get_db()
     doc = {
         "name": payload.get("name", ""),
@@ -647,7 +647,7 @@ async def projects_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/projects/{pid}")
-async def projects_update(pid: str, payload: dict, staff=Depends(get_current_staff)):
+async def projects_update(pid: str, payload: dict, staff=Depends(require_flag("can_manage_projects"))):
     db = await _get_db()
     upd = {k: v for k, v in payload.items() if k in {
         "name", "customer_name", "owner", "status", "priority", "progress",
@@ -662,7 +662,7 @@ async def projects_update(pid: str, payload: dict, staff=Depends(get_current_sta
 
 
 @router.delete("/admin/projects/{pid}")
-async def projects_delete(pid: str, staff=Depends(get_current_staff)):
+async def projects_delete(pid: str, staff=Depends(require_flag("can_manage_projects"))):
     db = await _get_db()
     r = await db.projects.delete_one({"_id": _oid(pid)})
     return {"deleted": r.deleted_count}
@@ -708,7 +708,7 @@ async def content_list(staff=Depends(get_current_staff),
 
 
 @router.post("/admin/content")
-async def content_create(payload: dict, staff=Depends(get_current_staff)):
+async def content_create(payload: dict, staff=Depends(require_flag("can_manage_content"))):
     db = await _get_db()
     doc = {
         "title": payload.get("title", ""),
@@ -738,7 +738,7 @@ async def content_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/content/{cid}")
-async def content_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
+async def content_update(cid: str, payload: dict, staff=Depends(require_flag("can_manage_content"))):
     db = await _get_db()
     upd = {k: v for k, v in payload.items() if k in {
         "title", "channel", "type", "status", "owner", "publish_date", "hook", "url"
@@ -760,7 +760,7 @@ async def content_update(cid: str, payload: dict, staff=Depends(get_current_staf
 
 
 @router.delete("/admin/content/{cid}")
-async def content_delete(cid: str, staff=Depends(get_current_staff)):
+async def content_delete(cid: str, staff=Depends(require_flag("can_manage_content"))):
     db = await _get_db()
     r = await db.content_plan.delete_one({"_id": _oid(cid)})
     await drop_activity(db, source="content_plan", source_id=cid)
@@ -1231,7 +1231,7 @@ def _note_author_role(staff: dict) -> str:
 
 
 @router.post("/admin/followups")
-async def followups_create(payload: dict, staff=Depends(get_current_staff)):
+async def followups_create(payload: dict, staff=Depends(require_flag("can_manage_followups"))):
     db = await _get_db()
     _deny_creative(staff)
     cust_id = _oid(payload["customer_id"]) if payload.get("customer_id") else None
@@ -1325,7 +1325,7 @@ async def followups_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/followups/{fid}")
-async def followups_update(fid: str, payload: dict, staff=Depends(get_current_staff)):
+async def followups_update(fid: str, payload: dict, staff=Depends(require_flag("can_manage_followups"))):
     db = await _get_db()
     _deny_creative(staff)
     d = await _assert_sales_can_touch_followup(db, staff, fid)
@@ -1615,7 +1615,7 @@ async def _release_crm_after_followup_delete(db, fu: dict) -> bool:
 
 
 @router.delete("/admin/followups/{fid}")
-async def followups_delete(fid: str, staff=Depends(get_current_staff)):
+async def followups_delete(fid: str, staff=Depends(require_flag("can_manage_followups"))):
     # Deletion is deliberately restricted by role, not assignment/tag ownership:
     # support must be able to remove operational follow-ups even if it is not
     # personally assigned or tagged on them.
@@ -3491,7 +3491,7 @@ async def calendar_list(staff=Depends(get_current_staff),
 
 
 @router.post("/admin/content-calendar")
-async def calendar_create(payload: dict, staff=Depends(get_current_staff)):
+async def calendar_create(payload: dict, staff=Depends(require_flag("can_manage_content"))):
     db = await _get_db()
     title = (payload.get("title") or "").strip()
     if not title:
@@ -3518,7 +3518,7 @@ async def calendar_create(payload: dict, staff=Depends(get_current_staff)):
 
 
 @router.put("/admin/content-calendar/{cid}")
-async def calendar_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
+async def calendar_update(cid: str, payload: dict, staff=Depends(require_flag("can_manage_content"))):
     db = await _get_db()
     d = await db.content_calendar.find_one({"_id": _oid(cid)})
     if not d:
@@ -3542,7 +3542,7 @@ async def calendar_update(cid: str, payload: dict, staff=Depends(get_current_sta
 
 
 @router.delete("/admin/content-calendar/{cid}")
-async def calendar_delete(cid: str, staff=Depends(get_current_staff)):
+async def calendar_delete(cid: str, staff=Depends(require_flag("can_manage_content"))):
     db = await _get_db()
     r = await db.content_calendar.delete_one({"_id": _oid(cid)})
     if not r.deleted_count:

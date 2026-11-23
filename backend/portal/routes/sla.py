@@ -14,7 +14,7 @@ from bson import ObjectId
 
 from .. import models as m
 from ..auth import (
-    get_current_admin, get_current_staff, require_roles,
+    get_current_admin, get_current_staff, require_roles, require_flag,
     STAFF_ROLES, FINANCE_ROLES, OPS_ROLES,
 )
 from ..activity_sync import close_activity, drop_activity, upsert_activity
@@ -172,8 +172,7 @@ async def get_sla_incident(iid: str, admin=Depends(get_current_staff)):
 
 
 @router.post("/admin/sla/incidents")
-async def create_sla_incident(payload: m.SLAIncidentIn, admin=Depends(get_current_staff)):
-    _require_sla_writer(admin.get("role"))
+async def create_sla_incident(payload: m.SLAIncidentIn, admin=Depends(require_flag("can_manage_sla"))):
     db = await _get_db()
     now = _now()
     doc = payload.model_dump()
@@ -186,8 +185,7 @@ async def create_sla_incident(payload: m.SLAIncidentIn, admin=Depends(get_curren
 
 
 @router.put("/admin/sla/incidents/{iid}")
-async def update_sla_incident(iid: str, payload: m.SLAIncidentUpdate, admin=Depends(get_current_staff)):
-    _require_sla_writer(admin.get("role"))
+async def update_sla_incident(iid: str, payload: m.SLAIncidentUpdate, admin=Depends(require_flag("can_manage_sla"))):
     db = await _get_db()
     existing = await db.sla_incidents.find_one({"_id": _oid(iid), **_sales_scope_filter_for_incidents(admin)})
     if not existing:
