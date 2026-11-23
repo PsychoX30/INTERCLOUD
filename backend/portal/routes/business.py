@@ -95,7 +95,10 @@ def _crm_sales_scope_filter(staff: dict) -> dict:
     clauses.append({"status": {"$in": ["prospect", "partnership"]}})
     staff_id = _staff_oid(staff)
     if staff_id:
-        clauses.append({"assigned_to": staff_id})
+        # Both shapes: current writes store an ObjectId, two legacy rows store
+        # the hex string. Without the string clause a sales user cannot see a
+        # prospect they hold, while the claim itself still blocks everyone else.
+        clauses.append({"assigned_to": {"$in": [staff_id, str(staff_id)]}})
     if not clauses:
         return {"_id": None}  # matches nothing
     return {"$or": clauses}
@@ -204,9 +207,32 @@ async def crm_list(staff=Depends(get_current_staff),
     # Collect user_ids for enrichment
     uids = [d.get("user_id") for d in docs if d.get("user_id")]
     enrich = await _crm_enrichment_by_uid(db, uids)
+    # Resolve claim holders so the table can name the sales user instead of
+    # showing a bare ObjectId. Only needed for rows still in the claimed state.
+    holder_ids = [d.get("assigned_to") for d in docs if d.get("assigned_to")]
+    holders = {}
+    if holder_ids:
+        # Legacy rows may hold assigned_to as a hex string rather than an
+        # ObjectId; $in on the raw values would then match nothing. Query both
+        # shapes and key the map by string so the join below is uniform.
+        probe = []
+        for hid in holder_ids:
+            probe.append(hid)
+            try:
+                probe.append(ObjectId(str(hid)))
+            except Exception:
+                pass
+        async for u in db.users.find(
+            {"_id": {"$in": probe}},
+            {"name": 1, "email": 1},
+        ):
+            holders[str(u["_id"])] = u
     out = []
     for d in docs:
         row = _serialize_crm(d)
+        holder = holders.get(str(d.get("assigned_to"))) if d.get("assigned_to") else None
+        row["assigned_to_name"] = (holder or {}).get("name") or ""
+        row["assigned_to_email"] = (holder or {}).get("email") or ""
         e = enrich.get(str(d.get("user_id"))) if d.get("user_id") else None
         row["latest_order"] = (e or {}).get("latest_order")
         row["active_orders_count"] = (e or {}).get("active_orders_count", 0)
@@ -299,6 +325,14 @@ async def crm_update(cid: str, payload: dict, staff=Depends(get_current_staff)):
     payload["updated_at"] = _now()
     if "email" in payload and payload["email"]:
         payload["email"] = payload["email"].lower()
+    # A status change by hand must also drop the claim, otherwise a row moved
+    # back to `prospect` keeps its old assigned_to and stays visible to (and
+    # blocked for) the sales user who used to own it. `assigned` is left alone:
+    # that path stamps the claim fields itself when the prospect is claimed.
+    if "status" in payload and payload["status"] != "assigned":
+        payload["assigned_to"] = None
+        payload["assigned_at"] = None
+        payload["assignment_expires_at"] = None
     await db.crm_customers.update_one({"_id": _oid(cid)}, {"$set": payload})
     d = await db.crm_customers.find_one({"_id": _oid(cid)})
     if not d:
@@ -1469,6 +1503,64 @@ async def followup_approval_respond(fid: str, aid: str, payload: dict,
     return _serialize_approval(target)
 
 
+async def _release_crm_after_followup_delete(db, fu: dict) -> bool:
+    """Return a claimed prospect to the shared pool after its task is gone.
+
+    Called when a follow-up is deleted. The claim made at creation time
+    (status='assigned', assigned_to=<sales>) was previously released only by
+    marking the task done or by the 5-day expiry sweeper, so deleting the task
+    left the prospect permanently claimed by a sales user who no longer had
+    any work on it -- and _assert_sales_can_touch_crm blocked everyone else.
+
+    Guards:
+      * the CRM row must still be `assigned` (never touch existing clients)
+      * it must still be assigned to the same person who owned the task
+      * the owner must have no other open follow-up on the same prospect
+    Returns True when a row was actually released.
+    """
+    cust_id = fu.get("customer_id")
+    if not cust_id:
+        return False
+    crm = await db.crm_customers.find_one({"_id": cust_id})
+    if not crm or crm.get("status") != "assigned":
+        return False
+
+    owner_id = str(fu.get("owner_id") or "").strip()
+    assigned_to = str(crm.get("assigned_to") or "").strip()
+    if owner_id and assigned_to and owner_id != assigned_to:
+        # Someone else holds the claim now (re-assigned meanwhile): leave it.
+        return False
+
+    # Keep the claim while the owner still owes work on this prospect.
+    if owner_id:
+        still_open = await db.followups.count_documents({
+            "customer_id": cust_id,
+            "owner_id": owner_id,
+            "done": {"$ne": True},
+            "_id": {"$ne": fu.get("_id")},
+        })
+        if still_open:
+            return False
+
+    now_dt = datetime.now(timezone.utc)
+    result = await db.crm_customers.update_one(
+        {"_id": cust_id, "status": "assigned"},
+        {"$set": {
+            "status": "prospect",
+            "assigned_to": None,
+            "assigned_at": None,
+            "assignment_expires_at": None,
+            "updated_at": now_dt.isoformat(),
+        }},
+    )
+    released = bool(getattr(result, "modified_count", 0))
+    if released:
+        logging.getLogger("portal.crm").info(
+            "follow-up %s deleted: released CRM prospect %s back to pool",
+            fu.get("_id"), cust_id)
+    return released
+
+
 @router.delete("/admin/followups/{fid}")
 async def followups_delete(fid: str, staff=Depends(get_current_staff)):
     # Deletion is deliberately restricted by role, not assignment/tag ownership:
@@ -1477,8 +1569,14 @@ async def followups_delete(fid: str, staff=Depends(get_current_staff)):
     if staff.get("role") not in {"admin", "owner", "support"}:
         raise HTTPException(status_code=403, detail="Only admin, owner, and support can delete follow-ups")
     db = await _get_db()
+    # Read the row first: after the delete there is nothing left to derive the
+    # prospect link and the owning sales from.
+    fu = await db.followups.find_one({"_id": _oid(fid)})
     r = await db.followups.delete_one({"_id": _oid(fid)})
-    return {"deleted": r.deleted_count}
+    if not getattr(r, "deleted_count", 0):
+        return {"deleted": 0, "crm_released": False}
+    released = await _release_crm_after_followup_delete(db, fu or {})
+    return {"deleted": r.deleted_count, "crm_released": released}
 
 
 @router.post("/admin/followups/{fid}/notes")

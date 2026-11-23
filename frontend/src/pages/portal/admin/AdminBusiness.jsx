@@ -48,6 +48,36 @@ const STATUSES = [
   ["existing", "Existing Client"],
   ["ex_client", "Ex-Client"],
 ];
+
+// CRM has its own status vocabulary, and "assigned" is a live claim rather
+// than a lifecycle state: a prospect someone is currently following up.
+// The generic StatusBadge falls back to grey for every CRM value, which hid
+// a stuck claim completely.
+const CRM_STATUS_LABEL = {
+  prospect: "Prospect",
+  partnership: "Partnership",
+  existing: "Existing client",
+  ex_client: "Ex-client",
+  assigned: "Assigned",
+};
+const CRM_STATUS_TONE = {
+  prospect: "bg-slate-100 text-slate-600 border-slate-200",
+  partnership: "bg-amber-100 text-amber-700 border-amber-200",
+  existing: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  ex_client: "bg-slate-200 text-slate-600 border-slate-300",
+  assigned: "bg-indigo-100 text-indigo-700 border-indigo-200",
+};
+const CrmStatusBadge = ({ status }) => {
+  const key = String(status || "prospect").toLowerCase();
+  return (
+    <span
+      className={`inline-block px-2 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider ${CRM_STATUS_TONE[key] || "bg-slate-100 text-slate-600 border-slate-200"}`}
+      data-testid={`crm-status-${key}`}
+    >
+      {CRM_STATUS_LABEL[key] || key.replace(/_/g, " ")}
+    </span>
+  );
+};
 export const AdminCRM = () => {
   const { user } = useAuth() || {};
   const isSales = user?.role?.toLowerCase() === "sales";
@@ -257,7 +287,14 @@ export const AdminCRM = () => {
                       <div className="text-[10px] text-slate-500">{c.won_orders_count} active service{c.won_orders_count > 1 ? "s" : ""}</div>
                     )}
                   </td>
-                  <td className="px-4 py-3"><StatusBadge status={c.status} /></td>
+                  <td className="px-4 py-3">
+                    <CrmStatusBadge status={c.status} />
+                    {c.status === "assigned" && (
+                      <div className="text-[10px] text-slate-500 mt-0.5" data-testid={`crm-holder-${c.id}`}>
+                        {c.assigned_to_name || c.assigned_to_email || "unassigned"}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     {c.phone && (
                       <a href={`https://wa.me/${String(c.phone).replace(/[^0-9]/g, "").replace(/^0/, "62")}`} target="_blank" rel="noreferrer"
@@ -671,7 +708,18 @@ export const AdminFollowups = () => {
 
   if (!rows) return <Loading />;
   const toggle = async (r) => { await api.put(`/admin/followups/${r.id}`, { done: !r.done }); load(); };
-  const del = async (id) => { if (window.confirm("Delete?")) { await api.delete(`/admin/followups/${id}`); load(); } };
+  const del = async (id) => {
+    const ok = window.confirm(
+      "Delete this follow-up?\n\nIf it is linked to a CRM prospect that you claimed, " +
+      "the prospect is released back to the shared pool so another sales user can follow it up."
+    );
+    if (!ok) return;
+    const { data } = await api.delete(`/admin/followups/${id}`);
+    if (data?.crm_released) {
+      alert("Follow-up dihapus. Prospek CRM dikembalikan ke shared pool.");
+    }
+    load();
+  };
   const closeDeal = async (id) => {
     try {
       const { data } = await api.post(`/admin/followups/${id}/close-deal`);
