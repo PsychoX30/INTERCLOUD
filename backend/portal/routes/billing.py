@@ -402,9 +402,19 @@ async def admin_list_quotations(
 
 
 @router.post("/admin/quotations", response_model=m.QuotationOut)
-async def admin_create_quotation(payload: m.QuotationIn, admin=Depends(get_current_admin)):
+async def admin_create_quotation(payload: m.QuotationIn, request: Request,
+                                 staff=Depends(require_roles("admin", "sales"))):
+    """Create a quotation.
+
+    Sales may quote their own clients only - `sales_can_access` is the same
+    gate `/admin/users/{uid}` uses, so a sales rep can never quote a client
+    they do not own. Finance stays read-only here and admin is unrestricted.
+    """
+    _deny_creative(staff)
     db = await _get_db()
     u = await _load_user(db, payload.user_id)
+    if not sales_can_access(staff, str(u["_id"])):
+        raise HTTPException(status_code=403, detail="Not your client")
     subtotal = sum(i.total for i in payload.items)
     tax_amount = round(subtotal * payload.tax_percent / 100, 2)
     total = round(subtotal + tax_amount, 2)
@@ -420,22 +430,46 @@ async def admin_create_quotation(payload: m.QuotationIn, admin=Depends(get_curre
         "valid_until": payload.valid_until,
         "status": "draft",
         "notes": payload.notes,
+        "created_by": str(staff.get("_id") or staff.get("id") or ""),
+        "created_by_email": staff.get("email", ""),
         "created_at": _now(),
     }
     r = await db.quotations.insert_one(doc)
     doc["_id"] = r.inserted_id
+    await log_audit(db, actor=staff, action="quotation.create", category="billing",
+                    target_type="quotation", target_id=str(r.inserted_id),
+                    target_label=number,
+                    metadata={"client": u.get("email", ""), "total": total},
+                    request=request)
     return await _serialize_quotation(db, doc)
 
 
 @router.put("/admin/quotations/{qid}/status")
 async def admin_update_quotation_status(
-    qid: str, payload: m.QuotationStatusIn, admin=Depends(get_current_admin)
+    qid: str, payload: m.QuotationStatusIn, request: Request,
+    staff=Depends(require_roles("admin", "sales")),
 ):
+    """Move a quotation through draft -> sent -> accepted/rejected/expired.
+
+    Scoped by `_sales_scope_filter(user_id)`: a sales rep can only touch
+    quotations that belong to their own clients. Anyone else sees 404, not a
+    403, so the endpoint does not leak the existence of foreign quotations.
+    """
+    _deny_creative(staff)
     db = await _get_db()
-    await db.quotations.update_one({"_id": _oid(qid)}, {"$set": {"status": payload.status}})
-    d = await db.quotations.find_one({"_id": _oid(qid)})
+    q = {"_id": _oid(qid), **_sales_scope_filter(staff, key="user_id")}
+    d = await db.quotations.find_one(q)
     if not d:
         raise HTTPException(status_code=404, detail="Quotation not found")
+    prev_status = d.get("status")
+    await db.quotations.update_one({"_id": d["_id"]},
+                                   {"$set": {"status": payload.status}})
+    d["status"] = payload.status
+    await log_audit(db, actor=staff, action="quotation.status_update", category="billing",
+                    target_type="quotation", target_id=qid,
+                    target_label=d.get("number", ""),
+                    metadata={"from": prev_status, "to": payload.status},
+                    request=request)
     return await _serialize_quotation(db, d)
 
 

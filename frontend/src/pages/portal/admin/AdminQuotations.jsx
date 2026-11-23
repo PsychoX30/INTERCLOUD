@@ -7,8 +7,16 @@ import { DataTable } from "../../../components/ui/data-table";
 import TablePager from "./TablePager";
 import { TaxPercentField } from "./TaxPercentField";
 import { toast } from "sonner";
+import { useAuth } from "../../../portal/AuthContext";
 
 const AdminQuotations = () => {
+  const { user } = useAuth();
+  const role = String(user?.role || "").toLowerCase();
+  // Sales can draft/send quotations for their own clients; only admin and
+  // finance may browse the full book. Converting a quotation into an invoice
+  // stays admin-only because it creates a billing document.
+  const canCreate = role === "admin" || role === "sales";
+  const canConvert = role === "admin";
   const [rows, setRows] = useState(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -31,7 +39,15 @@ const AdminQuotations = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  const setStatus = async (id, status) => { await api.put(`/admin/quotations/${id}/status`, { status }); load(); };
+  const setStatus = async (id, status) => {
+    try {
+      await api.put(`/admin/quotations/${id}/status`, { status });
+      load();
+    } catch (er) {
+      toast.error(er?.response?.data?.detail || "Gagal mengubah status quotation");
+      load();
+    }
+  };
 
   const columns = [
     { key: "number", label: "#", sortable: true, mono: true,
@@ -58,14 +74,26 @@ const AdminQuotations = () => {
           <a href={docUrl("quotation", q.id, "pdf")} target="_blank" rel="noreferrer" className="text-slate-600 hover:text-[#f5b120] mr-3" title="Download PDF" data-testid={`qtn-download-${q.number}`}>
             <Download className="h-4 w-4 inline" />
           </a>
-          <select value={q.status} onChange={(e) => setStatus(q.id, e.target.value)} className="text-xs h-8 rounded border border-slate-300 px-1.5 mr-2" data-testid={`qtn-status-${q.number}`}>
+          <select value={q.status} onChange={(e) => setStatus(q.id, e.target.value)}
+                  disabled={!canCreate}
+                  title={canCreate ? "Ubah status quotation" : "Status hanya bisa diubah admin/sales"}
+                  className="text-xs h-8 rounded border border-slate-300 px-1.5 mr-2 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
+                  data-testid={`qtn-status-${q.number}`}>
             <option value="draft">draft</option>
             <option value="sent">sent</option>
             <option value="accepted">accepted</option>
             <option value="rejected">rejected</option>
             <option value="expired">expired</option>
           </select>
-          {q.converted_invoice_number ? (
+          {!canConvert ? (q.converted_invoice_number ? (
+            <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-1" title={`Sudah dikonversi ke ${q.converted_invoice_number}`} data-testid={`qtn-converted-${q.number}`}>
+              <Receipt className="h-3 w-3" /> {q.converted_invoice_number}
+            </span>
+          ) : (
+            <span className="text-xs text-slate-400" title="Menunggu admin membuat invoice" data-testid={`qtn-await-invoice-${q.number}`}>
+              Menunggu invoice
+            </span>
+          )) : q.converted_invoice_number ? (
             <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-1" title={`Sudah dikonversi ke ${q.converted_invoice_number}`} data-testid={`qtn-converted-${q.number}`}>
               <Receipt className="h-3 w-3" /> {q.converted_invoice_number}
             </span>
@@ -82,8 +110,14 @@ const AdminQuotations = () => {
     <div>
       <PageHeader
         title="Quotations"
-        subtitle="Send tailored quotes to prospects. Accepted quotes can be converted into invoices."
-        actions={<button className={btnPrimary} onClick={() => setModal(true)} data-testid="new-qtn-btn"><Plus className="h-4 w-4" /> New Quotation</button>}
+        subtitle={canCreate
+          ? "Send tailored quotes to prospects. Accepted quotes can be converted into invoices."
+          : "Accepted quotations become invoices once an admin converts them."}
+        actions={canCreate && (
+          <button className={btnPrimary} onClick={() => setModal(true)} data-testid="new-qtn-btn">
+            <Plus className="h-4 w-4" /> New Quotation
+          </button>
+        )}
       />
       <DataTable
         rows={rows || []}
@@ -163,9 +197,12 @@ const NewQuotation = ({ onClose, onDone }) => {
 
   useEffect(() => {
     api.get("/admin/users").then((r) => {
-      const cs = r.data.filter((u) => u.role === "client");
+      // Sales only receives assigned clients here, so an empty list means
+      // the rep has nothing assigned yet - surface that instead of a dead form.
+      const list = Array.isArray(r.data) ? r.data : (r.data?.items || []);
+      const cs = list.filter((u) => u.role === "client");
       setUsers(cs); if (cs[0]) setUserId(cs[0].id);
-    });
+    }).catch(() => setUsers([]));
     const d = new Date(); d.setDate(d.getDate() + 30);
     setValidUntil(d.toISOString().slice(0, 10));
   }, []);
@@ -198,6 +235,11 @@ const NewQuotation = ({ onClose, onDone }) => {
       <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl bg-white rounded-3xl p-6 max-h-[92vh] overflow-y-auto" data-testid="new-qtn-form">
         <h3 className="text-xl font-extrabold text-[#0a2350]">New quotation</h3>
         {err && <div className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
+        {users.length === 0 && (
+          <div className="mt-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2" data-testid="new-qtn-no-clients">
+            Belum ada klien yang ditugaskan ke Anda. Minta admin menghubungkan klien terlebih dahulu.
+          </div>
+        )}
         <div className="mt-4 grid grid-cols-2 gap-3">
           <label className="col-span-2">
             <div className={labelClass}>Client</div>
@@ -229,7 +271,7 @@ const NewQuotation = ({ onClose, onDone }) => {
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" className={btnSecondary} onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={busy} className={btnPrimary}>Create quotation</button>
+          <button type="submit" disabled={busy || users.length === 0} className={btnPrimary} data-testid="new-qtn-submit">Create quotation</button>
         </div>
       </form>
     </div>
