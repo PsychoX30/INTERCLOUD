@@ -22,6 +22,7 @@ from ..auth import (
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
     require_menu,
+    require_flag,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -181,7 +182,7 @@ async def list_integrations(ops=Depends(require_menu("integrations"))):
 
 
 @router.post("/admin/integrations")
-async def create_integration(payload: dict, admin=Depends(get_current_admin)):
+async def create_integration(payload: dict, admin=Depends(require_flag("can_manage_integrations"))):
     db = await _get_db()
     module = payload.get("module")
     if not module_schema(module):
@@ -202,7 +203,7 @@ async def create_integration(payload: dict, admin=Depends(get_current_admin)):
 
 
 @router.put("/admin/integrations/{iid}")
-async def update_integration(iid: str, payload: dict, admin=Depends(get_current_admin)):
+async def update_integration(iid: str, payload: dict, admin=Depends(require_flag("can_manage_integrations"))):
     db = await _get_db()
     existing = await db.integrations.find_one({"_id": _oid(iid)})
     if not existing:
@@ -231,14 +232,14 @@ async def update_integration(iid: str, payload: dict, admin=Depends(get_current_
 
 
 @router.delete("/admin/integrations/{iid}")
-async def delete_integration(iid: str, admin=Depends(get_current_admin)):
+async def delete_integration(iid: str, admin=Depends(require_flag("can_manage_integrations"))):
     db = await _get_db()
     r = await db.integrations.delete_one({"_id": _oid(iid)})
     return {"deleted": r.deleted_count}
 
 
 @router.post("/admin/integrations/{iid}/test")
-async def test_integration(iid: str, admin=Depends(get_current_admin)):
+async def test_integration(iid: str, admin=Depends(require_flag("can_manage_integrations"))):
     db = await _get_db()
     d = await db.integrations.find_one({"_id": _oid(iid)})
     if not d:
@@ -252,7 +253,7 @@ async def test_integration(iid: str, admin=Depends(get_current_admin)):
 
 
 @router.post("/admin/integrations/test-config")
-async def test_integration_draft(payload: dict, admin=Depends(get_current_admin)):
+async def test_integration_draft(payload: dict, admin=Depends(require_flag("can_manage_integrations"))):
     """Test connection with an unsaved config (used by the Add Server dialog)."""
     return await _live_test_connection(payload.get("module", ""), payload.get("config", {}))
 
@@ -281,7 +282,7 @@ async def integrations_v2_list(ops=Depends(require_menu("integrations"))):
 
 
 @router.put("/admin/integrations-v2/{provider}")
-async def integrations_v2_upsert(provider: str, payload: dict, request: Request, admin=Depends(get_current_admin)):
+async def integrations_v2_upsert(provider: str, payload: dict, request: Request, admin=Depends(require_flag("can_manage_integrations"))):
     if provider not in iv2.INTEGRATION_SCHEMA:
         raise HTTPException(status_code=404, detail="Unknown provider")
     db = await _get_db()
@@ -314,7 +315,7 @@ async def integrations_v2_upsert(provider: str, payload: dict, request: Request,
 
 
 @router.delete("/admin/integrations-v2/{provider}")
-async def integrations_v2_delete(provider: str, request: Request, admin=Depends(get_current_admin)):
+async def integrations_v2_delete(provider: str, request: Request, admin=Depends(require_flag("can_manage_integrations"))):
     """Wipe all persisted settings for a provider (credentials + options + enabled).
 
     Useful for rotating credentials cleanly - the PUT endpoint merges by design,

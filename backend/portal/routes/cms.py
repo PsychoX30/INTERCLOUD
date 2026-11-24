@@ -23,6 +23,8 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES, SITE_CONTENT_ROLES,
+    require_menu,
+    require_flag,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -51,7 +53,7 @@ async def branding_get():
 
 
 @router.post("/admin/branding")
-async def branding_set(payload: dict, admin=Depends(get_current_admin)):
+async def branding_set(payload: dict, admin=Depends(require_flag("can_edit_branding"))):
     """Update one or more branding fields. Payload example:
         { "logo_dark": "data:image/png;base64,....",
           "favicon":   "https://cdn.example.com/favicon.png" }
@@ -80,7 +82,7 @@ async def branding_set(payload: dict, admin=Depends(get_current_admin)):
 
 
 @router.delete("/admin/branding/{key}")
-async def branding_reset(key: str, admin=Depends(get_current_admin)):
+async def branding_reset(key: str, admin=Depends(require_flag("can_edit_branding"))):
     """Reset one field to its hardcoded default."""
     if key not in _BRANDING_KEYS:
         raise HTTPException(status_code=400, detail=f"Unknown branding key: {key}")
@@ -851,7 +853,7 @@ async def public_status_page(request: Request):
 
 
 @router.get("/admin/status-page/config")
-async def status_page_config_get(admin=Depends(get_current_admin)):
+async def status_page_config_get(admin=Depends(require_menu("status_page"))):
     db = await _get_db()
     doc = await db.settings.find_one({"key": "status_page"}) or {}
     return doc.get("value") or {"groups": _DEFAULT_STATUS_GROUPS,

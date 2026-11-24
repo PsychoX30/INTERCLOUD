@@ -23,6 +23,7 @@ from ..auth import (
     ROLE_DEFAULT_FLAGS, ALL_FEATURE_FLAGS,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_flag,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -520,7 +521,7 @@ async def admin_update_user(uid: str, payload: m.UserUpdateIn, request: Request,
 
 
 @router.delete("/admin/users/{uid}")
-async def admin_delete_user(uid: str, request: Request, admin=Depends(get_current_admin)):
+async def admin_delete_user(uid: str, request: Request, admin=Depends(require_flag("can_delete_users"))):
     db = await _get_db()
     if str(admin["id"]) == uid:
         raise HTTPException(status_code=400, detail="You cannot delete yourself")
@@ -536,7 +537,7 @@ async def admin_delete_user(uid: str, request: Request, admin=Depends(get_curren
 
 
 @router.post("/admin/users/{uid}/impersonate")
-async def admin_impersonate_client(uid: str, request: Request, admin=Depends(get_current_admin)):
+async def admin_impersonate_client(uid: str, request: Request, admin=Depends(require_flag("can_impersonate_client"))):
     """Login-as-client untuk troubleshooting. Hanya klien aktif, tercatat di audit log."""
     db = await _get_db()
     target = await db.users.find_one({"_id": _oid(uid)})

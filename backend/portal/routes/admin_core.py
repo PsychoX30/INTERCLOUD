@@ -22,6 +22,7 @@ from ..auth import (
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
     require_menu,
+    require_flag,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -652,7 +653,7 @@ def _backup_dir() -> str:
 
 
 @router.post("/admin/backup/trigger")
-async def backup_trigger(request: Request, admin=Depends(get_current_admin)):
+async def backup_trigger(request: Request, admin=Depends(require_flag("can_run_backups"))):
     """Backup manual: mongodump ke file + catat di riwayat. Retensi: 20 arsip
     manual terbaru disimpan, sisanya dihapus (file + row riwayat)."""
     import os as _os
@@ -830,7 +831,7 @@ async def _log_factory_reset_after(db, admin, request, summary, backup_path):
 
 
 @router.post("/admin/backup/restore")
-async def backup_restore(request: Request, admin=Depends(get_current_admin), confirm: str = ""):
+async def backup_restore(request: Request, admin=Depends(require_flag("can_run_backups")), confirm: str = ""):
     """Restore a full snapshot. **Wipes every collection contained in the
     archive** (mongorestore --drop) and reinstates the uploaded content.
 
@@ -1160,7 +1161,7 @@ def _relative_months(n: int):
 
 
 @router.get("/admin/owner/overview")
-async def owner_overview(owner=Depends(_get_current_owner)):
+async def owner_overview(owner=Depends(require_menu("owner_dashboard"))):
     """Aggregate MRR/ARPU/churn/uptime/SLA into a single dashboard payload."""
     db = await _get_db()
     now = datetime.now(timezone.utc)

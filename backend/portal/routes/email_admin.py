@@ -22,6 +22,7 @@ from ..auth import (
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
     require_menu,
+    require_flag,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -74,7 +75,7 @@ async def admin_email_template_get(tid: str, ops=Depends(require_menu("email")))
 
 
 @router.post("/admin/email-templates")
-async def admin_email_template_create(payload: m.EmailTemplateIn, admin=Depends(get_current_admin)):
+async def admin_email_template_create(payload: m.EmailTemplateIn, admin=Depends(require_flag("can_view_email_automation"))):
     db = await _get_db()
     if await db.email_templates.find_one({"event_key": payload.event_key}):
         raise HTTPException(status_code=409, detail="A template with this event_key already exists")
@@ -200,7 +201,7 @@ async def admin_email_template_send_test(payload: m.EmailSendTestIn,
 
 @router.post("/admin/email/broadcast")
 async def admin_email_broadcast(payload: m.EmailNewsletterIn,
-                                admin=Depends(get_current_admin)):
+                                admin=Depends(require_flag("can_view_email_automation"))):
     """One-off broadcast - newsletter / maintenance / arbitrary."""
     db = await _get_db()
     recipients: List[dict] = []
@@ -260,7 +261,7 @@ async def admin_email_logs(limit: int = 200, ops=Depends(require_menu("email")))
 
 
 @router.post("/admin/email/run-scheduler-now")
-async def admin_email_run_scheduler_now(admin=Depends(get_current_admin)):
+async def admin_email_run_scheduler_now(admin=Depends(require_flag("can_view_email_automation"))):
     """Fire the invoice-reminder sweep on demand (used by admin UI + tests)."""
     db = await _get_db()
     summary = await _emails.run_invoice_reminder_sweep(db)
