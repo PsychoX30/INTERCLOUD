@@ -24,6 +24,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -144,7 +145,7 @@ def _serialize_employee(d: dict) -> dict:
 
 # Finance
 @router.get("/admin/finance/summary")
-async def admin_finance_summary(admin=Depends(require_roles("admin", "finance"))):
+async def admin_finance_summary(a=Depends(require_menu("finance"))):
     db = await _get_db()
     # Aggregate by month for last 12 months
     paid = await db.invoices.find({"status": "paid"}).to_list(5000)
@@ -318,7 +319,7 @@ def _serialize_asset(d):
 
 @router.get("/admin/assets")
 async def assets_list(
-    admin=Depends(require_roles("admin", "finance")), skip: int = 0, limit: int = 50,
+    a=Depends(require_menu("assets")), skip: int = 0, limit: int = 50,
     sort: str = "created_at", order: str = "desc", q: Optional[str] = None,
     paginate: bool = False,
 ):
@@ -344,7 +345,7 @@ async def assets_list(
 
 
 @router.get("/admin/assets/{aid}")
-async def assets_get(aid: str, admin=Depends(require_roles("admin", "finance"))):
+async def assets_get(aid: str, a=Depends(require_menu("assets"))):
     db = await _get_db()
     d = await db.assets.find_one({"_id": _oid(aid)})
     if not d:
@@ -489,7 +490,7 @@ async def expenses_delete(eid: str, admin=Depends(require_roles("admin", "financ
 
 # Extended finance report (revenue + expenses + assets)
 @router.get("/admin/assets/report/depreciation")
-async def assets_depreciation_report(months: int = 12, admin=Depends(require_roles("admin", "finance"))):
+async def assets_depreciation_report(months: int = 12, a=Depends(require_menu("assets"))):
     """Laporan total beban depresiasi aset aktif per periode (bulanan, N bulan terakhir)."""
     db = await _get_db()
     months = max(1, min(months, 60))
@@ -528,7 +529,7 @@ async def assets_depreciation_report(months: int = 12, admin=Depends(require_rol
 
 
 @router.get("/admin/finance/report")
-async def admin_finance_report(admin=Depends(require_roles("admin", "finance"))):
+async def admin_finance_report(a=Depends(require_menu("finance"))):
     db = await _get_db()
     paid = await db.invoices.find({"status": "paid"}).to_list(5000)
     total_revenue = sum(d.get("total", 0) for d in paid)
@@ -1104,7 +1105,7 @@ async def _ensure_sales_fee_dedupe_index(db) -> None:
 
 
 @router.get("/admin/finance/sales-context")
-async def sales_context(admin=Depends(require_roles("admin", "finance"))):
+async def sales_context(a=Depends(require_menu("finance"))):
     """Cascade-filter data for the Sales Fees tab.
 
     Returns:
@@ -1371,7 +1372,7 @@ async def render_sales_fee_slip(sid: str, format: str = "pdf", admin=Depends(get
 
 # ---------------- Finance detailed report ----------------
 @router.get("/admin/finance/detailed")
-async def finance_detailed(admin=Depends(require_roles("admin", "finance"))):
+async def finance_detailed(a=Depends(require_menu("finance"))):
     """Returns paid-invoice detail + all four expense ledgers + assets + depreciation.
 
     The frontend Finance page uses this to render tabbed detailed tables.
@@ -1512,7 +1513,7 @@ async def _gather_period_data(db, *, year: int, month: Optional[int] = None) -> 
 
 
 @router.get("/admin/finance/report/monthly/{period}")
-async def finance_monthly_xlsx(period: str, admin=Depends(require_roles("admin", "finance"))):
+async def finance_monthly_xlsx(period: str, a=Depends(require_menu("finance"))):
     """`period` is YYYY-MM. Returns an .xlsx with 6 sheets:
     Summary / Revenue / Expenses / Kas Kecil / Salaries / Sales Fees.
     Also freezes the month into `finalized_reports` so it becomes read-only.
@@ -1587,7 +1588,7 @@ async def finance_monthly_xlsx(period: str, admin=Depends(require_roles("admin",
 
 
 @router.get("/admin/finance/report/annual/{year}")
-async def finance_annual_xlsx(year: int, admin=Depends(require_roles("admin", "finance"))):
+async def finance_annual_xlsx(year: int, a=Depends(require_menu("finance"))):
     """One workbook with per-month AND cumulative Jan-Dec P&L + assets."""
     db = await _get_db()
     d = await _gather_period_data(db, year=year)
@@ -1678,7 +1679,7 @@ async def finance_annual_xlsx(year: int, admin=Depends(require_roles("admin", "f
 
 
 @router.get("/admin/finance/cashflow-forecast")
-async def finance_cashflow_forecast(admin=Depends(require_roles("admin", "finance"))):
+async def finance_cashflow_forecast(a=Depends(require_menu("finance"))):
     """Proyeksi arus kas 30/60/90 hari: inflow dari invoice unpaid/overdue + renewal
     layanan aktif; outflow dari run-rate 3 bulan terakhir keempat buku beban."""
     db = await _get_db()
@@ -1769,7 +1770,7 @@ def _rp(v) -> str:
 
 @router.get("/admin/finance/cashflow-forecast/export")
 async def finance_cashflow_export(format: str = "pdf", token: str = "",
-                                  admin=Depends(require_roles("admin", "finance"))):
+                                  a=Depends(require_menu("finance"))):
     """Unduh proyeksi arus kas 30/60/90 hari sebagai PDF atau Excel (xlsx)."""
     db = await _get_db()
     f = await _compute_cashflow_forecast(db)
@@ -1867,7 +1868,7 @@ async def finance_cashflow_export(format: str = "pdf", token: str = "",
 
 
 @router.get("/admin/finance/reports")
-async def finance_finalized_reports(admin=Depends(require_roles("admin", "finance"))):
+async def finance_finalized_reports(a=Depends(require_menu("finance"))):
     """List all previously-generated monthly/annual reports (audit trail)."""
     db = await _get_db()
     docs = await db.finalized_reports.find({}).sort("period", -1).to_list(500)
@@ -1981,7 +1982,7 @@ async def _settle_invoice_from_credit(db, invoice: dict, request, admin) -> int:
 
 
 @router.get("/admin/credit-notes")
-async def credit_notes_list(admin=Depends(require_roles("admin", "finance")),
+async def credit_notes_list(a=Depends(require_menu("credit_notes")),
                             invoice_id: Optional[str] = None,
                             user_id: Optional[str] = None,
                             status: Optional[str] = None,
@@ -2208,7 +2209,7 @@ async def credit_notes_delete(cid: str, request: Request,
 
 
 @router.get("/admin/credit-notes/{cid}")
-async def credit_notes_detail(cid: str, admin=Depends(require_roles("admin", "finance"))):
+async def credit_notes_detail(cid: str, a=Depends(require_menu("credit_notes"))):
     db = await _get_db()
     cn = await db.credit_notes.find_one({"_id": _oid(cid)})
     if not cn:

@@ -289,6 +289,75 @@ def has_flag(user: dict, key: str) -> bool:
     return key in effective_flags(user)
 
 
+def _menu_default_roles(keys: tuple) -> set:
+    """Role defaults for a menu, read from the catalog the UI itself renders.
+
+    Imported lazily: `routes.users` imports from this module, so a module-level
+    import would be circular. Routing the defaults through the catalog instead of
+    a second hard-coded table is what keeps "what the modal shows as default" and
+    "what the server allows without an allow-list" from drifting apart.
+    """
+    from .routes.users import ADMIN_MENU_CATALOG  # local import: avoids a cycle
+
+    out: set = set()
+    for m in ADMIN_MENU_CATALOG:
+        if m.get("key") in keys:
+            out |= set(m.get("default_roles") or [])
+    return out
+
+
+def require_menu(*keys: str):
+    """Dependency: caller may read this menu surface.
+
+    The same rule the sidebar uses, enforced on the server:
+
+    * an explicit `menu_keys` allow-list is authoritative in BOTH directions —
+      granting a menu the role would not normally have works, and a menu missing
+      from the list is refused even for a role that has it by default;
+    * with no allow-list, the catalog's `default_roles` decide.
+
+    This exists because a menu that renders but whose API answers 403 is worse
+    than a menu that is hidden: the operator grants access, the page opens, and
+    the panel sits empty with no explanation. `menu_keys` was already being read
+    by the frontend, so a read surface had to honour it too.
+
+    Multiple keys are accepted so an endpoint shared by two pages (the device
+    list behind both MikroTik Ops and Services, for example) stays reachable
+    through either grant.
+
+    Read-only by intent. Write routes stay behind `require_flag`, which keeps
+    "can you see this" and "can you change this" separate: a sales user can be
+    given the MikroTik panel to look at without gaining the ability to reboot a
+    router.
+    """
+    wanted = tuple(keys)
+    defaults = _menu_default_roles(wanted)
+
+    async def _dep(user=Depends(get_current_staff)):
+        role = user.get("role") or ""
+        if role == "admin":
+            return user
+        allow = user.get("menu_keys") or []
+        if allow:
+            if any(k in allow for k in wanted):
+                return user
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Menu ini belum diaktifkan untuk akun Anda. "
+                    "Minta admin menambahkannya di Users -> Manage access."
+                ),
+            )
+        if role in defaults:
+            return user
+        raise HTTPException(
+            status_code=403,
+            detail=f"Menu ini hanya untuk role: {', '.join(sorted(defaults)) or 'admin'}",
+        )
+
+    return _dep
+
+
 def require_flag(*keys: str):
     """Dependency: caller must hold at least one of `keys` (admin always passes).
 

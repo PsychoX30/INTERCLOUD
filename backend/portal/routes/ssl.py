@@ -11,7 +11,7 @@ from bson import ObjectId
 
 from .. import models as m
 from .. import integrations_v2 as iv2
-from ..auth import get_current_user, get_current_admin, require_roles
+from ..auth import get_current_user, get_current_admin, require_roles, require_menu
 from ..audit import log_audit
 from ..secretbox import enc_value as _sb_enc, dec_value as _sb_dec
 from .shared import _get_db, _get_setting_value, _insert_numbered, _iso, _now, _oid  # noqa: E402
@@ -185,7 +185,7 @@ async def client_ssl_order_detail(oid: str, user=Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 @router.get("/admin/ssl/markup")
-async def admin_ssl_markup_get(admin=Depends(get_current_admin)):
+async def admin_ssl_markup_get(admin=Depends(require_menu("ssl"))):
     """Return the SSL-specific markup. Restricted to role=admin."""
     db = await _get_db()
     doc = await db.settings.find_one({"key": _SSL_PRICING_KEY})
@@ -222,7 +222,7 @@ async def admin_ssl_markup_set(payload: dict, request: Request,
     return {"ok": True, "markup_pct": markup}
 
 @router.get("/admin/ssl/orders")
-async def admin_ssl_orders(admin=Depends(get_current_admin)):
+async def admin_ssl_orders(ops=Depends(require_menu("ssl"))):
     db = await _get_db()
     orders = await db.ssl_orders.find().sort("created_at", -1).to_list(500)
     return {"orders": [_serialize_ssl_order(o) for o in orders]}

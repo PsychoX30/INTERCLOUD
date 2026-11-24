@@ -154,7 +154,7 @@ async def dcim_rack_delete(rid: str, staff=Depends(require_flag("can_edit_dcim_d
 
 
 @router.put("/admin/dcim/prefixes/{pid}")
-async def dcim_prefix_update(pid: str, payload: dict, staff=Depends(require_flag("can_edit_ip_prefixes"))):
+async def dcim_prefix_update(pid: str, payload: dict, a=Depends(require_flag("can_edit_ip_prefixes"))):
     db = await _get_db()
     # `usage` tidak lagi bisa di-override manual: selalu dihitung dari record
     # dcim_ips. Payload yang membawa `usage` diabaikan.

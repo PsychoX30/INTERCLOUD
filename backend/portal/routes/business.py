@@ -1325,7 +1325,7 @@ async def followups_create(payload: dict, staff=Depends(require_flag("can_manage
 
 
 @router.put("/admin/followups/{fid}")
-async def followups_update(fid: str, payload: dict, staff=Depends(require_flag("can_manage_followups"))):
+async def followups_update(fid: str, payload: dict, admin=Depends(require_flag("can_manage_followups"))):
     db = await _get_db()
     _deny_creative(staff)
     d = await _assert_sales_can_touch_followup(db, staff, fid)

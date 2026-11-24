@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -140,7 +141,7 @@ async def _live_test_connection(module: str, cfg: dict) -> dict:
 
 
 @router.get("/admin/integrations/modules")
-async def list_integration_modules(admin=Depends(get_current_admin)):
+async def list_integration_modules(ops=Depends(require_menu("integrations"))):
     """Return the module registry (schemas for the Add Server dialog).
 
     Midtrans/Xendit stay hidden unless `enable_extra_payment_gateways` is on -
@@ -170,7 +171,7 @@ def _serialize_integration(d: dict, hide_secrets: bool = True) -> dict:
 
 
 @router.get("/admin/integrations")
-async def list_integrations(admin=Depends(get_current_admin)):
+async def list_integrations(ops=Depends(require_menu("integrations"))):
     db = await _get_db()
     docs = await db.integrations.find({}).sort("created_at", -1).to_list(500)
     allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
@@ -257,7 +258,7 @@ async def test_integration_draft(payload: dict, admin=Depends(get_current_admin)
 
 
 @router.get("/admin/integrations-v2/schema")
-async def integrations_v2_schema(admin=Depends(get_current_admin)):
+async def integrations_v2_schema(admin=Depends(require_menu("integrations"))):
     """Returns the field schema the admin UI uses to render each integration's settings form."""
     db = await _get_db()
     allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))
@@ -266,7 +267,7 @@ async def integrations_v2_schema(admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/integrations-v2")
-async def integrations_v2_list(admin=Depends(get_current_admin)):
+async def integrations_v2_list(ops=Depends(require_menu("integrations"))):
     """Return all persisted integration settings (secrets masked)."""
     db = await _get_db()
     allow_extra = bool(await _get_setting_value(db, "enable_extra_payment_gateways", False))

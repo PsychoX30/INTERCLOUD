@@ -6,7 +6,7 @@ so this route owns no collection and writes nothing.
 """
 from fastapi import APIRouter, Depends
 
-from ..auth import require_roles
+from ..auth import require_roles, require_menu
 from ..ops import build_ops_overview
 from .shared import _get_db
 
@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.get("/admin/ops/overview")
-async def ops_overview(staff=Depends(require_roles("admin", "support"))):
+async def ops_overview(staff=Depends(require_menu("operations_center"))):
     """Unified operations snapshot (monitoring, NOC, SLA, security, audit).
 
     Read-only: no inserts, updates, dispatches, or side effects. Missing or

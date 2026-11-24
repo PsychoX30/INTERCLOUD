@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..auth import get_current_admin, require_roles
+from ..auth import get_current_admin, require_roles, require_menu
 from ..monitoring import probe_target, resolve_ip, validate_target
 from .shared import _get_db, _oid
 
@@ -87,7 +87,7 @@ def _clean_retries(value) -> int:
 
 
 @router.get("/admin/monitoring/checks")
-async def monitoring_checks_list(staff=Depends(require_roles("admin", "support"))):
+async def monitoring_checks_list(ops=Depends(require_menu("monitoring"))):
     db = await _get_db()
     docs = await db.monitoring_checks.find({}).sort("created_at", 1).to_list(500)
     return [_serialize_check(doc) for doc in docs]
@@ -147,7 +147,7 @@ async def monitoring_check_delete(check_id: str, admin=Depends(get_current_admin
 
 @router.get("/admin/monitoring/checks/{check_id}/history")
 async def monitoring_check_history(check_id: str,
-                                   staff=Depends(require_roles("admin", "support")),
+                                   ops=Depends(require_menu("monitoring")),
                                    limit: int = 100):
     """Return bounded operational history for one persisted check."""
     db = await _get_db()
@@ -212,7 +212,7 @@ async def monitoring_check_run(check_id: str, admin=Depends(get_current_admin)):
 
 @router.get("/admin/monitoring/checks/{check_id}/uptime")
 async def monitoring_check_uptime(check_id: str,
-                                  staff=Depends(require_roles("admin", "support")),
+                                  a=Depends(require_menu("monitoring")),
                                   hours: int = 24):
     """Uptime-Kuma style: expected schedule slots vs observed samples.
 

@@ -12,7 +12,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from ..auth import get_current_admin, get_current_user, get_current_staff, require_roles
+from ..auth import get_current_admin, get_current_user, get_current_staff, require_roles, require_menu
 from ..audit import log_audit
 from ..monitoring_graphs import (
     serialize_graph,
@@ -243,7 +243,7 @@ async def create_graphs_bulk(payload: dict, admin=Depends(get_current_admin)):
 async def search_clients(
     q: str = Query("", max_length=100),
     client_id: Optional[str] = Query(None),
-    staff=Depends(require_roles("admin", "support", "sales")),
+    staff=Depends(require_menu("monitoring")),
 ):
     """Search clients by name, email, or company for graph assignment dropdown.
 
@@ -323,7 +323,7 @@ async def search_clients(
 async def list_graphs(
     enabled: Optional[bool] = None,
     client_id: Optional[str] = None,
-    staff=Depends(require_roles("admin", "support")),
+    staff=Depends(require_menu("monitoring")),
 ):
     db = await _get_db()
     query = {}
@@ -462,7 +462,7 @@ async def graph_data(
     from_: str = Query(..., alias="from"),
     to: str = Query(...),
     resolution: str = Query("auto"),
-    staff=Depends(require_roles("admin", "support")),
+    ops=Depends(require_menu("monitoring")),
 ):
     db = await _get_db()
 
@@ -526,7 +526,7 @@ async def export_graph(
     to: str = Query(...),
     resolution: str = Query("auto"),
     pair_id: Optional[str] = Query(None, description="Sibling OUT/IN graph id for a combined IN+OUT PDF"),
-    staff=Depends(require_roles("admin", "support")),
+    ops=Depends(require_menu("monitoring")),
 ):
     """Export the selected time range as PDF, optionally combining IN and OUT."""
     db = await _get_db()
@@ -645,7 +645,7 @@ _SAMPLE_COLLECTIONS = (
 
 
 @router.get("/admin/monitoring/health")
-async def monitoring_health(staff=Depends(require_roles("admin", "support"))):
+async def monitoring_health(staff=Depends(require_menu("monitoring"))):
     """Report retention/rollup health so silent failures become visible.
 
     The failure modes this exists to catch are the ones that never raise:
@@ -820,7 +820,7 @@ def _serialize_rule(d: dict) -> dict:
 
 
 @router.get("/admin/monitoring/alert-rules")
-async def alert_rules_list(staff=Depends(require_roles("admin", "support"))):
+async def alert_rules_list(staff=Depends(require_menu("monitoring"))):
     db = await _get_db()
     # Scope to graphs visible to this role (same pattern as monitoring_health graph rows)
     visible_ids = await _visible_graph_ids(db, staff)
@@ -916,7 +916,7 @@ def _validate_window_dates(payload: m.MaintenanceWindowIn) -> None:
 
 
 @router.get("/admin/monitoring/maintenance-windows")
-async def maintenance_windows_list(staff=Depends(require_roles("admin", "support"))):
+async def maintenance_windows_list(staff=Depends(require_menu("monitoring"))):
     db = await _get_db()
     # Scope to graphs visible to this role.
     visible_ids = await _visible_graph_ids(db, staff)
@@ -1020,7 +1020,7 @@ def _serialize_alert(d: dict) -> dict:
 
 @router.get("/admin/monitoring/graph-alerts")
 async def graph_alerts_list(open_only: bool = False, limit: int = 50,
-                            staff=Depends(require_roles("admin", "support"))):
+                            staff=Depends(require_menu("monitoring"))):
     """Recent alert events. `open_only=true` filters to unresolved rows."""
     db = await _get_db()
     query = {"resolved_at": None} if open_only else {}

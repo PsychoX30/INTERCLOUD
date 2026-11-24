@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -1308,7 +1309,7 @@ async def _auto_allocate_customer_ip(db, *, hostname: str, customer: str, ref: s
 # PROXMOX - available OS templates & OS request ticket bridge
 # ============================================================
 @router.get("/admin/proxmox/os-templates")
-async def proxmox_os_templates(staff=Depends(get_current_staff)):
+async def proxmox_os_templates(ops=Depends(require_menu("virtualization"))):
     """Return OS templates as would be reported by Proxmox ISO storage.
     Reads from an admin-editable settings doc; falls back to a common list."""
     db = await _get_db()
@@ -1370,7 +1371,7 @@ async def client_request_os(payload: dict, user=Depends(get_current_user)):
 
 # ---------------- Proxmox live actions ----------------
 @router.get("/admin/proxmox/nodes")
-async def proxmox_nodes(admin=Depends(require_roles("admin", "support"))):
+async def proxmox_nodes(ops=Depends(require_menu("virtualization"))):
     db = await _get_db()
     s = await _proxmox_settings(db)
     if not s:
@@ -1379,7 +1380,7 @@ async def proxmox_nodes(admin=Depends(require_roles("admin", "support"))):
 
 
 @router.get("/admin/proxmox/vms")
-async def proxmox_vms(node: Optional[str] = None, admin=Depends(require_roles("admin", "support"))):
+async def proxmox_vms(node: Optional[str] = None, ops=Depends(require_menu("virtualization"))):
     db = await _get_db()
     s = await _proxmox_settings(db)
     if not s:
@@ -1399,7 +1400,7 @@ async def proxmox_vm_action(node: str, vmid: int, action: str, admin=Depends(get
 
 
 @router.get("/admin/proxmox/vnc/{node}/{vmid}")
-async def proxmox_vnc(node: str, vmid: int, admin=Depends(get_current_admin)):
+async def proxmox_vnc(node: str, vmid: int, ops=Depends(require_menu("virtualization"))):
     db = await _get_db()
     s = await _proxmox_settings(db)
     if not s:
@@ -1531,7 +1532,7 @@ async def admin_provision_proxmox_vm(payload: dict, admin=Depends(require_roles(
 
 
 @router.get("/admin/proxmox/os-options")
-async def admin_proxmox_os_options(staff=Depends(require_roles("admin", "support"))):
+async def admin_proxmox_os_options(ops=Depends(require_menu("virtualization"))):
     """Daftar OS REAL untuk provisioning: template + ISO live dari Proxmox
     production + katalog cloud image (auto-build)."""
     db = await _get_db()
@@ -1743,7 +1744,7 @@ async def admin_hosting_package(sid: str, payload: dict,
 
 
 @router.get("/admin/proxmox/templates")
-async def admin_proxmox_templates(admin=Depends(require_roles("admin", "support"))):
+async def admin_proxmox_templates(admin=Depends(require_menu("virtualization"))):
     """LIVE list of clone templates on the Proxmox cluster + the configured VMID."""
     db = await _get_db()
     s = await _proxmox_settings(db)
@@ -1998,14 +1999,14 @@ async def admin_cp_server_packages(spid: str, staff=Depends(require_roles("admin
 
 
 @router.get("/admin/proxmox/servers")
-async def admin_px_servers_list(staff=Depends(require_roles("admin", "support"))):
+async def admin_px_servers_list(ops=Depends(require_menu("virtualization"))):
     db = await _get_db()
     docs = await db.proxmox_servers.find({}).sort("sort_order", 1).to_list(100)
     return [_px_server_public(d) for d in docs]
 
 
 @router.get("/admin/proxmox/servers/capacity")
-async def admin_px_servers_capacity(staff=Depends(require_roles("admin", "support"))):
+async def admin_px_servers_capacity(ops=Depends(require_menu("virtualization"))):
     """Laporan kapasitas live semua server + node yang akan dipilih load balancer."""
     db = await _get_db()
     s, node, report = await _pick_proxmox_server(db)

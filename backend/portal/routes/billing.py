@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -40,7 +41,7 @@ router = APIRouter()
 # Invoices (staff - Sales sees only invoices of their assigned clients)
 @router.get("/admin/invoices")
 async def admin_list_invoices(
-    staff=Depends(require_roles("admin", "finance")), page: Optional[int] = None,
+    staff=Depends(require_menu("invoices")), page: Optional[int] = None,
     skip: int = 0, limit: int = 25, sort: str = "created_at", order: str = "desc",
     paginate: bool = False,
 ):
@@ -521,7 +522,7 @@ async def admin_convert_quotation_to_invoice(qid: str, payload: m.QuotationConve
 # BILLING DEFAULTS (admin-editable global settings)
 # ============================================================
 @router.get("/admin/billing/settings")
-async def get_billing_settings(staff=Depends(require_roles("admin", "finance"))):
+async def get_billing_settings(a=Depends(require_menu("finance"))):
     """Global billing defaults. `default_tax_percent` is only the *suggested*
     initial PPN % pre-filled into new invoices/quotations and renewal
     auto-invoices - always overridable per document, down to 0."""

@@ -21,6 +21,8 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
+    require_flag,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -129,7 +131,7 @@ def _serialize_device(d: dict) -> dict:
 
 
 @router.get("/admin/mikrotik/devices")
-async def mikrotik_devices_list(admin=Depends(require_roles("admin", "support"))):
+async def mikrotik_devices_list(ops=Depends(require_menu("mikrotik"))):
     db = await _get_db()
     docs = await db.mikrotik_devices.find({}).sort("created_at", 1).to_list(500)
     out = [_serialize_device(d) for d in docs]
@@ -147,7 +149,7 @@ async def mikrotik_devices_list(admin=Depends(require_roles("admin", "support"))
 
 
 @router.post("/admin/mikrotik/devices")
-async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin)):
+async def mikrotik_devices_create(payload: dict, flag=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     doc = {
         "name": (payload.get("name") or "").strip() or "unnamed",
@@ -175,7 +177,7 @@ async def mikrotik_devices_create(payload: dict, admin=Depends(get_current_admin
 
 
 @router.put("/admin/mikrotik/devices/{did}")
-async def mikrotik_devices_update(did: str, payload: dict, admin=Depends(get_current_admin)):
+async def mikrotik_devices_update(did: str, payload: dict, flag=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     allowed = {"name", "host", "port", "username", "password", "use_tls",
                "main_interface", "site", "notes", "collection_role",
@@ -204,14 +206,14 @@ async def mikrotik_devices_update(did: str, payload: dict, admin=Depends(get_cur
 
 
 @router.delete("/admin/mikrotik/devices/{did}")
-async def mikrotik_devices_delete(did: str, admin=Depends(get_current_admin)):
+async def mikrotik_devices_delete(did: str, flag=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     r = await db.mikrotik_devices.delete_one({"_id": _oid(did)})
     return {"ok": True, "deleted": r.deleted_count}
 
 
 @router.post("/admin/mikrotik/devices/{did}/test")
-async def mikrotik_devices_test(did: str, admin=Depends(get_current_admin)):
+async def mikrotik_devices_test(did: str, flag=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     d = await _get_mikrotik_device(db, did)
     import asyncio as _a
@@ -231,32 +233,32 @@ async def _run_mikrotik(db, device_id: str | None, fn_name: str, *args, **kwargs
 
 # ---------------- Mikrotik live views ----------------
 @router.get("/admin/mikrotik/interfaces")
-async def mikrotik_interfaces(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
+async def mikrotik_interfaces(ops=Depends(require_menu("mikrotik")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "list_interfaces")
 
 
 @router.get("/admin/mikrotik/bgp")
-async def mikrotik_bgp(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
+async def mikrotik_bgp(ops=Depends(require_menu("mikrotik")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "list_bgp_peers")
 
 
 @router.get("/admin/mikrotik/traffic")
-async def mikrotik_traffic(interface: str, admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
+async def mikrotik_traffic(interface: str, ops=Depends(require_menu("mikrotik")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "traffic_monitor", interface)
 
 
 @router.get("/admin/mikrotik/system")
-async def mikrotik_system(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
+async def mikrotik_system(ops=Depends(require_menu("mikrotik")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "system_resource")
 
 
 # ---------- Looking Glass ----------
 @router.post("/admin/mikrotik/looking-glass")
-async def mikrotik_looking_glass(payload: dict, admin=Depends(get_current_admin)):
+async def mikrotik_looking_glass(payload: dict, a=Depends(require_flag("can_control_mikrotik"))):
     """Execute a Looking-Glass style lookup from the router:
     payload = {device_id?, tool: 'ping'|'traceroute'|'bgp_route', target: str}"""
     db = await _get_db()
@@ -274,7 +276,7 @@ async def mikrotik_looking_glass(payload: dict, admin=Depends(get_current_admin)
 
 # ---------- Blackhole ----------
 @router.get("/admin/mikrotik/blackhole")
-async def mikrotik_blackhole_list(admin=Depends(require_roles("admin", "support")),
+async def mikrotik_blackhole_list(ops=Depends(require_menu("mikrotik")),
                                   device_id: str | None = None,
                                   prefix_filter: str | None = None):
     db = await _get_db()
@@ -282,7 +284,7 @@ async def mikrotik_blackhole_list(admin=Depends(require_roles("admin", "support"
 
 
 @router.post("/admin/mikrotik/blackhole")
-async def mikrotik_blackhole_add(payload: dict, admin=Depends(get_current_admin)):
+async def mikrotik_blackhole_add(payload: dict, flag=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     prefix = (payload.get("prefix") or "").strip()
     if not prefix:
@@ -309,7 +311,7 @@ async def mikrotik_blackhole_add(payload: dict, admin=Depends(get_current_admin)
 
 
 @router.delete("/admin/mikrotik/blackhole/{route_id}")
-async def mikrotik_blackhole_remove(route_id: str, admin=Depends(get_current_admin),
+async def mikrotik_blackhole_remove(route_id: str, admin=Depends(require_flag("can_control_mikrotik")),
                                     device_id: str | None = None):
     db = await _get_db()
     dev = await _get_mikrotik_device(db, device_id)
@@ -332,7 +334,7 @@ async def noc_blackhole_log(q: Optional[str] = None, limit: int = 100, skip: int
                             sort: str = "at", order: str = "desc",
                             action: Optional[str] = None, source: Optional[str] = None,
                             paginate: bool = False,
-                            admin=Depends(require_roles("admin", "support"))):
+                            a=Depends(require_menu("noc"))):
     """Riwayat announce/remove blackhole (auto + manual) dengan pencarian prefix/aktor.
 
     Mendukung pagination (skip/limit), filter (action/source), dan sort server-side
@@ -544,7 +546,7 @@ def _rolling_top_links(rows: list, limit: int, now: Optional[float] = None) -> t
 @router.get("/admin/noc/netflow/sankey")
 async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
                              minutes: int = 5,
-                             admin=Depends(require_roles("admin", "support"))):
+                             a=Depends(require_menu("noc"))):
     """Data agregat arus trafik untuk Diagram Sankey.
 
     Sumber utama adalah collector **goflow2** (NetFlow/IPFIX dari MikroTik),
@@ -751,20 +753,20 @@ async def noc_netflow_sankey(device_id: Optional[str] = None, limit: int = 12,
 
 # ---------- Backup ----------
 @router.get("/admin/mikrotik/backups")
-async def mikrotik_backups_list(admin=Depends(require_roles("admin", "support")), device_id: str | None = None):
+async def mikrotik_backups_list(ops=Depends(require_menu("mikrotik")), device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "backup_list")
 
 
 @router.post("/admin/mikrotik/backups")
-async def mikrotik_backups_create(payload: dict, admin=Depends(get_current_admin)):
+async def mikrotik_backups_create(payload: dict, flag=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     return await _run_mikrotik(db, payload.get("device_id"),
                                "backup_create", name=payload.get("name"))
 
 
 @router.delete("/admin/mikrotik/backups/{filename}")
-async def mikrotik_backups_delete(filename: str, admin=Depends(get_current_admin),
+async def mikrotik_backups_delete(filename: str, flag=Depends(require_flag("can_control_mikrotik")),
                                   device_id: str | None = None):
     db = await _get_db()
     return await _run_mikrotik(db, device_id, "backup_delete", filename)
@@ -772,7 +774,7 @@ async def mikrotik_backups_delete(filename: str, admin=Depends(get_current_admin
 
 # ---------- Reboot ----------
 @router.post("/admin/mikrotik/reboot")
-async def mikrotik_reboot(payload: dict, admin=Depends(get_current_admin)):
+async def mikrotik_reboot(payload: dict, flag=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     confirm = (payload.get("confirm") or "").strip().upper()
     if confirm != "REBOOT":
@@ -800,7 +802,7 @@ def _serialize_threshold_rule(d: dict) -> dict:
 
 
 @router.get("/admin/noc/threshold-rules")
-async def noc_threshold_rules_list(admin=Depends(require_roles("admin", "support"))):
+async def noc_threshold_rules_list(ops=Depends(require_menu("noc"))):
     db = await _get_db()
     docs = await db.ddos_threshold_rules.find({}).sort("created_at", -1).to_list(200)
     return [_serialize_threshold_rule(d) for d in docs]
@@ -891,7 +893,7 @@ _DDOS_INCIDENTS_SORT_FIELDS = {"started_at", "ended_at", "target", "status", "bp
 async def noc_ddos_incidents(status: Optional[str] = None, limit: int = 100, skip: int = 0,
                              sort: str = "started_at", order: str = "desc",
                              paginate: bool = False,
-                             admin=Depends(require_roles("admin", "support"))):
+                             ops=Depends(require_menu("noc"))):
     db = await _get_db()
     q: dict = {"status": status} if status else {}
     limit = max(1, min(limit, 500))
@@ -936,7 +938,7 @@ def _serialize_notif_channel(d: dict) -> dict:
 
 
 @router.get("/admin/noc/notif-channels")
-async def noc_notif_channels_list(admin=Depends(require_roles("admin", "support"))):
+async def noc_notif_channels_list(ops=Depends(require_menu("noc"))):
     db = await _get_db()
     docs = await db.notif_channels.find({}).sort("created_at", -1).to_list(100)
     return [_serialize_notif_channel(d) for d in docs]
@@ -975,7 +977,7 @@ async def noc_notif_channels_delete(cid: str, admin=Depends(require_roles("admin
 
 
 @router.get("/admin/noc/ddos/notify-log")
-async def noc_ddos_notify_log(limit: int = 100, admin=Depends(require_roles("admin", "support"))):
+async def noc_ddos_notify_log(limit: int = 100, ops=Depends(require_menu("noc"))):
     db = await _get_db()
     limit = max(1, min(limit, 500))
     docs = await db.ddos_notify_log.find({}).sort("at", -1).to_list(limit)
@@ -1004,7 +1006,7 @@ def _serialize_bgp_bh(d: dict) -> dict:
 
 
 @router.get("/admin/noc/bgp-blackhole-configs")
-async def noc_bgp_bh_list(admin=Depends(require_roles("admin", "support"))):
+async def noc_bgp_bh_list(ops=Depends(require_menu("noc"))):
     db = await _get_db()
     docs = await db.bgp_blackhole_configs.find({}).sort("created_at", -1).to_list(50)
     return [_serialize_bgp_bh(d) for d in docs]
@@ -1061,7 +1063,7 @@ class DDoSWhitelistIn(BaseModel):
     prefixes: list[str]
 
 @router.get("/admin/noc/ddos-whitelist")
-async def noc_ddos_whitelist_get(admin=Depends(require_roles("admin", "support"))):
+async def noc_ddos_whitelist_get(ops=Depends(require_menu("noc"))):
     db = await _get_db()
     from ..ddos_guard import DEFAULT_WHITELIST, load_whitelist
     custom = await db.integration_settings.find_one({"_id": "ddos_whitelist"})
@@ -1127,7 +1129,7 @@ async def _noc_uptime_window(db, dev_ids, days: int):
 
 
 @router.get("/admin/noc/devices")
-async def noc_devices_list(admin=Depends(require_roles("admin", "support"))):
+async def noc_devices_list(a=Depends(require_menu("noc"))):
     """Current uptime state for every MikroTik device.
 
     Aggregates `noc_device_state` (last known status) so the frontend can
@@ -1167,7 +1169,7 @@ _NOC_EVENTS_SORT_FIELDS = {"at", "device_name", "device_host", "type", "email_no
 
 
 @router.get("/admin/noc/events")
-async def noc_events_list(admin=Depends(require_roles("admin", "support")),
+async def noc_events_list(ops=Depends(require_menu("noc")),
                           limit: int = 200, skip: int = 0,
                           device_id: Optional[str] = None,
                           type: Optional[str] = None,

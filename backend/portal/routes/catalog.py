@@ -755,7 +755,7 @@ async def form_builder_publish(fid: str, staff=Depends(require_flag("can_manage_
 
 
 @router.put("/admin/form-builder/{fid}/draft")
-async def form_builder_new_draft(fid: str, staff=Depends(require_flag("can_manage_forms"))):
+async def form_builder_new_draft(fid: str, a=Depends(require_flag("can_manage_forms"))):
     """Create a new draft from a published form (copy for editing)."""
     db = await _get_db()
     d = await db.form_configs.find_one({"_id": _oid(fid)})
@@ -787,7 +787,7 @@ async def form_builder_delete(fid: str, staff=Depends(require_flag("can_manage_f
 
 
 @router.put("/admin/form-builder/{fid}/close")
-async def form_builder_toggle_close(fid: str, payload: dict = None, staff=Depends(require_flag("can_manage_forms"))):
+async def form_builder_toggle_close(fid: str, payload: dict = None, a=Depends(require_flag("can_manage_forms"))):
     """Open/close a published form and adjust its submission cap.
 
     Closing keeps the data (unlike delete) and flips the public endpoint to a

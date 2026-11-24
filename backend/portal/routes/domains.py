@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -773,7 +774,7 @@ async def admin_domain_sync_pricing(admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/domains/markup")
-async def admin_domain_markup_get(admin=Depends(get_current_admin)):
+async def admin_domain_markup_get(ops=Depends(require_menu("domains"))):
     """Get current markup percentage and fallback price overrides."""
     db = await _get_db()
     doc = await db.settings.find_one({"key": "domain_pricing"})

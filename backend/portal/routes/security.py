@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -36,7 +37,7 @@ router = APIRouter()
 # ============================================================
 @router.get("/admin/security/login-analytics")
 async def login_analytics(
-    admin=Depends(get_current_admin),
+    ops=Depends(require_menu("security")),
     window: str = "24h",  # 24h | 7d | 30d
     limit: int = 100,
 ):
@@ -162,7 +163,7 @@ async def login_analytics(
 
 # ---------- Security Settings & Blocked IPs ----------
 @router.get("/admin/security/settings")
-async def security_settings_get(admin=Depends(get_current_admin)):
+async def security_settings_get(ops=Depends(require_menu("security"))):
     db = await _get_db()
     s = await _get_security_settings(db)
     return s
@@ -201,7 +202,7 @@ async def security_settings_put(payload: dict, request: Request, admin=Depends(g
 
 
 @router.get("/admin/security/blocked-ips")
-async def blocked_ips_list(admin=Depends(get_current_admin), active_only: bool = False):
+async def blocked_ips_list(ops=Depends(require_menu("security")), active_only: bool = False):
     db = await _get_db()
     now_dt = datetime.now(timezone.utc)
     docs = await db.blocked_ips.find({}).sort("blocked_at", -1).to_list(500)
@@ -267,7 +268,7 @@ async def blocked_ips_add(payload: dict, admin=Depends(get_current_admin)):
 # ---------- Security events (normalized IPS decision trail) ----------
 @router.get("/admin/security/events")
 async def security_events_list(
-    admin=Depends(get_current_admin),
+    a=Depends(require_menu("security")),
     limit: int = 100,
     event: str = "",
     ip: str = "",
@@ -305,7 +306,7 @@ async def security_events_list(
 
 
 @router.get("/admin/security/notifications")
-async def security_notifications_list(admin=Depends(get_current_admin), limit: int = 50):
+async def security_notifications_list(ops=Depends(require_menu("security")), limit: int = 50):
     db = await _get_db()
     limit = max(1, min(limit, 200))
     docs = await db.security_notifications.find({}).sort("created_at", -1).to_list(limit)

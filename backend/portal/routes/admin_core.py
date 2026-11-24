@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -676,7 +677,7 @@ async def backup_trigger(request: Request, admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/backup/history")
-async def backup_history_list(admin=Depends(get_current_admin)):
+async def backup_history_list(ops=Depends(require_menu("backup"))):
     db = await _get_db()
     docs = await db.backup_history.find({}).sort("created_at", -1).to_list(100)
     return [{"id": str(d["_id"]), "filename": d.get("filename", ""),
@@ -686,7 +687,7 @@ async def backup_history_list(admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/backup/history/{bid}/download")
-async def backup_history_download(bid: str, admin=Depends(get_current_admin)):
+async def backup_history_download(bid: str, ops=Depends(require_menu("backup"))):
     from fastapi.responses import Response as _R
     db = await _get_db()
     d = await db.backup_history.find_one({"_id": _oid(bid)})
@@ -702,7 +703,7 @@ async def backup_history_download(bid: str, admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/backup/download")
-async def backup_download(admin=Depends(get_current_admin)):
+async def backup_download(a=Depends(require_menu("backup"))):
     """Download a full gzipped BSON archive of every collection.
     Streams via a plain `bytes` response - the archive is small enough
     for the ~1000-row datasets this portal carries."""

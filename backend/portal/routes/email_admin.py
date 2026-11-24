@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -57,14 +58,14 @@ def _serialize_template(t: dict) -> dict:
 
 
 @router.get("/admin/email-templates")
-async def admin_email_templates_list(admin=Depends(get_current_admin)):
+async def admin_email_templates_list(ops=Depends(require_menu("email"))):
     db = await _get_db()
     docs = await db.email_templates.find({}).sort("event_key", 1).to_list(500)
     return [_serialize_template(d) for d in docs]
 
 
 @router.get("/admin/email-templates/{tid}")
-async def admin_email_template_get(tid: str, admin=Depends(get_current_admin)):
+async def admin_email_template_get(tid: str, ops=Depends(require_menu("email"))):
     db = await _get_db()
     d = await db.email_templates.find_one({"_id": _oid(tid)})
     if not d:
@@ -235,7 +236,7 @@ async def admin_email_broadcast(payload: m.EmailNewsletterIn,
 
 
 @router.get("/admin/email-logs")
-async def admin_email_logs(limit: int = 200, admin=Depends(get_current_admin)):
+async def admin_email_logs(limit: int = 200, ops=Depends(require_menu("email"))):
     db = await _get_db()
     docs = await db.email_logs.find({}).sort("created_at", -1).to_list(max(1, min(limit, 1000)))
     out = []
@@ -267,7 +268,7 @@ async def admin_email_run_scheduler_now(admin=Depends(get_current_admin)):
 
 
 @router.get("/admin/email/event-catalog")
-async def admin_email_event_catalog(admin=Depends(get_current_admin)):
+async def admin_email_event_catalog(user=Depends(require_menu("email"))):
     """Return the canonical list of event keys the frontend can reference."""
     return {
         "events": [

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..auth import get_current_admin, require_roles
+from ..auth import get_current_admin, require_roles, require_menu
 from .shared import _get_db, _oid
 
 router = APIRouter()
@@ -48,7 +48,7 @@ def _serialize_link(doc: dict) -> dict:
 # Node CRUD
 # ---------------------------------------------------------------------------
 @router.get("/admin/monitoring/map/nodes")
-async def list_nodes(staff=Depends(require_roles("admin", "support"))):
+async def list_nodes(ops=Depends(require_menu("monitoring"))):
     db = await _get_db()
     cursor = db.network_map_nodes.find({}).sort("created_at", 1)
     docs = await cursor.to_list(500)
@@ -137,7 +137,7 @@ async def delete_node(node_id: str, admin=Depends(get_current_admin)):
 # Link CRUD
 # ---------------------------------------------------------------------------
 @router.get("/admin/monitoring/map/links")
-async def list_links(staff=Depends(require_roles("admin", "support"))):
+async def list_links(ops=Depends(require_menu("monitoring"))):
     db = await _get_db()
     cursor = db.network_map_links.find({}).sort("created_at", 1)
     docs = await cursor.to_list(500)
