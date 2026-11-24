@@ -306,7 +306,14 @@ def _menu_default_roles(keys: tuple) -> set:
     return out
 
 
-def require_menu(*keys: str):
+# A merged console is one sidebar entry fronting several former menus. Granting
+# the umbrella must reach every panel inside it; granting one panel key must NOT
+# reach the others (that key is already checked as a `wanted` key of its own
+# surface). Kept as a one-tuple so no endpoint can widen access by accident.
+CONSOLE_GRANT = ("operations_center",)
+
+
+def require_menu(*keys: str, grant_via: tuple = ()):
     """Dependency: caller may read this menu surface.
 
     The same rule the sidebar uses, enforced on the server:
@@ -331,6 +338,14 @@ def require_menu(*keys: str):
     router.
     """
     wanted = tuple(keys)
+    # `grant_via` names menu keys that only an explicit allow-list may use to
+    # reach this surface. It exists for the merged consoles: Operations Center
+    # is one sidebar entry fronting seven former menus, and an operator who
+    # grants "operations_center" must reach the panels inside it. Leaving those
+    # keys out of `wanted` keeps the role defaults untouched, so a role that
+    # could not read NOC before still cannot read it merely because the console
+    # merged its tabs together.
+    granted = tuple(grant_via)
     defaults = _menu_default_roles(wanted)
 
     async def _dep(user=Depends(get_current_staff)):
@@ -339,7 +354,7 @@ def require_menu(*keys: str):
             return user
         allow = user.get("menu_keys") or []
         if allow:
-            if any(k in allow for k in wanted):
+            if any(k in allow for k in wanted) or any(k in allow for k in granted):
                 return user
             raise HTTPException(
                 status_code=403,

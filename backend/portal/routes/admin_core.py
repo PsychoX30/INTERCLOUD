@@ -23,6 +23,7 @@ from ..auth import (
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
     require_menu,
     require_flag,
+    CONSOLE_GRANT,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -282,7 +283,7 @@ async def admin_send_monthly_report(payload: dict = None, admin=Depends(require_
 
 
 @router.get("/admin/reports/monthly")
-async def admin_list_monthly_reports(admin=Depends(require_roles("admin", "finance"))):
+async def admin_list_monthly_reports(admin=Depends(require_menu("finance"))):
     """Arsip laporan bulanan (terbaru dulu) untuk menu Finance."""
     db = await _get_db()
     docs = await db.monthly_reports.find({}).sort("month", -1).to_list(60)
@@ -295,7 +296,7 @@ async def admin_list_monthly_reports(admin=Depends(require_roles("admin", "finan
 
 
 @router.get("/admin/reports/monthly/{month}/pdf")
-async def admin_monthly_report_pdf(month: str, admin=Depends(require_roles("admin", "finance"))):
+async def admin_monthly_report_pdf(month: str, admin=Depends(require_menu("finance"))):
     """Unduh ulang arsip laporan bulanan sebagai PDF."""
     db = await _get_db()
     d = await db.monthly_reports.find_one({"month": month})
@@ -452,7 +453,7 @@ def _monthly_report_workbook(month: str, summary: dict, invoices: list,
 
 
 @router.get("/admin/reports/monthly/{month}/xlsx")
-async def admin_monthly_report_xlsx(month: str, admin=Depends(require_roles("admin", "finance"))):
+async def admin_monthly_report_xlsx(month: str, admin=Depends(require_menu("finance"))):
     """Arsip laporan bulanan sebagai Excel (formula, format Rupiah/persen,
     penomoran) untuk diolah tim finance."""
     db = await _get_db()
@@ -866,7 +867,7 @@ async def backup_restore(request: Request, admin=Depends(require_flag("can_run_b
 # rebuilds the frontend, and restarts supervisor. Auto-backs up first.
 # ============================================================
 @router.get("/admin/system/version")
-async def system_version(admin=Depends(get_current_admin)):
+async def system_version(admin=Depends(require_menu("backup"))):
     """Return current git SHA + short version info for the update UI."""
     import asyncio as _asyncio, os as _os
     repo_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "..", ".."))
@@ -1028,7 +1029,7 @@ async def system_update(admin=Depends(get_current_admin), confirm: str = ""):
 
 
 @router.get("/admin/system/update/status")
-async def system_update_status(admin=Depends(get_current_admin)):
+async def system_update_status(admin=Depends(require_menu("backup"))):
     """Status update yang sedang/terakhir berjalan: running/ok/failed + log tail.
     Aman dipanggil berulang (dipakai polling UI setiap beberapa detik)."""
     st = _read_update_status()
@@ -1077,7 +1078,7 @@ async def system_update_status(admin=Depends(get_current_admin)):
 # ============================================================
 @router.get("/admin/audit-logs")
 async def admin_audit_logs_list(
-    admin=Depends(require_menu("audit_log")),
+    admin=Depends(require_menu("audit_log", grant_via=CONSOLE_GRANT)),
     limit: int = 200,
     skip: int = 0,
     category: Optional[str] = None,
@@ -1135,7 +1136,7 @@ async def admin_audit_logs_list(
 
 
 @router.get("/admin/audit-logs/facets")
-async def admin_audit_logs_facets(admin=Depends(require_menu("audit_log"))):
+async def admin_audit_logs_facets(admin=Depends(require_menu("audit_log", grant_via=CONSOLE_GRANT))):
     """Distinct values available to power the filter dropdowns."""
     db = await _get_db()
     return {
@@ -1326,7 +1327,7 @@ def _hc_systemd_state(unit: str) -> str:
 
 
 @router.get("/admin/system/health")
-async def admin_system_health(admin=Depends(require_roles("admin", "support"))):
+async def admin_system_health(admin=Depends(require_menu("backup"))):
     """Kesehatan live host + aplikasi: DB, disk, memori, CPU, SSL, scheduler,
     service systemd. Dipakai di Admin - Diagnostics - System Health dan untuk
     verifikasi setelah scripts/install.sh selesai."""

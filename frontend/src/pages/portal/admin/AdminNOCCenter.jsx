@@ -37,13 +37,17 @@ import AdminAuditLog from "./AdminAuditLog";
 // the standalone page had. A tab the role cannot see was also a page the role
 // could not open. The backend keeps its own guards regardless.
 const TABS = [
-  { key: "overview",    label: "Ops Overview",    icon: LayoutDashboard, roles: ["admin", "support"] },
-  { key: "noc",         label: "NOC Monitor",     icon: MonitorCheck,    roles: ["admin", "support"] },
-  { key: "monitoring",  label: "Monitoring",      icon: Activity,        roles: ["admin", "support"] },
-  { key: "diagnostics", label: "Diagnostics",     icon: TerminalSquare,  roles: ["admin", "support"] },
-  { key: "sla",         label: "SLA & Incidents", icon: LifeBuoy,        roles: ["admin", "support", "finance", "sales"] },
-  { key: "security",    label: "Security",        icon: ShieldCheck,     roles: ["admin"] },
-  { key: "audit",       label: "Audit Log",       icon: History,         roles: ["admin"] },
+  // `roles` decides for a user with no allow-list; `keys` decides for one who
+  // has it. Both are needed because an explicit grant must be able to hand a
+  // surface to a role that never had it, and the sidebar already treats an
+  // allow-list as authoritative in both directions.
+  { key: "overview",    label: "Ops Overview",    icon: LayoutDashboard, roles: ["admin", "support"], keys: ["ops", "operations_center"] },
+  { key: "noc",         label: "NOC Monitor",     icon: MonitorCheck,    roles: ["admin", "support"], keys: ["noc", "operations_center"] },
+  { key: "monitoring",  label: "Monitoring",      icon: Activity,        roles: ["admin", "support"], keys: ["monitoring", "operations_center"] },
+  { key: "diagnostics", label: "Diagnostics",     icon: TerminalSquare,  roles: ["admin", "support"], keys: ["diagnostics", "operations_center"] },
+  { key: "sla",         label: "SLA & Incidents", icon: LifeBuoy,        roles: ["admin", "support", "finance", "sales"], keys: ["sla", "operations_center"] },
+  { key: "security",    label: "Security",        icon: ShieldCheck,     roles: ["admin"], keys: ["security", "operations_center"] },
+  { key: "audit",       label: "Audit Log",       icon: History,         roles: ["admin"], keys: ["audit_log", "operations_center"] },
 ];
 
 // Legacy route -> tab. Used both by the redirects in App.js (via ?tab=) and by
@@ -61,13 +65,29 @@ export const ROUTE_TO_TAB = {
 
 const AdminNOCCenter = ({ user: userProp }) => {
   const role = userProp?.role;
+
+  // An explicit allow-list is authoritative here too: a user granted
+  // `operations_center` (or one of the former top-level keys the console
+  // absorbed) sees those panels even when their role would not, and a user not
+  // granted them does not see them even when their role would.
+  const allow = useMemo(
+    () => (Array.isArray(userProp?.menu_keys) ? userProp.menu_keys : []),
+    [userProp?.menu_keys],
+  );
+
+  const readable = useMemo(() => {
+    const set = new Set();
+    TABS.forEach((t) => {
+      if (role === "admin") set.add(t.key);
+      else if (allow.length) { if (t.keys.some((k) => allow.includes(k))) set.add(t.key); }
+      else if (!t.roles || t.roles.includes(role)) set.add(t.key);
+    });
+    return set;
+  }, [role, allow]);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const visibleTabs = useMemo(
-    () => TABS.filter((t) => !t.roles || !role || t.roles.includes(role)),
-    [role],
-  );
+  const visibleTabs = useMemo(() => TABS.filter((t) => readable.has(t.key)), [readable]);
 
   const tabFromUrl = searchParams.get("tab");
   const initialTab = useMemo(() => {
@@ -130,7 +150,13 @@ const AdminNOCCenter = ({ user: userProp }) => {
     else navigate(link);
   }, [goTab, navigate, visibleTabs]);
 
-  const sampling = useSamplingHealth(30000);
+  // The badge and the totals strip read NOC/monitoring/security surfaces. A user
+  // who cannot read them must not poll them at all: every interval would 403 and
+  // the empty result reads as "the collector is dead" rather than "not yours to
+  // see". Skip the request instead of rendering a lie.
+  const canReadNoc = readable.has("noc") || readable.has("monitoring");
+  const showTotals = ["noc", "monitoring", "security"].every((k) => readable.has(k));
+  const sampling = useSamplingHealth(30000, canReadNoc);
 
   const active = visibleTabs.find((t) => t.key === tab);
 
@@ -141,14 +167,16 @@ const AdminNOCCenter = ({ user: userProp }) => {
         subtitle="NOC, monitoring, diagnostics, incidents, security, and the audit trail in one console — the single entry point for every operational surface. Every number here is only as trustworthy as the flow-sampling pipeline, and that status is pinned below."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <SamplingBadge payload={sampling.payload} testid="noc-center-sampling" />
+            {canReadNoc && <SamplingBadge payload={sampling.payload} testid="noc-center-sampling" />}
           </div>
         }
       />
 
-      <SamplingAlert health={sampling} context="DDoS detection, Sankey and incident triage" />
+      {canReadNoc && (
+        <SamplingAlert health={sampling} context="DDoS detection, Sankey and incident triage" />
+      )}
 
-      {visibleTabs.length > 0 && <OperationsTotals sampling={sampling} onGo={goLink} />}
+      {showTotals && <OperationsTotals sampling={sampling} onGo={goLink} />}
 
       {visibleTabs.length === 0 ? (
         <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600" data-testid="noc-center-no-tabs">

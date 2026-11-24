@@ -24,6 +24,7 @@ from ..auth import (
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
     require_flag,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -336,7 +337,7 @@ FEATURE_FLAG_CATALOG = [
 
 
 @router.get("/admin/user-access-catalog")
-async def admin_user_access_catalog(admin=Depends(require_roles("admin", "sales", "finance", "support"))):
+async def admin_user_access_catalog(admin=Depends(require_menu("users"))):
     """Returns everything the User Access UI needs to render checkboxes.
 
     - `menu_catalog`: every menu key with label, group and the roles that get it
@@ -380,7 +381,7 @@ def _paginate(items: list, page: Optional[int], limit: int):
 
 
 @router.get("/admin/users")
-async def admin_list_users(staff=Depends(require_roles("admin", "sales", "finance", "support")),
+async def admin_list_users(staff=Depends(require_menu("users", "crm", "finance", "invoices", "quotations", "services", "projects", "followups")),
                            page: Optional[int] = None, limit: int = 25):
     """Sales sees only their assigned clients; other staff see all."""
     db = await _get_db()
@@ -558,7 +559,7 @@ async def admin_impersonate_client(uid: str, request: Request, admin=Depends(req
 
 
 @router.get("/admin/users/{uid}/profile")
-async def admin_user_profile(uid: str, admin=Depends(require_roles("admin", "sales", "finance", "support"))):
+async def admin_user_profile(uid: str, admin=Depends(require_menu("users", "crm", "invoices", "quotations", "services", "finance"))):
     """Client 360 profile: services (hosting accounts highlighted), billing summary."""
     db = await _get_db()
     u = await db.users.find_one({"_id": _oid(uid)})

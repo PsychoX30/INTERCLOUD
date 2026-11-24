@@ -23,6 +23,7 @@ from ..auth import (
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
     require_menu,
     require_flag,
+    CONSOLE_GRANT,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -38,7 +39,7 @@ router = APIRouter()
 # ============================================================
 @router.get("/admin/security/login-analytics")
 async def login_analytics(
-    ops=Depends(require_menu("security")),
+    ops=Depends(require_menu("security", grant_via=CONSOLE_GRANT)),
     window: str = "24h",  # 24h | 7d | 30d
     limit: int = 100,
 ):
@@ -164,7 +165,7 @@ async def login_analytics(
 
 # ---------- Security Settings & Blocked IPs ----------
 @router.get("/admin/security/settings")
-async def security_settings_get(ops=Depends(require_menu("security"))):
+async def security_settings_get(ops=Depends(require_menu("security", grant_via=CONSOLE_GRANT))):
     db = await _get_db()
     s = await _get_security_settings(db)
     return s
@@ -203,7 +204,7 @@ async def security_settings_put(payload: dict, request: Request, admin=Depends(g
 
 
 @router.get("/admin/security/blocked-ips")
-async def blocked_ips_list(ops=Depends(require_menu("security")), active_only: bool = False):
+async def blocked_ips_list(ops=Depends(require_menu("security", grant_via=CONSOLE_GRANT)), active_only: bool = False):
     db = await _get_db()
     now_dt = datetime.now(timezone.utc)
     docs = await db.blocked_ips.find({}).sort("blocked_at", -1).to_list(500)
@@ -269,7 +270,7 @@ async def blocked_ips_add(payload: dict, admin=Depends(get_current_admin)):
 # ---------- Security events (normalized IPS decision trail) ----------
 @router.get("/admin/security/events")
 async def security_events_list(
-    a=Depends(require_menu("security")),
+    a=Depends(require_menu("security", grant_via=CONSOLE_GRANT)),
     limit: int = 100,
     event: str = "",
     ip: str = "",
@@ -307,7 +308,7 @@ async def security_events_list(
 
 
 @router.get("/admin/security/notifications")
-async def security_notifications_list(ops=Depends(require_menu("security")), limit: int = 50):
+async def security_notifications_list(ops=Depends(require_menu("security", grant_via=CONSOLE_GRANT)), limit: int = 50):
     db = await _get_db()
     limit = max(1, min(limit, 200))
     docs = await db.security_notifications.find({}).sort("created_at", -1).to_list(limit)
@@ -407,7 +408,7 @@ async def diagnostics_run(payload: dict, admin=Depends(require_flag("can_run_dia
 
 
 @router.get("/admin/diagnostics/tools")
-async def diagnostics_tools_list(admin=Depends(require_menu("diagnostics"))):
+async def diagnostics_tools_list(admin=Depends(require_menu("diagnostics", grant_via=CONSOLE_GRANT))):
     """Advertise which tools are available on this host so the UI can grey out
     any missing binaries (e.g. traceroute) without a round-trip."""
     from portal import diagnostics as _diag

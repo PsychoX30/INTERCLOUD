@@ -28,7 +28,7 @@ from ..audit import log_audit
 from .. import outbound_detector as detect
 from .. import outbound_guard as guard
 from .. import outbound_sweep as sweep
-from ..auth import require_roles
+from ..auth import require_roles, require_menu, CONSOLE_GRANT
 from .shared import _get_db, _oid
 
 router = APIRouter()
@@ -41,7 +41,7 @@ def _now():
 
 
 @router.get("/admin/noc/outbound/config")
-async def outbound_config_get(admin=Depends(require_roles("admin", "support"))):
+async def outbound_config_get(admin=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
     db = await _get_db()
     cfg = await sweep.load_config(db, force=True)
     stored = await db.ddos_detection_config.find_one({"_id": sweep.CONFIG_ID}) or {}
@@ -164,7 +164,7 @@ async def outbound_mode_set(payload: dict, request: Request,
 
 
 @router.get("/admin/noc/outbound/enforcers")
-async def outbound_enforcers(admin=Depends(require_roles("admin", "support"))):
+async def outbound_enforcers(admin=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
     db = await _get_db()
     devices = await db.mikrotik_devices.find({}).to_list(500)
     prefixes = await db.dcim_prefixes.find({}).to_list(500)
@@ -222,7 +222,7 @@ async def outbound_resolve(payload: dict,
 @router.get("/admin/noc/outbound/shadow")
 async def outbound_shadow(limit: int = 100, only_block: bool = False,
                           target: Optional[str] = None,
-                          admin=Depends(require_roles("admin", "support"))):
+                          admin=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
     db = await _get_db()
     query: dict = {}
     if only_block:
@@ -250,7 +250,7 @@ async def outbound_shadow(limit: int = 100, only_block: bool = False,
 
 @router.get("/admin/noc/outbound/summary")
 async def outbound_summary(hours: int = 24,
-                           admin=Depends(require_roles("admin", "support"))):
+                           admin=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
     """Shadow review stats: how often the detector WOULD have blocked.
 
     This is the number that decides whether enforcement is safe to arm. A clean

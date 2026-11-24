@@ -71,7 +71,7 @@ async def admin_list_services(admin=Depends(require_menu("services")),
 
 
 @router.get("/admin/services/{sid}/detail")
-async def admin_service_detail(sid: str, admin=Depends(require_roles("admin", "finance", "support"))):
+async def admin_service_detail(sid: str, admin=Depends(require_menu("services"))):
     """Service + client + provisioning trail for the admin detail modal."""
     db = await _get_db()
     d = await db.services.find_one({"_id": _oid(sid)})
@@ -462,7 +462,7 @@ async def client_terminate_request_cancel(sid: str, user=Depends(get_current_use
 
 @router.get("/admin/service-requests")
 async def admin_service_requests(status: str = "pending",
-                                 staff=Depends(require_roles("admin", "support", "sales"))):
+                                 staff=Depends(require_menu("service_requests", "services"))):
     """Daftar permintaan terminate layanan. `status=pending` (default) hanya yang
     menunggu; `status=all` menyertakan riwayat (approved/rejected) untuk tracking."""
     db = await _get_db()

@@ -108,11 +108,12 @@ export const SamplingBadge = ({ payload, compact = false, testid = "sampling-bad
  * Fetches the netflow snapshot and exposes its freshness, so a page can gate
  * DDoS/NOC conclusions on the pipeline actually being alive.
  */
-export const useSamplingHealth = (pollMs = 30000) => {
+export const useSamplingHealth = (pollMs = 30000, enabled = true) => {
   const [payload, setPayload] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
+    if (!enabled) return;
     setBusy(true);
     try {
       const { data } = await api.get("/admin/noc/netflow/sankey");
@@ -123,14 +124,14 @@ export const useSamplingHealth = (pollMs = 30000) => {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [enabled]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, enabled]);
   useEffect(() => {
-    if (!pollMs) return undefined;
+    if (!pollMs || !enabled) return undefined;
     const t = setInterval(load, pollMs);
     return () => clearInterval(t);
-  }, [load, pollMs]);
+  }, [load, pollMs, enabled]);
 
   const derived = derive(payload);
   return { payload, ...derived, reload: load, busy };

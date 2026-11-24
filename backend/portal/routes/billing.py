@@ -377,7 +377,7 @@ async def _serialize_quotation(db, d: dict) -> dict:
 
 @router.get("/admin/quotations")
 async def admin_list_quotations(
-    staff=Depends(require_roles("admin", "sales", "finance")), skip: int = 0,
+    staff=Depends(require_menu("quotations")), skip: int = 0,
     limit: int = 25, sort: str = "created_at", order: str = "desc",
     paginate: bool = False, page: Optional[int] = None,
 ):
@@ -571,7 +571,7 @@ async def run_renewal_sweep_now(admin=Depends(get_current_admin)):
 
 # Bank accounts admin CRUD (simple)
 @router.get("/admin/bank-accounts")
-async def get_bank_accounts(admin=Depends(require_roles("admin", "finance"))):
+async def get_bank_accounts(admin=Depends(require_menu("finance"))):
     db = await _get_db()
     doc = await db.settings.find_one({"key": "bank_accounts"}) or {}
     return doc.get("value") or [

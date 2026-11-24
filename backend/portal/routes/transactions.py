@@ -6,7 +6,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import models as m
-from ..auth import require_roles
+from ..auth import require_roles, require_menu
 from .shared import _get_db, _iso, _oid, _sales_scope_filter, _pagination_params, _pagination_response
 from .users import _paginate
 
@@ -50,7 +50,7 @@ def _serialize_transaction(d: dict) -> dict:
 
 @router.get("/admin/transactions")
 async def list_transactions(
-    staff=Depends(require_roles("admin", "finance", "sales")),
+    staff=Depends(require_menu("transactions")),
     user_id: Optional[str] = None,
     status: Optional[str] = None,
     method: Optional[str] = None,
@@ -120,7 +120,7 @@ async def list_transactions(
 
 @router.get("/admin/transactions/summary")
 async def transaction_summary(
-    staff=Depends(require_roles("admin", "finance", "sales")),
+    staff=Depends(require_menu("transactions")),
     status: Optional[str] = None,
     method: Optional[str] = None,
     search: Optional[str] = None,
@@ -178,7 +178,7 @@ async def transaction_summary(
 
 @router.get("/admin/transactions/export/xlsx")
 async def export_transactions(
-    staff=Depends(require_roles("admin", "finance", "sales")),
+    staff=Depends(require_menu("transactions")),
     user_id: Optional[str] = None,
     status: Optional[str] = None,
     method: Optional[str] = None,
@@ -359,7 +359,7 @@ async def export_transactions(
 
 
 @router.get("/admin/transactions/{tid}")
-async def get_transaction(tid: str, staff=Depends(require_roles("admin", "finance", "sales"))):
+async def get_transaction(tid: str, staff=Depends(require_menu("transactions"))):
     db = await _get_db()
     doc = await db.transactions.find_one({"_id": _oid(tid), **_sales_scope_filter(staff, key="user_id")})
     if not doc:

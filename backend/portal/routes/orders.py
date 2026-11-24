@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -375,7 +376,7 @@ async def order_preview(payload: m.OrderIn, user=Depends(get_current_user)):
 # Orders
 @router.get("/admin/orders")
 async def admin_list_orders(
-    staff=Depends(require_roles("admin", "sales", "finance")),
+    staff=Depends(require_menu("orders")),
     page: Optional[int] = None, skip: int = 0, limit: int = 25,
     sort: str = "created_at", order: str = "desc", paginate: bool = False,
 ):
