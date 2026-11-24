@@ -22,6 +22,7 @@ from ..auth import (
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
     require_menu,
+    require_flag,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -385,7 +386,7 @@ async def security_notifications_test(payload: dict, admin=Depends(get_current_a
 
 # ---------- Real Diagnostic Tools ----------
 @router.post("/admin/diagnostics/run")
-async def diagnostics_run(payload: dict, admin=Depends(require_roles("admin", "support"))):
+async def diagnostics_run(payload: dict, admin=Depends(require_flag("can_run_diagnostics"))):
     from portal import diagnostics as _diag
     tool = (payload.get("tool") or "").strip().lower()
     target = (payload.get("target") or "").strip()
@@ -406,7 +407,7 @@ async def diagnostics_run(payload: dict, admin=Depends(require_roles("admin", "s
 
 
 @router.get("/admin/diagnostics/tools")
-async def diagnostics_tools_list(admin=Depends(require_roles("admin", "support"))):
+async def diagnostics_tools_list(admin=Depends(require_menu("diagnostics"))):
     """Advertise which tools are available on this host so the UI can grey out
     any missing binaries (e.g. traceroute) without a round-trip."""
     from portal import diagnostics as _diag

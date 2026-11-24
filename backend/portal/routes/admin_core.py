@@ -1077,7 +1077,7 @@ async def system_update_status(admin=Depends(get_current_admin)):
 # ============================================================
 @router.get("/admin/audit-logs")
 async def admin_audit_logs_list(
-    admin=Depends(get_current_admin),
+    admin=Depends(require_menu("audit_log")),
     limit: int = 200,
     skip: int = 0,
     category: Optional[str] = None,
@@ -1135,7 +1135,7 @@ async def admin_audit_logs_list(
 
 
 @router.get("/admin/audit-logs/facets")
-async def admin_audit_logs_facets(admin=Depends(get_current_admin)):
+async def admin_audit_logs_facets(admin=Depends(require_menu("audit_log"))):
     """Distinct values available to power the filter dropdowns."""
     db = await _get_db()
     return {

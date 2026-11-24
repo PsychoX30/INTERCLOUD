@@ -9,7 +9,7 @@ from pymongo.errors import DuplicateKeyError
 
 from ..activity_sync import close_activity, upsert_activity
 from ..audit import log_audit
-from ..auth import get_current_admin
+from ..auth import get_current_admin, require_menu
 from ..jitsi_meetings import (
     COLL,
     DEFAULT_DURATION_MIN,
@@ -270,7 +270,7 @@ async def jitsi_meeting_create(payload: MeetingCreateIn, admin=Depends(get_curre
 
 @router.get("/admin/jitsi/meetings")
 async def jitsi_meetings_admin(
-    include_ended: bool = False, limit: int = 100, admin=Depends(get_current_admin)
+    include_ended: bool = False, limit: int = 100, admin=Depends(require_menu("jitsi"))
 ):
     """Daftar rapat untuk panel admin.
 

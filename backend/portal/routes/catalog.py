@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access, require_flag,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -190,7 +191,7 @@ async def admin_delete_category(cid: str, admin=Depends(get_current_admin)):
 
 @router.get("/admin/products")
 async def admin_list_products(
-    admin=Depends(require_roles("admin", "support")),
+    admin=Depends(require_menu("products")),
     skip: int = 0, limit: int = 50, sort: str = "created_at",
     order: str = "desc", q: Optional[str] = None,
     paginate: bool = False, is_addon: Optional[bool] = None,

@@ -21,6 +21,7 @@ from ..auth import (
     require_roles, sales_can_access,
     STAFF_ROLES, FINANCE_ROLES, BILLING_ROLES, CATALOG_ROLES,
     OPS_ROLES, USER_MGMT_ROLES, TICKET_ROLES, CONTENT_ROLES,
+    require_menu,
 )
 from ..audit import log_audit, serialize as _serialize_audit
 from ..secretbox import (dec_value as _sb_dec, enc_value as _sb_enc,
@@ -34,7 +35,7 @@ router = APIRouter()
 
 
 @router.get("/admin/services")
-async def admin_list_services(admin=Depends(require_roles("admin", "finance", "support")),
+async def admin_list_services(admin=Depends(require_menu("services")),
                               skip: int = 0, limit: int = 50, sort: str = "created_at",
                               order: str = "desc", status: Optional[str] = None,
                               q: Optional[str] = None, paginate: Optional[bool] = None,
