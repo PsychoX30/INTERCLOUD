@@ -3,7 +3,7 @@ import { api } from "../../../portal/api";
 import { PageHeader, Card, Loading, EmptyState, btnPrimary, btnSecondary } from "../ui";
 import { RefreshCw, PlayCircle, Loader2, CheckCircle2, XCircle, Wifi, WifiOff, Activity, AlertTriangle, ExternalLink, Ticket as TicketIcon } from "lucide-react";
 import { Link } from "react-router-dom";
-import { NetflowSankey } from "./NetflowSankey";
+import { NetflowDailyReport } from "./NetflowDailyReport";
 import { DDoSPanel } from "./DDoSPanel";
 import { ThresholdRules } from "./ThresholdRules";
 import { DDoSHistory } from "./DDoSHistory";
@@ -94,7 +94,7 @@ const AdminNOC = ({ embedded = false } = {}) => {
         />
       )}
 
-      <SamplingAlert health={sampling} context="DDoS detection and the Sankey view" />
+      <SamplingAlert health={sampling} context="DDoS detection and the flow report" />
 
       {/* KPI grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -118,9 +118,11 @@ const AdminNOC = ({ embedded = false } = {}) => {
         </Card>
       )}
 
-      {/* Sankey selalu dirender - sumber datanya juga mencakup integrasi
-          MikroTik legacy (menu Integrations), bukan hanya devices Ops. */}
-      <NetflowSankey />
+      {/* Laporan arus harian menggantikan diagram Sankey. Sankey dibangun dari
+          ekor collector goflow2 yang hanya menyimpan ~50 detik data, sehingga
+          himpunan tautan berubah setiap refresh dan diagram tampak kehilangan
+          garis. Angka di sini berasal dari agregat per jam yang tersimpan. */}
+      <NetflowDailyReport refreshMs={60000} />
 
       {devices.length > 0 && (
         <>

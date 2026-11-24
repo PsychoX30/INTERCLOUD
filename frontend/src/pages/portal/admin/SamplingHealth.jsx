@@ -116,7 +116,10 @@ export const useSamplingHealth = (pollMs = 30000, enabled = true) => {
     if (!enabled) return;
     setBusy(true);
     try {
-      const { data } = await api.get("/admin/noc/netflow/sankey");
+      // /netflow/health, not /netflow/sankey: this hook is mounted by every
+      // NOC panel and only needs the collector's file age, so it must not
+      // pull a full aggregation payload to render a coloured dot.
+      const { data } = await api.get("/admin/noc/netflow/health");
       setPayload(data);
     } catch {
       // Keep the previous reading: a transient API failure is not the same

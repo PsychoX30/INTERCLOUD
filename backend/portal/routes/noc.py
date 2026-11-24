@@ -285,7 +285,7 @@ async def mikrotik_blackhole_list(ops=Depends(require_menu("mikrotik")),
 
 
 @router.post("/admin/mikrotik/blackhole")
-async def mikrotik_blackhole_add(payload: dict, flag=Depends(require_flag("can_control_mikrotik"))):
+async def mikrotik_blackhole_add(payload: dict, admin=Depends(require_flag("can_control_mikrotik"))):
     db = await _get_db()
     prefix = (payload.get("prefix") or "").strip()
     if not prefix:
@@ -542,6 +542,138 @@ def _rolling_top_links(rows: list, limit: int, now: Optional[float] = None) -> t
         "rows_folded": seen,
     }
     return out, coverage
+
+
+@router.get("/admin/noc/netflow/daily-report")
+async def noc_netflow_daily_report(prefix: Optional[str] = None, hours: int = 24,
+                                   force: bool = False,
+                                   a=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
+    """Laporan arus harian per prefix: volume, peer, AS, port, dan geo.
+
+    Menggantikan diagram Sankey sebagai tampilan utama NOC.  Sankey tidak rusak
+    karena bug: sumbernya adalah ekor berkas collector goflow2, yang diukur di
+    produksi 2026-11-24 hanya menyimpan 142.709 record dalam 49,3 detik.  Dua
+    pembacaan berurutan dari jendela sesaat menghasilkan himpunan (src,dst)
+    yang berbeda, sehingga garis tampak hilang setiap refresh.  Angka di sini
+    berasal dari agregat per jam yang disimpan (``flow_rollup``), bukan dari
+    cuplikan sesaat.
+
+    ``hours`` dibatasi 1..168.  ``force`` melewati cache 20 detik dan berguna
+    saat operator baru mengubah daftar prefix lokal.
+    """
+    db = await _get_db()
+    from portal import netflow_report as nfr
+    return await nfr.build_daily_report(db, prefix=prefix, hours=hours,
+                                        use_cache=not force)
+
+
+@router.get("/admin/noc/netflow/prefixes")
+async def noc_netflow_prefixes(a=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
+    """Daftar prefix lokal: yang dikonfigurasi, dan yang benar-benar bertrafik."""
+    db = await _get_db()
+    from portal import netflow_report as nfr
+    return await nfr.list_prefixes(db)
+
+
+@router.put("/admin/noc/netflow/prefixes")
+async def noc_netflow_set_prefixes(payload: dict,
+                                   a=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
+    """Set daftar prefix lokal secara eksplisit.
+
+    Tanpa ini, daftar diturunkan dari ``dcim_prefixes`` dan IP layanan, dan
+    sebuah /28 alokasi diperlebar ke /24 induknya.  Hanya admin dan support yang
+    boleh mengubahnya: nilai ini menentukan apa yang dihitung sebagai trafik
+    sendiri, sehingga salah isi akan menggeser seluruh laporan.
+    """
+    db = await _get_db()
+    from portal import netflow_report as nfr
+    prefixes = payload.get("prefixes") or []
+    if not isinstance(prefixes, list):
+        raise HTTPException(status_code=400, detail="prefixes harus berupa daftar")
+    try:
+        out = await nfr.set_local_prefixes(db, prefixes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await log_audit(db, a, "netflow.prefixes.set",
+                    target="netflow", detail={"prefixes": out["local_prefixes"]})
+    return out
+
+
+@router.get("/admin/noc/netflow/health")
+async def noc_netflow_health(a=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
+    """Kesehatan pipeline flow: umur berkas, lag agregator, gap rotasi.
+
+    Endpoint terpisah dengan sengaja.  Badge sampling sebelumnya memanggil
+    endpoint Sankey, yang berarti setiap halaman NOC menarik payload laporan
+    penuh hanya untuk membaca satu angka umur berkas.  Ini hanya membaca stat()
+    dan satu dokumen cursor.
+    """
+    db = await _get_db()
+    from portal import netflow_report as nfr
+    return await nfr.health_snapshot(db)
+
+
+@router.get("/admin/noc/netflow/bgp-lookup")
+async def noc_netflow_bgp_lookup(q: str = "",
+                                 a=Depends(require_menu("noc", grant_via=CONSOLE_GRANT))):
+    """Terjemahkan satu IP, prefix, atau ASN lewat bgp.tools.
+
+    Dipakai panel pencarian di laporan.  Jawabannya di-cache 30 hari, jadi
+    pertanyaan berulang tidak menyentuh jaringan sama sekali.
+    """
+    db = await _get_db()
+    from portal import bgptools as bgp
+    query = (q or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="parameter q wajib diisi")
+
+    # Everything that reaches bgp.tools has to be a plausible address, prefix or
+    # ASN. Without this gate a typo was forwarded to whois, came back
+    # unresolved, and the endpoint answered 200 with every field null - which
+    # reads as "this address belongs to no network" rather than "you typed it
+    # wrong". A bad query is a client error and now says so.
+    import ipaddress as _ip
+    kind = value = None
+    m = re.match(r"^as(\d{1,10})$", query, re.I)
+    if m:
+        kind, value = "asn", m.group(1)
+    else:
+        try:
+            if "/" in query:
+                net = _ip.ip_network(query, strict=False)
+                # Resolved through an address inside the prefix: bgp.tools
+                # reports the origin network, so its answer - not the string the
+                # operator typed - decides where the boundary really is.
+                probe = net.network_address
+                if net.version == 4 and net.num_addresses > 2:
+                    probe = net.network_address + 1
+                kind, value = "ip", str(probe)
+            else:
+                kind, value = "ip", str(_ip.ip_address(query))
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=("q harus berupa IP, prefix CIDR, atau ASN "
+                        "(contoh: 8.8.8.8, 157.20.32.0/24, as7713)"),
+            )
+    row = (await bgp.lookup_many(db, [value], kind=kind)).get(value.lower()) or {}
+    from portal import netflow_report as nfr
+    cache_key = value if kind == "asn" else (nfr.prefix24_of(value) or value)
+    cached = await db[bgp.CACHE_COLL].find_one(
+        {"_id": bgp._cache_id("asn" if kind == "asn" else "net", cache_key)})
+    return {
+        "ok": bool(row.get("asn")),
+        "query": query,
+        "kind": kind,
+        "asn": row.get("asn"),
+        "as_name": row.get("name"),
+        "cc": row.get("cc"),
+        "prefix": row.get("prefix"),
+        "registry": row.get("registry"),
+        "allocated": row.get("allocated"),
+        "cached": bool(cached),
+        "source": "bgp.tools",
+    }
 
 
 @router.get("/admin/noc/netflow/sankey")

@@ -3350,6 +3350,7 @@ def start_scheduler(db):
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
+        from apscheduler.triggers.interval import IntervalTrigger
     except Exception as e:  # noqa: BLE001
         log.warning(f"APScheduler not available: {e}")
         return None
@@ -3370,6 +3371,19 @@ def start_scheduler(db):
                 job=coro_factory,
             )
         return _run
+
+    # ---- netflow rollup helpers (need `db`, so they close over it) --------
+    async def _netflow_rollup_tick():
+        from . import netflow_report as nfr
+        return await nfr.rollup_tick(db)
+
+    async def _netflow_retention():
+        from . import netflow_report as nfr
+        out = await nfr.retention_sweep(db)
+        if out.get("rollup") or out.get("meta"):
+            log.info("[netflow] retention removed %s rollup / %s meta",
+                     out.get("rollup"), out.get("meta"))
+        return out
 
     sched = AsyncIOScheduler(timezone="Asia/Jakarta")
 
@@ -3588,6 +3602,40 @@ def start_scheduler(db):
         _leased("flow_persist", lambda: run_flow_sample_sweep(db), ttl_seconds=120),
         CronTrigger(minute="*", second=10),
         id="job:flow_persist",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # NetFlow hourly rollup - every 12 s, leased.
+    #
+    # The collector tail is a ~50 s rolling window (measured on production
+    # 2026-11-24: 142,709 records / 49.3 s), so a 24 h report cannot be built
+    # from it directly - anything older than a minute is already rotated away.
+    # This job is the writer that turns the tail into hourly history: it reads
+    # only new bytes since the cursor it stores in Mongo, folds them into an
+    # in-memory accumulator, and flushes that hour every ~55 s.
+    #
+    # 12 s tick: the producer emits ~2.9 MB/s, so a 12 s slice is ~35 MB - small
+    # enough to parse well inside the tick, large enough that a missed tick is
+    # still recovered by the next one (the cursor, not the clock, decides what
+    # has been read). TTL 60 s: five ticks of headroom, so one slow tick does
+    # not let a second worker start aggregating the same cursor and double-count.
+    sched.add_job(
+        _leased("netflow_rollup", _netflow_rollup_tick, ttl_seconds=60),
+        IntervalTrigger(seconds=12),
+        id="job:netflow_rollup",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # NetFlow rollup retention - hourly at :47.
+    # 7 days of hourly history is ~3.4M documents at the measured peer/port
+    # cardinality; older hours are deleted by `retention_sweep` rather than by a
+    # TTL index so a slow sweep can never remove the hour being written.
+    sched.add_job(
+        _leased("netflow_retention", _netflow_retention, ttl_seconds=600),
+        CronTrigger(minute=47),
+        id="job:netflow_retention",
         max_instances=1,
         coalesce=True,
     )
