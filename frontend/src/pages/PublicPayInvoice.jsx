@@ -4,6 +4,7 @@ import axios from "axios";
 import { Wallet, CreditCard, Copy, CheckCircle2, AlertTriangle, ShieldCheck, Loader2 } from "lucide-react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api/portal`;
+const REQ_TIMEOUT = 20000;  // a hung request must reject, or the spinner never clears
 
 const money = (v) => `Rp ${Number(v || 0).toLocaleString("id-ID")}`;
 const shortDate = (d) => {
@@ -41,7 +42,7 @@ export default function PublicPayInvoice() {
   const [payUrl, setPayUrl] = useState("");
 
   useEffect(() => {
-    axios.get(`${API}/portal-public/pay/${token}`)
+    axios.get(`${API}/portal-public/pay/${token}`, { timeout: REQ_TIMEOUT })
       .then((r) => { setInv(r.data); setPayUrl(r.data.payment_link || ""); })
       .catch((e) => setErr(e?.response?.status === 404
         ? "Link pembayaran tidak ditemukan atau sudah tidak berlaku."
@@ -51,7 +52,7 @@ export default function PublicPayInvoice() {
   const payDuitku = async () => {
     setPayBusy(true); setPayErr("");
     try {
-      const { data } = await axios.post(`${API}/portal-public/pay/${token}/pay-online`);
+      const { data } = await axios.post(`${API}/portal-public/pay/${token}/pay-online`, null, { timeout: REQ_TIMEOUT });
       if (data.payment_url) {
         setPayUrl(data.payment_url);
         window.open(data.payment_url, "_blank", "noopener");

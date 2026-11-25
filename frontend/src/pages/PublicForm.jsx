@@ -5,6 +5,7 @@ import { getRecaptchaToken } from "../portal/recaptcha";
 import { CheckCircle2, Loader2, Lock } from "lucide-react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api/portal`;
+const REQ_TIMEOUT = 20000;  // a hung request must reject, or the spinner never clears
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/;
 const PHONE_RE = /^[0-9+()\-\s]{7,20}$/;
@@ -70,7 +71,7 @@ export default function PublicForm() {
   const [done, setDone] = useState("");
 
   useEffect(() => {
-    axios.get(`${API}/portal-public/forms/${identifier}`)
+    axios.get(`${API}/portal-public/forms/${identifier}`, { timeout: REQ_TIMEOUT })
       .then((r) => {
         setCfg(r.data);
         setValues(initialValues(r.data.fields));
@@ -104,7 +105,7 @@ export default function PublicForm() {
     try {
       const recaptcha_token = await getRecaptchaToken("lead").catch(() => null);
       const r = await axios.post(`${API}/portal-public/forms/${identifier}/submit`,
-        { ...values, recaptcha_token });
+        { ...values, recaptcha_token }, { timeout: REQ_TIMEOUT });
       setDone(r.data.message);
     } catch (er) {
       const d = er?.response?.data?.detail;

@@ -6,6 +6,7 @@ import { Loader2, Video, AlertTriangle, Clock } from "lucide-react";
 // axios LANGSUNG, bukan `api.js`: interceptor 401 di sana melempar pengunjung
 // publik ke /portal/login. Halaman ini tidak punya sesi portal.
 const API = `${process.env.REACT_APP_BACKEND_URL}/api/portal`;
+const REQ_TIMEOUT = 20000;  // a hung request must reject, or the spinner never clears
 
 const Shell = ({ children }) => (
   <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -30,7 +31,7 @@ export default function MeetJoin() {
     let alive = true;
     setBusy(true);
     axios
-      .get(`${API}/jitsi/join`, { params: { k: key, name: "" } })
+      .get(`${API}/jitsi/join`, { params: { k: key, name: "" }, timeout: REQ_TIMEOUT })
       .then((r) => {
         if (!alive) return;
         // replace(), bukan push(): tombol back tidak boleh mendarat kembali di
