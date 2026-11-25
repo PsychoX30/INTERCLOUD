@@ -1073,6 +1073,50 @@ class GoFlow2Client:
     # still bounds memory for a truly pathological file.
     MAX_LINES_PER_POLL = 600_000
 
+    # Byte budget for one poll, and the bound that actually matters.
+    #
+    # Measured on production 2026-11-25: logrotate-goflow2.timer runs once a
+    # minute, so flows.json is allowed to grow to ~360 MB before copytruncate
+    # empties it (observed 361 MB -> 2 MB, same inode). This worker polls it
+    # every 10 s, but a poll is not free: a batch big enough to keep up takes
+    # tens of seconds to process, so the next tick arrives late and the batch it
+    # then faces is proportionally larger. The sweep was logging single polls of
+    # 330,111 rows over 63.2 s, and a line cap alone let one poll read the whole
+    # 360 MB file.
+    #
+    # Both uvicorn workers run the scheduler and each keeps its own client and
+    # its own cursor, so both could hold such a batch at once. At the measured
+    # 7.3 KiB retained per flow that is 2.31 GiB per worker, 4.6 GiB for the
+    # pair, against a kernel that OOM-killed these workers eight times in four
+    # hours at anon-rss 3.9-8.1 GiB. The kernel took the process down mid
+    # request, nginx answered 502, and /portal/admin/orders sat on "Loading..."
+    # with no error state to escape it.
+    #
+    # The budget is derived from the arrival rate, not chosen as a round number.
+    # The collector writes ~6.2 MB/s, so 128 MiB per 10 s tick clears 12.8 MB/s
+    # and still drains the backlog after a slow tick. The warning above still
+    # holds: a cap below the arrival rate x interval would fall behind for good,
+    # because copytruncate discards whatever was never read. This one is roughly
+    # twice the arrival rate, and the read loop stops only on a line boundary.
+    MAX_BYTES_PER_POLL = 128 << 20
+
+    # The exact inputs _normalize() and _compute_rates() read out of a raw
+    # record, in the order _extract() packs them. A record carries 50 top-level
+    # keys and the parser materialises all of them; these 16 are the only ones
+    # any output field is derived from, so this is what a batch is worth keeping.
+    # `record.get(k)` returns None for a missing key, which is indistinguishable
+    # from the raw value for every one of these reads, since all of them are
+    # guarded by `or ""` / `or 0` / `if sampling else 1`.
+    _FIELDS = (
+        "sampling_rate", "packets", "bytes",
+        "time_flow_start_ns", "time_flow_end_ns",
+        "proto", "tcp_flags", "src_port", "dst_port",
+        "src_addr", "dst_addr", "in_if", "out_if",
+        "sampler_address", "time_received_ns", "sequence_num",
+    )
+    _I_RECV = _FIELDS.index("time_received_ns")
+    _I_START = _FIELDS.index("time_flow_start_ns")
+
     # A collector that has written nothing for this long is not idle, it is
     # broken (or the router stopped exporting).  Callers surface it in the UI.
     STALE_AFTER_S = 300
@@ -1093,6 +1137,26 @@ class GoFlow2Client:
         self._offset = 0  # byte offset for incremental reads
         self._batch_seq = 0
         self._last_poll_mono = 0.0
+
+    def _extract(self, record: dict) -> tuple:
+        """Pack the fields _normalize() reads into a 16-scalar tuple.
+
+        A raw goflow2 record is a 50-key dict costing ~5 KiB retained (deep).
+        poll() used to keep every one of them for the whole batch, then walk the
+        list again to normalise. Since _normalize() is a pure function of this
+        fixed set of fields, the dict never has to outlive the line it came
+        from; the tuple is what a batch is worth holding.
+
+        Order must match ``_FIELDS``. Adding a field to _normalize() without
+        adding it here silently drops it, so the equivalence test
+        (nf_poll_equiv_test.py) is part of this change, not an extra.
+        """
+        return tuple(record.get(k) for k in self._FIELDS)
+
+    def _normalize_row(self, fields: tuple, fallback_duration_s: float = 30.0) -> dict:
+        """Normalise one packed tuple. Identical output to
+        ``_normalize(dict(zip(_FIELDS, fields)), fallback_duration_s)``."""
+        return self._normalize(dict(zip(self._FIELDS, fields)), fallback_duration_s)
 
     def peek(self, tail_bytes: int = 8_000_000, min_span_s: float = 2.0) -> dict:
         """Read the most recent records WITHOUT consuming the cursor.
@@ -1279,9 +1343,9 @@ class GoFlow2Client:
                     "message": (f"collector silent for {age_s/60:.1f} min"
                                 if stale else "no new flows since last poll")}
 
-        # Read up to MAX_LINES_PER_POLL lines since the last poll, parsing each
-        # line as it is read. Two reasons this is a streaming loop rather than
-        # `readlines()` + batch parse:
+        # Read up to MAX_LINES_PER_POLL lines or MAX_BYTES_PER_POLL bytes since
+        # the last poll, parsing each line as it is read. Three reasons this is a
+        # streaming loop rather than `readlines()` + batch parse:
         #
         #  1. `readlines(n)` treats n as a BYTE hint, so capping by line count
         #     needs manual iteration.
@@ -1289,8 +1353,16 @@ class GoFlow2Client:
         #     the order of hundreds of MB, and this runs inside a worker that
         #     shares memory with the API. Parsing in place keeps peak usage to
         #     the record list the caller actually needs.
-        records: list[dict] = []
+        #  3. A line cap alone does not bound the batch: at ~1 KB per record,
+        #     600_000 lines is ~600 MB of file, which logrotate's one-minute
+        #     window on this collector never lets it exceed — so the line cap
+        #     never engaged and a single poll could swallow the entire file.
+        #     The byte budget is the bound that holds; it is checked only after
+        #     a complete line has been read, so the cursor never lands mid-line
+        #     (the next poll resumes on a clean boundary).
+        records: list[tuple] = []
         bad_lines = 0
+        bytes_read = 0
         import json as _json
         try:
             with open(self.flow_path, "r") as f:
@@ -1299,16 +1371,22 @@ class GoFlow2Client:
                     line = f.readline()
                     if not line:
                         break
+                    bytes_read += len(line)
                     line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        records.append(_json.loads(line))
-                    except (ValueError, TypeError):
-                        # A record cut in half by copytruncate, or a torn write
-                        # at the tail. Dropping it is correct: the alternative
-                        # is a crash or a phantom record with zeroed counters.
-                        bad_lines += 1
+                    if line:
+                        try:
+                            # Packed immediately: the 50-key dict is transient,
+                            # only the 16 fields any output can derive from are
+                            # kept. See _extract().
+                            records.append(self._extract(_json.loads(line)))
+                        except (ValueError, TypeError):
+                            # A record cut in half by copytruncate, or a torn
+                            # write at the tail. Dropping it is correct: the
+                            # alternative is a crash or a phantom record with
+                            # zeroed counters.
+                            bad_lines += 1
+                    if bytes_read >= self.MAX_BYTES_PER_POLL:
+                        break
                 self._offset = f.tell()
         except OSError as e:
             return {"ok": False, "error": f"Cannot read flow file: {e}", "rows": []}
@@ -1343,9 +1421,9 @@ class GoFlow2Client:
         # report a span of hours, dividing a real burst by 27,000 s and
         # hiding the flood instead of scoring it.  Preferring the arrival
         # clock for every record keeps `max - min` inside one timeline.
-        observed_ns = [int(r.get("time_received_ns") or 0) for r in records]
+        observed_ns = [int(t[self._I_RECV] or 0) for t in records]
         if not any(observed_ns):
-            observed_ns = [int(r.get("time_flow_start_ns") or 0) for r in records]
+            observed_ns = [int(t[self._I_START] or 0) for t in records]
         observed_ns = [ts for ts in observed_ns if ts > 0]
         if len(observed_ns) > 1:
             record_span_s = (max(observed_ns) - min(observed_ns)) / 1_000_000_000
@@ -1391,8 +1469,8 @@ class GoFlow2Client:
         rows: list[dict] = []
         total_packets = 0.0
         total_bytes = 0.0
-        for record in records:
-            row = self._normalize(record, batch_duration_s)
+        for fields in records:
+            row = self._normalize_row(fields, batch_duration_s)
             total_packets += float(row.get("rx_packets") or 0)
             total_bytes += float(row.get("rate_bytes") or 0)
             rows.append(row)
