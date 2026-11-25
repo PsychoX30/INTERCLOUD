@@ -1,5 +1,6 @@
 import React from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertTriangle } from "lucide-react";
+import { isBackendDown, onBackendState, SLOW_REQUEST_MS } from "../../portal/api";
 
 export const PageHeader = ({ title, subtitle, actions }) => (
   <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-6">
@@ -72,11 +73,90 @@ export const StatusBadge = ({ status }) => {
   );
 };
 
-export const Loading = ({ label = "Loading…" }) => (
-  <div className="flex items-center gap-2 text-sm text-slate-500 py-10 justify-center">
-    <Loader2 className="h-4 w-4 animate-spin" /> {label}
+export const ErrorState = ({
+  title = "Gagal memuat data",
+  body,
+  onRetry,
+  testid = "error-state",
+}) => (
+  <div
+    className="text-center py-12 px-4 rounded-2xl border border-red-200 bg-red-50/50"
+    data-testid={testid}
+  >
+    <AlertTriangle className="h-6 w-6 text-red-600 mx-auto" />
+    <div className="mt-2 text-lg font-extrabold text-[#0a2350]">{title}</div>
+    {body && <p className="mt-2 text-sm text-slate-600 max-w-lg mx-auto">{body}</p>}
+    {onRetry && (
+      <button type="button" onClick={onRetry} className={`${btnSecondary} mt-4`}>
+        Coba lagi
+      </button>
+    )}
   </div>
 );
+
+// THE CHOKE POINT FOR "INFINITE LOADING".
+//
+// A page that is waiting renders this, so this is the only place a hang has to
+// be handled. Measured 2026-11-25: the backend worker was OOM-killed, the page's
+// request rejected, the handler had no error branch, `rows` stayed null and this
+// component rendered forever. Fixing the 29 pages that do that is 29 chances to
+// miss one; fixing the component they all share is one place that cannot be
+// missed, and it also covers a page that hangs on a request nobody .catch()ed.
+//
+// Two triggers, because they are different faults:
+//   - the API is answering with gateway errors  -> say so at once, it is certain
+//   - the request is merely taking too long     -> say so after 15 s, it is not
+export const Loading = ({ label = "Loading…" }) => {
+  const [elapsedMs, setElapsedMs] = React.useState(0);
+  const [down, setDown] = React.useState(isBackendDown);
+
+  React.useEffect(() => {
+    const started = Date.now();
+    const t = setInterval(() => setElapsedMs(Date.now() - started), 500);
+    const off = onBackendState(setDown);
+    return () => {
+      clearInterval(t);
+      off();
+    };
+  }, []);
+
+  if (down || elapsedMs >= SLOW_REQUEST_MS) {
+    return (
+      <div
+        className="text-center py-12 px-4 rounded-2xl border border-amber-200 bg-amber-50/60"
+        data-testid="loading-stalled"
+      >
+        <AlertTriangle className="h-6 w-6 text-amber-600 mx-auto" />
+        <div className="mt-2 text-lg font-extrabold text-[#0a2350]">
+          {down ? "Server sedang tidak merespons" : "Pemuatan lebih lama dari biasanya"}
+        </div>
+        <p className="mt-2 text-sm text-slate-600 max-w-lg mx-auto">
+          {down
+            ? "API mengembalikan error gateway atau tidak dapat dihubungi, jadi halaman ini tidak bisa menyelesaikan permintaannya."
+            : `Halaman ini masih menunggu data lebih dari ${Math.round(
+                SLOW_REQUEST_MS / 1000
+              )} detik. Koneksi mungkin terputus di tengah jalan.`}
+        </p>
+        <div className="mt-4 flex items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className={btnPrimary}
+            data-testid="loading-reload"
+          >
+            Muat ulang
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-sm text-slate-500 py-10 justify-center">
+      <Loader2 className="h-4 w-4 animate-spin" /> {label}
+    </div>
+  );
+};
 
 export const EmptyState = ({ title = "Nothing here yet", body }) => (
   <div className="text-center py-12">

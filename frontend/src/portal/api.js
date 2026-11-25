@@ -3,9 +3,63 @@ import axios from "axios";
 const BASE = process.env.REACT_APP_BACKEND_URL;
 const TOKEN_KEY = "ic_portal_token";
 
+// A request must always settle.
+//
+// Measured on 2026-11-25: the kernel OOM-killed a backend worker while a page was
+// loading. nginx answered 502 for a while, then nothing at all. A request to a
+// process that is gone, or to a socket nobody closes, does not fail fast — the
+// browser holds it until its own socket timeout, which is minutes. Every page
+// waiting on it showed a spinner for that whole time. A timeout converts that
+// into an ordinary rejection the UI can render.
+export const REQUEST_TIMEOUT_MS = 20000;
+
+// How long a spinner is allowed to spin before the UI says something. Shorter
+// than the request timeout on purpose: the point is to speak before the network
+// gives up, not after.
+export const SLOW_REQUEST_MS = 15000;
+
 export const api = axios.create({
   baseURL: `${BASE}/api/portal`,
+  timeout: REQUEST_TIMEOUT_MS,
 });
+
+// App-wide "is the API answering" signal, derived from real responses rather
+// than from a health poll (which would be one more request per page, and would
+// itself hang on the failure it is meant to detect).
+let _backendDown = false;
+
+export const isBackendDown = () => _backendDown;
+
+export const onBackendState = (cb) => {
+  const down = () => cb(true);
+  const up = () => cb(false);
+  window.addEventListener("ic-backend-down", down);
+  window.addEventListener("ic-backend-up", up);
+  return () => {
+    window.removeEventListener("ic-backend-down", down);
+    window.removeEventListener("ic-backend-up", up);
+  };
+};
+
+const setBackendDown = (next) => {
+  if (_backendDown === next) return; // only announce transitions
+  _backendDown = next;
+  try {
+    window.dispatchEvent(new Event(next ? "ic-backend-down" : "ic-backend-up"));
+  } catch {
+    /* non-browser contexts (tests) simply get no event */
+  }
+};
+
+// A gateway status means the API is not answering at all. A network error with
+// no response means the same thing. A 4xx/5xx that carries a Response does not:
+// those are the API answering, and belong to the page that asked.
+export const isGatewayFailure = (err) => {
+  const status = err?.response?.status;
+  if (status === 502 || status === 503 || status === 504) return true;
+  if (err?.code === "ECONNABORTED" || err?.code === "ETIMEDOUT") return true;
+  return !err?.response;
+};
 
 api.interceptors.request.use((cfg) => {
   const t = localStorage.getItem(TOKEN_KEY);
@@ -14,7 +68,10 @@ api.interceptors.request.use((cfg) => {
 });
 
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    setBackendDown(false);
+    return r;
+  },
   (err) => {
     // FastAPI returns Pydantic validation errors as `detail` being an ARRAY of
     // objects ({type, loc, msg, input, ctx, url}) or a plain object, not a
@@ -44,6 +101,10 @@ api.interceptors.response.use(
       if (!window.location.pathname.startsWith("/portal/login")) {
         window.location.href = "/portal/login?expired=1";
       }
+    } else if (isGatewayFailure(err)) {
+      // Only a non-401 failure can mean "the API is gone". A 401 is the API
+      // answering correctly, and must not raise the outage banner.
+      setBackendDown(true);
     }
     return Promise.reject(err);
   }

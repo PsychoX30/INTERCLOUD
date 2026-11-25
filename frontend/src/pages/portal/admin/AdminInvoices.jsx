@@ -9,15 +9,28 @@ import { Link, useNavigate } from "react-router-dom";
 
 const AdminInvoices = () => {
   const [rows, setRows] = useState(null);
+  const [err, setErr] = useState(false);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [limit, setLimit] = useState(50);
   const [modal, setModal] = useState(false);
   const navigate = useNavigate();
 
+  // `rows` starts null and is what drives `loading`. Without a catch, a failed
+  // request leaves it null forever and the table skeleton pulses indefinitely.
   const load = () =>
     api.get("/admin/invoices", { params: { paginate: true, limit, skip: page * limit } })
-      .then((r) => { setRows(r.data?.items || []); setTotal(r.data?.total || 0); });
+      .then((r) => {
+        setErr(false);
+        setRows(r.data?.items || []);
+        setTotal(r.data?.total || 0);
+      })
+      .catch(() => {
+        // Settle the table and say so. `[]` would render "No invoices yet",
+        // which claims the user has no invoices rather than that the read failed.
+        setRows([]);
+        setErr(true);
+      });
 
   useEffect(() => { load(); }, [page, limit]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -80,6 +93,8 @@ const AdminInvoices = () => {
       <DataTable
         rows={rows || []}
         loading={rows === null}
+        error={err}
+        onRetry={load}
         columns={columns}
         searchKeys={["number", "user_name", "user_email", "status"]}
         rowKey={(r) => r.id}

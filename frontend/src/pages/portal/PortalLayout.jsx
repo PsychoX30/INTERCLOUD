@@ -11,7 +11,7 @@ import {
   Bell, BookOpen, TrendingUp, Video, ShieldAlert, Clock,
 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
-import { api } from "../../portal/api";
+import { api, isBackendDown, onBackendState } from "../../portal/api";
 
 const CLIENT_NAV = [
   { to: "/portal/client/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
@@ -168,6 +168,11 @@ const PortalLayout = ({ variant = "client" }) => {
   const [collapsedGroups, setCollapsedGroups] = useState({});
   const isAdmin = variant === "admin";
   const impersonating = typeof window !== "undefined" && localStorage.getItem("ic_admin_return");
+
+  // The outage banner reads a signal derived from real responses (portal/api.js),
+  // so it costs no extra request and cannot itself hang on the failure it reports.
+  const [backendDown, setBackendDown] = useState(isBackendDown);
+  useEffect(() => onBackendState(setBackendDown), []);
 
   const visibleAdminGroups = useMemo(() => {
     if (!isAdmin) return [];
@@ -411,6 +416,31 @@ const PortalLayout = ({ variant = "client" }) => {
             </button>
           </div>
         </header>
+        {backendDown && (
+          <div
+            className="mx-4 md:mx-8 mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-3"
+            data-testid="backend-down-banner"
+            role="alert"
+          >
+            <ShieldAlert className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-red-700">
+                Server sedang tidak merespons
+              </div>
+              <p className="text-xs text-red-700/90 mt-0.5">
+                Sebagian data mungkin gagal dimuat. Halaman yang gagal akan
+                menampilkan tombol muat ulang.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="ml-auto text-xs font-semibold text-red-700 hover:text-red-900 underline flex-shrink-0"
+            >
+              Muat ulang
+            </button>
+          </div>
+        )}
         <main className="flex-1 p-4 md:p-8 min-w-0">
           <Outlet />
         </main>

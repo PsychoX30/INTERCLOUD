@@ -6,6 +6,7 @@ import TablePager from "./TablePager";
 
 const AdminServices = () => {
   const [rows, setRows] = useState(null);
+  const [err, setErr] = useState(false);
   const [users, setUsers] = useState({});
   const [active, setActive] = useState(null);
   const [requests, setRequests] = useState([]);
@@ -25,10 +26,16 @@ const AdminServices = () => {
   const loadRequests = () =>
     api.get("/admin/service-requests").then((r) => setRequests(r.data || [])).catch(() => setRequests([]));
 
+  // See AdminInvoices: `rows === null` is the loading flag, so a failed request
+  // must settle it or the skeleton never stops.
   const loadServices = useCallback(() => {
     api.get("/admin/services", { params }).then((r) => {
+      setErr(false);
       setRows(r.data?.items || []);
       setTotal(r.data?.total || 0);
+    }).catch(() => {
+      setRows([]);
+      setErr(true);
     });
   }, [params]);
 
@@ -110,6 +117,8 @@ const AdminServices = () => {
       <DataTable
         rows={rows || []}
         loading={rows === null}
+        error={err}
+        onRetry={loadServices}
         columns={columns}
         searchKeys={["product_name", "name", "category", "status"]}
         rowKey={(r) => r.id}

@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useCallback } from "react";
-import { ChevronDown, ChevronUp, ChevronsUpDown, Search, Inbox } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronsUpDown, Search, Inbox, AlertTriangle } from "lucide-react";
 
 /**
  * Lightweight, dependency-free table for admin/client views. Handles:
@@ -37,6 +37,14 @@ export const DataTable = React.memo(function DataTable({
   onRowClick,
   empty,
   loading = false,
+  // A load that failed is not an empty table.
+  //
+  // `rows || []` collapses "never loaded" and "loaded, empty" into one value, so
+  // a request that fails used to render "No invoices yet" — the page asserting
+  // the user has no data when it never received any. Callers that can fail now
+  // pass `error` and get an honest failure state with a retry.
+  error,
+  onRetry,
   searchable = true,
   className = "",
   testid,
@@ -140,7 +148,33 @@ export const DataTable = React.memo(function DataTable({
                 ))}
               </>
             )}
-            {!loading && sorted.length === 0 && (
+            {!loading && error && (
+              <tr>
+                <td colSpan={columns.length} className="px-4 py-16 text-center"
+                    data-testid={testid ? `${testid}-error` : undefined}>
+                  <div className="flex flex-col items-center gap-2 text-red-500">
+                    <AlertTriangle className="h-8 w-8 opacity-70" />
+                    <div className="text-sm font-semibold">
+                      {typeof error === "string" ? error : "Gagal memuat data"}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Server tidak mengembalikan data untuk tabel ini.
+                    </div>
+                    {onRetry && (
+                      <button
+                        type="button"
+                        onClick={onRetry}
+                        className="mt-2 text-xs font-semibold underline text-[#0a2350] hover:text-[#f5b120]"
+                        data-testid={testid ? `${testid}-retry` : undefined}
+                      >
+                        Coba lagi
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )}
+            {!loading && !error && sorted.length === 0 && (
               <tr>
                 <td colSpan={columns.length} className="px-4 py-16 text-center"
                     data-testid={testid ? `${testid}-empty` : undefined}>
