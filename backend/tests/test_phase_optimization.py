@@ -17,6 +17,15 @@ Cloudflare edge rewrites, per the review request.
 """
 from __future__ import annotations
 
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 import gzip
 import os
 import re
@@ -29,7 +38,7 @@ import xml.etree.ElementTree as ET
 
 def _read_frontend_url():
     try:
-        with open("/app/frontend/.env") as f:
+        with open(f"{_IC_FRONTEND}/.env") as f:
             for line in f:
                 if line.startswith("REACT_APP_BACKEND_URL="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -342,7 +351,7 @@ class TestPhase3Sitemap:
 # ================================================================
 class TestPhase3JsonLd:
     def test_organization_and_faq_present(self):
-        with open("/app/frontend/public/index.html", "r") as f:
+        with open(f"{_IC_FRONTEND}/public/index.html", "r") as f:
             html = f.read()
         assert '"@type": "Organization"' in html
         assert '"@type": "FAQPage"' in html
@@ -350,7 +359,7 @@ class TestPhase3JsonLd:
     def test_canonical_in_static_index_html(self):
         """Per spec: 'Landing page has canonical link (rel=canonical pointing to
         https://intercloud-digital.com/)'."""
-        with open("/app/frontend/public/index.html", "r") as f:
+        with open(f"{_IC_FRONTEND}/public/index.html", "r") as f:
             html = f.read()
         # Accept either static <link rel="canonical"> or a client-side helmet
         # (but spec says static is preferred).
@@ -365,14 +374,14 @@ class TestPhase3JsonLd:
 # ================================================================
 class TestPhase4Components:
     def test_data_table_source_exports(self):
-        p = "/app/frontend/src/components/ui/data-table.jsx"
+        p = f"{_IC_FRONTEND}/src/components/ui/data-table.jsx"
         assert os.path.exists(p)
         src = open(p).read()
         assert re.search(r"export\s+(const|default)\s+DataTable", src) or \
                "export default DataTable" in src, "DataTable export missing"
 
     def test_skeleton_source_exports(self):
-        p = "/app/frontend/src/components/ui/skeleton.jsx"
+        p = f"{_IC_FRONTEND}/src/components/ui/skeleton.jsx"
         assert os.path.exists(p)
         src = open(p).read()
         assert "Skeleton" in src and "export" in src, "Skeleton export missing"
@@ -397,7 +406,6 @@ class TestCriticalLoginRegression:
         assert r.status_code == 200, f"login failed: {r.status_code} {r.text[:200]}"
         data = r.json()
         assert "token" in data and "user" in data
-
 
 
 DEVICE_ID = "6a617872f12db51fa9cc268c"

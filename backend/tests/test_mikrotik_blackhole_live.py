@@ -1,3 +1,12 @@
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 """Live-router blackhole + regression tests against TO.DIST (RouterOS 7.20.6).
 
 Focus of this iteration (see /app/test_reports/iteration_21.json):
@@ -7,6 +16,7 @@ Focus of this iteration (see /app/test_reports/iteration_21.json):
   so it doesn't stream the full BGP table, and must honour `prefix_filter`.
 - Regression: existing mikrotik ops still work + diagnostics traceroute still works.
 """
+
 import os
 import time
 import urllib.parse
@@ -15,7 +25,7 @@ import pytest
 import requests
 from dotenv import load_dotenv
 
-load_dotenv("/app/frontend/.env")
+load_dotenv(f"{_IC_FRONTEND}/.env")
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 API = f"{BASE_URL}/api"

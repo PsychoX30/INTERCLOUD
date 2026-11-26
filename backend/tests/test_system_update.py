@@ -1,7 +1,17 @@
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 """
 Iteration 27 — System Update endpoints, install/update.sh script sanity,
 plus a regression sweep on backup download + login + mikrotik + branding.
 """
+
 import os
 import re
 import subprocess
@@ -13,7 +23,7 @@ import requests
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") if os.environ.get("REACT_APP_BACKEND_URL") else None
 if not BASE_URL:
     # Fallback to frontend/.env
-    with open("/app/frontend/.env") as f:
+    with open(f"{_IC_FRONTEND}/.env") as f:
         for line in f:
             if line.startswith("REACT_APP_BACKEND_URL="):
                 BASE_URL = line.split("=", 1)[1].strip().rstrip("/")
@@ -135,19 +145,19 @@ class TestSystemUpdate:
 # ------------------------------------------------------------
 class TestScripts:
     def test_install_syntax(self):
-        rc = subprocess.call(["bash", "-n", "/app/scripts/install.sh"])
+        rc = subprocess.call(["bash", "-n", f"{_IC_REPO}/scripts/install.sh"])
         assert rc == 0
 
     def test_update_syntax(self):
-        rc = subprocess.call(["bash", "-n", "/app/scripts/update.sh"])
+        rc = subprocess.call(["bash", "-n", f"{_IC_REPO}/scripts/update.sh"])
         assert rc == 0
 
     def test_scripts_executable(self):
-        for p in ["/app/scripts/install.sh", "/app/scripts/update.sh"]:
+        for p in [f"{_IC_REPO}/scripts/install.sh", f"{_IC_REPO}/scripts/update.sh"]:
             assert os.access(p, os.X_OK), f"{p} not executable"
 
     def test_install_contains_expected_tokens(self):
-        text = open("/app/scripts/install.sh").read()
+        text = open(f"{_IC_REPO}/scripts/install.sh").read()
         for tok in ["apt-get", "nginx", "mongodb", "python3.12",
                     "nodejs", "yarn", "supervisor", "ufw"]:
             assert tok in text, f"install.sh missing {tok}"
@@ -155,7 +165,7 @@ class TestScripts:
         assert "certbot" in text, "install.sh missing certbot"
 
     def test_update_contains_expected_tokens(self):
-        text = open("/app/scripts/update.sh").read()
+        text = open(f"{_IC_REPO}/scripts/update.sh").read()
         assert "mongodump --archive --gzip" not in text or True  # informational
         assert "mongodump" in text and "--archive" in text and "--gzip" in text, \
             "update.sh missing mongodump flags"

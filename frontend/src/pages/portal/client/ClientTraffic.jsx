@@ -1,28 +1,46 @@
 import React, { useEffect, useState } from "react";
-import { api } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState } from "../ui";
+import { api, formatApiError } from "../../../portal/api";
+import { PageHeader, Card, Loading, EmptyState, ErrorState } from "../ui";
 import { Activity, TrendingUp, TrendingDown } from "lucide-react";
 
 const ClientTraffic = () => {
   const [services, setServices] = useState(null);
   const [selected, setSelected] = useState("");
   const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [dataErr, setDataErr] = useState(null);
 
   useEffect(() => {
     // Default list already excludes terminated services — a dead service has no
     // traffic to report, and listing it here is what made this page look stale.
-    api.get("/client/services").then((r) => {
-      setServices(r.data);
-      if (r.data.length > 0) setSelected(r.data[0].id);
-    });
+    let alive = true;
+    setErr(null);
+    api.get("/client/services")
+      .then((r) => {
+        if (!alive) return;
+        const list = Array.isArray(r.data) ? r.data : [];
+        setServices(list);
+        if (list.length > 0) setSelected(list[0].id);
+      })
+      .catch((e) => { if (alive) setErr(formatApiError(e)); });
+    // The effect can unmount before the response lands (fast navigation); a
+    // late setState on an unmounted component is a warning, not a crash, but the
+    // service list is also the argument for the next request, so stale it hurts.
+    return () => { alive = false; };
   }, []);
 
   useEffect(() => {
     if (!selected) return;
     setData(null);
-    api.get(`/client/services/${selected}/traffic`).then((r) => setData(r.data));
+    setDataErr(null);
+    let alive = true;
+    api.get(`/client/services/${selected}/traffic`)
+      .then((r) => { if (alive) setData(r.data); })
+      .catch((e) => { if (alive) setDataErr(formatApiError(e)); });
+    return () => { alive = false; };
   }, [selected]);
 
+  if (err) return <ErrorState title="Gagal memuat daftar layanan" body={err} onRetry={() => window.location.reload()} />;
   if (!services) return <Loading />;
   if (services.length === 0) return (
     <div>
@@ -54,7 +72,14 @@ const ClientTraffic = () => {
         ))}
       </div>
 
-      {!data && <Loading />}
+      {dataErr && !data && (
+        <ErrorState
+          title="Gagal memuat data trafik"
+          body={dataErr}
+          onRetry={() => { const cur = selected; setSelected(""); setTimeout(() => setSelected(cur), 0); }}
+        />
+      )}
+      {!data && !dataErr && <Loading />}
       {data && data.available === false && (
         <Card className="p-10 text-center" data-testid="traffic-unavailable">
           <Activity className="h-8 w-8 text-slate-300 mx-auto" />

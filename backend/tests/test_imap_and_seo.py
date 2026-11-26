@@ -5,7 +5,17 @@ Also verifies the new `cover_image_alt` field round-trips through the
 Article API so the SEO alt text set in the editor lands on the public
 `<img alt=…>`.
 """
+
 from __future__ import annotations
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 import os
 import re
 import time
@@ -18,7 +28,7 @@ from portal import integrations_v2 as iv2
 API = os.environ.get("REACT_APP_BACKEND_URL") or (
     (lambda p: next((l.split("=", 1)[1].strip().strip('"')
                      for l in open(p) if l.startswith("REACT_APP_BACKEND_URL=")), ""))
-    ("/app/frontend/.env")
+    (f"{_IC_FRONTEND}/.env")
 )
 ADMIN_EMAIL = "admin@intercloud-digital.com"
 ADMIN_PASS  = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_ADMIN_PW")

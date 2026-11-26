@@ -4,6 +4,7 @@ import { PageHeader, btnPrimary, btnSecondary, inputClass, labelClass } from "..
 import { UserPlus, ShieldCheck, KeyRound, LogIn, Trash2 } from "lucide-react";
 import { DataTable } from "../../../components/ui/data-table";
 import { useAuth } from "../../../portal/AuthContext";
+import { checkPassword, PASSWORD_MIN_LEN } from "../../../portal/passwordPolicy";
 
 const AdminUsers = () => {
   const { user: me } = useAuth();
@@ -468,7 +469,8 @@ const ClientProfileModal = ({ userId, onClose }) => {
   const submit = async (e) => {
     e.preventDefault();
     setErr("");
-    if (pw.length < 8) return setErr("Password must be at least 8 characters.");
+    const pwErr = checkPassword(pw);
+    if (pwErr) return setErr(pwErr);
     if (pw !== pw2) return setErr("Password confirmation does not match.");
     if (!window.confirm(`Reset password for ${user.email}? This will invalidate all existing reset links for this user.`)) return;
     setBusy(true);
@@ -497,12 +499,12 @@ const ClientProfileModal = ({ userId, onClose }) => {
             {err && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
             <label className="block">
               <div className={labelClass}>New password</div>
-              <input type="password" required minLength={8} value={pw} onChange={(e) => setPw(e.target.value)}
+              <input type="password" required minLength={PASSWORD_MIN_LEN} value={pw} onChange={(e) => setPw(e.target.value)}
                      className={`${inputClass} mt-1`} data-testid="admin-reset-new" />
             </label>
             <label className="block">
               <div className={labelClass}>Confirm password</div>
-              <input type="password" required minLength={8} value={pw2} onChange={(e) => setPw2(e.target.value)}
+              <input type="password" required minLength={PASSWORD_MIN_LEN} value={pw2} onChange={(e) => setPw2(e.target.value)}
                      className={`${inputClass} mt-1`} data-testid="admin-reset-confirm" />
             </label>
             <label className="flex items-center gap-2 text-sm">

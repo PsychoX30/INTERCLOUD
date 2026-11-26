@@ -132,7 +132,7 @@ const TicketDetail = ({ ticket, onClose }) => {
           ))}
         </div>
         <form onSubmit={send} className="p-4 border-t border-slate-100 bg-slate-50">
-          <textarea rows={2} value={reply} onChange={(e) => setReply(e.target.value)} placeholder={internal ? "Catatan internal (tidak terlihat klien)…" : "Reply as staff…"} className={`${inputClass} h-auto py-2 ${internal ? "border-indigo-300 bg-indigo-50/50" : ""}`} data-testid="admin-ticket-reply" />
+          <textarea maxLength={20000} rows={2} value={reply} onChange={(e) => setReply(e.target.value)} placeholder={internal ? "Catatan internal (tidak terlihat klien)…" : "Reply as staff…"} className={`${inputClass} h-auto py-2 ${internal ? "border-indigo-300 bg-indigo-50/50" : ""}`} data-testid="admin-ticket-reply" />
           <div className="mt-2 flex items-center gap-3">
             <label className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 cursor-pointer">
               <input type="checkbox" checked={internal} onChange={(e) => setInternal(e.target.checked)} data-testid="admin-ticket-internal-toggle" />

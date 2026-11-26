@@ -1,10 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Download, Upload, ShieldAlert, Loader2, CheckCircle2, AlertTriangle, RefreshCw, GitBranch, Skull, Lock } from "lucide-react";
-import { api } from "../../../portal/api";
+import { api, BASE, getToken } from "../../../portal/api";
 import { useAuth } from "../../../portal/AuthContext";
-
-const API_BASE = process.env.REACT_APP_BACKEND_URL;
-const TOKEN_KEY = "ic_portal_token";
 
 const AdminBackup = () => {
   const { user } = useAuth();
@@ -112,8 +109,8 @@ const AdminBackup = () => {
     if (!canEdit) { setMsg({ kind: "error", text: "Hanya admin yang dapat mengunduh backup." }); return; }
     setDownloading(true); setMsg(null);
     try {
-      const token = localStorage.getItem(TOKEN_KEY) || "";
-      const res = await fetch(`${API_BASE}/api/portal/admin/backup/download`, {
+      const token = getToken() || "";
+      const res = await fetch(`${BASE}/api/portal/admin/backup/download`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
@@ -138,8 +135,8 @@ const AdminBackup = () => {
     if (!window.confirm(`This will WIPE every collection in the archive and restore the uploaded snapshot. Continue?`)) return;
     setRestoring(true); setMsg(null);
     try {
-      const token = localStorage.getItem(TOKEN_KEY) || "";
-      const res = await fetch(`${API_BASE}/api/portal/admin/backup/restore?confirm=REPLACE`, {
+      const token = getToken() || "";
+      const res = await fetch(`${BASE}/api/portal/admin/backup/restore?confirm=REPLACE`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/gzip" },
         body: file,
@@ -423,8 +420,8 @@ const BackupHistory = () => {
   };
   const dl = (b) => {
     if (!canEdit) { setNotice("Hanya admin yang dapat mengunduh arsip backup."); return; }
-    const token = localStorage.getItem(TOKEN_KEY) || "";
-    window.open(`${API_BASE}/api/portal/admin/backup/history/${b.id}/download?token=${encodeURIComponent(token)}`, "_blank");
+    const token = getToken() || "";
+    window.open(`${BASE}/api/portal/admin/backup/history/${b.id}/download?token=${encodeURIComponent(token)}`, "_blank");
   };
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-6 mb-6 shadow-sm" data-testid="backup-history-card">

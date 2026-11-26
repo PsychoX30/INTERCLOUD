@@ -1,3 +1,12 @@
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 """
 Iteration 28 regression smoke — backend side.
 Covers the backend items requested in the review:
@@ -6,6 +15,7 @@ Covers the backend items requested in the review:
   * Admin login still works (POST /api/portal/auth/login)
   * Invoice PDF preview (as admin) contains 130px logo CSS
 """
+
 import os
 import re
 
@@ -18,7 +28,7 @@ def _resolve_base_url() -> str:
         return env.rstrip("/")
     # fallback: parse from /app/frontend/.env
     from pathlib import Path
-    fenv = Path("/app/frontend/.env")
+    fenv = Path(f"{_IC_FRONTEND}/.env")
     if fenv.exists():
         for line in fenv.read_text().splitlines():
             if line.startswith("REACT_APP_BACKEND_URL="):

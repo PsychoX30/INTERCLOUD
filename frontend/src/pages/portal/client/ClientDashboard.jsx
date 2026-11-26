@@ -1,15 +1,25 @@
 import React, { useEffect, useState } from "react";
 import { AlertTriangle, ArrowRight, Receipt, ServerCog, LifeBuoy, ShoppingCart } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, money } from "../../../portal/api";
-import { PageHeader, StatCard, Card, Loading, btnPrimary, btnSecondary } from "../ui";
+import { api, money, formatApiError } from "../../../portal/api";
+import { PageHeader, StatCard, Card, Loading, ErrorState, btnPrimary, btnSecondary } from "../ui";
 
 const ClientDashboard = () => {
   const [data, setData] = useState(null);
-  useEffect(() => {
-    api.get("/client/dashboard").then((r) => setData(r.data));
-  }, []);
+  const [err, setErr] = useState(null);
 
+  // The landing page after login. A rejected request used to leave this on a
+  // spinner forever, so the first thing a client saw after signing in was a
+  // hang with no way out.
+  const load = () => {
+    setErr(null);
+    return api.get("/client/dashboard")
+      .then((r) => { setData(r.data); setErr(null); })
+      .catch((e) => setErr(formatApiError(e)));
+  };
+  useEffect(() => { load(); }, []);
+
+  if (err) return <ErrorState title="Gagal memuat dashboard" body={err} onRetry={load} />;
   if (!data) return <Loading />;
   const s = data.stats;
 

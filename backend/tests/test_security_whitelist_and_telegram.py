@@ -127,7 +127,7 @@ class TestIpInWhitelistUnit:
 
     @classmethod
     def setup_class(cls):
-        sys.path.insert(0, "/app/backend")
+        sys.path.insert(0, f"{_IC_BACKEND}")
         from portal.routes import _ip_in_whitelist  # noqa: E402
         cls._fn = staticmethod(_ip_in_whitelist)
 

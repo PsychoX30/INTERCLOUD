@@ -1,3 +1,12 @@
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 """Iteration 35 - Intercloud Portal new features regression.
 
 Covers:
@@ -16,6 +25,7 @@ Covers:
 - Auto-renew toggle
 - Order edit provision_log
 """
+
 import io
 import os
 import time
@@ -24,7 +34,7 @@ import pytest
 import requests
 
 def _read_env():
-    p = "/app/frontend/.env"
+    p = f"{_IC_FRONTEND}/.env"
     if os.path.exists(p):
         for line in open(p):
             if line.startswith("REACT_APP_BACKEND_URL="):

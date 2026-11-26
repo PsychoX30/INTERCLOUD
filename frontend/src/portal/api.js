@@ -1,6 +1,9 @@
 import axios from "axios";
 
-const BASE = process.env.REACT_APP_BACKEND_URL;
+// Exported so pages do not re-derive it (and drift) from the env var.
+// A page that builds its own base URL is a page that breaks the day the
+// deployment shape changes.
+export const BASE = process.env.REACT_APP_BACKEND_URL;
 const TOKEN_KEY = "ic_portal_token";
 
 // A request must always settle.

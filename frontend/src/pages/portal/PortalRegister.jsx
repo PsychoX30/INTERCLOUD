@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { UserPlus, Loader2, AlertTriangle, Cloud, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import { api } from "../../portal/api";
+import { checkPassword, PASSWORD_MIN_LEN } from "../../portal/passwordPolicy";
 
 /**
  * Public self-registration form.
@@ -67,7 +68,8 @@ const PortalRegister = () => {
     e.preventDefault();
     setErr("");
     if (!f.name.trim() || !f.email.trim() || !f.password) return setErr("Name, email, and password are required.");
-    if (f.password.length < 8) return setErr("Password must be at least 8 characters.");
+    const pwErr = checkPassword(f.password);
+    if (pwErr) return setErr(pwErr);
     if (f.password !== f.confirm) return setErr("Password confirmation does not match.");
     if (!f.accepts_tos) return setErr("Please accept the Terms of Service to continue.");
     setStep(2);
@@ -203,11 +205,11 @@ const PortalRegister = () => {
               </label>
               <label className={labelCls}>
                 <span className={labelTxt}>Password *</span>
-                <input type="password" value={f.password} onChange={set("password")} minLength={8} required data-testid="reg-password" className={inputCls} placeholder="min 8 characters" autoComplete="new-password" />
+                <input type="password" value={f.password} onChange={set("password")} minLength={PASSWORD_MIN_LEN} required data-testid="reg-password" className={inputCls} placeholder="min 8, upper + lower + angka" autoComplete="new-password" />
               </label>
               <label className={labelCls}>
                 <span className={labelTxt}>Confirm password *</span>
-                <input type="password" value={f.confirm} onChange={set("confirm")} minLength={8} required data-testid="reg-confirm" className={inputCls} autoComplete="new-password" />
+                <input type="password" value={f.confirm} onChange={set("confirm")} minLength={PASSWORD_MIN_LEN} required data-testid="reg-confirm" className={inputCls} autoComplete="new-password" />
               </label>
 
               <label className="col-span-2 flex items-start gap-2 text-sm mt-1">

@@ -1,7 +1,63 @@
 """Pydantic models for the portal."""
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+import re
+
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from typing import List, Optional, Literal
 from datetime import datetime, timezone
+
+
+# ============================================================
+# Password policy
+# ============================================================
+# Minimum 8 characters, and it must contain at least one lowercase letter, one
+# uppercase letter and one digit. Symbols are allowed but NOT required, so
+# "Example2026" is valid while "example2026" and "EXAMPLE2026" are not.
+#
+# Deliberately NOT enforced here:
+#   * symbol/complexity classes beyond case+digit - they push users toward
+#     predictable substitutions (P@ssw0rd) without adding real entropy, and
+#     NIST SP 800-63B recommends against them.
+#   * a maximum length beyond sanity: the hash is bcrypt, which silently
+#     truncates at 72 bytes. Enforcing that limit at the edge is more honest
+#     than letting two different long passwords be interchangeable.
+#
+# Applied to every place a USER password is set or changed. It is deliberately
+# NOT applied to:
+#   * LoginIn.password - a valid existing credential must still be accepted,
+#     otherwise tightening the policy locks out every account whose password
+#     predates it. Enforcement belongs at set-time, not at use-time.
+#   * FactoryResetIn.admin_password / ChangePasswordIn.current_password - these
+#     are re-authentication confirmations of an existing password.
+#   * HostingProvisionIn / guest-OS passwords - those are credentials for
+#     external panels and VMs, not for this portal.
+PW_MIN_LEN = 8
+PW_MAX_LEN = 72
+_PW_HAS_LOWER = re.compile(r"[a-z]")
+_PW_HAS_UPPER = re.compile(r"[A-Z]")
+_PW_HAS_DIGIT = re.compile(r"\d")
+
+
+def validate_password_strength(value: str) -> str:
+    """Enforce the portal password policy. Raises ValueError with a message the
+    UI can show verbatim (FastAPI surfaces it as a 422 detail)."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("Password wajib diisi")
+    if len(value) < PW_MIN_LEN:
+        raise ValueError(f"Password minimal {PW_MIN_LEN} karakter")
+    if len(value) > PW_MAX_LEN:
+        raise ValueError(f"Password maksimal {PW_MAX_LEN} karakter")
+    missing = []
+    if not _PW_HAS_LOWER.search(value):
+        missing.append("huruf kecil")
+    if not _PW_HAS_UPPER.search(value):
+        missing.append("huruf besar")
+    if not _PW_HAS_DIGIT.search(value):
+        missing.append("angka")
+    if missing:
+        raise ValueError(
+            "Password harus mengandung " + ", ".join(missing) + " (simbol opsional)"
+        )
+    return value
 
 
 # ---------- AUTH ----------
@@ -33,15 +89,30 @@ class RegisterIn(BaseModel):
     # Optional CRM token for close-deal registration flow
     crm_token: Optional[str] = None
 
+    @field_validator("password")
+    @classmethod
+    def _check_password_strength(cls, v):
+        return validate_password_strength(v)
+
 
 class ChangePasswordIn(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)
 
+    @field_validator("new_password")
+    @classmethod
+    def _check_password_strength(cls, v):
+        return validate_password_strength(v)
+
 
 class AdminResetPasswordIn(BaseModel):
     new_password: str = Field(..., min_length=8)
     notify_user: bool = False
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_password_strength(cls, v):
+        return validate_password_strength(v)
 
 
 class FactoryResetIn(BaseModel):
@@ -62,6 +133,11 @@ class ForgotPasswordIn(BaseModel):
 class ResetPasswordIn(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_password_strength(cls, v):
+        return validate_password_strength(v)
 
 
 class UserOut(BaseModel):
@@ -125,6 +201,11 @@ class UserCreateIn(BaseModel):
     feature_flags_custom: bool = False
     is_active: bool = True
 
+    @field_validator("password")
+    @classmethod
+    def _check_password_strength(cls, v):
+        return validate_password_strength(v)
+
 
 class UserUpdateIn(BaseModel):
     name: Optional[str] = None
@@ -148,6 +229,13 @@ class UserUpdateIn(BaseModel):
     # defaults apply. Without this the API cannot express "revoke a default".
     feature_flags_custom: Optional[bool] = None
     is_active: Optional[bool] = None
+    @field_validator("password")
+    @classmethod
+    def _check_password_strength(cls, v):
+        # None means "leave the password unchanged" on a partial update.
+        if v is None:
+            return v
+        return validate_password_strength(v)
 
 
 class BillingEmailsIn(BaseModel):
@@ -877,8 +965,20 @@ class SettingOut(SettingIn):
 
 
 # ---------- TICKETS ----------
+# These are the only free-text fields in the API that any authenticated client
+# can set to an arbitrary size. Without a bound, a single POST can put megabytes
+# into the tickets collection: the payload is capped by nginx (25M default), but
+# that is a transport limit, not a data-model one, and it applies to the whole
+# request rather than to this field. Bounding it here keeps a ticket row a ticket
+# and not a storage primitive. Observed maxima in production on 2026-11-26:
+# longest subject 25 chars, longest message 0 - so these limits are far above
+# anything a real ticket needs.
+TICKET_SUBJECT_MAX = 200
+TICKET_MESSAGE_MAX = 20_000
+
+
 class TicketReplyIn(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=TICKET_MESSAGE_MAX)
     internal: bool = False
 
 
@@ -891,10 +991,10 @@ class TicketReply(BaseModel):
 
 
 class TicketIn(BaseModel):
-    subject: str
+    subject: str = Field(..., min_length=1, max_length=TICKET_SUBJECT_MAX)
     department: Literal["technical", "billing", "general", "sales"] = "technical"
     priority: Literal["low", "medium", "high", "critical"] = "medium"
-    message: str
+    message: str = Field(..., min_length=1, max_length=TICKET_MESSAGE_MAX)
     related_device_id: Optional[str] = None   # optional link to a mikrotik_devices row
 
 

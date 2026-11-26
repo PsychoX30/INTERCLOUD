@@ -1071,34 +1071,38 @@ class GoFlow2Client:
     # the reader was 123 MB behind a 2.8 MB file. Draining up to this many
     # lines in a single poll lets it catch up in one or two ticks; the cap
     # still bounds memory for a truly pathological file.
-    MAX_LINES_PER_POLL = 600_000
+    # 120k lines is ~118 MB at the measured 982 B/record, so the byte budget
+    # (64 MiB ~ 68k records) is normally the binding cap. This one only matters
+    # for pathologically short records; it must not exceed the byte budget's
+    # record count by more than ~2x or it stops being a memory bound.
+    MAX_LINES_PER_POLL = 120_000
 
     # Byte budget for one poll, and the bound that actually matters.
     #
-    # Measured on production 2026-11-25: logrotate-goflow2.timer runs once a
-    # minute, so flows.json is allowed to grow to ~360 MB before copytruncate
-    # empties it (observed 361 MB -> 2 MB, same inode). This worker polls it
-    # every 10 s, but a poll is not free: a batch big enough to keep up takes
-    # tens of seconds to process, so the next tick arrives late and the batch it
-    # then faces is proportionally larger. The sweep was logging single polls of
-    # 330,111 rows over 63.2 s, and a line cap alone let one poll read the whole
-    # 360 MB file.
+    # The rule this has to satisfy: the budget must exceed the collector's
+    # arrival rate times the poll interval, or the sweeper falls behind
+    # permanently - logrotate's copytruncate discards whatever was never read.
     #
-    # Both uvicorn workers run the scheduler and each keeps its own client and
-    # its own cursor, so both could hold such a batch at once. At the measured
-    # 7.3 KiB retained per flow that is 2.31 GiB per worker, 4.6 GiB for the
-    # pair, against a kernel that OOM-killed these workers eight times in four
-    # hours at anon-rss 3.9-8.1 GiB. The kernel took the process down mid
-    # request, nginx answered 502, and /portal/admin/orders sat on "Loading..."
-    # with no error state to escape it.
+    # The previous value (128 MiB) was chosen against a comment claiming
+    # "~6.2-6.75 MB/s". Measured on 2026-11-26, after recovering a wedged
+    # collector, the real rate is 1.58 MB/s (16,300 KB per 10 s tick over six
+    # consecutive buckets; ~982 B per record, ~1,650 records/s). The old figure
+    # was inflated roughly 4x, which is why 128 MiB looked like only 1.13x
+    # headroom when it is really ~7.9x.
     #
-    # The budget is derived from the arrival rate, not chosen as a round number.
-    # The collector writes ~6.2 MB/s, so 128 MiB per 10 s tick clears 12.8 MB/s
-    # and still drains the backlog after a slow tick. The warning above still
-    # holds: a cap below the arrival rate x interval would fall behind for good,
-    # because copytruncate discards whatever was never read. This one is roughly
-    # twice the arrival rate, and the read loop stops only on a line boundary.
-    MAX_BYTES_PER_POLL = 128 << 20
+    # Memory side, also measured (tracemalloc over 3,199 real records through
+    # _extract): 176 bytes retained per record, not the 7.3 KiB the old comment
+    # assumed. So the old OOM arithmetic was wrong by ~40x in the safe
+    # direction as well.
+    #
+    # 64 MiB per tick therefore gives:
+    #   capacity : 6.4 MB/s = 4.0x the measured arrival rate
+    #   records  : ~68,000      -> ~11 MiB retained per worker
+    #                              -> ~23 MiB across both uvicorn workers
+    # and it still drains a full one-minute logrotate window (95 MB) in about
+    # two ticks. Headroom above arrival is what matters, not absolute size: 4x
+    # absorbs a 4x traffic spike without falling behind.
+    MAX_BYTES_PER_POLL = 64 << 20
 
     # The exact inputs _normalize() and _compute_rates() read out of a raw
     # record, in the order _extract() packs them. A record carries 50 top-level

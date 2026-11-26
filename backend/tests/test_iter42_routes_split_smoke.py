@@ -1,8 +1,18 @@
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 """
 Iteration 42: Regression smoke for routes.py -> routes/ package split.
 Behavior must be 1:1 identical. This test asserts endpoints across all 21 sub-router domains return 2xx (or expected auth codes).
 NO destructive calls (no provisioning create, no invoice paid PUT, no integrations mutations, no system update).
 """
+
 import os
 import re
 import pytest
@@ -13,7 +23,7 @@ def _read_backend_url():
     if v:
         return v.rstrip("/")
     try:
-        with open("/app/frontend/.env") as f:
+        with open(f"{_IC_FRONTEND}/.env") as f:
             for line in f:
                 if line.startswith("REACT_APP_BACKEND_URL="):
                     return line.split("=", 1)[1].strip().rstrip("/")

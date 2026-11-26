@@ -1,14 +1,24 @@
-"""Shared pytest configuration — loads env vars from /app/backend/.env if not already set."""
+"""Shared pytest configuration.
+
+Paths are derived from this file's own location, not hardcoded to the old
+container layout (/app), so the suite runs on a dev checkout, in CI, and on the
+production host. Layout assumed: <repo>/backend/tests/conftest.py
+"""
 import os
 import sys
 from pathlib import Path
 
+TESTS_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = TESTS_DIR.parent
+REPO_DIR = BACKEND_DIR.parent
+FRONTEND_DIR = REPO_DIR / "frontend"
+
 # Allow `from portal import …` imports regardless of pytest rootdir resolution.
-sys.path.insert(0, "/app/backend")
+sys.path.insert(0, str(BACKEND_DIR))
 
 
 def _load_env_from_file() -> None:
-    env_path = Path("/app/backend/.env")
+    env_path = BACKEND_DIR / ".env"
     if not env_path.exists():
         return
     for line in env_path.read_text().splitlines():
@@ -226,7 +236,7 @@ def _public_base() -> str:
     url = os.environ.get("REACT_APP_BACKEND_URL", "")
     if not url:
         try:
-            for line in Path("/app/frontend/.env").read_text().splitlines():
+            for line in (FRONTEND_DIR / ".env").read_text().splitlines():
                 if line.startswith("REACT_APP_BACKEND_URL="):
                     url = line.split("=", 1)[1].strip().strip('"')
                     break
@@ -307,8 +317,77 @@ def _serialize_shared_mail_state(request):
         f.close()
 
 
+# ==================================================================
+# WRITE GATE
+# ==================================================================
+# This suite is not read-only. pytest_sessionstart below creates demo users,
+# products, services, invoices and tickets through the admin API, and
+# pytest_sessionfinish rewrites the integration_settings collection. That was
+# harmless in a throwaway container with its own database; on a host whose
+# MONGO_URL points at the production cluster it would seed fixture rows into
+# live data and could flip real integration flags.
+#
+# Until now the only thing preventing that was that the suite could not import
+# at all on this host (16 collection errors from /app paths). Those paths are
+# fixed, which removes that accidental protection - so the protection has to be
+# explicit instead.
+#
+# Anything that writes requires IC_ALLOW_DB_WRITES=1. Read-only modules still
+# run without it.
+ALLOW_DB_WRITES = os.environ.get("IC_ALLOW_DB_WRITES") == "1"
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip every module that can mutate persistent state, unless allowed.
+
+    Decided by inspecting the module source at collection time rather than from
+    a hand-maintained list. A list drifts: 80+ of these modules write, and a
+    module added tomorrow would silently bypass a hardcoded list. The patterns
+    below cover HTTP writes and direct database calls.
+    """
+    if ALLOW_DB_WRITES:
+        return
+    import re
+    import pytest as _pytest
+
+    # Anything that creates/updates/deletes over HTTP or talks to Mongo directly.
+    MUTATING = re.compile(
+        r"requests\.(post|put|patch|delete)\b"
+        r"|_rq\.(post|put|patch|delete)\b"
+        r"|session\.(post|put|patch|delete)\b"
+        r"|\.post\(|\.put\(|\.patch\(|\.delete\("
+        r"|MongoClient|insert_one|insert_many|update_one|update_many"
+        r"|delete_one|delete_many|replace_one|\.drop\(|bulk_write"
+    )
+
+    skip = _pytest.mark.skip(
+        reason="can mutate database state; set IC_ALLOW_DB_WRITES=1 to run"
+    )
+    cache = {}
+    for item in items:
+        path = str(getattr(item, "fspath", ""))
+        name = os.path.basename(path)
+        if name == "conftest.py":
+            continue
+        if name not in cache:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    # Strip the path-resolution prelude so "os.path.dirname"
+                    # style helpers cannot trip the pattern.
+                    src = f.read()
+                cache[name] = bool(MUTATING.search(src))
+            except Exception:
+                cache[name] = True          # unreadable: assume the worst
+        if cache[name]:
+            item.add_marker(skip)
+
+
 def pytest_sessionstart(session):
     global _demo_users_done
+    if not ALLOW_DB_WRITES:
+        # Seeding fixtures into whatever MONGO_URL points at is exactly the
+        # accident this gate exists to prevent.
+        return
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     # Master (or non-distributed run): snapshot integration_settings so the
     # suites that toggle/delete providers can't clobber the live dev config.
@@ -337,6 +416,8 @@ def pytest_sessionstart(session):
 
 def pytest_sessionfinish(session, exitstatus):
     # Restore integration_settings exactly as they were before the run.
+    if not ALLOW_DB_WRITES:
+        return
     if os.environ.get("PYTEST_XDIST_WORKER") is not None:
         return
     try:

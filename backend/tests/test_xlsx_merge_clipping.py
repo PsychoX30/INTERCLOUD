@@ -15,14 +15,15 @@ import io
 import re
 import sys
 import os
+from pathlib import Path
 
 import pytest
 
-# Support both containerised (/app/backend) and local dev paths.
-for _p in ("/app/backend", "/home/support/INTERCLOUD/backend"):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
+# Derived from this file's location rather than hardcoded: <repo>/backend/tests/
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+os.chdir(_BACKEND_DIR)
 
 import portal.routes.business as biz  # noqa: E402
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { api } from "../../../portal/api";
-import { PageHeader, Card, Loading, EmptyState, btnSecondary } from "../ui";
+import { api, formatApiError } from "../../../portal/api";
+import { PageHeader, Card, Loading, EmptyState, ErrorState, btnSecondary } from "../ui";
 import { TrendingUp, Users, ServerCog, ShieldCheck, ReceiptText, AlertTriangle, RefreshCw, Award } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 
@@ -15,8 +15,18 @@ const idrShort = (v) => {
 
 const AdminOwnerDashboard = () => {
   const [d, setD] = useState(null);
-  const load = () => api.get("/admin/owner/overview").then((r) => setD(r.data));
+  const [err, setErr] = useState(null);
+  // A request that rejects without a handler leaves `d` null forever, which
+  // renders a spinner that never resolves — indistinguishable from a slow API.
+  // Every branch below now settles: data, or a message with a retry.
+  const load = () => {
+    setErr(null);
+    return api.get("/admin/owner/overview")
+      .then((r) => { setD(r.data); setErr(null); })
+      .catch((e) => setErr(formatApiError(e)));
+  };
   useEffect(() => { load(); }, []);
+  if (err) return <ErrorState title="Gagal memuat executive overview" body={err} onRetry={load} />;
   if (!d) return <Loading label="Aggregating executive metrics…" />;
 
   return (

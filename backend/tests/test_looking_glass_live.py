@@ -12,7 +12,17 @@ Plus regression coverage on the other mikrotik admin ops.
 Requires the live TO.DIST device — id 6a617872f12db51fa9cc268c, RouterOS
 7.20.6 at 157.20.32.253:8777. A valid src-address is 157.20.32.253.
 """
+
 from __future__ import annotations
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 import os
 import ipaddress
 import time
@@ -23,7 +33,7 @@ BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 if not BASE_URL:
     # Fallback: read frontend/.env (test env may not export it)
     try:
-        with open("/app/frontend/.env") as f:
+        with open(f"{_IC_FRONTEND}/.env") as f:
             for line in f:
                 if line.startswith("REACT_APP_BACKEND_URL="):
                     BASE_URL = line.split("=", 1)[1].strip().rstrip("/")

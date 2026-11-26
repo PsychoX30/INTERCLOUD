@@ -91,7 +91,7 @@ const NewTicketModal = ({ onClose, onCreated }) => {
         <div className="mt-4 space-y-3">
           <div>
             <div className={labelClass}>Subject</div>
-            <input required value={subject} onChange={(e) => setSubject(e.target.value)} className={inputClass} data-testid="ticket-subject" />
+            <input required maxLength={200} value={subject} onChange={(e) => setSubject(e.target.value)} className={inputClass} data-testid="ticket-subject" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -124,7 +124,7 @@ const NewTicketModal = ({ onClose, onCreated }) => {
           )}
           <div>
             <div className={labelClass}>Message</div>
-            <textarea required rows={5} value={message} onChange={(e) => setMessage(e.target.value)} className={`${inputClass} h-auto py-2`} data-testid="ticket-message" />
+            <textarea required rows={5} maxLength={20000} value={message} onChange={(e) => setMessage(e.target.value)} className={`${inputClass} h-auto py-2`} data-testid="ticket-message" />
           </div>
         </div>
         <div className="mt-5 flex justify-end gap-2">
@@ -185,7 +185,7 @@ const TicketDetail = ({ ticket, onClose }) => {
           ))}
         </div>
         <form onSubmit={send} className="p-4 border-t border-slate-100 bg-slate-50">
-          <textarea rows={2} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply…" className={`${inputClass} h-auto py-2`} data-testid="ticket-reply-input" disabled={t.status === "closed"} />
+          <textarea maxLength={20000} rows={2} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply…" className={`${inputClass} h-auto py-2`} data-testid="ticket-reply-input" disabled={t.status === "closed"} />
           <div className="mt-2 flex items-center justify-end gap-2">
             {t.status !== "closed" && (
               <button

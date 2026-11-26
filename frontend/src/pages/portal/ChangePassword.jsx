@@ -4,6 +4,7 @@ import { PageHeader, Card, btnPrimary, inputClass, labelClass } from "./ui";
 import { Lock, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useAuth } from "../../portal/AuthContext";
 import { TwoFactorPanel } from "./TwoFactorPanel";
+import { checkPassword, PASSWORD_MIN_LEN } from "../../portal/passwordPolicy";
 
 /**
  * Change-password screen - available to every logged-in role (client and staff).
@@ -19,7 +20,8 @@ const ChangePassword = () => {
   const submit = async (e) => {
     e.preventDefault();
     setErr(""); setOk(false);
-    if (f.new_password.length < 8) return setErr("New password must be at least 8 characters.");
+    const pwErr = checkPassword(f.new_password);
+    if (pwErr) return setErr(pwErr);
     if (f.new_password !== f.confirm) return setErr("Password confirmation does not match.");
     if (f.new_password === f.current_password) return setErr("New password must differ from the current one.");
     setBusy(true);
@@ -61,14 +63,14 @@ const ChangePassword = () => {
                      data-testid="change-pw-current" className={`${inputClass} mt-1`} autoComplete="current-password" />
             </label>
             <label className="block mt-4">
-              <div className={labelClass}>New password (min 8 characters)</div>
-              <input type="password" required minLength={8} value={f.new_password}
+              <div className={labelClass}>New password (min 8, huruf besar + kecil + angka)</div>
+              <input type="password" required minLength={PASSWORD_MIN_LEN} value={f.new_password}
                      onChange={(e) => setF({ ...f, new_password: e.target.value })}
                      data-testid="change-pw-new" className={`${inputClass} mt-1`} autoComplete="new-password" />
             </label>
             <label className="block mt-4">
               <div className={labelClass}>Confirm new password</div>
-              <input type="password" required minLength={8} value={f.confirm}
+              <input type="password" required minLength={PASSWORD_MIN_LEN} value={f.confirm}
                      onChange={(e) => setF({ ...f, confirm: e.target.value })}
                      data-testid="change-pw-confirm" className={`${inputClass} mt-1`} autoComplete="new-password" />
             </label>

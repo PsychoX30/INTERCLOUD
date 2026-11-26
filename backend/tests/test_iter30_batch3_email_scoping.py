@@ -1,3 +1,12 @@
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 """
 Iteration 30 — Batch-3 verification.
 
@@ -17,6 +26,7 @@ F3 — Sales scoping in /admin/dashboard
 
 Regression — batch-2 fixes still work.
 """
+
 import os
 import time
 from pathlib import Path
@@ -31,7 +41,7 @@ def _resolve_base_url() -> str:
     env = os.environ.get("REACT_APP_BACKEND_URL")
     if env:
         return env.rstrip("/")
-    fenv = Path("/app/frontend/.env")
+    fenv = Path(f"{_IC_FRONTEND}/.env")
     if fenv.exists():
         for line in fenv.read_text().splitlines():
             if line.startswith("REACT_APP_BACKEND_URL="):

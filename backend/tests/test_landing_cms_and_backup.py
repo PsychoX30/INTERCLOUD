@@ -1,9 +1,19 @@
+import os as _ic_os
+# This suite originally ran inside a container where the code lived at /app.
+# Those absolute paths are resolved from this file's own location instead, so the
+# same tests run on a dev checkout, in CI, or on the production host without a
+# symlink farm. Layout assumed: <repo>/backend/tests/this_file.py
+_IC_BACKEND = _ic_os.path.dirname(_ic_os.path.dirname(_ic_os.path.abspath(__file__)))
+_IC_REPO = _ic_os.path.dirname(_IC_BACKEND)
+_IC_FRONTEND = _ic_os.path.join(_IC_REPO, "frontend")
+
 """Backend tests for iteration_26:
 - Landing CMS (public GET, admin POST/DELETE, 128 KB cap, auth guards)
 - Backup download (mongodump gzip archive, filename pattern, headers, auth)
 - Restore (confirm guard, empty guard, round-trip, auth)
 - Regressions: login endpoint, /api/portal/admin/users survives round-trip
 """
+
 import os
 import re
 import gzip
@@ -13,7 +23,7 @@ import pytest
 import requests
 
 BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL")
-            or open("/app/frontend/.env").read().split("REACT_APP_BACKEND_URL=")[1].splitlines()[0].strip()
+            or open(f"{_IC_FRONTEND}/.env").read().split("REACT_APP_BACKEND_URL=")[1].splitlines()[0].strip()
            ).rstrip("/")
 API = f"{BASE_URL}/api/portal"
 

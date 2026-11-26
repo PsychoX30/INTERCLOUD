@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../portal/api";
 import { Lock, Loader2, AlertTriangle, CheckCircle2, Cloud } from "lucide-react";
+import { checkPassword, PASSWORD_MIN_LEN } from "../../portal/passwordPolicy";
 
 const PortalResetPassword = () => {
   const [sp] = useSearchParams();
@@ -16,7 +17,8 @@ const PortalResetPassword = () => {
   const submit = async (e) => {
     e.preventDefault();
     setErr("");
-    if (pw.length < 8) return setErr("Password must be at least 8 characters.");
+    const pwErr = checkPassword(pw);
+    if (pwErr) return setErr(pwErr);
     if (pw !== pw2) return setErr("Password confirmation does not match.");
     setBusy(true);
     try {
@@ -41,7 +43,7 @@ const PortalResetPassword = () => {
         </div>
         <div className="relative max-w-md">
           <h1 className="text-4xl font-extrabold leading-tight">Choose a strong <span className="text-[#f5b120]">password</span>.</h1>
-          <p className="mt-5 text-white/70 text-sm leading-relaxed">Use at least 8 characters. Mix upper/lower case + a number for extra strength.</p>
+          <p className="mt-5 text-white/70 text-sm leading-relaxed">Minimal 8 karakter, wajib mengandung huruf besar, huruf kecil, dan angka. Simbol opsional.</p>
         </div>
         <div className="relative text-[11px] text-white/50">© {new Date().getFullYear()} PT Intercloud Digital Inovasi</div>
       </div>
@@ -68,12 +70,12 @@ const PortalResetPassword = () => {
               )}
               <label className="block mt-5">
                 <span className="text-sm font-bold text-[#0a2350]">New password</span>
-                <input type="password" required minLength={8} value={pw} onChange={(e) => setPw(e.target.value)} data-testid="reset-new"
+                <input type="password" required minLength={PASSWORD_MIN_LEN} value={pw} onChange={(e) => setPw(e.target.value)} data-testid="reset-new"
                   className="mt-1.5 w-full h-12 rounded-xl border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120] text-sm" />
               </label>
               <label className="block mt-4">
                 <span className="text-sm font-bold text-[#0a2350]">Confirm password</span>
-                <input type="password" required minLength={8} value={pw2} onChange={(e) => setPw2(e.target.value)} data-testid="reset-confirm"
+                <input type="password" required minLength={PASSWORD_MIN_LEN} value={pw2} onChange={(e) => setPw2(e.target.value)} data-testid="reset-confirm"
                   className="mt-1.5 w-full h-12 rounded-xl border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-[#f5b120] focus:border-[#f5b120] text-sm" />
               </label>
               <button type="submit" disabled={busy || !token} data-testid="reset-submit"

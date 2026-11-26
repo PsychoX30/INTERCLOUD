@@ -1,15 +1,23 @@
 import React, { useEffect, useState } from "react";
-import { api, money, shortDate, docUrl } from "../../../portal/api";
-import { PageHeader, Loading, StatusBadge, EmptyState } from "../ui";
+import { api, money, shortDate, docUrl, formatApiError } from "../../../portal/api";
+import { PageHeader, Loading, StatusBadge, EmptyState, ErrorState } from "../ui";
 import { FileDown, Download, BadgePercent } from "lucide-react";
 
 const ClientCreditNotes = () => {
   const [rows, setRows] = useState(null);
+  const [err, setErr] = useState(null);
 
-  useEffect(() => {
-    api.get("/client/credit-notes").then((r) => setRows(r.data));
-  }, []);
+  // Without the .catch() a rejected request left `rows` null and the page spun
+  // forever. A failed load is a state, not an absence of one.
+  const load = () => {
+    setErr(null);
+    return api.get("/client/credit-notes")
+      .then((r) => { setRows(Array.isArray(r.data) ? r.data : []); setErr(null); })
+      .catch((e) => setErr(formatApiError(e)));
+  };
+  useEffect(() => { load(); }, []);
 
+  if (err) return <ErrorState title="Gagal memuat credit notes" body={err} onRetry={load} />;
   if (!rows) return <Loading />;
 
   const applied = rows.filter((r) => r.status === "applied").reduce((a, b) => a + b.amount, 0);
