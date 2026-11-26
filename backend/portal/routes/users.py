@@ -492,6 +492,11 @@ async def admin_update_user(uid: str, payload: m.UserUpdateIn, request: Request,
     if payload.password:
         upd["password_hash"] = hash_password(payload.password)
         password_changed = True
+        # Force-invalidate the user's existing sessions when an admin sets a
+        # password (e.g. after a suspected compromise). Uses $set on a field
+        # we compute here because this update goes through a generic dict.
+        existing_sv = int((existing or {}).get("session_version") or 0)
+        upd["session_version"] = existing_sv + 1
     if upd:
         await db.users.update_one({"_id": _oid(uid)}, {"$set": upd})
     u = await _load_user(db, uid)
@@ -548,7 +553,8 @@ async def admin_impersonate_client(uid: str, request: Request, admin=Depends(req
         raise HTTPException(status_code=400, detail="Hanya akun klien yang bisa diimpersonasi")
     if target.get("status") == "suspended":
         raise HTTPException(status_code=400, detail="Akun klien sedang disuspensi")
-    token = create_access_token(str(target["_id"]), target["email"], "client")
+    token = create_access_token(str(target["_id"]), target["email"], "client",
+                                sv=int(target.get("session_version") or 0))
     await log_audit(db, actor=admin, action="user.impersonate", category="security",
                     target_type="user", target_id=str(target["_id"]),
                     target_label=target.get("email", ""), severity="warning",

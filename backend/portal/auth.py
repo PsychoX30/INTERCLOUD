@@ -17,7 +17,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_TTL_MINUTES = 60 * 24 * 7  # 1 week for portal use
+ACCESS_TOKEN_TTL_MINUTES = 120  # 2 hours; see session versioning below.
 
 STAFF_ROLES = {"admin", "owner", "sales", "finance", "support", "ticket_only", "creative"}
 FINANCE_ROLES = {"admin", "owner", "finance"}  # sees revenue/finance widgets (owner read-only)
@@ -53,11 +53,24 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str, role: str) -> str:
+def create_access_token(user_id: str, email: str, role: str,
+                        *, sv: int = 0) -> str:
+    """Mint a portal access token.
+
+    `sv` is the user's `session_version` baked into the token. `_resolve_user`
+    rejects any token whose `sv` no longer matches the stored value, so
+    rotating a token is just an `$inc: {session_version: 1}` on the user row.
+
+    Before this existed a stolen token stayed valid for its full lifetime
+    (7 days) with no way to revoke it — password change, admin reset, and
+    "log out everywhere" all left it working. Tokens are now 2 hours and
+    revocable.
+    """
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
+        "sv": int(sv),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES),
         "type": "access",
     }
@@ -130,6 +143,14 @@ async def _resolve_user(request: Request, creds: HTTPAuthorizationCredentials | 
     # so toggling a user off would not actually cut them off.
     if user.get("is_active") is False:
         raise HTTPException(status_code=401, detail="Akun dinonaktifkan")
+    # Revoke every previously-issued token for this account. The token carries
+    # the `sv` it was minted with; bumping session_version on the user row
+    # (password change/reset, admin action, "log out everywhere") invalidates
+    # all of them at once. Tokens minted before this field existed have no
+    # `sv` and are treated as 0, which matches the absent-field default, so
+    # the change does not log anybody out on deploy.
+    if int(payload.get("sv") or 0) != int(user.get("session_version") or 0):
+        raise HTTPException(status_code=401, detail="Sesi berakhir, silakan login ulang")
     user["id"] = str(user.pop("_id"))
     user.pop("password_hash", None)
     # Normalize assigned_client_ids to str list

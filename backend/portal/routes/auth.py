@@ -32,6 +32,7 @@ from portal.security import AUTH_LOGIN_LIMIT  # noqa: E402
 from portal.security import AUTH_REGISTER_LIMIT  # noqa: E402
 from portal.security import AUTH_RESET_LIMIT  # noqa: E402
 from portal.security import limiter as _rl_limiter  # noqa: E402
+from portal.security import escape_html as _esc_html  # noqa: E402
 
 router = APIRouter()
 
@@ -114,7 +115,8 @@ async def login(payload: m.LoginIn, request: Request):
                                  ip=ip, user_agent=ua, recaptcha_enabled=bool(recap_doc),
                                  recaptcha_score=recap_score)
         return {"require_2fa": True, "mfa_token": _tf.make_mfa_token(str(u["_id"]))}
-    token = create_access_token(str(u["_id"]), u["email"], u["role"])
+    token = create_access_token(str(u["_id"]), u["email"], u["role"],
+                                sv=int(u.get("session_version") or 0))
     await _log_login_attempt(db, email=email, action="login", success=True, reason="ok",
                              ip=ip, user_agent=ua, recaptcha_enabled=bool(recap_doc),
                              recaptcha_score=recap_score)
@@ -161,7 +163,8 @@ async def login_2fa(payload: dict, request: Request):
     await db.users.update_one({"_id": u["_id"]}, {"$set": {"failed_2fa": 0}})
     await _log_login_attempt(db, email=u["email"], action="login_2fa", success=True, reason="ok",
                              ip=ip, user_agent=ua)
-    token = create_access_token(str(u["_id"]), u["email"], u["role"])
+    token = create_access_token(str(u["_id"]), u["email"], u["role"],
+                                sv=int(u.get("session_version") or 0))
     return {"token": token, "user": _user_public(u)}
 
 
@@ -366,7 +369,8 @@ async def register(payload: m.RegisterIn, request: Request):
     except Exception:
         pass
 
-    token = create_access_token(str(doc["_id"]), doc["email"], doc["role"])
+    token = create_access_token(str(doc["_id"]), doc["email"], doc["role"],
+                                sv=int(doc.get("session_version") or 0))
     return {"token": token, "user": _user_public(doc)}
 
 
@@ -428,7 +432,10 @@ async def auth_change_password(payload: m.ChangePasswordIn, user=Depends(get_cur
         {"_id": u["_id"]},
         {"$set": {"password_hash": hash_password(payload.new_password),
                   "password_changed_at": _now(),
-                  "must_change_password": False}},
+                  "must_change_password": False},
+         # Sign out every other session/device; this one gets a fresh token
+         # below from the same rotated value.
+         "$inc": {"session_version": 1}},
     )
     # Invalidate any outstanding reset tokens for this user
     await db.password_resets.update_many({"user_id": u["_id"], "used": False}, {"$set": {"used": True}})
@@ -448,7 +455,10 @@ async def admin_reset_user_password(uid: str, payload: m.AdminResetPasswordIn,
         {"_id": target["_id"]},
         {"$set": {"password_hash": hash_password(payload.new_password),
                   "password_changed_at": _now(),
-                  "password_reset_by": ObjectId(admin["id"])}},
+                  "password_reset_by": ObjectId(admin["id"])},
+         # The target is signed out everywhere. Their stolen token dies now
+         # instead of at expiry.
+         "$inc": {"session_version": 1}},
     )
     await db.password_resets.update_many({"user_id": target["_id"], "used": False},
                                          {"$set": {"used": True}})
@@ -530,7 +540,9 @@ async def auth_reset_password(payload: m.ResetPasswordIn, request: Request):
     await db.users.update_one(
         {"_id": row["user_id"]},
         {"$set": {"password_hash": hash_password(payload.new_password),
-                  "password_changed_at": _now()}},
+                  "password_changed_at": _now()},
+         # Anyone holding a token minted before this reset loses access.
+         "$inc": {"session_version": 1}},
     )
     await db.password_resets.update_one({"_id": row["_id"]},
                                         {"$set": {"used": True, "used_at": _now()}})
@@ -551,7 +563,7 @@ async def _send_password_notice(db, user: dict, *, kind: str, reset_url: str = "
     if kind == "forgot":
         subject = "Reset your Intercloud portal password"
         html = (
-            f"<p>Hi {user.get('name','there')},</p>"
+            f"<p>Hi {_esc_html(user.get('name') or 'there')},</p>"
             f"<p>We received a password-reset request for your Intercloud portal account. "
             f"Click the button below within the next 60 minutes to set a new password:</p>"
             f"<p><a href='{reset_url}' style='display:inline-block;padding:10px 22px;"
@@ -563,7 +575,7 @@ async def _send_password_notice(db, user: dict, *, kind: str, reset_url: str = "
     else:
         subject = "Your Intercloud portal password was reset"
         html = (
-            f"<p>Hi {user.get('name','there')},</p>"
+            f"<p>Hi {_esc_html(user.get('name') or 'there')},</p>"
             f"<p>An administrator has reset the password for your Intercloud portal account. "
             f"Please contact your account manager for the new password, "
             f"or use the &lsquo;Forgot password&rsquo; link on the portal login page.</p>"

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Callable
 
@@ -75,12 +76,189 @@ from starlette.responses import Response
 # ============================================================
 # Rate limiter - one instance shared across the app
 # ============================================================
+def _limiter_storage_uri() -> str:
+    """MongoDB-backed counters, falling back to memory.
+
+    `memory://` is per-process. uvicorn runs `--workers 2`, so every policy
+    below was really 2x its stated rate, split by whichever worker the kernel
+    picked: `AUTH_REGISTER_LIMIT = 5/hour` allowed up to 10, `AUTH_LOGIN_LIMIT
+    = 10/minute` up to 20, and the effective rate doubled again on every
+    restart. (Measured: a 12-request burst against /auth/login produced one
+    429 from only one of the two workers.)
+
+    MongoDB is already a hard dependency of this app, so the counters cost no
+    new infrastructure and are shared by both workers.
+
+    Order matters: `server.py` imports this module at line 14 but calls
+    `load_dotenv()` at line 19, so `MONGO_URL` is still unset when this runs.
+    We therefore load `backend/.env` ourselves (override=False, so the app's
+    own later call is unaffected). Getting this wrong silently degrades to
+    the per-process limiter, which is the bug this function exists to fix.
+
+    Any failure - missing env, missing pymongo, bad URI - falls back to
+    memory. A limiter outage must never take the API down; a lenient limiter
+    is strictly better than an unavailable one.
+    """
+    uri = os.environ.get("MONGO_URL")
+    if not uri:
+        try:
+            from dotenv import load_dotenv
+            from pathlib import Path
+            # portal/security.py -> portal -> backend
+            env_path = Path(__file__).resolve().parents[1] / ".env"
+            load_dotenv(env_path, override=False)
+            uri = os.environ.get("MONGO_URL")
+        except Exception:
+            uri = None
+    if not uri:
+        return "memory://"
+    if not uri.startswith(("mongodb://", "mongodb+srv://")):
+        return "memory://"
+    try:
+        from limits.storage import MongoDBStorage
+    except Exception:  # pragma: no cover - dependency missing
+        return "memory://"
+    # Touch the connection once, here, with short timeouts. Doing it at import
+    # rather than on the first login means a wrong URI or missing grant
+    # degrades to the in-memory limiter at startup instead of failing every
+    # rate-limited request later.
+    try:
+        MongoDBStorage(
+            uri,
+            database_name=os.environ.get("DB_NAME") or "intercloud_portal",
+            serverSelectionTimeoutMS=1500,
+            connectTimeoutMS=1500,
+            socketTimeoutMS=2000,
+        ).storage  # property -> __initialize_database (creates its indexes)
+    except Exception as e:  # pragma: no cover - environment specific
+        logging.getLogger("portal.security").warning(
+            "[ratelimit] mongo storage unavailable (%s: %s) - falling back to "
+            "per-process memory limiter; limits will be per worker until fixed",
+            type(e).__name__, str(e)[:160],
+        )
+        return "memory://"
+    return uri
+
+
+def _limiter_db_name() -> str:
+    """Database the limiter counters live in - the app's own DB.
+
+    The app's mongo credentials are granted on DB_NAME only, so this has to
+    match it. `server.py` also calls `load_dotenv()`, but this module is
+    imported before that line runs, hence the local load below.
+    """
+    name = os.environ.get("DB_NAME")
+    if not name:
+        try:
+            from dotenv import load_dotenv
+            from pathlib import Path
+            load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+            name = os.environ.get("DB_NAME")
+        except Exception:
+            name = None
+    return name or "intercloud_portal"
+
+
 limiter = Limiter(
     key_func=_client_ip,
     default_limits=[],   # no global cap; opt-in via decorators only
     headers_enabled=False,   # BaseHTTPMiddleware-wrapped responses break the injector; keep off
-    storage_uri="memory://",
+    storage_uri=_limiter_storage_uri(),
+    # Keep the limiter's own bookkeeping out of the app database; a separate
+    # db name keeps the counters from polluting `db.users` etc.
+    storage_options={
+        # MUST be the app's own database. The mongo user granted to this app is
+        # scoped to DB_NAME only: pointing the limiter at any other database
+        # fails with `not authorized on <db> to execute command` at the first
+        # rate-limited request (measured with "intercloud_ratelimit"). The
+        # counters live in their own collections (`counters`, `windows`) and
+        # never touch business data.
+        "database_name": _limiter_db_name(),
+        # Bounded: pymongo's default server-selection timeout is 30s, which
+        # would turn a mongo hiccup into a 30s hang on every rate-limited
+        # request. The counters are best-effort; fail fast instead.
+        "serverSelectionTimeoutMS": 1500,
+        "connectTimeoutMS": 1500,
+        "socketTimeoutMS": 2000,
+    },
 )
+
+
+def _install_safe_mongo_storage_del() -> None:
+    """Replace limits' `MongoDBStorageBase.__del__` with a shutdown-safe one.
+
+    The stock destructor is:
+
+        def __del__(self):
+            if self.storage:
+                self.storage.close()
+
+    Two problems, both measured on this host:
+      1. `self.storage` is a property that LAZILY CREATES the pymongo client.
+         Touching it during teardown therefore opens a new connection at the
+         worst possible moment (and, with mongo unreachable, raised
+         ServerSelectionTimeoutError out of `__del__`).
+      2. `pymongo.MongoClient.close()` imports modules while the interpreter is
+         shutting down and raises `ImportError: sys.meta_path is None`.
+
+    Neither can be caught by the caller - exceptions in `__del__` are printed
+    as "Exception ignored in" and nothing else - so every worker restart wrote
+    two tracebacks into the backend error log and made a clean restart look
+    like a crash. That noise is how a real failure gets missed later.
+
+    This only replaces the cleanup path; behaviour during normal operation is
+    untouched. Idempotent and fully guarded.
+    """
+    try:
+        from limits.storage.mongodb import MongoDBStorageBase
+
+        def _safe_del(self) -> None:
+            try:
+                client = getattr(self, "_storage", None)
+                if client is not None:
+                    client.close()
+            except Exception:
+                # Shutdown, or the client was already torn down. Nothing to do
+                # and nowhere useful to report it.
+                pass
+
+        MongoDBStorageBase.__del__ = _safe_del
+    except Exception:  # pragma: no cover - dependency layout changed
+        logging.getLogger("portal.security").warning(
+            "[ratelimit] could not install shutdown-safe mongo destructor; "
+            "expect 'Exception ignored in MongoDBStorageBase.__del__' on restart"
+        )
+
+
+_install_safe_mongo_storage_del()
+
+
+def _warm_limiter_storage(lim) -> None:
+    """Force the limiter's storage to initialise now instead of on teardown.
+
+    `limits` MongoDBStorage initialises its collection lazily, and its
+    `__del__` re-triggers that initialisation at interpreter shutdown - when
+    pymongo is already being torn down. Measured: every worker restart wrote a
+    ServerSelectionTimeoutError traceback from `MongoDBStorageBase.__del__`
+    into the backend error log, which makes a clean restart look like a crash.
+
+    Touching `.storage` once satisfies the property's guard, so teardown does
+    no I/O. Failure is non-fatal: slowapi swallows storage errors per request
+    and the app fails open, which is the right trade for a rate limiter.
+    """
+    try:
+        storage = getattr(lim, "_storage", None)
+        inner = getattr(storage, "storage", None)
+        if inner is not None:
+            _ = inner
+    except Exception as e:  # pragma: no cover - environment specific
+        logging.getLogger("portal.security").warning(
+            "[ratelimit] storage warm-up failed (%s) - counters may be skipped",
+            type(e).__name__,
+        )
+
+
+_warm_limiter_storage(limiter)
 
 # Fixed policies (documented at each auth endpoint):
 AUTH_LOGIN_LIMIT           = "10/minute"   # login attempts
@@ -96,12 +274,13 @@ PUBLIC_STATUS_LIMIT        = "60/minute"   # unauthenticated /public/status + si
 # ============================================================
 CSP_POLICY = (
     "default-src 'self'; "
-    "script-src  'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com "
+    "script-src  'self' 'unsafe-eval' https://www.google.com https://www.gstatic.com "
     "            https://www.googletagmanager.com https://images.pexels.com; "
+    "script-src-attr 'none'; "
     "style-src   'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src    'self' https://fonts.gstatic.com data:; "
     "img-src     'self' https: data: blob:; "
-    "connect-src 'self' https: wss:; "
+    "connect-src 'self' wss://intercloud-digital.com; "
     "frame-src   'self' https://www.google.com; "
     "object-src  'none'; "
     "base-uri    'self'; "
@@ -136,6 +315,31 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Kill legacy XSS heuristics in old browsers; modern browsers ignore.
         h.setdefault("X-XSS-Protection", "0")
         return response
+
+
+# ============================================================
+# HTML escaping for outbound email
+# ============================================================
+def escape_html(value) -> str:
+    """Escape a value for interpolation into an HTML email body.
+
+    User-controlled text (display name, company, ticket subject) is stored
+    verbatim by design - the React portal renders it as text and React escapes
+    it. Email is different: those strings are concatenated into HTML strings,
+    so an unescaped name is real stored HTML injection into every message the
+    system sends to that address.
+
+    Use on EVERY dynamic value inside an f-string HTML body. Not needed for
+    server-generated values (URLs you built yourself), but harmless there.
+    """
+    if value is None:
+        return ""
+    return (str(value)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&#x27;"))
 
 
 # ============================================================
