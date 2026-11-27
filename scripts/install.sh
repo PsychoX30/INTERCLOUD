@@ -628,6 +628,12 @@ fi
 # worker_rlimit_nofile). Everything else goes into conf.d/00-hardening.conf.
 install -o root -g root -m 0644 /dev/stdin /etc/nginx/conf.d/00-hardening.conf <<'HTTPCONF'
 server_tokens off;
+
+# TLS floor at http level so a host that has not run certbot yet is not
+# left on whatever nginx's compiled-in default happens to allow. certbot's
+# options-ssl-nginx.conf sets the same pair at server level, which overrides
+# this one (duplicate values only log a warning).
+ssl_protocols TLSv1.2 TLSv1.3;
 HTTPCONF
 
 cat > /etc/nginx/sites-available/intercloud <<NGINX
