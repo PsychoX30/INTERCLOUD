@@ -99,6 +99,17 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
 )
+
+# APScheduler emits two INFO lines ("Running job ..." / "Job ... executed
+# successfully") every 12 s per job. With several leased jobs that is ~6 500
+# lines an hour, 99% of backend.err.log — enough to rotate real WARNINGs
+# ("collector stale", SNMP timeouts) out of the file before anyone reads them.
+# The scheduler module manages its own logging and ignores basicConfig's root
+# level, so it has to be named explicitly. WARNING and above still come through.
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+# Same class of problem: the lease helper logs one INFO line per skipped job per
+# cycle. Keep it at WARNING so only genuine lease problems surface.
+logging.getLogger("portal.emails").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Mask JWT/bearer/password/token/email in log lines

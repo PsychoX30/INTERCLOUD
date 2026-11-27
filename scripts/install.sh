@@ -621,9 +621,8 @@ cat > /etc/nginx/sites-available/intercloud <<NGINX
 # itself and backend middleware only fires on /api/*.
 #
 # CSP whitelist covers:
-#   - React inline runtime → 'unsafe-inline' on script-src (until nonce)
-#   - Google reCAPTCHA v3 / Cloudflare Turnstile → frame-src whitelist
-#   - Emergent CDN + WhatsApp embeds + logos → img-src https:
+#   - Google reCAPTCHA v3 / Cloudflare Turnstile -> frame-src whitelist
+#   - Emergent CDN + WhatsApp embeds + logos -> img-src https:
 #
 # NOTE: kept as a static string, NOT an nginx 'map' directive, because
 # not every nginx build supports \$var interpolation inside add_header.
@@ -636,24 +635,88 @@ map \$http_upgrade \$connection_upgrade {
     ''      close;
 }
 
+# ---- L7 rate limit zones ------------------------------------------------
+# SlowAPI limits live in the app, but they only run after nginx has already
+# accepted the request and FastAPI has parsed it. These zones drop the flood
+# at the edge instead, so a burst never reaches Python.
+#
+# Sizes: 10m holds ~160k distinct client IPs per zone - far beyond what this
+# box serves, so eviction under siege degrades to "some IPs share a bucket".
+#
+# Rates are deliberately loose. The two auth zones sit slightly ABOVE the app's
+# own policy (AUTH_LOGIN_LIMIT 10/minute, AUTH_REGISTER_LIMIT 5/hour) so the app
+# stays the authority and its JSON 429 body reaches the client. The edge only
+# catches the pathological case the app would otherwise have to parse.
+limit_req_zone \$binary_remote_addr zone=api_general:10m rate=30r/s;
+limit_req_zone \$binary_remote_addr zone=api_auth:10m    rate=20r/m;
+limit_req_zone \$binary_remote_addr zone=api_write:10m   rate=5r/s;
+limit_conn_zone \$binary_remote_addr zone=api_conn:10m;
+
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
     server_name ${NGINX_SERVER_NAME};
 
-    client_max_body_size 100M;   # backup restores upload archives here
+    # Default cap for everything. A single server-wide cap meant any
+    # unauthenticated POST to any route could make nginx buffer hundreds of MB
+    # before FastAPI even saw it. Large uploads are re-enabled per-location
+    # below, only on the routes that need them.
+    client_max_body_size 25M;
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml text/xml application/xml;
 
     # ---- Security headers --------------------------------------------
-    add_header X-Frame-Options "DENY" always;
+    # nginx is the single source of truth for security headers on the public
+    # path: it covers the SPA *and* the proxied /api responses. FastAPI's
+    # SecurityHeadersMiddleware also emits the same set, so without this every
+    # /api response carries each header TWICE with conflicting values --
+    # X-Frame-Options arrives as both DENY (app) and SAMEORIGIN (nginx), and
+    # browsers apply the strictest, so the app's DENY silently wins and breaks
+    # the same-origin framing the CMS live-preview relies on.
+    proxy_hide_header Content-Security-Policy;
+    proxy_hide_header Strict-Transport-Security;
+    proxy_hide_header X-Content-Type-Options;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header Referrer-Policy;
+    proxy_hide_header Permissions-Policy;
+    proxy_hide_header Cross-Origin-Opener-Policy;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com https://www.gstatic.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; frame-src 'self' https://www.google.com https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';" always;
+    # CSP. Tightened where it is provably safe, kept where it is load-bearing:
+    #   - dropped 'unsafe-inline' from script-src: the built index.html has no
+    #     inline <script> (verified) and React ships hashed chunks only.
+    #   - added script-src-attr 'none': the shell has no on*= attributes. This
+    #     closes the classic <img onerror=...> injection primitive.
+    #   - connect-src narrowed from 'https: wss:' (any host) to 'self' plus the
+    #     one WebSocket origin the VM console uses.
+    #   - 'unsafe-eval' KEPT on purpose: the lazily-loaded PDF viewer chunk
+    #     feature-detects `new Function` for its font compiler. Removing it
+    #     breaks client-side PDF preview for no measurable gain, since the
+    #     attacker-controlled sink (inline script) is already closed above.
+    #   - frame-ancestors stays 'self' (CMS live-preview renders the site in an
+    #     iframe of itself); X-Frame-Options SAMEORIGIN matches it.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' https://www.google.com https://www.gstatic.com https://challenges.cloudflare.com; script-src-attr 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' wss://intercloud-digital.com; frame-src 'self' https://www.google.com https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self';" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
-    # NOTE: Strict-Transport-Security is added by certbot on the HTTPS
-    # server block it generates. Adding it on plain HTTP violates spec.
+    # HSTS lives here, NOT in the certbot-generated block (certbot does not add
+    # it; a live request carried no Strict-Transport-Security header at all).
+    # Safe because this server block only listens on 443 - HSTS on a plain-HTTP
+    # response is ignored by browsers. `preload` only takes effect once the
+    # domain is submitted to the browser preload list.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+    # Slow-client protection. Defaults are generous (60s header/body), which
+    # lets a handful of half-open clients hold worker connections open.
+    client_body_timeout   30s;
+    client_header_timeout 30s;
+    send_timeout          60s;
+    keepalive_timeout     30s;
+
+    # nginx answers 503 by default when a zone is exceeded. 503 means "this
+    # server cannot service the request at all", which trips uptime monitors and
+    # misleads clients into retrying. 429 matches the app's own limiter.
+    limit_req_status 429;
+    limit_conn_status 429;
 
     # ACME HTTP-01 challenge — MUST be served over plain HTTP, no redirects.
     location /.well-known/acme-challenge/ {
@@ -666,13 +729,52 @@ server {
     root $APP_DIR/frontend/build;
     index index.html;
 
-    # Backend API
-    location /api/ {
+    # ---- Auth endpoints: the flood target (registration issues a JWT) ------
+    # Matched before the generic /api/ block (longest prefix wins).
+    location ~ ^/api/portal/auth/(login|register|forgot-password|reset-password|login/2fa)$ {
+        limit_req zone=api_auth burst=10 nodelay;
+        limit_conn api_conn 20;
+        client_max_body_size 1M;
         proxy_pass http://127.0.0.1:8001;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # overwrite, never append: the app trusts the last hop, and an appended
+        # client-supplied value would win.
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # ---- Upload routes: the only places that may send big bodies ----------
+    location ~ ^/api/portal/admin/(backup/restore|media|documents/upload|crm/import|mikrotik/backups) {
+        client_max_body_size 350M;
+        limit_req zone=api_write burst=10 nodelay;
+        client_body_timeout 300s;
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_request_buffering off;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_read_timeout 600s;
+    }
+
+    # Backend API
+    location /api/ {
+        # Edge cap: well above what a page load needs (the SPA fires ~10-20
+        # requests), low enough that the flood is cheap to reject.
+        limit_req zone=api_general burst=60 nodelay;
+        limit_conn api_conn 40;
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_request_buffering off;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
         # WebSocket upgrade — required for the noVNC VM console relay
         # (/api/portal/client/services/{id}/vm/console-ws). Without these
@@ -816,6 +918,110 @@ chown root:adm /var/log/intercloud-backup.log
 chmod 640 /var/log/intercloud-backup.log
 
 # ------------------------------------------------------------------
+# 8a-bis. Hourly business-only backup
+#   The full archive above is ~400 MB and only as fresh as 03:15. Business data
+#   is a few MB, so it is snapshotted hourly instead: worst-case data loss drops
+#   from 24 h to ~1 h at negligible I/O.
+# ------------------------------------------------------------------
+log "Installing hourly business backup"
+chmod +x "$APP_DIR/scripts/business-backup.sh" 2>/dev/null || true
+mkdir -p /var/backups/intercloud/business
+chown -R intercloud:intercloud /var/backups/intercloud/business
+
+cat > /etc/cron.d/intercloud-business-backup <<CRON2
+# Managed by scripts/install.sh — hourly BUSINESS-ONLY snapshot.
+# The full daily archive (03:15) stays as the disaster-recovery record; this
+# one caps worst-case data loss at ~1 hour for a few MB of I/O.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+5 * * * * root APP_DIR=$APP_DIR BACKUP_DIR=/var/backups/intercloud/business RETENTION_HOURS=48 bash $APP_DIR/scripts/business-backup.sh >> /var/log/intercloud-business-backup.log 2>&1
+CRON2
+chmod 644 /etc/cron.d/intercloud-business-backup
+touch /var/log/intercloud-business-backup.log
+chown root:adm /var/log/intercloud-business-backup.log
+chmod 640 /var/log/intercloud-business-backup.log
+
+# ------------------------------------------------------------------
+# 8a-ter. Backend memory watchdog
+#   On 2026-11-22..25 the FastAPI workers grew to 8 GB anon-RSS and the kernel
+#   OOM-killed them 15 times. Each kill was survivable (supervisor restarts in
+#   ~3 s) but the kernel picks its victim by RSS, and mongod -- 3.6 GB, the
+#   largest process on the box -- is next in that ordering. Recycling the
+#   workers at 2.5 GB keeps the choice away from the kernel entirely.
+# ------------------------------------------------------------------
+log "Installing backend memory watchdog"
+chmod +x "$APP_DIR/scripts/memory-watchdog.sh" 2>/dev/null || true
+
+# Keep mongod out of the kernel's OOM victim ordering. The portal workers are
+# recyclable (supervisor restarts them in ~3 s); mongod holds the only copy of
+# live business data that is not in the hourly dump yet.
+mkdir -p /etc/systemd/system/mongod.service.d
+cat > /etc/systemd/system/mongod.service.d/oom.conf <<OOMCONF
+[Service]
+OOMScoreAdjust=-600
+OOMCONF
+systemctl daemon-reload
+
+cat > /etc/cron.d/intercloud-memory-watchdog <<CRON3
+# Managed by scripts/install.sh — recycle backend workers before the kernel
+# OOM killer has to (it killed them 15x between 2026-11-22 and 2026-11-25).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+*/10 * * * * root APP_DIR=$APP_DIR $APP_DIR/scripts/memory-watchdog.sh >> /var/log/intercloud-memory-watchdog.log 2>&1
+CRON3
+chmod 644 /etc/cron.d/intercloud-memory-watchdog
+touch /var/log/intercloud-memory-watchdog.log
+chown root:adm /var/log/intercloud-memory-watchdog.log
+chmod 640 /var/log/intercloud-memory-watchdog.log
+
+# ------------------------------------------------------------------
+# 8a-quater. Log rotation
+#   Without this, backend.err.log grew to 128k lines of APScheduler INFO noise
+#   and supervisor's own log is unrotated: on a long-lived host they fill the
+#   disk and take the box down. `su root root` is required because these files
+#   are root-owned and logrotate refuses to write a state file for another user
+#   from a non-root context; copytruncate because supervisor keeps the fd open.
+# ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# 8a-quinquies. Jitsi heap ceilings
+#   Both JVM launchers default to -Xmx3072m, i.e. 6 GB of heap ceiling
+#   reserved on an 8.9 GB box for ~180 MB of actual use. That pushed
+#   Committed_AS above CommitLimit and contributed to the global OOM kills.
+# ------------------------------------------------------------------
+if [ -f /etc/jitsi/jicofo/config ]; then
+    log "Capping Jitsi heap"
+    grep -q '^JICOFO_MAX_MEMORY=' /etc/jitsi/jicofo/config \
+        && sed -i 's/^JICOFO_MAX_MEMORY=.*/JICOFO_MAX_MEMORY=1024m/' /etc/jitsi/jicofo/config \
+        || echo 'JICOFO_MAX_MEMORY=1024m' >> /etc/jitsi/jicofo/config
+    # jvb.sh reads VIDEOBRIDGE_MAX_MEMORY, not JVB_OPTS, for the heap cap.
+    if grep -q '^VIDEOBRIDGE_MAX_MEMORY=' /etc/jitsi/videobridge/config 2>/dev/null; then
+        sed -i 's/^VIDEOBRIDGE_MAX_MEMORY=.*/VIDEOBRIDGE_MAX_MEMORY=1536m/' /etc/jitsi/videobridge/config
+    else
+        echo 'VIDEOBRIDGE_MAX_MEMORY=1536m' >> /etc/jitsi/videobridge/config
+    fi
+fi
+
+log "Configuring log rotation"
+cat > /etc/logrotate.d/intercloud <<LOGROT8
+/var/log/intercloud-backend.out.log /var/log/intercloud-backend.err.log /var/log/intercloud-backup-watchdog.log /var/log/intercloud-backup-alerts.log /var/log/intercloud-memory-watchdog.log
+/var/log/intercloud-backup.log /var/log/intercloud-business-backup.log
+/var/log/supervisor/supervisord.log {
+    su root root
+    daily
+    rotate 7
+    size 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}
+LOGROT8
+chmod 644 /etc/logrotate.d/intercloud
+
+# ------------------------------------------------------------------
 # 8b. fail2ban — protect SSH and nginx auth/login endpoints
 # ------------------------------------------------------------------
 if command -v fail2ban-server >/dev/null 2>&1; then
@@ -829,6 +1035,11 @@ bantime  = 1h
 [nginx-portal-auth]
 enabled  = true
 filter   = nginx-portal-auth
+# `auto` resolves to the SYSTEMD backend whenever the nginx unit exists. A
+# systemd-backed jail with no journalmatch reads nothing while still reporting
+# itself healthy, so this jail silently never banned anyone until 2026-11-27
+# (Total failed: 0 forever). nginx writes access_log to a FILE -> force polling.
+backend  = polling
 logpath  = /var/log/nginx/access.log
 maxretry = 20
 findtime = 10m
