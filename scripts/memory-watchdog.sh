@@ -15,7 +15,10 @@ set -uo pipefail
 APP_DIR="${APP_DIR:-/opt/intercloud-portal}"
 LIMIT_MB="${LIMIT_MB:-2500}"
 STATE=/var/tmp/memory-watchdog.count
-LOG=/var/log/intercloud-memory-watchdog.log
+LOG=${LOG:-/var/log/intercloud-memory-watchdog.log}
+# DRY_RUN=1 makes the decision visible without touching the service. Testing the
+# restart path on a live box should not cost a real restart.
+DRY_RUN="${DRY_RUN:-0}"
 
 maxrss=0; maxpid=0
 for pid in $(pgrep -f 'server:app' 2>/dev/null); do
@@ -33,8 +36,12 @@ if [ "$maxrss" -ge "$LIMIT_MB" ]; then
     echo "$n" > "$STATE"
     echo "$(date -u +%FT%TZ) HIGH MEMORY sample $n/3: pid=$maxpid rss=${maxrss}MB limit=${LIMIT_MB}MB" >> "$LOG"
     if [ "$n" -ge 3 ]; then
-        echo "$(date -u +%FT%TZ) ACTION restart intercloud-backend (rss=${maxrss}MB sustained 3 samples)" >> "$LOG"
-        supervisorctl restart intercloud-backend >> "$LOG" 2>&1
+        if [ "$DRY_RUN" = "1" ]; then
+            echo "$(date -u +%FT%TZ) DRY-RUN: would restart intercloud-backend (rss=${maxrss}MB sustained 3 samples)" >> "$LOG"
+        else
+            echo "$(date -u +%FT%TZ) ACTION restart intercloud-backend (rss=${maxrss}MB sustained 3 samples)" >> "$LOG"
+            supervisorctl restart intercloud-backend >> "$LOG" 2>&1
+        fi
         echo "0" > "$STATE"
     fi
 else

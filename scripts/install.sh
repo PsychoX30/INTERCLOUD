@@ -600,6 +600,20 @@ sudo -u intercloud -H bash -c "
 # ------------------------------------------------------------------
 # 7. nginx — reverse proxy / static + /api
 # ------------------------------------------------------------------
+# worker_connections: the packaged default (768) caps concurrent connections per
+# worker. Telemetry fan-in plus the Jitsi/WebSocket paths outgrew it on the live
+# box, so raise it here instead of leaving each host to discover this by hand.
+# worker_rlimit_nofile must move with it or the workers hit EMFILE instead.
+log "Raising nginx worker limits"
+if grep -qE '^\s*worker_connections\s' /etc/nginx/nginx.conf; then
+    sed -i -E 's/^\s*worker_connections\s+[0-9]+;/\tworker_connections 4096;/' /etc/nginx/nginx.conf
+else
+    sed -i -E '0,/^events\s*\{/s//events {\n\tworker_connections 4096;/' /etc/nginx/nginx.conf
+fi
+if ! grep -qE '^\s*worker_rlimit_nofile' /etc/nginx/nginx.conf; then
+    sed -i -E '0,/^worker_processes/s//worker_rlimit_nofile 131072;\nworker_processes/' /etc/nginx/nginx.conf
+fi
+
 log "Writing /etc/nginx/sites-available/intercloud"
 # Include www.<domain> in server_name so both variants resolve here.
 NGINX_SERVER_NAME="${PORTAL_DOMAIN:-_}"
@@ -609,7 +623,9 @@ fi
 
 # Global http-level hardening: hide nginx version so attackers can't
 # fingerprint the exact release + map it to known CVEs. Uses conf.d so we
-# don't touch the vendor-provided /etc/nginx/nginx.conf.
+# Leave the vendor-provided /etc/nginx/nginx.conf alone EXCEPT for the two
+# directives that can only live in its main/events context (worker_connections,
+# worker_rlimit_nofile). Everything else goes into conf.d/00-hardening.conf.
 install -o root -g root -m 0644 /dev/stdin /etc/nginx/conf.d/00-hardening.conf <<'HTTPCONF'
 server_tokens off;
 HTTPCONF
