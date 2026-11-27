@@ -106,7 +106,16 @@ logging.basicConfig(
 # ("collector stale", SNMP timeouts) out of the file before anyone reads them.
 # The scheduler module manages its own logging and ignores basicConfig's root
 # level, so it has to be named explicitly. WARNING and above still come through.
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
+# Two apscheduler loggers emit WARNING for routine conditions on this fleet:
+# "skipped: maximum number of running instances reached" fires whenever a */10 s
+# tick is still finishing from the previous tick, and "Run time of job ... was
+# missed" fires on any scheduler latency above the 1 s default grace. With six
+# sub-minute jobs, two uvicorn workers and an HTTP-level limit_req that already
+# caps concurrency at 1:2, that is ~70 warnings/hour of pure scheduling jitter.
+# Measured over 7 h: 502 WARNING lines buried 7 real bgp.tools timeouts and 1
+# genuine job exception. Quiet the scheduler, keep ERROR: a job that actually
+# raises still surfaces, including the traceback.
+logging.getLogger("apscheduler").setLevel(logging.ERROR)
 # Same class of problem: the lease helper logs one INFO line per skipped job per
 # cycle. Keep it at WARNING so only genuine lease problems surface.
 logging.getLogger("portal.emails").setLevel(logging.WARNING)

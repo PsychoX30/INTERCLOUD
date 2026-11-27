@@ -965,6 +965,32 @@ chown root:adm /var/log/intercloud-business-backup.log
 chmod 640 /var/log/intercloud-business-backup.log
 
 # ------------------------------------------------------------------
+# 8a-bis. Backup freshness watchdog
+#   A backup that silently stops is worse than no backup: the daily archive
+#   is the only disaster-recovery record and nothing else inspects it. This
+#   check judges the age of the DATA (the UTC date embedded in
+#   daily-YYYYMMDD), not the file mtime, so a touch or rsync cannot mask a
+#   stalled job. It also proves the newest hourly snapshot still gunzips.
+# ------------------------------------------------------------------
+log "Installing backup freshness watchdog"
+chmod +x "$APP_DIR/scripts/backup-watchdog.sh" 2>/dev/null || true
+
+cat > /etc/cron.d/intercloud-backup-watchdog <<CRONW
+# Managed by scripts/install.sh — hourly freshness check on both backup lines.
+# :45 sits 40 min after the hourly snapshot (:05) and 22 h after the daily
+# archive (:15). MAX_FULL_AGE_HOURS=48 covers the 44.25 h worst case of the
+# date-in-filename scheme; lower it only if that naming scheme changes.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+45 * * * * root APP_DIR=$APP_DIR MAX_BIZ_AGE_MIN=90 MAX_FULL_AGE_HOURS=48 bash $APP_DIR/scripts/backup-watchdog.sh >> /var/log/intercloud-backup-watchdog.log 2>&1
+CRONW
+chmod 644 /etc/cron.d/intercloud-backup-watchdog
+touch /var/log/intercloud-backup-watchdog.log /var/log/intercloud-backup-alerts.log
+chown root:adm /var/log/intercloud-backup-watchdog.log /var/log/intercloud-backup-alerts.log
+chmod 640 /var/log/intercloud-backup-watchdog.log /var/log/intercloud-backup-alerts.log
+
+# ------------------------------------------------------------------
 # 8a-ter. Backend memory watchdog
 #   On 2026-11-22..25 the FastAPI workers grew to 8 GB anon-RSS and the kernel
 #   OOM-killed them 15 times. Each kill was survivable (supervisor restarts in

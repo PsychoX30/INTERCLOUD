@@ -18,7 +18,15 @@ APP_DIR="${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/intercloud}"
 BIZ_DIR="$BACKUP_DIR/business"
 MAX_BIZ_AGE_MIN="${MAX_BIZ_AGE_MIN:-90}"      # hourly job -> 90 min tolerance
-MAX_FULL_AGE_HOURS="${MAX_FULL_AGE_HOURS:-30}" # daily job -> 30 h tolerance
+# The age this compares is (now - midnight of the UTC date in the filename),
+# NOT time since the archive was written. daily-backup.sh runs at 03:15 WIB
+# (20:15 UTC) and names the file with the UTC date at that moment, so the
+# newest archive is 20.25 h of age the instant it is written and grows to
+# 44.25 h just before the next run 24 h later. A 30 h limit therefore fired
+# every day from 06 UTC to 21 UTC (13 h out of 24, ~31-34 h reported) on a
+# perfectly healthy backup line. 48 h = 44.25 h worst case + 3.75 h slack for
+# a late run. Do not lower this without changing the filename scheme.
+MAX_FULL_AGE_HOURS="${MAX_FULL_AGE_HOURS:-48}"
 MIN_BIZ_BYTES="${MIN_BIZ_BYTES:-1000000}"
 LOG_TAG="[$(date -u +%FT%TZ)]"
 
